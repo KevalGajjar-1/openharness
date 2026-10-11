@@ -123,6 +123,25 @@ environment to every pane: every harness would have been that agent's session, w
 master and the core drop those variables before they start anything, and the core removes them from a tmux
 server's environment as it removes harnessd's own (`lib/agentSessionEnv.ts`).
 
+### MCP
+
+`harness mcp` serves the verbs as MCP tools on stdin and stdout, for agents that reach tools through MCP rather
+than a shell (Claude Desktop, Cursor, Windsurf; Claude Code and Codex with the Harness plugin): `harness_list`,
+`harness_start`, `harness_wait`, `harness_read`, `harness_close`, and `harness_send` only in a harness's own pane,
+since nothing can message an agent outside one. Each call runs the verb as `harness` in a process of its own, so
+the rules above decide what it may do, and the tool's answer is the text the verb prints. `initialize` carries the
+when-to-use rules as the server's instructions.
+
+The server is one agent's session. An MCP server's environment need not name the session (Codex's does not), so the
+server says it: `AI_AGENT` from the client's name in `initialize` (`codex-mcp-client` is Codex, `cursor-vscode`
+Cursor, `claude-ai` Claude Desktop) and `HARNESS_AGENT_SESSION` from its parent, the agent that started it. A
+`harness_wait` waits two minutes unless told (ten at most), within what clients allow a call, and says to call it
+again; ending on the person, a stop or the clock is an answer, not an error.
+
+Checked with real clients on October 11: Claude Code (`claude -p --mcp-config`) and Codex (`codex exec -c
+mcp_servers.harness…`) each listed the harnesses through it and were told "You are Claude Code, outside Harness." and
+"You are Codex, outside Harness."
+
 Signed out, all of this works: the daemon runs as this computer, and `harness new` now asks for that identity as
 `harness start` does (#1183). It used to read the sign-in file alone and refuse.
 

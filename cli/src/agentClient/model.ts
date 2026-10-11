@@ -92,8 +92,17 @@ export function outsideCaller(env: NodeJS.ProcessEnv, machineId: string): Caller
   // "claude-code_2-1-296_agent": the agent's name, then its version.
   const named = (env.AI_AGENT?.trim() || (env.CLAUDECODE === '1' ? 'claude-code' : '')).split('_')[0].slice(0, 40)
   if (!named) return null
-  return { machineId, agentId: `agent:${named}`, name: named === 'claude-code' ? 'Claude Code' : named, engine: named === 'claude-code' ? 'claude' : named, outside: true }
+  // A wrapper that knows the session when the agent does not say it: `harness mcp`, one server a session.
+  const session = env[AGENT_SESSION_ENV]?.trim().slice(0, 80)
+  const engine = named === 'claude-code' ? 'claude' : named
+  return { machineId, agentId: `agent:${named}${session ? `:${session}` : ''}`, name: AGENT_NAMES[named] ?? engineName(engine), engine, outside: true }
 }
+
+/** Agents that are not an engine Harness runs, by the name they give. */
+const AGENT_NAMES: Record<string, string> = { 'claude-desktop': 'Claude Desktop', windsurf: 'Windsurf', cline: 'Cline', zed: 'Zed' }
+
+/** Set beside AI_AGENT by what runs `harness` for an agent and knows its session (`harness mcp`): one caller a session. */
+export const AGENT_SESSION_ENV = 'HARNESS_AGENT_SESSION'
 
 export interface RowContext {
   machineId: string

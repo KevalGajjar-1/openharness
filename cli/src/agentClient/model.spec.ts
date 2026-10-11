@@ -50,9 +50,14 @@ describe('a harness as the agent verbs show it', () => {
       .toEqual({ machineId: 'm', agentId: 'claude-code:S1', name: 'Claude Code', engine: 'claude', outside: true })
     expect(outsideCaller({ CODEX_THREAD_ID: 'T1' }, 'm')).toEqual({ machineId: 'm', agentId: 'codex:T1', name: 'Codex', engine: 'codex', outside: true })
     // An agent that names only itself is one caller for every session of it.
-    expect(outsideCaller({ AI_AGENT: 'cursor_1-2_agent' }, 'm')).toEqual({ machineId: 'm', agentId: 'agent:cursor', name: 'cursor', engine: 'cursor', outside: true })
+    expect(outsideCaller({ AI_AGENT: 'cursor_1-2_agent' }, 'm')).toEqual({ machineId: 'm', agentId: 'agent:cursor', name: 'Cursor', engine: 'cursor', outside: true })
+    expect(outsideCaller({ AI_AGENT: 'claude-desktop' }, 'm')).toMatchObject({ name: 'Claude Desktop', engine: 'claude-desktop' })
+    expect(outsideCaller({ AI_AGENT: 'codex' }, 'm')).toMatchObject({ name: 'Codex', engine: 'codex' })
+    expect(outsideCaller({ AI_AGENT: 'newagent' }, 'm')).toMatchObject({ name: 'newagent' })
     expect(outsideCaller({ CLAUDECODE: '1' }, 'm')).toMatchObject({ agentId: 'agent:claude-code', name: 'Claude Code', engine: 'claude' })
     expect(outsideCaller({ CLAUDECODE: '0', CLAUDE_CODE_SESSION_ID: 'S1' }, 'm')).toBeNull()
+    // What runs `harness` for it and knows its session says so (`harness mcp`).
+    expect(outsideCaller({ AI_AGENT: 'cursor', HARNESS_AGENT_SESSION: 'mcp-42' }, 'm')).toMatchObject({ agentId: 'agent:cursor:mcp-42', name: 'Cursor' })
     expect(outsideCaller({ AI_AGENT: '  ' }, 'm')).toBeNull()
   })
 
