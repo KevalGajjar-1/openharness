@@ -127,7 +127,6 @@ import '../widgets/task_palette.dart';
 import '../state/task_route.dart';
 import '../orchestrator/orchestrator_launcher.dart';
 import '../orchestrator/orchestrator_workspace.dart';
-import '../teams/team_workspace.dart';
 import '../state/workspace_learning.dart';
 import '../state/workspace_onboarding.dart';
 import '../state/workspace_chrome.dart';
@@ -6496,8 +6495,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
     ShortcutAction.routeTask: _routeTask,
     ShortcutAction.orchestrate: () =>
         _dialog(() => showOrchestratorLauncher(context, app)),
-    ShortcutAction.team: () =>
-        _dialog(() => showChannelWorkspace(context, app)),
     ShortcutAction.reload: app.retryMachines,
     ShortcutAction.showLayout: () =>
         _dialog(() => showLayoutPalette(context, app)),
