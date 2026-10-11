@@ -57,6 +57,7 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
   const root = env.HARNESS_AGENT_MESSAGES_DIR
   const inboxCommand = messagesCommand(root)
   const { event, allow } = settings.inbox!
+  let blockChanged = true
   try {
     verifyRequired()
     const observed = inspectHookFile(file)
@@ -67,9 +68,9 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     }
     const blocks = current.hooks[event] ?? []
     const ours = blocks.filter(isMessagesBlock)
-    const allowed = allow && 'list' in allow ? withRule(current, allow.list, allow.rule) : false
-    const changed = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
-      || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout || allowed
+    blockChanged = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
+      || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
+    const changed = (allow && 'list' in allow && withRule(current, allow.list, allow.rule)) || blockChanged
     current.hooks[event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
     const next = changed ? JSON.stringify(current, null, 2) + '\n' : observed.content!
     const reviewed = settings.reviewed ? prepareReviewed(settings.reviewed, home, file, JSON.parse(next) as Settings) : null
@@ -79,7 +80,14 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     published.verify(); approval?.verify()
     writeMessagesHook(root)
   } catch (err) {
-    console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, err instanceof Error ? err.message : err)
+    const reason = err instanceof Error ? err.message : err
+    if (blockChanged) console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, reason)
+    else {
+      // The hook was already in place and only the allowance was refused (a read-only file): its script is
+      // still kept current, and the log names what failed rather than calling the hook missing.
+      console.warn(`[hooks] could not allow harness send in ${file} (the engine asks before each one):`, reason)
+      try { writeMessagesHook(root) } catch { /* the hook runs nothing it cannot find; messages wait for idle */ }
+    }
     verifyRequired()
   }
   if (allow && 'file' in allow) {

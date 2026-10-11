@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { formatSent, paneOwner, parseSendArgs, SEND_USAGE, sendCommand } from './command.js'
+import { formatSent, paneOwner, parseSendArgs, readMessageFile, SEND_USAGE, sendCommand } from './command.js'
 import { MessageError } from './model.js'
 import type { Rpc } from './rpc.js'
 
@@ -91,5 +91,27 @@ describe('what harness send prints', () => {
     expect(err.at(-1)).toMatch(/harness pane/)
     expect(await sendCommand(['--nope'], { err: (l) => err.push(l) })).toBe(2)
     expect(err.at(-1)).toBe(SEND_USAGE)
+  })
+})
+
+describe('a message file', () => {
+  it('is read only from the temporary folder, by its real path and only name', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'send-file-'))
+    const outside = mkdtempSync(join(homedir(), '.send-file-outside-'))
+    try {
+      writeFileSync(join(temp, 'note.md'), 'the long note')
+      expect(readMessageFile(join(temp, 'note.md'), [temp])).toBe('the long note')
+      expect(parseSendArgs(['api', '--text-file', join(temp, 'note.md')]).text).toBe('the long note')
+      writeFileSync(join(outside, 'secret'), 'kept from the agent')
+      symlinkSync(join(outside, 'secret'), join(temp, 'link'))
+      linkSync(join(temp, 'note.md'), join(temp, 'second-name'))
+      for (const path of [join(outside, 'secret'), join(temp, 'link'), join(temp, 'second-name'), temp]) {
+        expect(() => readMessageFile(path, [temp]), path).toThrow('Write the message to a file in the temporary folder (/tmp) first')
+      }
+      expect(() => readMessageFile(join(temp, 'missing'), [temp])).toThrow(`There is no file at ${join(temp, 'missing')}.`)
+      expect(() => readMessageFile(join(temp, 'note.md'), [join(temp, 'gone')])).toThrow(MessageError)
+    } finally {
+      rmSync(temp, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true })
+    }
   })
 })

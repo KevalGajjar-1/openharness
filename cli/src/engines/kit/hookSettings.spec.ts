@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -195,4 +195,18 @@ it('launches Codex when its rules file cannot be written, and says so', async ()
   expect(await installHookSettings('codex', codex.settings, 19473, home)).toBe(true)
   expect(warn).toHaveBeenCalledWith(`[hooks] could not allow harness send in ${join(home, 'rules', 'harness.rules')} (the engine asks before each one):`, expect.any(String))
   expect(JSON.parse(readFileSync(join(home, 'hooks.json'), 'utf8')).hooks.PostToolUse[0].hooks[0].command).toBe(messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR))
+})
+
+it.skipIf(process.getuid?.() === 0)('says only the allowance failed when a read-only file already has the hook', async () => {
+  const home = join(root, 'claude'), file = join(home, claude.settings.file)
+  expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+  const settings = JSON.parse(readFileSync(file, 'utf8')); delete settings.permissions
+  writeFileSync(file, JSON.stringify(settings, null, 2) + '\n'); chmodSync(file, 0o444)
+  rmSync(join(env.HARNESS_AGENT_MESSAGES_DIR, 'hook.mjs'), { force: true })
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+    expect(warn.mock.calls.map(call => call[0])).toEqual([`[hooks] could not allow harness send in ${file} (the engine asks before each one):`])
+    expect(existsSync(join(env.HARNESS_AGENT_MESSAGES_DIR, 'hook.mjs'))).toBe(true)
+  } finally { chmodSync(file, 0o644) }
 })

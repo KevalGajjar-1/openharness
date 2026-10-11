@@ -3,14 +3,15 @@
  * (docs/design/2026-10-10-agent-messages.md). Run in the agent's own pane: the pane says who is sending.
  *
  *   harness send                       who is in this tab, and the rules
- *   harness send <name>[,<name>] text  message them (or --text-file PATH)
+ *   harness send <name>[,<name>] text  message them (or --text-file PATH, in the temporary folder)
  *
  * It asks the daemon that made the pane, the way an engine's hook does (`@harness_daemon` and the hook routes),
  * so a development daemon beside the release one is never confused with it.
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import { env } from '../config/env.js'
 import { readAuthSession } from '../lib/authSession.js'
 import { HARNESS_OWNER_OPTION } from '../lib/harnessSessionLabel.js'
@@ -21,7 +22,7 @@ export const SEND_USAGE = `harness send — message your teammates in this tab
 
   harness send                          who is here, and how to work together
   harness send <name>[,<name>] "text"   message one or more teammates
-  harness send <name> --text-file PATH  a longer message, from a file
+  harness send <name> --text-file PATH  a longer message, from a file in the temporary folder (/tmp)
 
 Run it in your own harness pane. Agent Messages must be on in the tab (the chat icon on the tab), except
 between a harness and the harnesses it started on this machine.
@@ -29,7 +30,25 @@ Use --json for structured output.`
 
 export interface SendArgs { names: string[]; text: string; json: boolean }
 
-export function parseSendArgs(argv: readonly string[], read: (path: string) => string = (path) => readFileSync(path, 'utf8')): SendArgs {
+/**
+ * A message file, read only from the temporary folder. `harness send` runs without a permission question
+ * (engines/kit/hookSettings.ts), so it must not read for an agent what the agent could not read itself: a
+ * file a deny rule or the sandbox keeps from it would otherwise go, unasked, to a teammate on another
+ * machine. The agent's folder is no boundary, since the same command can `cd` anywhere first. The real path
+ * is checked, so a link out of the folder is refused, and a file with another name (a hard link) too.
+ */
+export function readMessageFile(path: string, folders: readonly string[] = [tmpdir(), '/tmp']): string {
+  let real: string
+  try { real = realpathSync(resolve(path)) } catch { throw new MessageError('TEXT_FILE', `There is no file at ${path}.`) }
+  const allowed = folders.flatMap((folder) => { try { return [realpathSync(folder)] } catch { return [] } })
+  const stat = statSync(real)
+  if (!allowed.some((folder) => real.startsWith(folder + sep)) || !stat.isFile() || stat.nlink !== 1) {
+    throw new MessageError('TEXT_FILE', `Write the message to a file in the temporary folder (/tmp) first; ${path} is not one.`)
+  }
+  return readFileSync(real, 'utf8')
+}
+
+export function parseSendArgs(argv: readonly string[], read: (path: string) => string = (path) => readMessageFile(path)): SendArgs {
   let json = false, file: string | null = null
   const words: string[] = []
   for (let i = 0; i < argv.length; i++) {

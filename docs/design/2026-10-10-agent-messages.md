@@ -95,7 +95,7 @@ Agent traffic never interrupts the person. Harness alerts only when the rate lim
 ## The agent's side
 
 ```
-harness send <name>[,<name>…] "text"      # or --text-file PATH
+harness send <name>[,<name>…] "text"      # or --text-file PATH, a file in the temporary folder
 harness send                              # who is in this tab, the rules, and your last messages
 ```
 
@@ -126,7 +126,9 @@ So that a reply never waits on a permission question, the daemon allows `harness
 rules when it installs the messages hook: `Bash(harness send:*)` in Claude Code's `permissions.allow`, beside
 the person's other rules, and a `prefix_rule` in `rules/harness.rules` of Codex's home, since Codex's sandbox
 cannot reach the daemon. One of those agents could not reply for hours because its permission check refused
-the command it would have replied with. A person's deny rule still wins.
+the command it would have replied with. A person's deny rule still wins. Because it runs unasked, `--text-file` reads only a
+file in the temporary folder (its real path, one name): otherwise it could read for an agent what a deny rule or
+the sandbox keeps from it, and send that to a teammate on another machine.
 
 ## How it works
 
