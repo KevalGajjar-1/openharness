@@ -32,7 +32,7 @@ it.each(['claude', 'codex'] as const)('publishes one current %s proof after both
   expect(proofs).toHaveLength(1)
   expect(proofs[0]!.current()).toBe(true)
   const content = JSON.parse(readFileSync(join(home, settings.file), 'utf8'))
-  expect(content.hooks[settings.inbox!.event].some((block: { hooks: { command: string }[] }) => block.hooks.some(hook => hook.command === messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR)))).toBe(true)
+  expect(content.hooks[settings.inbox!.event]?.some((block: { hooks: { command: string }[] }) => block.hooks.some(hook => hook.command === messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR)))).toBe(true)
 })
 
 it.each(['both current', 'follower revoked', 'owner revoked'] as const)('joins the complete Messages stage with caller authority: %s', async state => {
