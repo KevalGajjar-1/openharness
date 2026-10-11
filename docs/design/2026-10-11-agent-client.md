@@ -89,7 +89,8 @@ limits, `close` and measurement read it.
 It is a file the CLI appends to, not a field in the core's registry, so this first version changes nothing in the
 core and can be removed whole. Like Agent Messages it is a collaboration scope, not a sandbox: any process of the
 same user can write it. If agents use this, the record moves into the registry beside `forkedFrom`, and the
-windows can show it in the pane header.
+windows can show it in the pane header. The registry keeps one fact of it already, for the pull request line below:
+the row's `startedBy` is `agent`. Who, and the depth, stay in the file.
 
 The task a harness is started with carries one header line, so the new harness knows it is from an agent and not
 the person (the lamp team's tmux paste read as the owner's), and how to answer:
@@ -146,6 +147,38 @@ mcp_servers.harness…`) each listed the harnesses through it and were told "You
 
 Signed out, all of this works: the daemon runs as this computer, and `harness new` now asks for that identity as
 `harness start` does (#1183). It used to read the sign-in file alone and refuse.
+### Pull requests
+
+A harness an agent started adds one line to the pull requests it opens, beside the engine's own, so every reader of
+the pull request, and their agents, sees where it was made: the loop that spread "Generated with Claude Code"
+(approved by the owner, October 11). A harness the person started adds nothing.
+
+```
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+🤝 Started by another agent in [Harness](https://harness.autonomous.ai) — agents that run agents.
+```
+
+`harness new` from an agent's pane sends `startedBy: agent` with `agent_create`; the row keeps it, and every launch
+of that harness (create, restart, resume, restore, retarget) is given the line, read again each time
+(`lib/agentAttribution.ts`). A fork is the forker's and gets none. Each engine is told in its own words, declared on
+its launch contract (`EngineLaunch.attribution`) and applied by `engines/kit/attribution.ts`:
+
+- **Claude Code**: its own setting, `attribution.pr`, given with `--settings`. Set, it replaces Claude Code's line
+  (2.1.296: `pr: h.pr ?? <own line>`), so the value is Claude Code's line, or the person's own text, then ours.
+  `--settings` merges over the person's settings key by key, so their `attribution.commit` stays. Nothing is added
+  where they hid the line: `attribution: false`, `pr: ""`, or the older `includeCoAuthoredBy: false`, which setting
+  `pr` would end, bringing Claude Code's commit trailer back.
+- **Codex** has no setting for the text (0.162.1): its own line is an instruction in its developer message
+  (`<git_attribution>`), on or off by workspace. Ours goes the same way, `-c developer_instructions=…`, worded as
+  Codex words its own. `-c` replaces the person's value, so theirs comes first; one Harness cannot read exactly (a
+  multi-line string, an escape), or one a folder's own `.codex/config.toml` sets, is left alone and nothing is added.
+- Pull requests only: no commit trailer.
+
+The person turns it off per computer with `harness settings pull-request-line off`: `pullRequestLine` in
+`<data>/agent-settings.json`, beside `agentsStartAgents`, on by default and read at each launch, so a harness running
+then keeps its line until it restarts. `/api/agent-settings` reads and writes it too; Settings ▸ Agents does not show it
+yet, as a setting in the apps needs an agreed mockup first. Not covered yet: the other eleven engines (no contract),
+the orchestrator's harnesses, and a machine whose daemon predates `startedBy`, which ignores it.
 
 ## Limits
 

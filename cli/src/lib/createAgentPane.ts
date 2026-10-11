@@ -20,6 +20,7 @@ import type { TerminalBackend } from './terminalBackend.js'
 import type { TerminalCreateResult, TmuxRuntimeRef } from './terminalTypes.js'
 import { terminalRouteKey } from './terminalRuntime.js'
 import type { ExternalResumeIntent } from './externalResume.js'
+import type { StartedBy } from './agentAttribution.js'
 
 const DEFAULT_MAX_ATTEMPTS = 3
 
@@ -44,6 +45,7 @@ export interface CreateAgentPaneDeps {
     label?: string | null
     forkedFrom?: ForkOrigin | null
     externalResume?: ExternalResumeIntent
+    startedBy?: StartedBy | null
   }) => RegisteredSession | null }
   nativeToken?: string
   engine: AgentEngine
@@ -78,6 +80,9 @@ export interface CreateAgentPaneDeps {
   agent?: string | null
   /** The agent this pane is a fork of (`agent_fork`), recorded on the row; null otherwise. */
   forkedFrom?: ForkOrigin | null
+  /** `agent` when another agent started it, recorded on the row so every relaunch keeps its pull request line
+   *  (lib/agentAttribution.ts). Already in `argv`: this is the record, not the launch. */
+  startedBy?: StartedBy | null
   externalResume?: ExternalResumeIntent
   /** Rechecked by the backend after its gates and immediately before process dispatch. */
   current?: () => boolean
@@ -128,6 +133,7 @@ export async function createAndRegisterPane(deps: CreateAgentPaneDeps): Promise<
       label: deps.label,
       forkedFrom: deps.forkedFrom,
       ...(deps.externalResume ? { externalResume: deps.externalResume } : {}),
+      ...(deps.startedBy ? { startedBy: deps.startedBy } : {}),
     })
     if (pending) return { ok: true, spawned, pending }
     console.warn(`[agent] create ${deps.engine} registration failed · pane ${spawned.runtime.paneId} · `

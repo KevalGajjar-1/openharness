@@ -144,7 +144,7 @@ Machine:
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
   harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
   harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
-  harness settings [<name> on|off]  what agents may do here (agents-start-agents), as Settings ▸ Agents
+  harness settings [<name> on|off]  what agents may do here (agents-start-agents, pull-request-line), as Settings ▸ Agents
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})

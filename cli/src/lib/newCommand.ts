@@ -354,7 +354,8 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
         if (typeof entry.engine === 'string' && entry.engine) baseEngine = entry.engine
       }
       const asked = origin && args.prompt ? { ...args, prompt: origin.prompt(args.prompt, machineId) } : args
-      const payload = newAgentPayload(asked, cwd, baseEngine)
+      // Started by an agent: the machine records it, and the pull requests it opens say so (lib/agentAttribution.ts).
+      const payload: Record<string, unknown> = { ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}) }
       let result = await session.request('agent_create', payload)
       // A launch the daemon holds (a native launch waiting its turn) is still on its way: asked after until it is not,
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it

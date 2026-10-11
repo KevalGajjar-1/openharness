@@ -57,6 +57,7 @@ import { hardenPrivateStateFileIfPresent, readPrivateStateFile, secureStateDirec
 import { mergeTerminalRuntimes, processIdentityKey, sameProcessIdentity, terminalPlacementKey, terminalRouteKey } from './terminalRuntime.js'
 import type { HookTerminalHint, ProcessIdentity, TerminalRuntimeRef } from './terminalTypes.js'
 import { externalReservations, externalResumePending, externalResumeIds, parseExternalResume, type ExternalResumeIntent } from './externalResume.js'
+import type { StartedBy } from './agentAttribution.js'
 
 export type { ProcessIdentity } from './terminalTypes.js'
 
@@ -239,6 +240,12 @@ export interface RegisteredSession {
    * other agent.
    */
   forkedFrom?: ForkOrigin | null
+  /**
+   * `agent` when another agent started this harness (`harness new` from its pane); absent when the person did.
+   * Recorded once at creation and carried into every relaunch (`launchOverrides.ts`), whose argv then has the
+   * engine add a line to the pull requests it opens (lib/agentAttribution.ts). Never re-derived from the process.
+   */
+  startedBy?: StartedBy
   /** Legacy launcher-owned snapshots may still contain this field. New records never write it. */
   launcherId?: string
   transcriptPath: string | null
@@ -607,7 +614,7 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
   // Taken out of the spread and put back only when it is a real moment: the spread would otherwise
   // carry a hand-edited string or a negative number straight into the frame's `toISOString()`.
   // `forkedFrom` is out too, so an invalid one is dropped rather than spread back in as-is.
-  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, ...rest } = row
+  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, startedBy: rawStartedBy, ...rest } = row
   const lastOpenedAt = normalizedOpenedAt(rawOpenedAt)
   // Out of the spread for the same reason: a half-formed record is dropped, never relaunched with.
   const scmLaunch = parseScmLaunchRecord(rawScmLaunch)
@@ -628,6 +635,8 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
     defaultName: normalizedDefaultName(row.defaultName),
     agent: normalizedAgentName((row as { agent?: unknown }).agent),
     ...normalizedForkedFrom(rawForkedFrom),
+    // Out of the spread too: only `agent` is a harness another agent started; anything else is the person's.
+    ...(rawStartedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
     cwd: typeof row.cwd === 'string' ? row.cwd : null,
     runtimes,
     primaryRuntimeKey: normalizedPrimary,
@@ -1289,6 +1298,7 @@ class Registry {
           ...(raw.bypassPermission === true ? { bypassPermission: true } : {}),
           ...(permissionModeName(raw.permissionMode) ? { permissionMode: raw.permissionMode } : {}),
           ...(raw.terminalHost === true || engine === 'terminal' ? { terminalHost: true } : {}),
+          ...(raw.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
           transcriptPath,
           defaultName: normalizedDefaultName(raw.defaultName),
           title: titleDisplayName(typeof raw.title === 'string' ? raw.title : null),
@@ -1592,6 +1602,8 @@ class Registry {
     /** The agent this one is a fork of — see RegisteredSession.forkedFrom. */
     forkedFrom?: ForkOrigin | null
     externalResume?: ExternalResumeIntent
+    /** Who started it — see RegisteredSession.startedBy. */
+    startedBy?: StartedBy | null
   }): RegisteredSession | null {
     if (this.writeBlocked) return null
     const externalResume = input.externalResume === undefined ? undefined : parseExternalResume(input.externalResume)
@@ -1628,6 +1640,7 @@ class Registry {
       ...(permissionModeName(input.permissionMode) ? { permissionMode: input.permissionMode } : {}),
       ...(isTerminalEngine(input.engine) ? { terminalHost: true } : {}),
       ...normalizedForkedFrom(input.forkedFrom),
+      ...(input.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
       transcriptPath: null,
       projectDir: basename(input.cwd ?? '') || agentId,
       cwd: input.cwd ?? null,
@@ -1970,6 +1983,9 @@ class Registry {
       dsh: existing?.dsh ?? null,
       dshRuntime: existing?.dshRuntime ?? null,
       agent: existing?.agent ?? null,
+      // Carried forward like `agent`: dropped at the first hook, a restart of a harness another agent started came
+      // back without its pull request line (found by e2e/agentClient.e2e.ts).
+      ...(existing?.startedBy ? { startedBy: existing.startedBy } : {}),
       ...(existing?.bypassPermission ? { bypassPermission: true } : {}),
       ...(existing?.permissionMode ? { permissionMode: existing.permissionMode } : {}),
       ...(existing?.resumeOnly ? { resumeOnly: true, launch: { state: 'ready' as const } } : {}),

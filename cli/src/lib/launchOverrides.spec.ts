@@ -4,6 +4,7 @@ import { buildLaunchOverrides, prepareLaunchOverrides, validateLaunchOverrides, 
 import { DSH_SESSION_ENV } from '../dsh/launch.js'
 import { GRID_CONFLICTING_ENV_VARS, type GridLaunchOverride } from './gridLaunch.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
+import { AGENT_ATTRIBUTION_LINE } from './agentAttribution.js'
 
 const GRID: GridLaunchOverride = {
   networkId: 'grid-abc',
@@ -321,6 +322,32 @@ describe('buildLaunchOverrides — a pane opened as a named agent comes back as 
   it('adds nothing for a general session, or for an engine with no contract on a hand-edited row', async () => {
     expect(await buildLaunchOverrides(deps().d, 'opencode', { agent: null }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
     expect(await buildLaunchOverrides(deps().d, 'claude', { agent: 'harness-compute' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+  })
+})
+
+describe('buildLaunchOverrides — a harness another agent started keeps its pull request line', () => {
+  const pr = (args: string[]) => JSON.parse(args[args.indexOf('--settings') + 1]!).attribution.pr as string
+
+  it('appends it after everything else, on its own login and on a grid, read from the settings the relaunch reads', async () => {
+    const read = vi.fn((path: string) => path === '/workspace/.claude/settings.json' ? '{"attribution":{"pr":"Mine"}}' : null)
+    const own = await buildLaunchOverrides(deps({ readAttribution: read }).d, 'claude', { startedBy: 'agent', cwd: '/workspace' }, 'a')
+    expect(own.ok).toBe(true)
+    if (!own.ok) return
+    expect(own.overrides.extraArgs[0]).toBe('--settings')
+    expect(pr(own.overrides.extraArgs)).toBe(`Mine\n${AGENT_ATTRIBUTION_LINE}`)
+    expect(read).toHaveBeenCalledWith('/workspace/.claude/settings.local.json')
+    const grid = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'codex', { startedBy: 'agent', gridLaunch: GRID, cwd: null }, 'a')
+    expect(grid.ok).toBe(true)
+    if (!grid.ok) return
+    expect(grid.overrides.extraArgs.at(-2)).toBe('-c')
+    expect(grid.overrides.extraArgs.at(-1)).toMatch(/^developer_instructions=".*Started by another agent in \[Harness\]/)
+  })
+
+  it('adds nothing for the person\'s harness, or for an engine with no way to say it', async () => {
+    const read = vi.fn(() => null)
+    expect(await buildLaunchOverrides(deps({ readAttribution: read }).d, 'claude', { startedBy: null, cwd: '/w' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+    expect(await buildLaunchOverrides(deps({ readAttribution: read }).d, 'opencode', { startedBy: 'agent', cwd: '/w' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+    expect(read).not.toHaveBeenCalled()
   })
 })
 

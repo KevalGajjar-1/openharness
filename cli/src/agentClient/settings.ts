@@ -10,10 +10,13 @@ import { AGENT_SETTING_NAMES, readAgentSettings, writeAgentSettings, type AgentS
 export const SETTINGS_USAGE = `Usage: harness settings [<name> on|off]
 
 What agents may do on this computer, as Settings ▸ Agents shows it:
-  agents-start-agents   agents may start, wait for and close harnesses of their own, and are told how (on by default)`
+  agents-start-agents   agents may start, wait for and close harnesses of their own, and are told how (on by default)
+  pull-request-line     a harness another agent starts says so in the pull requests it opens: one line beside the
+                        engine's own (on by default)`
 
 const ABOUT: Record<keyof AgentSettings, string> = {
   agentsStartAgents: 'agents may start, wait for and close harnesses of their own',
+  pullRequestLine: 'a harness another agent starts says so in the pull requests it opens',
 }
 
 export function settingsCommand(argv: readonly string[], dataDir: string, out: (line: string) => void = console.log, err: (line: string) => void = console.error): number {

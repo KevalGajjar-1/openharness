@@ -2,7 +2,8 @@
  * What the person lets agents do with Harness (docs/design/2026-10-11-agent-client.md), kept by the daemon in its data
  * folder: `agent-settings.json`. Settings ▸ Agents writes it through the daemon (`/api/agent-settings`), `harness
  * settings` from a terminal, and the daemon and the CLI read it: the daemon when it starts an agent (whether its
- * instructions say how to start others), `harness new` when an agent runs it (whether it may).
+ * instructions say how to start others, and whether one another agent started says so in its pull requests),
+ * `harness new` when an agent runs it (whether it may).
  *
  * Agents may start agents unless the person turns it off: some want every agent to work alone, under their eye.
  * A file that is missing or that cannot be read is the defaults, never a refusal to work.
@@ -13,19 +14,23 @@ import { join } from 'node:path'
 export interface AgentSettings {
   /** Agents may start, wait for and close harnesses of their own, and are told how as they start. */
   agentsStartAgents: boolean
+  /** A harness another agent started adds a line to the pull requests it opens (lib/agentAttribution.ts). Read at
+   *  each launch of one, so a harness running when it is turned off keeps its line until it restarts. */
+  pullRequestLine: boolean
 }
 
-export const AGENT_SETTINGS_DEFAULTS: AgentSettings = { agentsStartAgents: true }
+export const AGENT_SETTINGS_DEFAULTS: AgentSettings = { agentsStartAgents: true, pullRequestLine: true }
 
 /** Each setting's name in `harness settings`, and its key. */
-export const AGENT_SETTING_NAMES: Record<string, keyof AgentSettings> = { 'agents-start-agents': 'agentsStartAgents' }
+export const AGENT_SETTING_NAMES: Record<string, keyof AgentSettings> = { 'agents-start-agents': 'agentsStartAgents', 'pull-request-line': 'pullRequestLine' }
 
 export const agentSettingsPath = (dataDir: string): string => join(dataDir, 'agent-settings.json')
 
 export function readAgentSettings(dataDir: string): AgentSettings {
   try {
     const saved = JSON.parse(readFileSync(agentSettingsPath(dataDir), 'utf8')) as Record<string, unknown>
-    return { agentsStartAgents: typeof saved.agentsStartAgents === 'boolean' ? saved.agentsStartAgents : AGENT_SETTINGS_DEFAULTS.agentsStartAgents }
+    return Object.fromEntries(Object.entries(AGENT_SETTINGS_DEFAULTS)
+      .map(([key, fallback]) => [key, typeof saved[key] === 'boolean' ? saved[key] : fallback])) as unknown as AgentSettings
   } catch {
     return { ...AGENT_SETTINGS_DEFAULTS }
   }
@@ -54,7 +59,7 @@ export function agentSettingsRoutes(dataDir: string): { read: () => Promise<{ st
     read: async () => ({ status: 200, body: { ...readAgentSettings(dataDir) } }),
     write: async (body) => {
       const next = writeAgentSettings(dataDir, body)
-      return next ? { status: 200, body: { ...next } } : { status: 400, body: { error: { code: 'BAD_REQUEST', message: 'Nothing to change: send {"agentsStartAgents": true|false}.' } } }
+      return next ? { status: 200, body: { ...next } } : { status: 400, body: { error: { code: 'BAD_REQUEST', message: 'Nothing to change: send {"agentsStartAgents": true|false} or {"pullRequestLine": true|false}.' } } }
     },
   }
 }

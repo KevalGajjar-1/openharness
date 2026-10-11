@@ -226,6 +226,8 @@ describe('harness new: the daemon', () => {
     const d = deps(['codex', '--name', 'reviewer', '--', 'review', 'it'], socket, { origin: async () => origin })
     expect(await newCommand(d)).toBe(0)
     expect(socket.sent[1]!.payload.prompt).toBe('[from lead on m2]\n\nreview it')
+    // The machine records that an agent started it: the pull requests it opens say so (lib/agentAttribution.ts).
+    expect(socket.sent[1]!.payload.startedBy).toBe('agent')
     expect(created).toEqual([['m2', { id: 'a9', name: 'reviewer' }]])
     expect(d.out[1]).toBe('Read it: harness show reviewer')
     // No task: nothing to head.
@@ -244,9 +246,11 @@ describe('harness new: the daemon', () => {
     expect(await newCommand(far)).toBe(0)
     expect(far.err).toEqual(['its limits start from zero'])
     // A person at a terminal: no origin, the old words.
-    const person = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'c1', name: 'x' } } : null), { origin: async () => null })
+    const atTerminal = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'c1', name: 'x' } } : null)
+    const person = deps(['codex'], atTerminal, { origin: async () => null })
     expect(await newCommand(person)).toBe(0)
     expect(person.out[1]).toBe('Open it in Harness with ⌘O.')
+    expect(atTerminal.sent[1]!.payload).not.toHaveProperty('startedBy')
   })
 
   it('turns the machine\'s refusal into words, and a usage slip into the usage', async () => {

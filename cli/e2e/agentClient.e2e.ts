@@ -2,11 +2,12 @@
  * Harness for agents on the real daemon (docs/design/2026-10-11-agent-client.md): an agent, from its own pane, runs
  * the `harness` verbs as it would through its shell tool. It lists the harnesses, starts one with a task, waits for
  * it, reads its answer, messages it without any tab having Agent Messages on, and closes it; it may not close one it
- * did not start. The fake engines answer by echoing (harness/fakeEngine.mjs).
+ * did not start. The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
+ * requests it opens: in the arguments its engine is launched with, each launch, until the person turns it off.
  *
  * Signed in to the fake backend, which answers the account's tabs: none has Agent Messages on.
  */
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -15,6 +16,8 @@ import { LocalClient } from './harness/client.js'
 import { CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
 import { FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
 
+/** The line (lib/agentAttribution.ts), as a reader of the pull request sees it. */
+const AGENT_ATTRIBUTION_LINE = '🤝 Started by another agent in [Harness](https://harness.autonomous.ai) — agents that run agents.'
 const ME: FakeMachine = { machineId: 'b8'.repeat(16), computerId: 'e2e-computer-0000-0000-0000000000b8', name: 'studio', token: 'e2e-token-agent-client' }
 const signIn = (d: IsolatedDaemon) => writeFileSync(join(d.root, 'auth', 'session.json'), JSON.stringify({
   version: 1, accessToken: ME.token, autonomousEnv: 'prod', computerId: ME.computerId,
@@ -274,6 +277,81 @@ describe('Harness for agents, end to end', () => {
     expect(JSON.parse(listed.out).harnesses).toEqual([])
     // The setting is the daemon's, as the window reads it.
     const read = await fetch(`http://127.0.0.1:${d.port}/api/agent-settings`)
-    expect(await read.json()).toEqual({ agentsStartAgents: false })
+    expect(await read.json()).toEqual({ agentsStartAgents: false, pullRequestLine: true })
+  })
+  it('a harness an agent starts says so in the pull requests it opens, on every launch, until the person turns it off', async () => {
+    const relay = await FakeBackend.start()
+    backend = relay
+    relay.addMachine(ME)
+    relay.agentMessages = { revision: 1, machines: [{ machineId: ME.machineId, name: 'studio' }], tabs: [] }
+    const d = await IsolatedDaemon.create({ env: {
+      BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId,
+      HARNESSD_SERVICE_INITIAL_BACKOFF_MS: '200', HARNESSD_SERVICE_MAX_BACKOFF_MS: '1000',
+    } })
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    signIn(d)
+    await d.start()
+    const client = await LocalClient.connect(d, { machineId: ME.machineId })
+    const live = (name: string) => until(`${name} to be up`, async () => {
+      const row = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === name)
+      return row?.sessionId && row.status === 'active' ? row : null
+    }, 60_000, 500)
+    const folder = (name: string) => { const dir = join(d.projectsDir, name); mkdirSync(dir, { recursive: true }); return dir }
+
+    // The person's own harness: no line.
+    const made = await client.request('agent_create', { engine: 'claude', cwd: folder('lead'), bypassPermission: true, name: 'lead' }, 90_000)
+    expect(made.error, JSON.stringify(made)).toBeUndefined()
+    const lead = await live('lead')
+    expect(await commandsIn(d, String(lead.tmuxPane))).not.toContain('--settings')
+    const run = (...args: string[]) => harness(d, String(lead.tmuxPane), args)
+
+    // Claude Code, started by it: Claude Code's own pull request line kept, and Harness's after it.
+    expect((await run('new', 'claude', folder('kid'), '--name', 'kid', '--', 'hello kid')).code).toBe(0)
+    const kid = await live('kid')
+    // `ps` may print the emoji and the dash as it likes; the rest is as the engine was given it.
+    expect(await commandsIn(d, String(kid.tmuxPane))).toMatch(new RegExp(`--settings \\{"attribution":\\{"pr":"${ascii('🤖 Generated with [Claude Code](https://claude.com/claude-code)')}\\\\n${ascii(AGENT_ATTRIBUTION_LINE)}"\\}\\}`))
+
+    // Codex, started by it: told as Codex is told its own attribution.
+    expect((await run('new', 'codex', folder('kidx'), '--name', 'kidx', '--', 'hello kidx')).code).toBe(0)
+    const kidx = await live('kidx')
+    expect(await commandsIn(d, String(kidx.tmuxPane))).toMatch(new RegExp(`-c developer_instructions="When you create or update a pull request, .*\`${ascii(AGENT_ATTRIBUTION_LINE)}\``))
+
+    // A restart launches it again from its row: the line comes back with it.
+    const restarted = await client.request('agent_restart', { agentId: kid.id }, 90_000)
+    expect(restarted.error, JSON.stringify(restarted)).toBeUndefined()
+    await until('kid to come back with its line', async () => {
+      const row = await live('kid')
+      return row.tmuxPane && (await commandsIn(d, String(row.tmuxPane))).includes('"attribution"') ? row : null
+    }, 60_000, 500)
+
+    // Turned off by the person: the next one an agent starts has no line.
+    const off = await harness(d, '', ['settings', 'pull-request-line', 'off'])
+    expect(off.code, off.err).toBe(0)
+    expect(off.out.trim()).toBe('pull-request-line is off.')
+    expect((await run('new', 'claude', folder('quiet'), '--name', 'quiet', '--', 'hello quiet')).code).toBe(0)
+    const quiet = await live('quiet')
+    const command = await commandsIn(d, String(quiet.tmuxPane))
+    expect(command).toContain('hello quiet')
+    expect(command).not.toContain('--settings')
+    client.close()
   })
 })
+
+/** [text] as a pattern that matches it whatever `ps` prints for a character outside ASCII. */
+const ascii = (text: string): string => [...text].map((ch) => /[ -~]/.test(ch) ? ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '.+?').join('')
+
+/** The command lines of the processes in [pane], as `ps` prints them: the engine's carries the arguments it was launched
+ *  with (the fake engines' process title is their engine's name, then their arguments, as a CLI's is). */
+async function commandsIn(d: IsolatedDaemon, pane: string): Promise<string> {
+  const panes = (await d.tmux.run('list-panes', '-a', '-F', '#{pane_id} #{pane_pid}')).split('\n').map((line) => line.split(' '))
+  const root = Number(panes.find(([id]) => id === pane)?.[1])
+  const table = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n')
+    .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((match): match is RegExpMatchArray => !!match)
+  const tree = new Set([root])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const [, pid, ppid] of table) if (tree.has(Number(ppid)) && !tree.has(Number(pid))) { tree.add(Number(pid)); grew = true }
+  }
+  return table.filter(([, pid]) => tree.has(Number(pid))).map(([, , , command]) => command).join('\n')
+}

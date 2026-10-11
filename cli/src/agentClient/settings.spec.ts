@@ -14,7 +14,10 @@ describe('harness settings', () => {
     const out: string[] = [], err: string[] = []
     const run = (...argv: string[]) => settingsCommand(argv, dir, (l) => out.push(l), (l) => err.push(l))
     expect(run()).toBe(0)
-    expect(out.pop()).toBe('agents-start-agents   on   agents may start, wait for and close harnesses of their own')
+    expect(out.pop()).toBe([
+      'agents-start-agents   on   agents may start, wait for and close harnesses of their own',
+      'pull-request-line     on   a harness another agent starts says so in the pull requests it opens',
+    ].join('\n'))
     expect(run('agents-start-agents', 'off')).toBe(0)
     expect(out.pop()).toBe('agents-start-agents is off.')
     expect(readAgentSettings(dir).agentsStartAgents).toBe(false)
@@ -22,6 +25,9 @@ describe('harness settings', () => {
     expect(out.pop()).toMatch(/^agents-start-agents +off /)
     expect(run('agents-start-agents', 'on')).toBe(0)
     expect(readAgentSettings(dir).agentsStartAgents).toBe(true)
+    expect(run('pull-request-line', 'off')).toBe(0)
+    expect(out.pop()).toBe('pull-request-line is off.')
+    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: false })
   })
 
   it('refuses what it does not know with the usage, and prints it for --help', () => {

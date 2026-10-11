@@ -312,6 +312,14 @@ describe('agent_create, refused before any pane exists', () => {
     expect(await ask({ engine: 'claude', cwd: '/w', resumeSessionId: 'ses_abc', takeOver: 'later' })).toStrictEqual(takeOver)
     expect(create).not.toHaveBeenCalled()
   })
+
+  it('a starter that is not another agent: absent is the person, anything else is refused', async () => {
+    const { ask, create } = setup()
+    const refused = { error: 'INVALID_STARTED_BY', detail: 'startedBy is agent, or absent for the person' }
+    expect(await ask({ engine: 'claude', cwd: '/w', startedBy: 'person' })).toStrictEqual(refused)
+    expect(await ask({ engine: 'claude', cwd: '/w', startedBy: true })).toStrictEqual(refused)
+    expect(create).not.toHaveBeenCalled()
+  })
 })
 
 describe('agent_create, launched', () => {
@@ -325,6 +333,15 @@ describe('agent_create, launched', () => {
     expect(create).toHaveBeenCalledWith({ engine: 'codex', cwd: '/w', bypassPermission: true, permissionMode: 'auto', grid: null, codexHome: '/homes/codex',
       dsh: 'acme/notes', prompt: 'fix the build', name: 'Builder', agent: 'reviewer', resumeSessionId: null, takeOver: null })
     expect(Object.keys(vi.mocked(create!).mock.calls[0][0])).toEqual(['engine', 'cwd', 'bypassPermission', 'permissionMode', 'grid', 'codexHome', 'dsh', 'prompt', 'name', 'agent', 'resumeSessionId', 'takeOver'])
+  })
+
+  it('hands on that another agent started it, and nothing for the person, so their receipts\' fingerprints stay as they were', async () => {
+    const { ask, create } = setup()
+    await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent' })
+    await ask({ engine: 'claude', cwd: '/w', startedBy: null })
+    const [byAgent, byPerson] = vi.mocked(create!).mock.calls.map(([input]) => input)
+    expect(byAgent).toMatchObject({ engine: 'claude', cwd: '/w', startedBy: 'agent' })
+    expect(Object.keys(byPerson!)).not.toContain('startedBy')
   })
 
   it('opens a terminal in the home folder, bypasses permission unless told not to, and takes blank choices as none', async () => {

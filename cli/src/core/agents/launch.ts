@@ -43,8 +43,8 @@ export interface LaunchHelperDeps {
 
 export function createLaunchHelpers({ authority, prepareApiTools, launchOverridesDeps, setGridLaunch, setTail }: LaunchHelperDeps) {
   // Whatever the source (the row itself, or a grid override the desktop just sent), the agent's DSH,
-  // workspace and named agent come from the row: a retarget must not silently drop the harness the
-  // agent is, or bring a pane opened as `harness-compute` back as a general session.
+  // workspace, named agent and who started it come from the row: a retarget must not silently drop the harness
+  // the agent is, or bring a pane opened as `harness-compute` back as a general session.
   // An agent on a saved API's model relaunches with that API's endpoint and key as saved now, so a key
   // pasted since takes effect, and a removed API is refused rather than kept on its old key: the models
   // service reads them as it builds the launch (`buildLaunchOverrides`, `refresh`).
@@ -54,7 +54,7 @@ export function createLaunchHelpers({ authority, prepareApiTools, launchOverride
     session = structuredClone(session)
     const changed = { ok: false, error: 'AGENT_CHANGED', detail: 'The harness changed or stopped during launch preparation.' } as const
     if (!current()) return changed
-    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, configKey, current, native)
+    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, startedBy: session.startedBy ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, configKey, current, native)
     if (!current()) return changed
     if (!result.ok && (result.unavailable || result.error === 'AGENT_CHANGED')) return result
     // Saved-API instructions remain available after an ordinary semantic refusal, as before.

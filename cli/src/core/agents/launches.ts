@@ -336,6 +336,11 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
       }
       takeOver = payload.takeOver
     }
+    // Another agent started it (`harness new` from its pane, agentClient/commands.ts `agentOrigin`): its pull requests
+    // say so (lib/agentAttribution.ts). Refused, not ignored, when it is anything else: absent is the person.
+    if (payload.startedBy !== undefined && payload.startedBy !== null && payload.startedBy !== 'agent') {
+      reply({ error: 'INVALID_STARTED_BY', detail: 'startedBy is agent, or absent for the person' }); return
+    }
     const input = {
       engine,
       cwd: typeof cwd === 'string' ? cwd : terminal ? homedir() : '',
@@ -350,6 +355,8 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
       agent,
       resumeSessionId,
       takeOver,
+      // Only when set: a person's create keeps the fingerprint its receipt was recorded with before the field.
+      ...(payload.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
     }
     const fingerprintInput = model.state === 'ok' ? { ...input, modelSelection: model.selection } : input
     if (creationId !== undefined) {

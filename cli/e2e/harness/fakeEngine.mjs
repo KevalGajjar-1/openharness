@@ -1735,9 +1735,10 @@ export async function run(engine, config = {}, { native = false } = {}) {
 }
 
 /** The options both CLIs read a value after, and Codex's `resume <id>` and `fork <id>`: the word after one is not a
- *  prompt. */
+ *  prompt. `--settings <file-or-json>` carries the pull request line of a harness another agent started
+ *  (lib/agentAttribution.ts), last on a relaunch, where no first message follows it. */
 const TAKES_VALUE = new Set(['--model', '-m', '--permission-mode', '--resume', '-r', '--session-id', '--append-system-prompt',
-  '--mcp-config', '--effort', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval', 'resume', 'fork'])
+  '--mcp-config', '--effort', '--settings', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval', 'resume', 'fork'])
 
 /** The prompt at the end of the command line, when there is one. */
 function firstPromptOf(args) {

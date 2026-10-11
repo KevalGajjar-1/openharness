@@ -360,7 +360,14 @@ export function launchClaudeConfigDir(environment: NodeJS.ProcessEnv = launchEnv
 
 /** The home an engine's launch contract declares (engines/facets/launch.ts `LaunchHome`), for a launch made now. */
 export function launchHomeOf(home: LaunchHome, profile: string | null | undefined, environment: NodeJS.ProcessEnv = launchEnvironment()): string {
-  return 'setting' in home ? launchHome(home.setting, profile, environment) : movedHome(environment[home.variable]) || movedHome(environment.HOME) || homedir()
+  if ('setting' in home) return launchHome(home.setting, profile, environment)
+  const personal = launchPersonalHome(environment)
+  return movedHome(environment[home.variable]) || (home.otherwise === 'home' ? personal : join(personal, home.otherwise.folder))
+}
+
+/** The person's home folder for a launch made now: the HOME its shell sets, else this process's. */
+export function launchPersonalHome(environment: NodeJS.ProcessEnv = launchEnvironment()): string {
+  return movedHome(environment.HOME) || homedir()
 }
 
 /** The environment that runs an agent on its own profile `home`, for an engine whose sessions follow one (its
