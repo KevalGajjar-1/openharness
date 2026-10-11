@@ -210,6 +210,11 @@ const envSchema = z.object({
   CURSOR_LLM_API_KEY: z.string().optional(),
   CURSOR_LLM_MODEL: z.string().default('DeepSeek-V4-Flash-0731'),
 
+  // Harness's own OpenRouter key, spent on ⌘B's Jev decisions for people with no key of their own
+  // (routes/jevRoute.ts). Optional here, but the route fails CLOSED without it. Give it its own key with
+  // a credit limit on OpenRouter: that limit is the budget, the route's per-account caps only spread it.
+  JEV_OPENROUTER_API_KEY: z.string().optional(),
+
   // TTL for the in-memory subdomain→machineId cache on the public app-proxy hot path
   // (avoids a Mongo lookup per request). Bounds staleness after a cross-instance app teardown.
   // 60 min default (mapping is stable; a same-instance delete evicts immediately).

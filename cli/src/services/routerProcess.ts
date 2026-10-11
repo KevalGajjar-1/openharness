@@ -1,7 +1,7 @@
 /**
  * The router in its own process (`harness __service router`): the same handler as in the core's process
- * (services/router.ts). It asks the core nothing; the OpenRouter key it reads and the Jev calls it makes
- * are this process's alone.
+ * (services/router.ts). It asks the core nothing; the OpenRouter key or sign-in it reads and the Jev calls
+ * it makes are this process's alone.
  */
 import { startRouter } from './router.js'
 import { runServiceProcess, type ServiceProcess } from './process.js'
