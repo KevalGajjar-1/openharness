@@ -93,7 +93,7 @@ The task a harness is started with carries one header line, so the new harness k
 the person (the lamp team's tmux paste read as the owner's), and how to answer:
 
 ```
-[from lead · Claude Code · studio, the harness that started you. Reply with: harness send lead "…"]
+[from lead · Claude Code · studio, the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]
 
 Review 3f2a9c1 …
 ```

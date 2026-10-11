@@ -91,7 +91,7 @@ describe('Harness for agents, end to end', () => {
     expect(shown.out).toContain('kid · Claude Code · ')
     expect(shown.out).toContain('· idle · started by you')
     expect(shown.out).toContain('asked: [from lead · Claude Code · ')
-    expect(shown.out).toContain('the harness that started you. Reply with: harness send lead "…"]')
+    expect(shown.out).toContain('the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]')
     expect(shown.out).toContain('hello kid')
     expect((await run('ps')).out).toMatch(/\nkid +Claude Code +\w+ +you /)
 

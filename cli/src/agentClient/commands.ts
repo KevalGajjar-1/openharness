@@ -12,9 +12,11 @@
  * `--json` for programs. Everything is composed from requests the daemon already answers: `agents_list`,
  * `agent_recent`, a bounded `session_get` page, and `agent_close` (its `inspect` mode tells needs-input from idle).
  */
-import { readFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import type { NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
@@ -479,8 +481,22 @@ export async function agentOrigin(deps: ClientDeps = {}): Promise<NewOrigin | nu
     prompt: (text, machineId) => {
       // Said once, at the top: the task is from an agent, not the person (the lamp team's tmux paste read as the
       // owner's). The answer route works where the two share a machine (Agent Messages' lineage scope).
-      const reply = machineId === o.where.machineId ? ` Reply with: harness send ${addressOf(caller)} "…"` : ''
-      return `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you.${reply}]\n\n${text}`
+      const here = machineId === o.where.machineId
+      // It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its whole report
+      // back as a message as well, which would land in the middle of the starter's own turn.
+      const reply = here ? ` It reads your answer itself; to ask it something while you work: harness send ${addressOf(caller)} "…"` : ' It reads your answer itself.'
+      const header = `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you.${reply}]\n\n`
+      if (header.length + text.length <= MAX_FIRST_PROMPT_CHARS) return header + text
+      // A first message holds 2,000 characters (engineLaunch.ts), and a task an agent hands on is often longer: the
+      // first eval's prompts were refused whole. The task goes in a file the new harness is told to read.
+      if (!here) throw new AgentClientError('PROMPT_TOO_LONG', `A task for another machine holds at most ${MAX_FIRST_PROMPT_CHARS - header.length} characters. Shorten it.`)
+      const dir = join(o.where.dataDir, 'agent-client', 'tasks')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, `${new Date(s.now()).toISOString().slice(0, 10)}-${randomBytes(4).toString('hex')}.md`)
+      writeFileSync(file, text, { mode: 0o600 })
+      const lead = `Your task is longer than a first message holds. All of it is in ${file}: read the whole file before you start. It begins:\n\n`
+      const room = MAX_FIRST_PROMPT_CHARS - header.length - lead.length - 1
+      return `${header}${lead}${clip(text, room)}`
     },
     created: (machineId, agent) => {
       const id = typeof agent.id === 'string' ? agent.id : ''

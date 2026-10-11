@@ -248,6 +248,7 @@ const ERRORS: Record<string, string> = {
   INVALID_DSH: 'That harness is not in the machine\'s catalog, or does not run on that engine.',
   PROJECT_EXISTS: 'A project with that name already exists. Name its folder instead.',
   PROMPT_UNSUPPORTED: 'That agent cannot be started with a first message.',
+  PROMPT_TOO_LONG: 'A first message holds at most 2,000 characters. Put the rest in a file and name the file in it.',
   SPAWN_FAILED: 'The agent could not be started.',
 }
 

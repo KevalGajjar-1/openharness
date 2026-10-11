@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -493,8 +493,16 @@ describe('harness new, run by an agent', () => {
     const origin = (await agentOrigin(h.deps))!
     expect(d.closed).toBe(true)
     expect(() => origin.check()).not.toThrow()
-    expect(origin.prompt('review it', 'm')).toBe('[from lead · Claude Code · studio, the harness that started you. Reply with: harness send lead "…"]\n\nreview it')
-    expect(origin.prompt('train it', 'mini')).toBe('[from lead · Claude Code · studio, the harness that started you.]\n\ntrain it')
+    expect(origin.prompt('review it', 'm')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]\n\nreview it')
+    expect(origin.prompt('train it', 'mini')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself.]\n\ntrain it')
+    // A task longer than a first message holds: the whole of it in a file, its start in the message.
+    const long = `Review all of it. ${'x'.repeat(3_000)}`
+    const sent = origin.prompt(long, 'm')
+    expect(sent.length).toBeLessThanOrEqual(2_000)
+    const file = /All of it is in (\S+): read the whole file/.exec(sent)![1]
+    expect(readFileSync(file, 'utf8')).toBe(long)
+    expect(sent).toContain('It begins:\n\nReview all of it. xxx')
+    expect(() => origin.prompt(long, 'mini')).toThrow(/another machine holds at most/)
     origin.created('m', { id: 'kid', name: 'reviewer' })
     origin.created('m', { name: 'no id' })
     expect(h.ledger.all()).toEqual([{ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'reviewer' } }])
