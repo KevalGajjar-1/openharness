@@ -218,7 +218,7 @@ async function fakeFo(script: { ask: Array<Record<string, unknown>>; reply: Arra
     let result: Record<string, unknown>
     if (message.method === 'tools/list') {
       result = { tools: [
-        { name: 'ask_fo', inputSchema: script.schema ?? { properties: { request: { type: 'string' }, conversation_id: { type: 'string' } }, required: ['request'] } },
+        { name: 'ask_fo', inputSchema: script.schema ?? { properties: { request: { type: 'string' }, conversation_id: { type: 'string' }, newConversation: { type: 'boolean' } }, required: ['request'] } },
         { name: 'get_fo_reply', inputSchema: { properties: { conversation_id: { type: 'string' }, request_id: { type: 'string' } } } },
       ] }
     } else {
@@ -254,7 +254,8 @@ describe('Fo', () => {
     const adapter = foAdapter(async () => client, () => new Date('2026-10-11T10:00:00Z'))
     const started = await adapter.start({ task: 'book a haircut', repository: null, options: {} })
     expect(started).toEqual({ remote: { id: 'c1', run: '{"request_id":"r1"}' }, links: [], update: { messages: [], state: 'working', activity: 'Looking' } })
-    expect(fo.calls[0]).toEqual({ tool: 'ask_fo', args: { request: 'book a haircut' } })
+    // A new harness is a new Fo conversation, never the person's current one.
+    expect(fo.calls[0]).toEqual({ tool: 'ask_fo', args: { request: 'book a haircut', newConversation: true } })
     expect(await adapter.poll(started.remote)).toEqual({ messages: [], state: 'working', activity: 'Calling Hair Lab', waited: true })
     expect(fo.calls[1]).toEqual({ tool: 'get_fo_reply', args: { conversation_id: 'c1', request_id: 'r1' } })
     expect(await adapter.poll(started.remote)).toMatchObject({ state: 'needs_input', question: { text: 'They have 9:30 or 11:00.\n1) 9:30\n2) 11:00\nWhich one?', choices: ['9:30', '11:00'] }, remote: { run: undefined } })

@@ -61,14 +61,17 @@ export function foAdapter(client: () => Promise<McpClient>, now: () => Date = ()
     return schema
   }
 
-  /** `ask_fo`, with the conversation named when there is one to continue. */
+  /** `ask_fo`, with the conversation named when there is one to continue, and a fresh one asked for when not:
+   *  by default Fo continues the person's current conversation, which a new harness must not land in. */
   const ask = async (text: string, conversation: string | null): Promise<{ remote: Remote; reply: ReturnType<typeof readReply> }> => {
     const known = await tools()
     const askTool = known.get('ask_fo')
     if (!askTool) throw new CloudError('CLOUD_FAILED', `${NAME}'s MCP server has no ask_fo. Connect https://mcp.api.wajo.ai/fo.`)
     const args: Record<string, unknown> = { [wordsParam(askTool)]: text }
     const conversationParam = Object.keys(props(askTool)).find((name) => /conversation/i.test(name) && props(askTool)[name]?.type === 'string')
+    const freshParam = Object.keys(props(askTool)).find((name) => /^new/i.test(name) && props(askTool)[name]?.type === 'boolean')
     if (conversation && conversationParam) args[conversationParam] = conversation
+    else if (!conversation && freshParam) args[freshParam] = true
     const reply = readReply(await (await client()).call('ask_fo', args, 60_000))
     const id = reply.ids.conversation_id ?? reply.ids.conversationId ?? conversation ?? 'current'
     const pending = Object.fromEntries(Object.entries(reply.ids).filter(([key]) => !/conversation/i.test(key)))
