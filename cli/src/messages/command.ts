@@ -23,7 +23,8 @@ export const SEND_USAGE = `harness send — message your teammates in this tab
   harness send <name>[,<name>] "text"   message one or more teammates
   harness send <name> --text-file PATH  a longer message, from a file
 
-Run it in your own harness pane. Agent Messages must be on in the tab (the chat icon on the tab).
+Run it in your own harness pane. Agent Messages must be on in the tab (the chat icon on the tab), except
+between a harness and the harnesses it started on this machine.
 Use --json for structured output.`
 
 export interface SendArgs { names: string[]; text: string; json: boolean }

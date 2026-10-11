@@ -137,7 +137,12 @@ Machine:
   harness search <words>       find the conversation on this computer that said them: every turn of
                                every harness, live or stopped (--limit=N, --json)
   harness send <name> "text"   from an agent's pane: message a teammate in this tab, when Agent Messages
-                               are on there (the tab's chat icon); \`harness send\` alone lists who is here
+                               are on there (the tab's chat icon), or a harness it started;
+                               \`harness send\` alone lists who is here
+  harness ps [--all]           the harnesses here: state, who started each, what each is about
+  harness show <name>          a harness's state and last turn: what it was asked and what it answered
+  harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
+  harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})
@@ -2443,6 +2448,7 @@ async function logsExportCommand(json: boolean): Promise<void> {
 
 import { orchestratorCommand } from './orchestrator/command.js'
 import { sendCommand } from './messages/command.js'
+import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
 
 // ── arg parse ──────────────────────────────────────────────────────────────────────────────────
 // `hn` is the terminal client's short name (like tmux, fzf): the same CLI, entered at `tui`. A call
@@ -2473,6 +2479,18 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') { console.log(VERS
 switch (cmd) {
   case 'send':
     sendCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  case 'ps':
+    psCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  case 'show':
+    showCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  case 'wait':
+    waitCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  case 'close':
+    closeCommand(rest).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'orchestrator':
     orchestratorCommand(rest).then(code => { process.exitCode = code }).catch(onError)
@@ -2595,6 +2613,7 @@ switch (cmd) {
       connect: (url) => new NewCommandSocket(url),
       output: (line) => console.log(line),
       error: (line) => console.error(line),
+      origin: () => agentOrigin(),
     }).then((code) => { process.exitCode = code }).catch(onError)
     break
   case 'shell-launch':
