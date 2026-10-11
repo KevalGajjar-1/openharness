@@ -83,8 +83,8 @@ export async function answerExperimentQuery(core: Core, experiments: ReadonlySet
     case 'cloud_unask': {
       if (service !== 'cloud' || !core.cloud) return { error: 'NOT_CLOUD' }
       if (query === 'cloud_publish') core.cloud.publish(Array.isArray(payload.harnesses) ? payload.harnesses : [])
-      else if (query === 'cloud_ask') core.cloud.ask(text(payload.agentId), text(payload.requestId), (payload.question ?? {}) as { text: string; choices: string[] })
-      else core.cloud.unask(text(payload.agentId), text(payload.requestId))
+      else if (query === 'cloud_ask') core.cloud.ask(text(payload.agentId), text(payload.questionId), (payload.question ?? {}) as { text: string; choices: string[] })
+      else core.cloud.unask(text(payload.agentId), text(payload.questionId))
       return {}
     }
     case 'observer_send': {

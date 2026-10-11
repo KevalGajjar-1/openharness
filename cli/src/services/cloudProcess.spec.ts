@@ -11,7 +11,7 @@ describe('cloud agents in their own process', () => {
 
   it('answers the apps and the core\'s port, and tells a core that connects everything again', async () => {
     let options: ServiceProcessOptions | null = null
-    const port = { create: vi.fn(async () => ({ ok: true, agent: {} })), deliver: vi.fn(async () => ({ ok: true })), answer: vi.fn(async () => ({ ok: true })), stop: vi.fn(async () => ({ ok: true })) }
+    const port = { create: vi.fn(async () => ({ ok: true, agent: {} })), deliver: vi.fn(async () => ({ ok: true })), answer: vi.fn(async () => ({ ok: true })), stopHarness: vi.fn(async () => ({ ok: true })) }
     const republish = vi.fn()
     let core: Parameters<typeof startCloudOn>[0] | null = null
     const start = vi.fn((given, ports) => { core = given; ports.cloud = port; return { requests: { cloud_agents: async () => ({ agents: [] }) }, republish } }) as unknown as typeof startCloudOn
@@ -22,13 +22,13 @@ describe('cloud agents in their own process', () => {
     await requests.create!({ engine: 'fo' }, asker)
     await requests.deliver!({ agentId: 'cloud_1', text: 'hi' }, asker)
     await requests.deliver!({}, asker)
-    await requests.answer!({ agentId: 'cloud_1', requestId: 'cloud_q_1', answers: { answer: 'main', bad: 3 } }, asker)
+    await requests.answer!({ agentId: 'cloud_1', questionId: 'cloud_q_1', requestId: 'the-link-s-own', answers: { answer: 'main', bad: 3 } }, asker)
     await requests.answer!({ answers: null }, asker)
-    await requests.stop!({ agentId: 'cloud_1' }, asker)
+    await requests.stopHarness!({ agentId: 'cloud_1' }, asker)
     expect(port.create).toHaveBeenCalledWith({ engine: 'fo' })
     expect(port.deliver.mock.calls).toEqual([['cloud_1', 'hi'], ['', '']])
     expect(port.answer.mock.calls).toEqual([['cloud_1', 'cloud_q_1', { answer: 'main' }], ['', '', {}]])
-    expect(port.stop).toHaveBeenCalledWith('cloud_1')
+    expect(port.stopHarness).toHaveBeenCalledWith('cloud_1')
 
     // Before a core connects, what it tells the core goes nowhere; once one does, it is asked of that core.
     core!.cloud!.publish([])
@@ -39,8 +39,8 @@ describe('cloud agents in their own process', () => {
     core!.cloud!.ask('cloud_1', 'cloud_q_1', { text: 'Which?', choices: [] })
     core!.cloud!.unask('cloud_1', 'cloud_q_1')
     expect(query.mock.calls).toEqual([
-      ['cloud_publish', { harnesses: [] }], ['cloud_ask', { agentId: 'cloud_1', requestId: 'cloud_q_1', question: { text: 'Which?', choices: [] } }],
-      ['cloud_unask', { agentId: 'cloud_1', requestId: 'cloud_q_1' }],
+      ['cloud_publish', { harnesses: [] }], ['cloud_ask', { agentId: 'cloud_1', questionId: 'cloud_q_1', question: { text: 'Which?', choices: [] } }],
+      ['cloud_unask', { agentId: 'cloud_1', questionId: 'cloud_q_1' }],
     ])
   })
 

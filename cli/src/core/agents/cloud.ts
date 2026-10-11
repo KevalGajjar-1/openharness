@@ -117,7 +117,7 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
     /** Stop Harness for a cloud harness, answered as `agent_delete` is; null when it is not one. */
     stop(agentId: string): Promise<Record<string, unknown>> | null {
       if (!harnesses.has(agentId)) return null
-      return call((cloud) => cloud.stop(agentId), DOWN)
+      return call((cloud) => cloud.stopHarness(agentId), DOWN)
         .then((result) => (result.ok ? { deleted: true, ...(result.detail ? { detail: result.detail } : {}) } : { error: result.error, ...(result.detail ? { detail: result.detail } : {}) }))
     },
   }

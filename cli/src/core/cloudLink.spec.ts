@@ -9,10 +9,10 @@ describe('cloud agents in their own process, as the core reaches them', () => {
     expect(await port.create({ engine: 'fo' })).toEqual({ ok: true, agent: { id: 'cloud_1' } })
     expect(await port.deliver('cloud_1', 'hi')).toEqual({ ok: true, detail: 'done' })
     expect(await port.answer('cloud_1', 'cloud_q_1', { answer: 'main' })).toEqual({ ok: true, detail: 'done' })
-    expect(await port.stop('cloud_1')).toEqual({ ok: true, detail: 'done' })
+    expect(await port.stopHarness('cloud_1')).toEqual({ ok: true, detail: 'done' })
     expect(call.mock.calls).toEqual([
       ['create', { engine: 'fo' }], ['deliver', { agentId: 'cloud_1', text: 'hi' }],
-      ['answer', { agentId: 'cloud_1', requestId: 'cloud_q_1', answers: { answer: 'main' } }], ['stop', { agentId: 'cloud_1' }],
+      ['answer', { agentId: 'cloud_1', questionId: 'cloud_q_1', answers: { answer: 'main' } }], ['stopHarness', { agentId: 'cloud_1' }],
     ])
   })
 
@@ -21,8 +21,8 @@ describe('cloud agents in their own process, as the core reaches them', () => {
     const port = createCloudLink(async () => answers.shift()!)
     expect(await port.create({})).toEqual({ ok: false, error: 'NOT_CONNECTED', detail: 'Connect Fo' })
     expect(await port.deliver('a', 'b')).toEqual({ ok: false, error: 'X' })
-    expect(await port.stop('a')).toEqual(CLOUD_DOWN)
-    expect(await port.stop('a')).toEqual({ ok: true })
+    expect(await port.stopHarness('a')).toEqual(CLOUD_DOWN)
+    expect(await port.stopHarness('a')).toEqual({ ok: true })
     expect(await port.create({})).toEqual(CLOUD_DOWN)
   })
 })

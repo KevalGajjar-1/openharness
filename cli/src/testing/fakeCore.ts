@@ -85,6 +85,6 @@ export function fakeCore(over: Overrides = {}): CoreApi {
       ...over.wifi,
     },
     // Only a spec that gives the cloud agents doors has them, as only a core that offers them does.
-    ...(over.cloud ? { cloud: { publish: vi.fn(), ask: vi.fn(), unask: vi.fn(), ...over.cloud } } : {}),
+    ...(over.cloud ? { cloud: Object.assign({ publish: vi.fn(), ask: vi.fn(), unask: vi.fn() }, over.cloud) } : {}),
   }
 }

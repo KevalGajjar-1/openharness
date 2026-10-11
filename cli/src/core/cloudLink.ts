@@ -1,7 +1,8 @@
 /**
  * Cloud agents in their own process, as the core reaches them (an experiment; the process's side is
  * services/cloudProcess.ts). The core asks them four things, each when a person does it and never in a
- * connection's line: a New Harness for a cloud agent, words for one, an answer to its question, and Stop.
+ * connection's line: a New Harness for a cloud agent, words for one, an answer to its question, and Stop
+ * Harness (`stopHarness`: never `stop`, which a service host reads as stopping the service).
  * Each is a request to the process (core/serviceLinks.ts `call`, which starts it when it is off); an answer
  * that does not come is the port's fallback (core/api.ts `CLOUD_FALLBACKS`): refused, with a reason.
  */
@@ -26,7 +27,8 @@ export function createCloudLink(call: CallCloud): CloudPort {
       return refused.ok ? DOWN : refused
     },
     deliver: async (agentId, text) => result(await call('deliver', { agentId, text })),
-    answer: async (agentId, requestId, answers) => result(await call('answer', { agentId, requestId, answers })),
-    stop: async (agentId) => result(await call('stop', { agentId })),
+    // `questionId`: a call's own `requestId` is the link's, written over whatever the payload carried.
+    answer: async (agentId, requestId, answers) => result(await call('answer', { agentId, questionId: requestId, answers })),
+    stopHarness: async (agentId) => result(await call('stopHarness', { agentId })),
   }
 }

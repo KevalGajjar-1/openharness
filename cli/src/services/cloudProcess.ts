@@ -2,7 +2,7 @@
  * Cloud agents in their own process (`harness __service cloud`), an experiment: the same service as in the
  * core's process (services/cloud.ts), answering two askers:
  * - the apps' requests, `cloud_transcript` and `cloud_agents`;
- * - the core, through its port (core/cloudLink.ts): `create`, `deliver`, `answer` and `stop`, named as the
+ * - the core, through its port (core/cloudLink.ts): `create`, `deliver`, `answer` and `stopHarness`, named as the
  *   port's members so that a test's fault names the same member whichever process it runs in.
  *
  * What it tells the core (its harnesses, their questions) is asked of the core over its link
@@ -46,8 +46,8 @@ export function runCloudService(options: CloudProcessOptions): ServiceProcess {
       // The port's members, asked only by the core (core/cloudLink.ts).
       create: (payload) => port.create(payload),
       deliver: (payload) => port.deliver(text(payload.agentId), text(payload.text)),
-      answer: (payload) => port.answer(text(payload.agentId), text(payload.requestId), answers(payload.answers)),
-      stop: (payload) => port.stop(text(payload.agentId)),
+      answer: (payload) => port.answer(text(payload.agentId), text(payload.questionId), answers(payload.answers)),
+      stopHarness: (payload) => port.stopHarness(text(payload.agentId)),
     },
     onConnected: (connection) => { core = connection; service.republish() },
   })

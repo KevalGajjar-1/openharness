@@ -113,7 +113,7 @@ describe('the core API a light service runs on in its own process', () => {
 
   it('gives the cloud agents their doors only with a core to ask, and never waits on or throws from them', async () => {
     expect(processCoreApi('/data', 'cloud').cloud).toBeUndefined()
-    const ask = vi.fn(async () => { throw new Error('gone') })
+    const ask = vi.fn(async (_query: string): Promise<Record<string, unknown>> => { throw new Error('gone') })
     const doors = processCoreApi('/data', 'cloud', { ask }).cloud!
     doors.publish([])
     doors.ask('cloud_1', 'cloud_q_1', { text: 'Which?', choices: [] })

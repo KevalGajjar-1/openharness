@@ -20,7 +20,7 @@ const port = (): CloudPort & { [K in keyof CloudPort]: ReturnType<typeof vi.fn> 
   create: vi.fn(async () => ({ ok: true as const, agent: { id: 'cloud_2' } })),
   deliver: vi.fn(async () => ({ ok: true as const })),
   answer: vi.fn(async () => ({ ok: true as const })),
-  stop: vi.fn(async () => ({ ok: true as const, detail: 'Fo keeps working on its own.' })),
+  stopHarness: vi.fn(async () => ({ ok: true as const, detail: 'Fo keeps working on its own.' })),
 })
 
 describe('agents a service owns', () => {
@@ -91,7 +91,7 @@ describe('agents a service owns', () => {
 
     expect(cloud.stop('a1')).toBeNull()
     expect(await cloud.stop('cloud_1')).toEqual({ deleted: true, detail: 'Fo keeps working on its own.' })
-    service.stop.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, error: 'CLOUD_FAILED', detail: 'down' }).mockResolvedValueOnce({ ok: false, error: 'X' })
+    service.stopHarness.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, error: 'CLOUD_FAILED', detail: 'down' }).mockResolvedValueOnce({ ok: false, error: 'X' })
     expect(await cloud.stop('cloud_1')).toEqual({ deleted: true })
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'CLOUD_FAILED', detail: 'down' })
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'X' })

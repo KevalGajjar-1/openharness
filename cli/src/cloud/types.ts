@@ -25,7 +25,7 @@ export interface CloudUpdate {
   messages: CloudMessage[]
   state?: CloudState
   activity?: string | null
-  /** The agent waits on the person: what it asks, with the choices it offers. */
+  /** The agent waits on the person: what it asks, with the choices it offers. Absent: the question already asked stands. */
   question?: { text: string; choices: string[] } | null
   branch?: string | null
   links?: CloudLink[]

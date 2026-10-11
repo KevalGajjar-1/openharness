@@ -4,7 +4,7 @@
  */
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { connectionFor, connectionsBridge, refusal, type Bridge } from './bridge.js'
+import { connectionFor, connectionsBridge, endpointFor, refusal, type Bridge } from './bridge.js'
 import { cursorAdapter, cursorLinks, cursorState, runResult } from './cursor.js'
 import { DEFAULT_ACU_LIMIT, devinAdapter, devinLinks, devinState } from './devin.js'
 import { foAdapter, questionIn, readReply, wordsParam } from './fo.js'
@@ -14,7 +14,8 @@ import { CloudError } from './types.js'
 const servers: Server[] = []
 afterEach(() => { for (const server of servers.splice(0)) { server.close(); server.closeAllConnections() } })
 
-async function serve(handler: (request: IncomingMessage, body: string) => { status?: number; headers?: Record<string, string>; body: string }): Promise<string> {
+type Answer = { status?: number; headers?: Record<string, string>; body: string }
+async function serve(handler: (request: IncomingMessage, body: string) => Answer): Promise<string> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = []
     request.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
@@ -71,6 +72,17 @@ describe('the bridge', () => {
     await expect(connectionFor(bridge, 'devin-cloud')).rejects.toThrow('needs to be connected again')
     await expect(connectionFor(bridge, 'cursor-cloud')).rejects.toThrow('add-key Cursor')
     await expect(connectionFor({ connections: async () => { throw new Error('down') } } as unknown as Bridge, 'fo')).rejects.toThrow('Connections is not running here')
+  })
+
+  it('finds a maker at another address when one is named for it', async () => {
+    const env = { HARNESS_CLOUD_ENDPOINTS: JSON.stringify({ 'devin-cloud': 'http://127.0.0.1:9/x', fo: 'https://fo.example/fo', 'cursor-cloud': 'not a url' }) }
+    expect(endpointFor('devin-cloud', env)).toEqual({ api: 'http://127.0.0.1:9' })
+    expect(endpointFor('fo', env)).toEqual({ mcp: 'fo.example' })
+    expect(endpointFor('cursor-cloud', env)).toEqual({ api: 'https://api.cursor.com' })
+    expect(endpointFor('devin-cloud', { HARNESS_CLOUD_ENDPOINTS: '{' })).toEqual({ api: 'https://api.devin.ai' })
+    expect(endpointFor('devin-cloud', {})).toEqual({ api: 'https://api.devin.ai' })
+    const bridge = { connections: async () => [{ code: 'fake', name: 'Devin', mcp: null, api: 'http://127.0.0.1:9', state: 'connected' }] } as unknown as Bridge
+    expect((await connectionFor(bridge, 'devin-cloud', env)).code).toBe('fake')
   })
 
   it('says a maker\'s refusal as a person reads it', () => {
@@ -143,7 +155,8 @@ describe('Devin Cloud', () => {
     await expect(devinAdapter(bridge, async () => 'd').start({ task: 't', repository: null, options: { acuLimit: 2 } })).rejects.toThrow('No session was made')
     expect(calls[1][2]).toEqual({ prompt: 't', max_acu_limit: 2, title: 't' })
     const waiting = apiBridge([{ json: { org_id: 'o' } }, { json: { status: 'running', status_detail: 'waiting_for_approval' } }, { json: { items: [] } }])
-    expect((await devinAdapter(waiting.bridge, async () => 'd').poll({ id: 'x' })).question).toEqual({ text: 'Devin is waiting for your approval.', choices: [] })
+    // Waiting with nothing new said: the question already asked stands (the service asks one if none was).
+    expect((await devinAdapter(waiting.bridge, async () => 'd').poll({ id: 'x' })).question).toBeUndefined()
   })
 })
 
@@ -197,7 +210,7 @@ describe('Cursor Cloud', () => {
 async function fakeFo(script: { ask: Array<Record<string, unknown>>; reply: Array<Record<string, unknown>>; schema?: Record<string, unknown> }) {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
   let sessions = 0
-  const base = await serve((request, body) => {
+  const base = await serve((request, body): Answer => {
     const message = JSON.parse(body) as { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } }
     if (message.method === 'initialize') return { headers: { 'mcp-session-id': `s${++sessions}` }, body: JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }) }
     if (!message.id) return { status: 202, body: '' }

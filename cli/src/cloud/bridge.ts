@@ -42,9 +42,24 @@ export function connectionsBridge(base: () => string = () => `http://127.0.0.1:$
   }
 }
 
-/** The connection that signs in a cloud agent, or why there is none. */
-export async function connectionFor(bridge: Bridge, agent: CloudAgentId): Promise<Connection> {
+/**
+ * Where a cloud agent's maker is: its own address, or another named in `HARNESS_CLOUD_ENDPOINTS` (JSON, by
+ * agent id): a test's fake, or an organization's own host for the maker.
+ */
+export function endpointFor(agent: CloudAgentId, env: NodeJS.ProcessEnv = process.env): { mcp: string } | { api: string } {
   const want = CLOUD_AGENTS[agent].connection
+  let moved: unknown
+  try { moved = (JSON.parse(env.HARNESS_CLOUD_ENDPOINTS ?? '{}') as Record<string, unknown>)[agent] } catch { moved = undefined }
+  if (typeof moved !== 'string') return want
+  try {
+    const url = new URL(moved)
+    return 'mcp' in want ? { mcp: url.host } : { api: url.origin }
+  } catch { return want }
+}
+
+/** The connection that signs in a cloud agent, or why there is none. */
+export async function connectionFor(bridge: Bridge, agent: CloudAgentId, env: NodeJS.ProcessEnv = process.env): Promise<Connection> {
+  const want = endpointFor(agent, env)
   let connections: Connection[]
   try { connections = await bridge.connections() } catch { throw new CloudError('CONNECTIONS_UNAVAILABLE', 'Connections is not running here. Try again in a moment.') }
   const found = connections.find((connection) => 'mcp' in want

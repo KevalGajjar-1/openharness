@@ -92,9 +92,8 @@ export function devinAdapter(bridge: Bridge, code: () => Promise<string>): Cloud
         messages,
         state,
         activity: session.status === 'suspended' ? SUSPENDED[String(session.status_detail)] ?? null : null,
-        question: state === 'needs_input'
-          ? { text: (lastWords ?? (session.status_detail === 'waiting_for_approval' ? 'Devin is waiting for your approval.' : 'Devin is waiting for you.')).slice(0, 500), choices: [] }
-          : null,
+        // Asked from Devin's newest words; with none new, the question already asked stands (cloud/service.ts).
+        question: state !== 'needs_input' ? null : lastWords ? { text: lastWords.slice(0, 500), choices: [] } : undefined,
         links: devinLinks(session),
         remote: { cursor },
       }

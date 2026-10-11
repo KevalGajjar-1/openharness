@@ -154,7 +154,13 @@ export function startCloudService(options: CloudServiceOptions) {
     if (update.branch !== undefined) entry.harness.branch = update.branch
     if (update.links) entry.harness.links = update.links
     if (update.remote) entry.remote = { ...entry.remote, ...update.remote }
-    if (update.question !== undefined || entry.harness.state !== 'needs_input') ask(entry, entry.harness.state === 'needs_input' ? update.question ?? null : null)
+    if (entry.harness.state !== 'needs_input') ask(entry, null)
+    else if (update.question) ask(entry, update.question)
+    // Waiting, with nothing new said and nothing asked yet (a restart): it asks what it last said.
+    else if (!entry.question) {
+      const said = transcript(entry.harness.agentId).filter((message) => message.from === 'agent').at(-1)?.text
+      ask(entry, { text: (said ?? `${CLOUD_AGENTS[entry.harness.agent].name} is waiting for you.`).slice(0, 500), choices: [] })
+    }
     return JSON.stringify([entry.harness, entry.remote, entry.question?.text]) !== before
   }
 
@@ -254,7 +260,7 @@ export function startCloudService(options: CloudServiceOptions) {
     return deliver(agentId, words)
   }
 
-  const stop = (agentId: string): Promise<CloudResult> => serial(agentId, async () => {
+  const stopHarness = (agentId: string): Promise<CloudResult> => serial(agentId, async () => {
     const entry = entries.get(agentId)
     if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
     const adapter = adapters[entry.harness.agent]
@@ -306,7 +312,7 @@ export function startCloudService(options: CloudServiceOptions) {
 
   return {
     requests,
-    port: { create, deliver, answer, stop } satisfies CloudPort,
+    port: { create, deliver, answer, stopHarness } satisfies CloudPort,
     /** The core connected again (its restart): it is told every harness, and asked every open question, again. */
     republish(): void {
       publish()

@@ -173,12 +173,13 @@ export function processCoreApi(dataDir: string, service: string, view: AgentsVie
     },
     wifi: UNASKED.wifi,
     // The cloud agents' doors (core/experimentQueries.ts): told to the core in order, never waited on. A core
-    // that is not connected hears it all again when it is (services/cloudProcess.ts `republish`).
+    // that is not connected hears it all again when it is (services/cloudProcess.ts `republish`). A question's
+    // id travels as `questionId`: `requestId` is the query's own, which the link writes over.
     ...(ask ? {
       cloud: {
         publish: (harnesses) => { void ask('cloud_publish', { harnesses }).catch(() => {}) },
-        ask: (agentId, requestId, question) => { void ask('cloud_ask', { agentId, requestId, question }).catch(() => {}) },
-        unask: (agentId, requestId) => { void ask('cloud_unask', { agentId, requestId }).catch(() => {}) },
+        ask: (agentId, requestId, question) => { void ask('cloud_ask', { agentId, questionId: requestId, question }).catch(() => {}) },
+        unask: (agentId, requestId) => { void ask('cloud_unask', { agentId, questionId: requestId }).catch(() => {}) },
       } satisfies CloudCore,
     } : {}),
   }
