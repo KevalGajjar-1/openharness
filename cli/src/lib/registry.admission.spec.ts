@@ -7,7 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 // These are ownership and injected-I/O outcomes, independent of host scheduling. Actual
 // elapsed-work deadlines are exercised separately in engines/kit/nativeEvidence.spec.ts.
-vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => 0 } }))
+const clock = vi.hoisted(() => ({ now: 0 }))
+vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => clock.now } }))
 
 const fault = vi.hoisted(() => ({ file: '', rename: false, directorySync: false, renamed: false,
   afterProof: undefined as (() => void) | undefined, beforeVerify: undefined as (() => void) | undefined }))
@@ -32,7 +33,11 @@ function observeNativeProof(): void { vi.doMock('../engines/transcriptBindings.j
   return { ...actual, transcriptEvidence: (...args: Parameters<typeof actual.transcriptEvidence>) => {
     const proof = actual.transcriptEvidence(...args)
     fault.afterProof?.()
-    return { ...proof, verify: (...selected: Parameters<typeof proof.verify>) => { fault.beforeVerify?.(); proof.verify(...selected) } }
+    return { ...proof, verify: (...selected: Parameters<typeof proof.verify>) => { fault.beforeVerify?.(); proof.verify(...selected) },
+      retain: (...selected: Parameters<typeof proof.retain>) => {
+        const retained = proof.retain(...selected)
+        return () => { fault.beforeVerify?.(); retained() }
+      } }
   } }
 }) }
 const A = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', B = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
@@ -51,6 +56,7 @@ const unchanged = (before: ReturnType<typeof snapshot>) => {
   expect(readFileSync(file, 'utf8')).toBe(before.disk)
 }
 beforeEach(async () => {
+  clock.now = 0
   fault.rename = false; fault.directorySync = false; fault.renamed = false; fault.afterProof = undefined; fault.beforeVerify = undefined
   root = realpathSync(mkdtempSync(join(tmpdir(), 'registry-admission-')))
   home = join(root, 'codex'); file = join(root, 'data', 'registry.json'); fault.file = file
@@ -108,6 +114,64 @@ it('rechecks the native header under the write lock before publishing any regist
   expect(() => registry.register(input())).toThrow('header changed')
   expect(checked).toBe(true)
   unchanged(before)
+})
+it('prepares a registration without publication before its durable hook claim is available', async () => {
+  const before = snapshot()
+  const staged = registry.prepareRegistration(input())!
+  unchanged(before)
+  await Promise.resolve()
+  const fence = vi.fn(() => {
+    expect(JSON.parse(readFileSync(join(file + '.lock', 'owner.json'), 'utf8')).pid).toBe(process.pid)
+    unchanged(before)
+  })
+  expect(staged.commit(fence)?.entry.sessionId).toBe(A)
+  expect(fence).toHaveBeenCalledOnce()
+  expect(registry.bySession(A)?.agentId).toBe(target)
+})
+it('keeps a prepared registration unchanged when its asynchronous claim loses authority', async () => {
+  const before = snapshot(), staged = registry.prepareRegistration(input())!
+  await Promise.resolve()
+  expect(() => staged.commit(() => { throw Error('fixture claim revoked') })).toThrow('fixture claim revoked')
+  unchanged(before)
+})
+it('does not publish a prepared registration over a changed live owner', async () => {
+  const staged = registry.prepareRegistration(input())!
+  await Promise.resolve()
+  registry.byAgent(target)!.title = 'A newer live observation'
+  const before = snapshot()
+  expect(() => staged.commit()).toThrow('prepared registration owner changed')
+  unchanged(before)
+})
+it('rechecks prepared native evidence after an asynchronous claim boundary', async () => {
+  const before = snapshot(), staged = registry.prepareRegistration(input())!
+  await Promise.resolve()
+  writeFileSync(transcript, header(B))
+  expect(() => staged.commit()).toThrow('header changed')
+  unchanged(before)
+})
+it('captures prepared registration inputs before the asynchronous claim boundary', async () => {
+  const body = { ...input(), runtimes: [{ backend: 'tmux' as const, paneId: '%1' }] }
+  const options = { verifiedNativeSource: false }
+  const staged = registry.prepareRegistration(body, options)!
+  await Promise.resolve()
+  body.processIdentity.pid = 9999
+  body.runtimes[0]!.paneId = '%99'
+  body.cwd = '/fixture/changed'
+  options.verifiedNativeSource = true
+  const saved = staged.commit()!.entry
+  expect(saved.processIdentity?.pid).toBe(5101)
+  expect(saved.runtimes).toEqual([{ backend: 'tmux', paneId: '%1' }])
+  expect(saved.cwd).toBe(root)
+})
+it.each([false, true])('verifies prepared registration facts under a fresh budget after a long disk wait (replaced=%s)', async replaced => {
+  const before = snapshot(), staged = registry.prepareRegistration(input())!
+  await Promise.resolve()
+  clock.now = 10_000
+  if (replaced) {
+    rmSync(transcript); writeFileSync(transcript, header())
+    expect(() => staged.commit()).toThrow('changed')
+    unchanged(before)
+  } else expect(staged.commit()?.entry.sessionId).toBe(A)
 })
 it('never overwrites a different durable admission that arrived during inspection', () => {
   const peer = new (registry.constructor as new () => typeof registry)(); peer.load()
@@ -536,6 +600,9 @@ it('recovers a peer-changed fileless binding only after fresh native source admi
   writeFileSync(file, JSON.stringify(peerRows, null, 2))
   expect(() => registry.register(body)).toThrow('different durable owner')
   expect(registry.register(body)?.entry.identityHold).toContain('concurrent binding')
+  const options = { verifiedNativeSource: false }, prepared = registry.prepareRegistration(body, options)!
+  options.verifiedNativeSource = true
+  expect(prepared.commit()?.entry.identityHold).toContain('concurrent binding')
   const result = registry.register(body, { verifiedNativeSource: true })!
   expect(result.entry.identityHold).toBeUndefined()
   expect(result.entry.interpretationHold).toBeTruthy()

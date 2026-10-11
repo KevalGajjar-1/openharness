@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, read
 import { dirname } from 'node:path'
 import { IdentityReadUnavailable } from './identityScan.js'
 import { NativeEvidenceBudget, nativeUnavailable } from './nativeEvidence.js'
-import { nativeFileKey, NativePaths } from './nativePaths.js'
+import { nativeFileKey, NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import { firstLine, nativeSessionMeta, type NativeFirstRecord } from './nativeHeader.js'
 import { controlIdentity, type ControlIdentityRule } from './controlIdentity.js'
 
@@ -158,5 +158,20 @@ export class NativeFiles {
       }
     }
     this.paths.verify()
+  }
+
+  /** Carry facts across a disk wait, never the inspection's expiring work budget.
+   * A replacement route, directory pool or opening still invalidates the facts. */
+  retain(selected?: string): () => void {
+    this.verify(selected)
+    const facts = this.paths.snapshot(), reads = [...this.reads], directories = [...this.directories]
+    return () => {
+      verifyNativePathFacts(facts)
+      const fresh = new NativeFiles()
+      for (const [path, record] of reads) fresh.reads.set(path, record)
+      for (const [path, version] of directories) fresh.directories.set(path, version)
+      fresh.verify(selected)
+      verifyNativePathFacts(facts)
+    }
   }
 }
