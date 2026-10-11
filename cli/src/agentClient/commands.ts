@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+import { readAgentSettings } from '../lib/agentSettings.js'
 import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import type { NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
@@ -70,6 +71,8 @@ const QUIET_LOOKS = 3
 const STARTING_MS = 2 * 60_000
 
 class UsageError extends Error {}
+
+export const AGENTS_START_AGENTS_OFF = 'The person has turned off agents starting harnesses on this computer (Harness Settings ▸ Agents). Do the work yourself.'
 
 const ORPHAN = 'This pane\'s harness is no longer running, so nothing here may close or start harnesses. Only the person can.'
 
@@ -552,6 +555,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   if (o.orphan) return refusing('NOT_YOURS', ORPHAN)
   const caller = o.caller
   if (!caller) return null
+  // The person's say, on the machine the agent runs on (Settings ▸ Agents, `harness settings`).
+  if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF)
   return {
     check: async () => {
       const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now())

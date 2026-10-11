@@ -256,4 +256,24 @@ describe('Harness for agents, end to end', () => {
     server.close()
     client.close()
   })
+
+  it('an agent may not start a harness once the person turns that off', async () => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const dir = join(d.projectsDir, 'held')
+    mkdirSync(dir, { recursive: true })
+    // The person, at a terminal; then Claude Code in a terminal app.
+    const off = await harness(d, '', ['settings', 'agents-start-agents', 'off'])
+    expect(off.out.trim()).toBe('agents-start-agents is off.')
+    const refused = await harness(d, '', ['new', 'claude', dir, '--name', 'held', '--', 'hello'], { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'held-session' })
+    expect(refused.code, refused.out).toBe(1)
+    expect(refused.err).toContain('The person has turned off agents starting harnesses on this computer')
+    const listed = await harness(d, '', ['ps', '--json'])
+    expect(JSON.parse(listed.out).harnesses).toEqual([])
+    // The setting is the daemon's, as the window reads it.
+    const read = await fetch(`http://127.0.0.1:${d.port}/api/agent-settings`)
+    expect(await read.json()).toEqual({ agentsStartAgents: false })
+  })
 })
