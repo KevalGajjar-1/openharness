@@ -142,6 +142,26 @@ The integration slice began October 11 at 01:31 UTC. At this checkpoint it
 contains implementation and local validation only. Draft CI and independent
 review overlapped implementation; no integration merge or publication occurred.
 
+## Review correction: the final native dispatch boundary
+
+Local workspace trust now precedes the retained native-hook proof. It uses the
+saved local authorization, captured home and a fresh bounded directory proof;
+workspace replacement, edits or incomplete enumeration cannot grant trust.
+Delayed pane observations retain the original route, token and conversation.
+Retarget and restore also retain their nested preparation proof through the
+actual pane mutation. OpenCode native API calls preserve the selected executable,
+absent location variables and the exact environment of an uncertain receipt.
+
+A native guard that rejects changed post-startup files must publish its inert
+state: tmux does not update `pane_start_command` when a shell calls `exec`.
+The transition checks the original pane, shell PID and launch nonce together
+inside the server before respawn. Its client has a deadline; fallback stays
+inert, and an unconfirmed process remains visibly held. The held command retains
+the daemon ownership prefix required on older tmux versions. Inline launch text
+cannot be mistaken for an already-held command. A core restart preserves an
+unbound held create/fork; it cannot silently substitute a fresh generic launch.
+Recovery of the exact original lifecycle request remains checklist group 3.
+
 ## Remaining launch integration
 
 Every create/fork/restart/retarget/restore/external-resume path must use a confirmed

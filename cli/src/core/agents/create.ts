@@ -7,9 +7,9 @@ import type { NativeLaunch, NativeLaunchResult, NativeLaunchSource } from '../..
  *
  * Moved verbatim out of `runForeground` (the core boundary, step 11: docs/design/2026-10-03-harnessd.md).
  */
-import { statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { BackendSocket } from '../../backendSocket.js'
 import type { ModelsPort } from '../api.js'
 import { MODEL_MANAGER_ID } from '../../dsh/builtinIds.js'
@@ -39,6 +39,8 @@ import type { publishGridConfigDir } from '../../lib/publishedGridConfig.js'
 import { nativeHookLocations } from '../../engines/kit/nativeLocations.js'
 import { engineHooks } from '../../engines/hooks.js'
 import { folderTrust } from '../../engines/launchPrep.js'
+import { projectsRoot } from '../../lib/projectFolder.js'
+import { NativeFiles } from '../../engines/kit/nativeFiles.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
 import { clearPaneRemainOnExit } from '../../lib/tmux.js'
 import type { TmuxBackend } from '../../lib/tmuxBackend.js'
@@ -92,18 +94,26 @@ export function createAgentCreator({
   prepareApiTools, hookPort, hooksDisabled, installOpencodePlugin, gridLaunchMachine, buildGridLaunch, terminalHintMachineName, blocksFolder,
   gridSetup, privateGridName, dshLaunch,
 }: CreateAgentDeps) {
-  const prepare = async (input: Parameters<CreateAgent>[0], authority: LaunchAuthority): Promise<LaunchPreparation<Awaited<ReturnType<CreateAgent>>>> => {
+  const prepare = async (input: Parameters<CreateAgent>[0], authority: LaunchAuthority, context?: { local: boolean }): Promise<LaunchPreparation<Awaited<ReturnType<CreateAgent>>>> => {
     if (input.resumeSessionId) return { ok: true, dispatch: () => externalResume(input) }
     const stale = () => ({ ok: false as const, error: 'LAUNCH_AUTHORITY_CHANGED', unavailable: 'launch', detail: 'Waiting for the original launch request’s authority.' })
     if (!authority.current()) return stale()
     let { engine, cwd, bypassPermission, permissionMode, grid, codexHome, dsh, prompt, name, agent, scmLaunchRecord } = input
     if (!tmuxBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
     if (blocksFolder(cwd)) return { ok: false, error: 'WORKTREE_BUSY' }
+    const workspaceIdentity = () => { const info = statSync(cwd); return `${info.dev}:${info.ino}:${realpathSync(cwd)}` }
+    let originalWorkspace: string
     try {
       if (!statSync(cwd).isDirectory()) return { ok: false, error: 'CWD_NOT_FOUND' }
+      originalWorkspace = workspaceIdentity()
     } catch {
       return { ok: false, error: 'CWD_NOT_FOUND' }
     }
+    // The local Desktop already made this workspace. Observe emptiness before any
+    // preparation writes, but grant trust only after its dependencies are ready.
+    const trustEmptyProject = context?.local === true && !dsh && dirname(cwd) === projectsRoot()
+      && await readdir(cwd).then(names => names.length === 0, () => false)
+    if (!authority.current()) return stale()
     // A harness can pin its permission mode (`dshPinnedPermissionMode`): the Grid harness starts model
     // servers, which Codex's sandbox would start without a GPU. Pinned before anything reads the mode,
     // and recorded on the row like a chosen one, so a relaunch keeps it.
@@ -257,6 +267,21 @@ export function createAgentCreator({
       console.log(describeGridLaunch(engine, grid, built.launch.webSearch))
     }
     if (!current()) return stale()
+    if (trustEmptyProject) {
+      try {
+        // A clone or user edit can arrive while dependencies are being prepared.
+        // Trust only the same physical workspace, still empty at the write boundary.
+        const files = new NativeFiles()
+        const empty = files.entries(cwd).length === 0
+        if (!current()) return stale()
+        if (empty && workspaceIdentity() === originalWorkspace) {
+          files.verify()
+          const environment = native ? { ...native.environment, ...gridLaunch?.env, ...dshEnv } : undefined
+          const profile = engine === 'codex' && environment ? nativeHookLocations(environment).CODEX_HOME : codexHome
+          folderTrust(engine, profile, environment)?.record(cwd)
+        }
+      } catch (error) { console.warn(`[agent] pre-trust ${cwd} · ${error instanceof Error ? error.message : error}`) }
+    }
     if (native && !await native.prepareHooks(hooksDisabled ? 0 : hookPort, authority.current,
       { ...gridLaunch?.env, ...dshEnv }, gridLaunch ? gridConflictingEnvToClear(gridLaunch) : [])) return {
       ok: false, error: 'NATIVE_LAUNCH_HELD', detail: 'Waiting to confirm the engine’s native hooks.', unavailable: 'native',

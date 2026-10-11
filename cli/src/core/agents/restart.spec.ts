@@ -76,6 +76,15 @@ describe('restarting an agent', () => {
   beforeEach(() => { vi.spyOn(console, 'log').mockImplementation(() => {}) })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it.each(['starting', 'held'] as const)('does not replace an unbound native %s launch with a generic fresh restart', async state => {
+    const run = setup(agent({ sessionId: '', launch: state === 'starting' ? { state, nativeToken: 'original' }
+      : { state, nativeToken: 'original', service: 'native', detail: 'Original request held' } }))
+    expect(await run.restart('a1')).toMatchObject({ ok: false, error: 'NATIVE_LAUNCH_HELD' })
+    expect(run.deps.restartHeld).not.toHaveBeenCalled()
+    expect(run.deps.relaunchOverrides).not.toHaveBeenCalled()
+    expect(restartAgent).not.toHaveBeenCalled()
+  })
+
   it.each(['inspection', 'permission', 'snapshot'] as const)('preserves the live process when restart loses %s evidence', async stage => {
     let nativeCurrent = true
     const launch = { current: () => nativeCurrent } as never

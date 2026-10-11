@@ -101,6 +101,9 @@ export function createAgentRestarter({
     if (purgeBusy(agentId) || stopJobs.has(agentId) || pinnedControls.has(agentId)) return { ok: false, error: 'AGENT_BUSY' }
     const session = registry.resolve(agentId)
     if (!session) return { ok: false, error: 'AGENT_NOT_FOUND' }
+    if (!session.sessionId && (session.launch?.state === 'held' || session.launch?.state === 'starting') && session.launch.nativeToken) {
+      return { ok: false, error: 'NATIVE_LAUNCH_HELD', detail: 'The original launch is held for recovery. Its first prompt or fork cannot be replaced by a fresh launch.' }
+    }
     const held = restartHeld(session.agentId)
     if (held) return held
     if (!session.tmuxPane || !tmuxBackend) return { ok: false, error: 'RESTART_UNSUPPORTED_BACKEND' }

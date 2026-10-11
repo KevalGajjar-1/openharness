@@ -98,7 +98,7 @@ describe('retargeting an agent', () => {
 
   it.each(['ready', 'permission', 'snapshot'] as const)('keeps retarget native write and dispatch on one snapshot: %s', async mode => {
     let nativeCurrent = true
-    const launch = { current: () => nativeCurrent, executable: '/fixture/native/opencode', opencodeMajor: 2 } as unknown as NativeLaunch
+    const launch = { current: () => nativeCurrent, executable: '/fixture/native/opencode', environment: { HOME: '/fixture/home' }, opencodeMajor: 2 } as unknown as NativeLaunch
     const run = setup(agent({ engine: 'opencode' }), {
       launchOverridesDeps: { native: async () => ({ ok: true, launch }) } as never,
       relaunchOverrides: async () => ({ ok: true, overrides: { native: launch, env: { HOME: '/fixture/home' }, extraArgs: [], clearEnv: [], sessionModel: 'fixture/model' } }),
@@ -108,6 +108,7 @@ describe('retargeting an agent', () => {
       },
     })
     vi.mocked(applyOpencodeSessionModel).mockImplementationOnce(async (_input, options) => {
+      expect(_input.dbPath).toBe('/fixture/home/.local/share/opencode/opencode.db')
       expect(options?.current?.()).toBe(true)
       expect(options).toMatchObject({ executable: launch.executable, environment: { HOME: '/fixture/home' } })
       return { ok: true }
@@ -127,6 +128,31 @@ describe('retargeting an agent', () => {
     nativeCurrent = true
     vi.mocked(run.deps.registry.byAgent).mockReturnValue(undefined)
     expect(current()).toBe(false)
+  })
+
+  it.each(['prepared', 'clearing', 'hold-open'] as const)('keeps the live process when native proof changes during %s', async phase => {
+    const actual = await vi.importActual<typeof import('../../lib/restartAgent.js')>('../../lib/restartAgent.js')
+    vi.mocked(restartAgent).mockImplementationOnce(actual.restartAgent)
+    let valid = true
+    const native = { current: () => valid } as NativeLaunch
+    const terminate = vi.fn(async () => 'gone' as const), respawn = vi.fn(async () => ({ ok: true }))
+    const run = setup(agent(), { launchOverridesDeps: { native: async () => ({ ok: true, launch: native }) } as never,
+      relaunchOverrides: async () => {
+        if (phase === 'prepared') valid = false
+        return { ok: true, overrides: { native, env: {}, extraArgs: [], clearEnv: [] } }
+      },
+      paneSwapDeps: () => ({ holdOpen: async () => { valid = false; return { ok: true } }, terminate, respawn,
+        waitForProcess: async () => null, buildArgv: () => ['fixture-engine'], log: () => {} }),
+    })
+    if (phase === 'clearing') vi.mocked(run.deps.tmuxBackend!.clearEnv).mockImplementationOnce(async (_pane, _vars, current) => {
+      valid = false
+      expect(current?.()).toBe(false)
+      return { state: 'succeeded', dispatch: 'executed' }
+    })
+    expect(await run.retarget({ agentId: 'a1', grid: null })).toMatchObject({ ok: false })
+    expect(terminate).not.toHaveBeenCalled()
+    expect(respawn).not.toHaveBeenCalled()
+    vi.mocked(restartAgent).mockReset().mockResolvedValue({ ok: true, resumed: true, processIdentity: { pid: 2, startMarker: 'new', executable: '/bin/claude' } })
   })
 
   it('keeps an admitted external conversation when its retarget resume fails', async () => {

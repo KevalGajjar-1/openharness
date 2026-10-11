@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, opendirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,8 +23,19 @@ import { prepareInstructionWrites } from '../../scm/scmProjects.js'
 import { opencodeMajorVersion } from '../../engines/launchControl.js'
 import { installOpencodePlugin } from '../../engines/nativeHooks.js'
 import type { NativeLaunch } from '../../engines/nativeLaunch.js'
+import { projectsRoot } from '../../lib/projectFolder.js'
+import { NativeFiles } from '../../engines/kit/nativeFiles.js'
+
+vi.mock('../../lib/projectFolder.js', async real => {
+  const actual = await real<typeof import('../../lib/projectFolder.js')>()
+  return { ...actual, projectsRoot: vi.fn(actual.projectsRoot) }
+})
 
 vi.mock('../../scm/scmProjects.js', async real => ({ ...await real<object>(), prepareInstructionWrites: vi.fn(async () => {}) }))
+vi.mock('node:fs', async real => {
+  const actual = await real<typeof import('node:fs')>()
+  return { ...actual, opendirSync: vi.fn(actual.opendirSync) }
+})
 vi.mock('node:fs/promises', async real => {
   const actual = await real<typeof import('node:fs/promises')>()
   return { ...actual, readdir: vi.fn(actual.readdir) }
@@ -139,11 +150,61 @@ const installed = (over: Record<string, unknown> = {}) => ({ id: 'autonomous/ble
 
 describe('creating an agent', () => {
   beforeEach(() => {
+    vi.mocked(projectsRoot).mockReset()
+    vi.mocked(opendirSync).mockReset()
     vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.mocked(createAndRegisterPane).mockReset().mockResolvedValue({ ok: true, spawned: { runtime: { paneId: '%1' } }, pending } as never)
   })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
+
+  it.each(['local', 'remote', 'nonempty', 'unreadable', 'unreadable before trust', 'revoked', 'revoked before trust', 'changed contents', 'replaced workspace', 'changed after enumeration', 'redirected during enumeration', 'error', 'thrown text', 'no trust contract', 'legacy'] as const)(
+    'decides local trust before workspace preparation and writes it before final proof: %s', async mode => {
+      const parent = mode === 'redirected during enumeration' ? folder() : root
+      vi.mocked(projectsRoot).mockReturnValueOnce(parent)
+      const cwd = parent === root ? folder(mode === 'nonempty' ? ['user-file'] : []) : join(parent, 'workspace')
+      mkdirSync(cwd, { recursive: true })
+      let current = true
+      if (mode === 'unreadable') vi.mocked(readdir).mockRejectedValueOnce(Error('fixture denied'))
+      if (mode === 'unreadable before trust') vi.spyOn(NativeFiles.prototype, 'entries').mockImplementationOnce(() => { throw Error('fixture denied') })
+      if (mode === 'revoked') vi.mocked(readdir).mockImplementationOnce(async () => { current = false; return [] })
+      if (mode === 'revoked before trust') vi.spyOn(NativeFiles.prototype, 'entries').mockImplementationOnce(() => { current = false; return [] })
+      if (mode === 'changed after enumeration') {
+        const entries = NativeFiles.prototype.entries
+        vi.spyOn(NativeFiles.prototype, 'entries').mockImplementationOnce(function (this: NativeFiles, path, missing) {
+          const result = entries.call(this, path, missing)
+          writeFileSync(join(cwd, 'user-file'), 'arrived after the empty read')
+          return result
+        })
+      }
+      if (mode === 'redirected during enumeration') {
+        const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
+        vi.mocked(opendirSync).mockImplementationOnce((path, options) => {
+          renameSync(parent, parent + '-original'); mkdirSync(cwd, { recursive: true })
+          try { return actual.opendirSync(path, options) }
+          finally { renameSync(parent, parent + '-redirected'); renameSync(parent + '-original', parent) }
+        })
+      }
+      if (mode === 'error' || mode === 'thrown text') preTrustCodexProject.mockImplementationOnce(() => { throw mode === 'error' ? Error('fixture denied') : 'fixture denied' })
+      const expected = !['remote', 'nonempty', 'unreadable', 'unreadable before trust', 'revoked', 'revoked before trust', 'changed contents', 'replaced workspace', 'changed after enumeration', 'redirected during enumeration', 'no trust contract'].includes(mode)
+      const launch = { current: () => current, environment: { HOME: '/fixture/home', CODEX_HOME: '/fixture/selected' },
+        permission: async () => 'supported', prepareHooks: vi.fn(async () => {
+          expect(preTrustCodexProject, JSON.stringify(vi.mocked(console.warn).mock.calls)).toHaveBeenCalledTimes(expected ? 1 : 0)
+          return true
+        }),
+      } as unknown as NativeLaunch
+      const run = setup(mode === 'legacy' ? {} : { native: async () => {
+        if (mode === 'changed contents') writeFileSync(join(cwd, 'user-file'), 'user content')
+        if (mode === 'replaced workspace') { renameSync(cwd, cwd + '-original'); mkdirSync(cwd) }
+        return { ok: true, launch }
+      } })
+      const result = await run.create.prepare(request({ cwd, engine: mode === 'no trust contract' ? 'opencode' : 'codex' }),
+        { id: 'fixture', label: 'harness-codex-fixture', current: () => current, hold: () => {} }, { local: mode !== 'remote' })
+      if (mode === 'revoked' || mode === 'revoked before trust') expect(result).toMatchObject({ ok: false, unavailable: 'launch' })
+      else expect(result.ok).toBe(true)
+      expect(preTrustCodexProject, JSON.stringify(vi.mocked(console.warn).mock.calls)).toHaveBeenCalledTimes(expected ? 1 : 0)
+      if (expected) expect(preTrustCodexProject).toHaveBeenCalledWith(cwd, mode === 'legacy' ? null : '/fixture/selected')
+    })
 
   it.each(['folder inspection', 'tmux capabilities', 'config publication'] as const)('holds a create revoked during %s before launch side effects', async stage => {
     let current = true

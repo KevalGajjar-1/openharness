@@ -54,7 +54,7 @@ export interface LaunchRequestDeps {
   receipts: Pick<AgentCreationReceipts, 'run' | 'status' | 'has' | 'runIntent' | 'pendingIntents' | 'pendingIntent' | 'cancelIntent'>
   /** Each launch, read when a request comes in: null on a machine that cannot launch agents. */
   createAgent: () => CreateAgent | null
-  prepareCreate?: (input: Parameters<CreateAgent>[0], authority: LaunchAuthority) => Promise<LaunchPreparation<Awaited<ReturnType<CreateAgent>>>>
+  prepareCreate?: (input: Parameters<CreateAgent>[0], authority: LaunchAuthority, context?: { local: boolean }) => Promise<LaunchPreparation<Awaited<ReturnType<CreateAgent>>>>
   forkAgent: () => ForkAgent | null
   resumeAgent: () => ResumeAgent | null
   restartAgent: () => RestartAgent | null
@@ -155,7 +155,7 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
         if (!target) { authority.hold(modelHold); return null }
         input.grid = target
       }
-      const ready = await prepareCreate(input, { ...authority, label: saved.label })
+      const ready = await prepareCreate(input, { ...authority, label: saved.label }, { local: saved.local })
       if (!authority.current()) return null
       if (!ready.ok) {
         if (ready.unavailable) { authority.hold({ service: ready.unavailable, detail: ready.detail ?? 'Waiting for launch preparation.' }); return null }
@@ -163,8 +163,10 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
       }
       return async () => {
         if (!authority.current()) return { state: 'unconfirmed' }
-        const result = await executeCreate(input, null, saved.local as boolean, () => ready.dispatch(), true)
-        if (result.state === 'created') return result
+        // All preparation, including local workspace trust, precedes the claim.
+        // A trust write here would invalidate Codex's final config proof.
+        const result = await ready.dispatch()
+        if (result.ok) return { state: 'created', agentId: result.session.agentId }
         // Dispatch's outcome is uncertain once its exclusive claim is durable.
         // In particular, a stale guard must never reopen that claim for replay.
         return { state: 'unconfirmed' }

@@ -1,6 +1,7 @@
 import { LAUNCH_LOCATION_VARIABLES } from '../engines/kit/nativeLocations.js'
 import type { NativeLaunch } from '../engines/nativeLaunch.js'
 import { nativeLaunchGuard } from '../engines/kit/nativeLaunchGuard.js'
+import { nativePaneHold, NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -22,6 +23,7 @@ import { managedNodePath } from './nodeRuntime.js'
 import { RAISE_OPEN_FILES_SH } from './openFiles.js'
 import { ENGINE_EXIT_PANE_OPTION } from './engineExitOption.js'
 import { shellSingleQuote } from './shellQuote.js'
+import { harnessPaneOwner } from './harnessSessionLabel.js'
 
 export { shellSingleQuote }
 
@@ -582,7 +584,11 @@ export function buildEngineLaunchArgv(
     : opts.installFirst
       ? installFirstScript(opts.installFirst)
       : 'harness_engine_bin=$1\n'
-  const waiting = `exec /bin/sh -c ${shellSingleQuote('trap \'\' INT QUIT TSTP; printf \'%s\\n\' \"$1\"; while :; do sleep 3600; done')} harness-held ${shellSingleQuote('Waiting for native launch preparation to be confirmed.')} ${shellSingleQuote(opts.native?.token ?? '')}`
+  const heldCommand = `/bin/sh -c ${shellSingleQuote('trap \'\' INT QUIT TSTP; printf \'%s\\n\' \"$1\"; while :; do sleep 3600; done')} harness-held ${shellSingleQuote('Waiting for native launch preparation to be confirmed.')} ${shellSingleQuote(opts.native?.token ?? '')}`
+  // tmux retains pane_start_command across exec. Transition this pane to the
+  // inert command so core can recognize its exact token after a crash, using the
+  // same server-side predicate as every other held launch. No engine has run.
+  const waiting = nativePaneHold(opts.native?.token ?? '', tmuxBinary, heldCommand, runtimeNode, harnessPaneOwner(env.ADAPTER_DATA_DIR))
   const guard = opts.native ? nativeLaunchGuard(opts.native, runtimeNode, waiting) : ''
   const body = `${JOB_CONTROL}${SIGNAL_GUARD}${engineFound}shift\n${guard}${engineRunScript(engine, tmuxBinary)}`
   // The open-files raise goes ahead of everything, the installer included: a pane inherits the tmux
@@ -591,7 +597,10 @@ export function buildEngineLaunchArgv(
   // the failure the person then reads in the pane. See openFiles.ts.
   const wait = opts.waitForPid ? waitForPidScript(opts.waitForPid) : ''
   const script = RAISE_OPEN_FILES_SH + prelude + cwdPrelude + wait + body
-  return engineShellArgv(interactive, [isPosixShell(interactive.path) ? sourcedOnce(script) : script, 'harness-engine', ...(opts.cwd ? [opts.cwd] : []), ...command])
+  const argv = engineShellArgv(interactive, [isPosixShell(interactive.path) ? sourcedOnce(script) : script, 'harness-engine', ...(opts.cwd ? [opts.cwd] : []), ...command])
+  // Keep the nonce outside the one-time file, including non-POSIX and inline
+  // launches. It is tmux's original launch identity, never a post-rc environment fact.
+  return opts.native ? ['/usr/bin/env', `${NATIVE_LAUNCH_MARKER}=${opts.native.token}`, ...argv] : argv
 }
 
 /**

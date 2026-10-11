@@ -8,6 +8,7 @@ import { readLeanBundle } from '../src/harnessd/leanBundle.js'
 import { LocalClient } from './harness/client.js'
 import { assertHooksContained, CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
 import { withLean } from './harness/release.js'
+import { shellSingleQuote } from '../src/lib/shellQuote.js'
 
 let scratch = '', bundle = ''
 let daemon: IsolatedDaemon | undefined, client: LocalClient | undefined
@@ -127,6 +128,55 @@ it('retains and cancels native-held requests across a core crash, then recovers 
   const launched = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   expect(launched).toHaveLength(1)
   expect(launched[0].at(-1)).toBe(request.prompt)
+}, 120_000)
+
+it.each(['create', 'fork'] as const)('keeps a post-rc held %s with its original request through repair and core restart', async operation => {
+  const d = daemon = await IsolatedDaemon.create({ scriptPath: bundle, env: { HARNESS_CONNECTIONS_PORT: '0', SHELL: '/bin/bash' } })
+  onTestFailed(() => console.log(d.log()))
+  const executable = join(d.root, 'bin', 'codex'), calls = join(d.root, 'dispatches')
+  const originalWrapper = readFileSync(executable, 'utf8'), line = originalWrapper.indexOf('\n') + 1
+  writeFileSync(executable, originalWrapper.slice(0, line)
+    + `import { appendFileSync as recordNativeLaunch } from 'node:fs';\nif (!process.argv.includes('--version') && !process.argv.includes('--help')) recordNativeLaunch(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`
+    + originalWrapper.slice(line), { mode: 0o755 })
+  await d.start()
+  let c = client = await LocalClient.connect(d)
+  const cwd = join(d.projectsDir, 'post-rc-held'); mkdirSync(cwd)
+  let source: string | undefined
+  if (operation === 'fork') {
+    const parent = await c.request('agent_create', { engine: 'codex', cwd, bypassPermission: true }, 30_000)
+    expect(parent.error, JSON.stringify(parent)).toBeUndefined()
+    source = parent.agent.id
+    await until('the source conversation to bind', async () => {
+      const rows = (await c.request('agents_list')).agents
+      return rows.find((row: any) => row.id === source && row.sessionId)
+    }, 30_000)
+    const ended = c.next(frame => frame.type === 'turn_ended' && frame.agentId === source, 30_000)
+    c.send('message', { agentId: source, content: 'private fork source' }); await ended
+  }
+  // Only the new pane's rc file changes this private config, after preparation.
+  // Native probes have no TMUX_PANE. This forces the real final guard to hold.
+  const config = join(d.engineConfig.codexHome, 'config.toml'), trigger = join(d.root, 'change-once')
+  const original = readFileSync(config)
+  writeFileSync(trigger, '')
+  writeFileSync(join(d.env.HOME!, '.bashrc'), `if [ -n "$TMUX_PANE" ] && [ -f ${shellSingleQuote(trigger)} ]; then printf '\\n# changed by private pane fixture\\n' >> ${shellSingleQuote(config)}; /bin/rm ${shellSingleQuote(trigger)}; fi\n`)
+  const response = await c.request(operation === 'create' ? 'agent_create' : 'agent_fork', operation === 'create'
+    ? { engine: 'codex', cwd, bypassPermission: true, prompt: 'original held prompt' }
+    : { agentId: source, prompt: 'original fork prompt' }, 30_000)
+  expect(response.error, JSON.stringify(response)).toBeUndefined()
+  const id = response.agent.id
+  const held = async () => (await c.request('agents_list', { includeStopped: true })).agents.find((row: any) => row.id === id)
+  await until('the post-rc native hold', async () => (await held())?.launch?.state === 'held', 30_000)
+  expect((await held()).sessionId).toBeFalsy()
+  writeFileSync(config, original)
+  const before = d.log().length
+  process.kill(d.corePid()!, 'SIGKILL'); c.close()
+  await until('the core to recover while retaining the original request', () => d.log().slice(before).includes('[cli] ready'), 15_000)
+  c = client = await LocalClient.connect(d)
+  expect(await c.request('agent_restart', { agentId: id }, 15_000)).toMatchObject({ error: 'NATIVE_LAUNCH_HELD' })
+  expect(await held()).toMatchObject({ launch: { state: 'held', service: 'native' } })
+  expect((await held()).sessionId).toBeFalsy()
+  const dispatched = existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []
+  expect(dispatched).toHaveLength(operation === 'fork' ? 1 : 0)
 }, 120_000)
 
 it.each([['missing', 'claude'], ['stalled', 'codex']] as const)(

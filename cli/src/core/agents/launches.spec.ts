@@ -116,7 +116,7 @@ describe('agent_create, refused before any pane exists', () => {
     expect(prepareCreate).not.toHaveBeenCalled()
     await run.ask(input)
     await vi.waitFor(() => expect(run.replies[1]).toMatchObject({ state: 'created' }))
-    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({ grid, prompt: 'original prompt' }), expect.any(Object))
+    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({ grid, prompt: 'original prompt' }), expect.any(Object), { local: true })
     expect(dispatch).toHaveBeenCalledOnce()
   })
 

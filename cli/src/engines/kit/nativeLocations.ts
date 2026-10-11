@@ -6,7 +6,7 @@ import type { HookPreparationOptions } from './nativeHookFiles.js'
 // again after rc files run in the pane, so preparation and execution agree.
 export const LAUNCH_LOCATION_VARIABLES = [
   'HOME', 'PATH', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_DATA_DIR', 'PI_CODING_AGENT_DIR',
+  'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_DATA_DIR', 'OPENCODE_DB', 'PI_CODING_AGENT_DIR',
   'HERMES_HOME', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR', 'GROK_HOME', 'AGY_HOME', 'COPILOT_HOME',
   'SHELL', 'ZDOTDIR', 'CLAUDE_PROJECTS_DIR', 'CURSOR_HOME', 'AGY_CONFIG_DIR', 'COMMANDCODE_HOME',
   'DEVIN_HOME', 'DEVIN_CONFIG_PATH', 'OPENCODE_PLUGIN_DIR', 'KILO_PLUGIN_DIR', 'PI_HOME',
@@ -14,10 +14,17 @@ export const LAUNCH_LOCATION_VARIABLES = [
 ] as const
 
 /** The shell can unset an inherited location. Absence is part of its snapshot. */
-export function nativeProcessEnvironment(locations: Readonly<Record<string, string>>, ambient: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function nativeProcessEnvironment(locations: Readonly<NodeJS.ProcessEnv>, ambient: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const result = { ...ambient }
   for (const key of LAUNCH_LOCATION_VARIABLES) delete result[key]
   return { ...result, ...locations }
+}
+
+/** OpenCode uses OPENCODE_DB, otherwise its XDG data root; OPENCODE_DATA_DIR is ignored. */
+export function nativeOpencodeStore(vars: Readonly<Record<string, string>>): string {
+  const store = vars.OPENCODE_DB || join(vars.XDG_DATA_HOME || join(vars.HOME, '.local', 'share'), 'opencode', 'opencode.db')
+  if (!isAbsolute(store) || store.includes('\0') || store.length > 4096) throw Error('Unconfirmed OpenCode store')
+  return store
 }
 
 export interface NativeHookOptions extends HookPreparationOptions {

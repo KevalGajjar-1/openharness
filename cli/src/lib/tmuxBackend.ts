@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { shellSingleQuote } from './shellQuote.js'
+import { heldPaneFormat } from './nativePaneHold.js'
 import { patientExec } from './patientExec.js'
 import type { TerminalBackend } from './terminalBackend.js'
 import {
@@ -262,7 +263,7 @@ export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
     const commands = [...setup, args]
     if (request.expectedHeldToken && !/^[a-f0-9-]{36}$/.test(request.expectedHeldToken)) return terminalActionNotStarted('invalid waiting pane identity')
     const command = request.expectedHeldToken
-      ? ['if-shell', '-F', '-t', runtime.paneId, `#{&&:#{m:*harness-held*,#{pane_start_command}},#{m:*${request.expectedHeldToken}*,#{pane_start_command}}}`,
+      ? ['if-shell', '-F', '-t', runtime.paneId, heldPaneFormat(request.expectedHeldToken),
         commands.map(parts => parts.map(shellSingleQuote).join(' ')).join('; '), 'display-message -p adoption-mismatch']
       : commands.flatMap((parts, index) => index ? [';', ...parts] : parts)
     const result = await new Promise<{ error: NodeJS.ErrnoException | null; stderr: string }>((resolve) => {
@@ -286,7 +287,7 @@ export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
   async isHeld(runtime: TmuxRuntimeRef, token: string): Promise<boolean | 'unknown'> {
     if (!/^%\d+$/.test(runtime.paneId) || !/^[a-f0-9-]{36}$/.test(token)) return 'unknown'
     return new Promise(resolve => run('tmux', ['display-message', '-p', '-t', runtime.paneId,
-      `#{&&:#{m:*harness-held*,#{pane_start_command}},#{m:*${token}*,#{pane_start_command}}}`], { timeout: 2_000 }, (error, stdout) => {
+      heldPaneFormat(token)], { timeout: 2_000 }, (error, stdout) => {
       if (error) { resolve(isNoTmuxServerError(error.message) || /can't find pane: %\d+/.test(error.message) ? false : 'unknown'); return }
       resolve(stdout.trim() === '1' ? true : stdout.trim() === '0' ? false : 'unknown')
     }))
@@ -298,7 +299,7 @@ export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
     const result = await inTmuxRoom('notify', () => new Promise<{ error: Error | null; stdout: string }>(resolve => {
       if (!current()) { resolve({ error: new Error('Adoption changed before pane close'), stdout: '' }); return }
       // Evaluated inside the tmux server, in the same command that kills: no check/use gap for %N.
-      run('tmux', ['if-shell', '-F', '-t', runtime.paneId, `#{&&:#{m:*harness-held*,#{pane_start_command}},#{m:*${token}*,#{pane_start_command}}}`,
+      run('tmux', ['if-shell', '-F', '-t', runtime.paneId, heldPaneFormat(token),
         `kill-pane -t ${runtime.paneId}`, 'display-message -p adoption-mismatch'], { timeout: 5_000 },
       (error, stdout) => resolve({ error, stdout }))
     }))

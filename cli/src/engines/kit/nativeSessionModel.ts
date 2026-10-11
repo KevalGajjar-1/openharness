@@ -4,6 +4,7 @@ import type { NativeExecutableSnapshot } from './nativeVersion.js'
  * cancellation and uncertain-write corrections are tracked in the OpenCode control research note. */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { LAUNCH_LOCATION_VARIABLES, nativeProcessEnvironment } from './nativeLocations.js'
 
 export interface NativeSessionModel { providerID: string; modelID: string }
 export type NativeModelResult = { ok: true } | { ok: false; code: string; detail: string; effect?: 'uncertain' }
@@ -28,7 +29,7 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
   // An uncertain write cannot be forgotten just because its request returned. Keep
   // one receipt per conversation until a later read confirms it. At capacity, hold
   // new work instead of evicting a receipt and making a blind retry possible.
-  type Pending = { model: NativeSessionModel; cwd?: string; store?: string; busy: boolean; dispatched: boolean; executable?: Promise<string> }
+  type Pending = { model: NativeSessionModel; cwd?: string; store?: string; environment?: string; busy: boolean; dispatched: boolean; executable?: Promise<string> }
   const pending = new Map<string, Pending>()
   const capacity = 256
   /** A SQL string literal — the only way a value reaches the statement. */
@@ -128,7 +129,7 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
       const executable = await selection.executable
       if (authority.current?.() === false || selection.snapshot?.current() === false || authority.executable?.current() === false) throw new NativeDispatchCancelled('Native model operation was cancelled before dispatch')
       return new Promise((done, failed) => {
-        const child = execFile(executable, args, { ...(authority.environment ? { env: { ...process.env, ...authority.environment } } : {}), ...(options.cwd ? { cwd: options.cwd } : {}),
+        const child = execFile(executable, args, { ...(authority.environment ? { env: nativeProcessEnvironment(authority.environment) } : {}), ...(options.cwd ? { cwd: options.cwd } : {}),
           timeout: rule.api.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, encoding: 'utf8',
         }, (error, stdout, stderr) => { if (error) failed(Object.assign(error, { stdout, stderr })); else done({ stdout }) })
         child.stdin?.end()
@@ -162,7 +163,7 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
     model: NativeSessionModel,
     options: { cwd?: string; store?: string; run?: NativeApiRun; checkCatalog?: boolean; retryDelayMs?: number } & NativeModelAuthority = {},
   ): Promise<NativeModelResult> {
-    options = { ...options }
+    options = { ...options, ...(options.environment ? { environment: { ...options.environment } } : {}) }
     const current = () => options.current?.() !== false
     if (!current()) return changed()
     if (!ID_RE.test(sessionId)) {
@@ -170,14 +171,17 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
     }
     const requested = { ...model }
     const previous = pending.get(sessionId)
+    // A receipt is evidence about one captured native store, not permission for
+    // a later shell/profile to reinterpret an uncertain write at the same id.
+    const environment = options.environment && JSON.stringify(LAUNCH_LOCATION_VARIABLES.map(key => options.environment![key] ?? null))
     const held = (detail: string): NativeModelResult => ({ ok: false, code: rule.errors.switchFailed, detail,
       ...(previous?.dispatched ? { effect: 'uncertain' as const } : {}) })
     if (previous?.busy) return held('Waiting for the native model operation already running for this conversation. No additional change was sent.')
-    if (previous && (previous.cwd !== options.cwd || previous.store !== options.store)) {
+    if (previous && (previous.cwd !== options.cwd || previous.store !== options.store || previous.environment !== environment)) {
       return held('Waiting to confirm the earlier native model change in its original store and folder. No additional change was sent.')
     }
     if (!previous && pending.size >= capacity) return held('Waiting for outstanding native model changes to be confirmed. No model change was sent.')
-    const receipt: Pending = previous ?? { model: requested, cwd: options.cwd, store: options.store, busy: false, dispatched: false }
+    const receipt: Pending = previous ?? { model: requested, cwd: options.cwd, store: options.store, environment, busy: false, dispatched: false }
     receipt.busy = true
     pending.set(sessionId, receipt)
     const run = options.run ?? nativeRun(options, receipt)
@@ -302,7 +306,7 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
   ): Promise<NativeModelResult> {
     if (deps.current?.() === false) return changed()
     if ((input.major ?? 0) >= rule.serviceMajor) {
-      return switchSessionModel(input.sessionId, input.model, { cwd: input.cwd, store: input.dbPath, run: deps.run, checkCatalog: input.checkCatalog, retryDelayMs: deps.retryDelayMs, current: deps.current })
+      return switchSessionModel(input.sessionId, input.model, { ...deps, cwd: input.cwd, store: input.dbPath, checkCatalog: input.checkCatalog })
     }
     const written = await setSessionModel(input.dbPath, input.sessionId, input.model, deps)
     return !written.ok && written.code === rule.errors.sessionMissing ? { ok: true } : written

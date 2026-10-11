@@ -14,6 +14,7 @@ import { sid } from '../../lib/log.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
 import type { TerminalRuntimeRef, TmuxRuntimeRef } from '../../lib/terminalTypes.js'
 import { clearPaneRemainOnExit, resolvePaneEngineProcess, tmuxPaneState } from '../../lib/tmux.js'
+import { createLaunchAuthority } from './launchAuthority.js'
 
 export interface PaneWatcherDeps {
   registry: Pick<typeof registry, 'byAgent' | 'updateProcessIdentity' | 'setLaunch' | 'setTerminalAvailable' | 'releaseEngine'>
@@ -38,10 +39,16 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
   const watchNewPane = async (engine: AgentEngine, pending: RegisteredSession, spawned: { runtime: TmuxRuntimeRef }, command: string[], installIfMissing: ReturnType<typeof engineInstallRecipe> | undefined, budgetMs = 10 * 60_000): Promise<void> => {
     const startedAt = Date.now()
     let delayMs = 50
+    const nativeToken = pending.launch?.state === 'starting' ? pending.launch.nativeToken : undefined
+    // A delayed probe belongs to this launch, including its original route and
+    // binding. Stop, a newer launch or discovery can supersede it while tmux waits.
+    const current = nativeToken ? createLaunchAuthority({ byAgent: id => registry.byAgent(id),
+      revision: () => 0, cancelled: () => false })(pending.agentId, pending) : () => true
     try {
       while (Date.now() - startedAt < budgetMs) {
-        if (!registry.byAgent(pending.agentId)) return
+        if (!registry.byAgent(pending.agentId) || !current()) return
         const processIdentity = await resolvePaneEngineProcess(spawned.runtime.paneId, engine)
+        if (!current()) return
         if (processIdentity) {
           registry.updateProcessIdentity(pending.agentId, processIdentity)
           const ready = registry.setLaunch(pending.agentId, { state: 'ready' })
@@ -54,6 +61,7 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
           return
         }
         const paneState = await tmuxPaneState(spawned.runtime.paneId)
+        if (!current()) return
         if (paneState === 'gone') {
           registry.setTerminalAvailable(pending.agentId, false)
           announceSession(pending)
@@ -66,15 +74,17 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
           delayMs = Math.min(delayMs * 2, 750)
           continue
         }
-        const nativeToken = pending.launch?.state === 'starting' ? pending.launch.nativeToken : undefined
-        if (nativeToken && await waitingPane?.(spawned.runtime, nativeToken) === true) {
+        const waiting = nativeToken && await waitingPane?.(spawned.runtime, nativeToken)
+        if (!current()) return
+        if (waiting === true) {
           const held = registry.setLaunch(pending.agentId, { state: 'held', service: 'native', nativeToken,
-            detail: 'Waiting to confirm the engine executable and native hooks. This launch will retry.' })
+            detail: 'The engine did not start because its executable or native hooks changed. The original launch is held for recovery.' })
           if (held) announceSession(held)
           return
         }
         if (paneState.dead) {
           const installed = await commandAvailableInInteractiveShell(command[0], undefined, installIfMissing)
+          if (!current()) return
           const error = installed ? 'ENGINE_DID_NOT_START' : 'ENGINE_NOT_INSTALLED'
           const detail = installed
             ? `${engine} exited before its engine process became ready. See the terminal output for details.`
@@ -100,6 +110,7 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
           // the pane is alive and about to become a terminal. That is the sentence this state
           // selects ("started and exited with status N"), and it is the true one here.
           const captured = await captureTerminal(pending.agentId, 40)
+          if (!current()) return
           console.warn(`[agent] create · ${engine} · agent ${sid(pending.agentId)} · `
             + describeAgentCreateFailure({
               state: { dead: true, exitStatus: paneState.engineExit, command: engine },
@@ -109,7 +120,8 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
               processes: [],
               elapsedMs: Date.now() - startedAt,
             }))
-          await clearPaneRemainOnExit(spawned.runtime.paneId)
+          await clearPaneRemainOnExit(spawned.runtime.paneId, current)
+          if (!current()) return
           // A hook may have bound a conversation while this watcher was awaiting its probe.
           // Archive the current row, not the pre-hook pending snapshot.
           const row = registry.byAgent(pending.agentId)
@@ -124,8 +136,11 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
         await sleep(delayMs)
         delayMs = Math.min(delayMs * 2, 750)
       }
+      if (!current()) return
       const detail = `${engine} did not expose an engine process within ${Math.round(budgetMs / 60_000)} minutes. The terminal remains available.`
-      const failed = registry.setLaunch(pending.agentId, { state: 'failed', error: 'START_TIMEOUT', detail })
+      const failed = registry.setLaunch(pending.agentId, nativeToken
+        ? { state: 'held', service: 'native', nativeToken, detail: 'Waiting to confirm the native engine process. The original launch and terminal are preserved.' }
+        : { state: 'failed', error: 'START_TIMEOUT', detail })
       if (failed) announceSession(failed)
       console.warn(`[agent] create timed out · ${engine} · agent ${pending.agentId}`)
     } catch (error) {
