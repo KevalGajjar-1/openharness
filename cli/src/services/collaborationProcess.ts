@@ -157,7 +157,8 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
       told = ''
       // Its queues resume once it knows the agents and the daemon, and the core hears what may be written.
       void ready().then(() => {
-        current()
+        // A core that restarted holds none of the typed attempts handed to the last one.
+        current().reconnected?.()
         tell()
       })
     },

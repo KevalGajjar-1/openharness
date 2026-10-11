@@ -18,20 +18,22 @@ const message = (n: number, tabId = 'app'): Message => ({
 describe('Agent Messages\' saved state', () => {
   it('starts empty, saves privately, and reads back only what parses', () => {
     const store = new MessageStore(join(dir, 'state'))
-    expect(store.state).toEqual({ history: [], local: [], outbox: [], noted: {} })
+    expect(store.state).toEqual({ history: [], local: [], outbox: [], noted: {}, notes: {} })
     store.record(message(1))
     store.state.local.push({ key: 'k', messageId: 'm0000001', agentId: 'b', pane: '%1', state: 'queued', tries: 0, nextTryAt: 0, at: 0 })
     store.state.outbox.push({ messageId: 'm0000001', machineId: 'm2', nextTryAt: 0, tries: 0 })
     store.state.noted.b = 'sig'
+    store.state.notes.b = { pane: '%1', key: '0note-sig', signature: 'sig' }
     store.save()
     const again = new MessageStore(join(dir, 'state'))
     expect(again.state.history.map((e) => e.message.id)).toEqual(['m0000001'])
     expect(again.state.local).toHaveLength(1)
     expect(again.state.outbox).toHaveLength(1)
     expect(again.state.noted).toEqual({ b: 'sig' })
-    writeFileSync(join(dir, 'state', 'state.json'), JSON.stringify({ history: [{ message: { id: 'bad' } }, { message: message(2) }], local: [null, { key: 1 }], outbox: [null], noted: 'x' }))
+    expect(again.state.notes).toEqual({ b: { pane: '%1', key: '0note-sig', signature: 'sig' } })
+    writeFileSync(join(dir, 'state', 'state.json'), JSON.stringify({ history: [{ message: { id: 'bad' } }, { message: message(2) }], local: [null, { key: 1 }], outbox: [null], noted: 'x', notes: [] }))
     const partial = new MessageStore(join(dir, 'state'))
-    expect(partial.state).toEqual({ history: [{ message: message(2), statuses: [] }], local: [], outbox: [], noted: {} })
+    expect(partial.state).toEqual({ history: [{ message: message(2), statuses: [] }], local: [], outbox: [], noted: {}, notes: {} })
   })
 
   it('keeps an unreadable file for a person to inspect, never reading it as empty', () => {

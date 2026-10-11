@@ -38,6 +38,8 @@ export interface AgentMessages {
   requests: ServiceRequests
   /** Whether the core may write a typed delivery now: the mailbox's word, in line. */
   canWrite(deliveryId: string): boolean
+  /** The service reached a core again, perhaps a new one: typed attempts in flight go back to the hook. */
+  reconnected?(): void
   start(): void
   stop(): void
 }
@@ -48,6 +50,8 @@ export const TICK_MS = 5_000
 export const REMOTE_STATUS_MS = 15_000
 /** How long another machine's names for its agents are kept. */
 export const WHO_MS = 60_000
+/** How old an inbox file nothing here waits on must be before a start sweeps it away. */
+export const SWEEP_AFTER_MS = 10 * 60_000
 
 const PANE = /^%\d{1,9}$/
 const key = (m: Member): string => `${m.machineId}/${m.agentId}`
@@ -61,10 +65,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   const inbox = new PaneInbox(options.inboxRoot ?? env.HARNESS_AGENT_MESSAGES_DIR)
   /** Other machines' names for their agents, with when they were asked. */
   const who = new Map<string, { name: string; engine: string; project?: string; at: number }>()
+  /** When each other machine was last asked for names, answering or not. */
+  const asked = new Map<string, number>()
   /** When each sender sent, for the rate limit. */
   const sent = new Map<string, number[]>()
-  /** The roster note waiting in each local agent's inbox, by agent. */
-  const notes = new Map<string, { pane: string; key: string; signature: string }>()
   let timer: ReturnType<typeof setInterval> | null = null
   let lastRemoteStatus = -Infinity
 
@@ -87,12 +91,13 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     agent: (agentId): MailboxAgent | null => {
       const session = localAgent(agentId)
       if (!session) return null
-      // Codex runs a sub-agent's hooks from its parent's pane: the hook delivers only to the parent's
-      // conversation. A Claude Code sub-agent says so itself (`agent_id` in the hook's input).
-      return { pane: session.tmuxPane, session: session.engine === 'codex' ? session.sessionId : '', available: session.active && core.agents.terminalAvailable(agentId) }
+      // The hook delivers only to this conversation: a Codex sub-agent runs its hooks from its parent's pane, and
+      // a pane number tmux gives out again is another's. A Claude Code sub-agent says so itself (`agent_id`).
+      return { pane: session.tmuxPane, session: session.sessionId ?? '', available: session.active && core.agents.terminalAvailable(agentId) }
     },
     deliver: (agentId, text, deliveryId) => { core.turns.deliver(agentId, text, deliveryId); options.changed?.() },
     refused: (delivery) => refusal(delivery),
+    ready: () => directory.current() !== null,
     text: (delivery, message) => {
       const roster = rosterOf(delivery.agentId)
       return roster && store.state.noted[delivery.agentId] !== roster.signature ? `${roster.text}\n\n${rendered(message)}` : rendered(message)
@@ -150,26 +155,37 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       ...(known?.project ? { where: known.project } : {}) }
   }
 
-  /** Ask other machines for their agents' names, those not known or too old. */
+  /**
+   * Ask other machines for their agents' names, those not known or too old; a machine asked lately, answering or
+   * not, is not asked again yet. The notes are looked at again only when a name changed: looked at on every
+   * answer, a teammate no machine can name (a stopped harness here) asked again at once, without end.
+   */
   async function learnNames(members: Member[], wait: boolean): Promise<void> {
     const byMachine = new Map<string, string[]>()
     for (const m of members) {
       if (m.machineId === self()) continue
       const known = who.get(key(m))
       if (known && now() - known.at < WHO_MS) continue
+      if (now() - (asked.get(m.machineId) ?? -Infinity) < WHO_MS && !wait) continue
       byMachine.set(m.machineId, [...(byMachine.get(m.machineId) ?? []), m.agentId])
     }
+    if (!byMachine.size) return
+    let learned = false
     const asks = [...byMachine].map(async ([machineId, agentIds]) => {
+      asked.set(machineId, now())
       try {
         const answer = await rpc(at(machineId), { action: 'who', agentIds }, 8_000)
         for (const a of Array.isArray(answer.agents) ? answer.agents as Record<string, unknown>[] : []) {
           if (typeof a.agentId !== 'string' || typeof a.name !== 'string') continue
-          who.set(`${machineId}/${a.agentId}`, { name: a.name, engine: typeof a.engine === 'string' ? a.engine : 'agent',
-            ...(typeof a.project === 'string' ? { project: a.project } : {}), at: now() })
+          const before = who.get(`${machineId}/${a.agentId}`)
+          const next = { name: a.name, engine: typeof a.engine === 'string' ? a.engine : 'agent',
+            ...(typeof a.project === 'string' ? { project: a.project } : {}), at: now() }
+          if (!before || before.name !== next.name || before.engine !== next.engine || before.project !== next.project) learned = true
+          who.set(`${machineId}/${a.agentId}`, next)
         }
       } catch { /* that machine is away: its agents keep the names they had */ }
     })
-    const done = Promise.all(asks).then(() => { notesPump() })
+    const done = Promise.all(asks).then(() => { if (learned) notesPump() })
     if (wait) await done
   }
 
@@ -185,34 +201,40 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   }
 
   function withdrawNote(agentId: string): void {
-    const pending = notes.get(agentId)
+    const pending = store.state.notes[agentId]
     if (!pending) return
     inbox.withdraw(pending.pane, pending.key)
-    notes.delete(agentId)
+    delete store.state.notes[agentId]
+    saveQuietly()
   }
 
   /** Give each local agent the roster note it has not read: through its hook only, never typed. */
   function notesPump(): void {
     if (!directory.current()) return
     const unknown: Member[] = []
+    const alive = new Set(live().map((s) => s.agentId))
+    // A note for a harness that is gone or stopped is withdrawn: its pane number may be another's next.
+    for (const agentId of Object.keys(store.state.notes)) if (!alive.has(agentId)) withdrawNote(agentId)
     for (const session of live()) {
-      const pending = notes.get(session.agentId)
+      const pending = store.state.notes[session.agentId]
       if (pending && inbox.claimed(pending.pane, pending.key)) {
         store.state.noted[session.agentId] = pending.signature
-        notes.delete(session.agentId)
+        delete store.state.notes[session.agentId]
         saveQuietly()
       }
       const roster = rosterOf(session.agentId)
       if (!roster) { withdrawNote(session.agentId); continue }
-      unknown.push(...directory.peers({ machineId: self(), agentId: session.agentId }).filter((m) => !teammate(m).known))
+      // Only another machine can name its agents: a teammate here with no harness is stopped, and has no name to ask.
+      unknown.push(...directory.peers({ machineId: self(), agentId: session.agentId }).filter((m) => m.machineId !== self() && !teammate(m).known))
       if (store.state.noted[session.agentId] === roster.signature) { withdrawNote(session.agentId); continue }
-      const current = notes.get(session.agentId)
-      if (current?.signature === roster.signature && current.pane === session.tmuxPane) continue
+      const current = store.state.notes[session.agentId]
+      if (current?.signature === roster.signature && current.pane === session.tmuxPane && inbox.waiting(current.pane, current.key)) continue
       withdrawNote(session.agentId)
       const noteKey = `0note-${roster.signature}`
       try {
-        inbox.put(session.tmuxPane, noteKey, { session: session.engine === 'codex' ? session.sessionId : '', text: roster.text })
-        notes.set(session.agentId, { pane: session.tmuxPane, key: noteKey, signature: roster.signature })
+        inbox.put(session.tmuxPane, noteKey, { session: session.sessionId ?? '', text: roster.text })
+        store.state.notes[session.agentId] = { pane: session.tmuxPane, key: noteKey, signature: roster.signature }
+        saveQuietly()
       } catch { /* the next look puts it */ }
     }
     if (unknown.length) void learnNames(unknown, false)
@@ -234,8 +256,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])
       .map((n) => String(n).trim()).filter(Boolean)
     const text = typeof payload.text === 'string' ? payload.text : ''
-    // No recipient and no text: who is here, and the rules.
-    if (!names.length && !text) return { roster: rosterOf(session.agentId)?.text ?? 'No teammates in this tab yet.' }
+    // No recipient and no text: who is here, the rules, and this agent's last messages. An agent whose context
+    // was compacted asks this to learn again what it was told: seen on a real team, one rebuilt it from its team
+    // history in five commands.
+    if (!names.length && !text) return { roster: rosterOf(session.agentId)?.text ?? 'No teammates in this tab yet.', recent: recentFor(me) }
     if (!names.length) throw new MessageError('USAGE', 'Name who to message: harness send <name> "text"')
     if (!text.trim()) throw new MessageError('USAGE', 'Write the message: harness send <name> "text"')
     if (text.length > LIMITS.text) throw new MessageError('TOO_LONG', `A message holds at most ${LIMITS.text} characters.`)
@@ -283,6 +307,17 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         return { name: r.name, state: status?.state ?? 'queued', ...(status?.via ? { via: status.via } : {}), ...(status?.reason ? { reason: status.reason } : {}) }
       }),
     }
+  }
+
+  /** The last messages a harness sent or was sent, oldest first, as `harness send` lists them. */
+  function recentFor(me: Member, count = 5): Array<Record<string, unknown>> {
+    const mine = (m: Member) => m.machineId === me.machineId && m.agentId === me.agentId
+    return store.state.history.filter((e) => mine(e.message.from) || e.message.to.some(mine)).slice(-count).map((e) => {
+      const sent = mine(e.message.from)
+      const status = sent ? e.statuses.find((s) => s.state !== 'delivered') ?? e.statuses[0] : e.statuses.find((s) => mine(s))
+      return { id: e.message.id, at: e.message.at, ...(sent ? { to: e.message.to.map((r) => r.name) } : { from: e.message.from.name }),
+        text: e.message.text, state: status?.state ?? 'queued' }
+    })
   }
 
   /** Hand what waits in the outbox to its machines: now for one message, or every one that is due. */
@@ -338,7 +373,12 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   async function deliver(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const message = parseMessage(payload.message)
     if (!message) throw new MessageError('INVALID_MESSAGE', 'That is not a message.')
-    await directory.refresh()
+    // This machine's own harnesses send through `send`, which names them by their pane: never as another's.
+    if (message.from.machineId === self()) throw new MessageError('NOT_FROM_THERE', 'A message from this machine is sent here, not handed over.')
+    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. It is handed over again later.')
+    if (store.state.local.filter((d) => d.state === 'queued').length >= LIMITS.waiting) {
+      throw new MessageError('MAILBOX_FULL', 'Too many messages are waiting on that machine. It is handed over again later.')
+    }
     const known = store.entry(message.id)
     if (!known) store.record(message)
     const statuses: DeliveryStatus[] = []
@@ -379,6 +419,21 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     return { messages: entries.slice(-limit).map((e) => ({ ...e.message, statuses: e.statuses })) }
   }
 
+  /**
+   * Inbox files nothing here is waiting to deliver, from a service that stopped or a daemon long gone (the inboxes
+   * are every daemon's on this computer): removed once they are old enough not to be another live daemon's
+   * delivery in the making, which that daemon puts back anyway.
+   */
+  function sweep(): void {
+    const ours = new Set([
+      ...store.state.local.filter((d) => d.state === 'queued' && d.pane).map((d) => `${d.pane}/${d.key}`),
+      ...Object.values(store.state.notes).map((n) => `${n.pane}/${n.key}`),
+    ])
+    for (const entry of inbox.entries()) {
+      if (!ours.has(`${entry.pane}/${entry.key}`) && now() - entry.at > SWEEP_AFTER_MS) inbox.withdraw(entry.pane, entry.key)
+    }
+  }
+
   function saveQuietly(): void {
     try { store.save() } catch { /* kept in memory; the next change saves again */ }
   }
@@ -390,11 +445,14 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     requests: {
       agent_messages: (payload, asker) => Promise.resolve().then(async () => {
         if (!asker.owner) throw new MessageError('OWNER_REQUIRED', 'Agent Messages answer only the owner.')
+        // A pane is only this machine's to name; a hand-over, its status and its names are another machine's
+        // daemon's to ask, over the relay, never a process here's.
+        const fromHere = ['send'].includes(String(payload.action))
+        if (['send', 'deliver', 'status', 'who'].includes(String(payload.action)) && asker.local !== fromHere) {
+          throw new MessageError(fromHere ? 'LOCAL_ONLY' : 'REMOTE_ONLY', fromHere ? 'harness send runs in a pane on this machine.' : 'Only another of your machines hands messages over.')
+        }
         switch (payload.action) {
-          case 'send':
-            // A pane is only this machine's to name.
-            if (!asker.local) throw new MessageError('LOCAL_ONLY', 'harness send runs in a pane on this machine.')
-            return send(payload)
+          case 'send': return send(payload)
           case 'deliver': return deliver(payload)
           case 'status': return statusOf(payload)
           case 'who': return whoAre(payload)
@@ -406,9 +464,11 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         : { error: 'MESSAGES_UNAVAILABLE', detail: 'Agent Messages are unavailable right now. Nothing was sent.' })),
     },
     canWrite: (deliveryId) => mailbox.canWrite(deliveryId),
+    reconnected: () => mailbox.takeBackAttempts(),
     start: () => {
       directory.start()
       mailbox.start()
+      sweep()
       timer = setInterval(() => {
         notesPump()
         void handOver()

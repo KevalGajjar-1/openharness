@@ -17,8 +17,9 @@ export interface LocalDelivery {
   key: string
   messageId: string
   agentId: string
-  /** The pane the inbox file was put in. */
+  /** The pane the inbox file was put in, and the conversation it names; none while its harness is stopped. */
   pane: string
+  session?: string
   state: DeliveryState
   via?: 'hook' | 'prompt'
   reason?: string
@@ -26,7 +27,7 @@ export interface LocalDelivery {
    * A typed attempt the core was handed, under its own delivery id. `queuedAt`: when the core said it holds it;
    * `parked`: held behind a running turn, so given back to the hook and no longer writable.
    */
-  attempt?: { id: string; queuedAt?: number; parked?: boolean }
+  attempt?: { id: string; at?: number; queuedAt?: number; parked?: boolean; parkedAt?: number }
   tries: number
   nextTryAt: number
   at: number
@@ -43,13 +44,19 @@ export interface State {
   outbox: Outgoing[]
   /** Per local agent: the roster note it was last given, by signature. */
   noted: Record<string, string>
+  /** Per local agent: the roster note waiting in its inbox, kept so a restart never orphans one. */
+  notes: Record<string, { pane: string; key: string; signature: string }>
 }
 
-const empty = (): State => ({ history: [], local: [], outbox: [], noted: {} })
+const empty = (): State => ({ history: [], local: [], outbox: [], noted: {}, notes: {} })
 
 export class MessageStore {
   readonly file: string
   state: State
+  /** The history by message id, kept with it: every pump looks each waiting delivery's message up. Rebuilt
+   *  when the history is replaced as a whole. */
+  private index = new Map<string, Entry>()
+  private indexed: Entry[] | null = null
   constructor(readonly dir: string) {
     this.file = join(dir, 'state.json')
     this.state = this.load()
@@ -72,6 +79,7 @@ export class MessageStore {
       local: Array.isArray(raw.local) ? raw.local.filter((d) => d && typeof d.key === 'string' && typeof d.pane === 'string') : [],
       outbox: Array.isArray(raw.outbox) ? raw.outbox.filter((o) => o && typeof o.messageId === 'string') : [],
       noted: raw.noted && typeof raw.noted === 'object' ? raw.noted : {},
+      notes: raw.notes && typeof raw.notes === 'object' && !Array.isArray(raw.notes) ? raw.notes : {},
     }
   }
 
@@ -84,7 +92,11 @@ export class MessageStore {
   }
 
   entry(messageId: string): Entry | undefined {
-    return this.state.history.find((e) => e.message.id === messageId)
+    if (this.indexed !== this.state.history) {
+      this.index = new Map(this.state.history.map((e) => [e.message.id, e]))
+      this.indexed = this.state.history
+    }
+    return this.index.get(messageId)
   }
 
   /** Record a message, once. Keeps each tab's newest `LIMITS.history`, never one still waiting here. */
@@ -93,10 +105,14 @@ export class MessageStore {
     if (known) return known
     const entry: Entry = { message, statuses: [] }
     this.state.history.push(entry)
+    if (this.indexed === this.state.history) this.index.set(message.id, entry)
     const tab = this.state.history.filter((e) => e.message.tabId === message.tabId)
     const waiting = new Set([...this.state.local.filter((d) => d.state === 'queued').map((d) => d.messageId), ...this.state.outbox.map((o) => o.messageId)])
     for (const old of tab.slice(0, Math.max(0, tab.length - LIMITS.history))) {
-      if (!waiting.has(old.message.id)) this.state.history.splice(this.state.history.indexOf(old), 1)
+      if (!waiting.has(old.message.id)) {
+        this.state.history.splice(this.state.history.indexOf(old), 1)
+        this.index.delete(old.message.id)
+      }
     }
     return entry
   }

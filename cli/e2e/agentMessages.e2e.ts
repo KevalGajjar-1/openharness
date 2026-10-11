@@ -4,8 +4,7 @@
  * agent through its PostToolUse hook at its next tool call, with nothing typed into its pane. The fake engines run
  * the hooks the daemon installed, as both CLIs do (harness/fakeEngine.mjs, `!work`).
  *
- * The directory of tabs comes from the account, which an isolated daemon does not have: a message handed over by
- * another machine (`deliver`) is accepted while the directory cannot be read, as the sender's daemon checked it.
+ * The directory of tabs comes from the account: the daemon is signed in to the fake backend, which answers it.
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -35,13 +34,6 @@ async function create(d: IsolatedDaemon, client: LocalClient, folder: string, en
   }, 60_000, 500)
 }
 const starts = (d: IsolatedDaemon) => [...d.log().matchAll(/\[harnessd\] service teams started/g)].length
-let n = 0
-/** A message another of the owner's machines hands over for this machine's agent. */
-const incoming = (d: IsolatedDaemon, agentId: string, text: string) => ({
-  id: `m${String(++n).padStart(7, '0')}`, tabId: 'e2e', text, at: Date.now(),
-  from: { machineId: 'other-machine', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' },
-  to: [{ machineId: d.computerId, agentId, name: 'api' }],
-})
 const statusOf = async (client: LocalClient, id: string) => {
   const history = await client.request<{ messages?: Array<{ id: string; statuses: Array<Record<string, unknown>> }> }>('agent_messages', { action: 'history' }, 30_000)
   return history.messages?.find((m) => m.id === id)?.statuses[0] ?? null
@@ -84,66 +76,82 @@ describe('Agent Messages, end to end', () => {
     expect(starts(d)).toBe(1)
   })
 
-  it('types a message into an idle agent, under its sender\'s header, through the core\'s safe input', async () => {
-    const d = await fresh()
-    const client = await LocalClient.connect(d)
-    const api = await create(d, client, 'idle-api')
-    const message = incoming(d, api.id, 'Which port does the daemon serve?')
-    const started = client.next((frame: Frame) => frame.type === 'turn_started' && frame.agentId === api.id, 60_000, 'the message to start a turn')
-    const handed = await client.request('agent_messages', { action: 'deliver', message }, 40_000)
-    expect(handed.error, JSON.stringify(handed)).toBeUndefined()
-    await started
-    await until('the message to be delivered as a prompt', async () => {
-      const status = await statusOf(client, message.id)
-      return status?.state === 'delivered' ? status : null
-    }, 60_000, 500).then((status) => expect(status).toMatchObject({ via: 'prompt' }))
-    client.close()
-  })
-
-  it.each(['claude', 'codex'])('reaches a working %s agent at its next tool call through its hook, typing nothing', async (engine) => {
-    const d = await fresh()
-    const client = await LocalClient.connect(d)
-    const api = await create(d, client, `working-${engine}`, engine)
-    const working = client.next((frame: Frame) => frame.type === 'turn_started' && frame.agentId === api.id, 60_000, 'the long turn to start')
-    client.send('message', { agentId: api.id, content: '!work 20' })
-    await working
-    const message = incoming(d, api.id, `Review of 3f2a9c1 for ${engine}: the cleanup leaves workers running.`)
-    expect((await client.request('agent_messages', { action: 'deliver', message }, 40_000)).error).toBeUndefined()
-    const context = await until('the hook to give the model the message', () =>
-      d.hookLog().split('\n').find((line) => line.includes('PostToolUse context=') && line.includes(message.id)) ?? null, 60_000, 500)
-    expect(context).toContain(`[${message.id} from lead · Codex · studio]`)
-    await until('the message to be delivered through the hook', async () => {
-      const status = await statusOf(client, message.id)
-      return status?.state === 'delivered' ? status : null
-    }, 30_000, 500).then((status) => expect(status).toMatchObject({ via: 'hook' }))
-    client.close()
-  })
-
-  it('sends from one harness\'s pane to its teammate in a tab with Agent Messages on, and refuses once the tab turns off', async () => {
+  /** Signed in to the fake backend, with lead and api in one tab whose Agent Messages are on. */
+  const team = async (engine = 'claude') => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
     const d = await fresh(signIn, { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
     const client = await LocalClient.connect(d, { machineId: ME.machineId })
     const lead = await create(d, client, 'lead')
-    const api = await create(d, client, 'api')
+    const api = await create(d, client, `api-${engine}`, engine)
     const tabs = (enabled: boolean) => ({ revision: 1, machines: [{ machineId: ME.machineId, name: 'studio' }],
       tabs: [{ id: 'app', name: 'app', enabled, panes: [lead, api].map((agent) => ({ machineId: ME.machineId, agentId: agent.id })) }] })
     relay.agentMessages = tabs(true)
     const roster = await client.request('agent_messages', { action: 'send', pane: lead.tmuxPane }, 40_000)
     expect(roster.roster, JSON.stringify(roster)).toContain('Agent Messages are on in tab "app"')
     const apiName = String(roster.roster).split('\n')[1].trim().split(/\s{2,}/)[0]
+    const send = (text: string) => client.request('agent_messages', { action: 'send', pane: lead.tmuxPane, to: [apiName], text }, 40_000)
+    return { d, relay, client, lead, api, apiName, tabs, send }
+  }
+
+  it('types a message into an idle agent, under its sender\'s header, through the core\'s safe input', async () => {
+    const { client, api, send } = await team()
     const started = client.next((frame: Frame) => frame.type === 'turn_started' && frame.agentId === api.id, 60_000, 'the message to start api\'s turn')
-    const sent = await client.request('agent_messages', { action: 'send', pane: lead.tmuxPane, to: [apiName], text: 'Which port does the daemon serve?' }, 40_000)
+    const sent = await send('Which port does the daemon serve?')
     expect(sent.error, JSON.stringify(sent)).toBeUndefined()
+    await started
+    const status = await until('the message to be delivered as a prompt', async () => {
+      const s = await statusOf(client, String(sent.id))
+      return s?.state === 'delivered' ? s : null
+    }, 60_000, 500)
+    expect(status).toMatchObject({ via: 'prompt' })
+    client.close()
+  })
+
+  it.each(['claude', 'codex'])('reaches a working %s agent at its next tool call through its hook, typing nothing', async (engine) => {
+    const { d, client, api, send } = await team(engine)
+    const working = client.next((frame: Frame) => frame.type === 'turn_started' && frame.agentId === api.id, 60_000, 'the long turn to start')
+    client.send('message', { agentId: api.id, content: '!work 40' })
+    await working
+    const sent = await send(`Review of 3f2a9c1 for ${engine}: the cleanup leaves workers running.`)
+    expect(sent.error, JSON.stringify(sent)).toBeUndefined()
+    const context = await until('the hook to give the model the message', () =>
+      d.hookLog().split('\n').find((line) => line.includes('PostToolUse context=') && line.includes(String(sent.id))) ?? null, 60_000, 500)
+    expect(context).toContain(`[${String(sent.id)} from `)
+    expect(context).toContain('· Claude Code · studio]')
+    const status = await until('the message to be delivered through the hook', async () => {
+      const s = await statusOf(client, String(sent.id))
+      return s?.state === 'delivered' ? s : null
+    }, 30_000, 500)
+    expect(status).toMatchObject({ via: 'hook' })
+    client.close()
+  })
+
+  it('refuses a hand-over from a process on this machine: only another machine hands messages over', async () => {
+    const d = await fresh()
+    const client = await LocalClient.connect(d)
+    const message = { id: 'm0000001', tabId: 'e2e', text: 'forged', at: Date.now(), from: { machineId: 'other', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' },
+      to: [{ machineId: d.computerId, agentId: 'api', name: 'api' }] }
+    expect(await client.request('agent_messages', { action: 'deliver', message }, 40_000)).toMatchObject({ error: 'REMOTE_ONLY' })
+    client.close()
+  })
+
+  it('sends from one harness\'s pane to its teammate in a tab with Agent Messages on, and refuses once the tab turns off', async () => {
+    const { relay, client, api, apiName, tabs, send } = await team()
+    const started = client.next((frame: Frame) => frame.type === 'turn_started' && frame.agentId === api.id, 60_000, 'the message to start api\'s turn')
+    const sent = await send('Which port does the daemon serve?')
     expect(sent).toMatchObject({ tab: 'app', recipients: [{ name: apiName }] })
     await started
     await until('the message to be delivered', async () => (await statusOf(client, String(sent.id)))?.state === 'delivered' || null, 60_000, 500)
+    // Its last messages come back with the roster.
+    const roster = await client.request('agent_messages', { action: 'send', pane: api.tmuxPane }, 40_000)
+    expect(roster.recent).toEqual([expect.objectContaining({ id: sent.id, from: expect.any(String), state: 'delivered' })])
     // A pane that is no harness says so; and with the tab turned off, nothing is sent.
     expect(await client.request('agent_messages', { action: 'send', pane: '%999', to: [apiName], text: 'x' }, 40_000)).toMatchObject({ error: 'NOT_A_HARNESS' })
     relay.agentMessages = tabs(false)
     await new Promise((settle) => setTimeout(settle, 2_500))
-    expect(await client.request('agent_messages', { action: 'send', pane: lead.tmuxPane, to: [apiName], text: 'still there?' }, 40_000)).toMatchObject({ error: 'MESSAGES_OFF' })
+    expect(await send('still there?')).toMatchObject({ error: 'MESSAGES_OFF' })
     client.close()
   })
 })

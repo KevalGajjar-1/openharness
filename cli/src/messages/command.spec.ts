@@ -15,6 +15,8 @@ describe('harness send arguments', () => {
     expect(parseSendArgs([])).toEqual({ names: [], text: '', json: false })
     expect(parseSendArgs(['api,web', 'is', 'it', 'in?'])).toEqual({ names: ['api', 'web'], text: 'is it in?', json: false })
     expect(parseSendArgs(['api', '--text-file', 'note.md', '--json'], () => 'from file')).toEqual({ names: ['api'], text: 'from file', json: true })
+    // After the recipients, dashes are the message's own.
+    expect(parseSendArgs(['api', '---', 'do', 'not', '--force', 'push'])).toEqual({ names: ['api'], text: '--- do not --force push', json: false })
   })
 
   it('refuses what it cannot read, with the usage', () => {
@@ -40,6 +42,11 @@ describe('the pane\'s own daemon', () => {
 describe('what harness send prints', () => {
   it('says what became of the message for each teammate, or the roster', () => {
     expect(formatSent({ roster: 'Teammates: api' })).toBe('Teammates: api')
+    expect(formatSent({ roster: 'Teammates: api', recent: [
+      { id: 'm1', to: ['api', 'web'], text: 'first line\nmore', state: 'delivered' },
+      { id: 'm2', from: 'api', text: 'x'.repeat(200), state: 'queued' },
+    ] })).toBe(`Teammates: api\n\nYour last messages:\n  [m1 to api, web] first line (delivered)\n  [m2 from api] ${'x'.repeat(157)}… (queued)`)
+    expect(formatSent({ roster: 'Teammates: api', recent: [{ id: 'm3', from: 'api', state: 'failed' }] })).toBe('Teammates: api\n\nYour last messages:\n  [m3 from api]  (failed)')
     expect(formatSent({ id: 'm1234567', recipients: [
       { name: 'api', state: 'delivered', via: 'prompt' },
       { name: 'web', state: 'queued', reason: 'working: arrives at its next tool call' },

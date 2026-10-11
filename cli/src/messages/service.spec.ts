@@ -9,7 +9,7 @@ import { PaneInbox } from './inbox.js'
 import { deliveryKey } from './mailbox.js'
 import { LIMITS, MessageError } from './model.js'
 import type { Rpc } from './rpc.js'
-import { REMOTE_STATUS_MS, startAgentMessages, TICK_MS } from './service.js'
+import { REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'agent-messages-')) })
@@ -132,6 +132,11 @@ describe('harness send', () => {
     // Sent to the same teammate twice in one message: once.
     const twice = await t.ask({ action: 'send', pane: '%1', to: 'api,API', text: 'once' })
     expect(twice.recipients).toHaveLength(1)
+    // Its last messages come back with the roster, as the sender and as the recipient see them.
+    const lead = await t.ask({ action: 'send', pane: '%1' })
+    expect((lead.recent as Array<Record<string, unknown>>).at(-1)).toMatchObject({ id: twice.id, to: ['api'], text: 'once', state: 'queued' })
+    const api = await t.ask({ action: 'send', pane: '%2' })
+    expect((api.recent as Array<Record<string, unknown>>).at(-1)).toMatchObject({ id: twice.id, from: 'lead', state: 'queued' })
   })
 
   it('tells two teammates with the same start apart only by more of the name', async () => {
@@ -201,6 +206,27 @@ describe('from the owner\'s other machines', () => {
     expect(await t.ask({ action: 'status', ids: ['m00000aa', 'unknown'] }, OWNER_REMOTE)).toEqual({ statuses: [expect.objectContaining({ state: 'delivered', via: 'prompt' })] })
   })
 
+  it('takes a hand-over only from another machine, never naming this one as the sender, and not while the directory is unknown', async () => {
+    const t = setup()
+    expect(await t.ask({ action: 'deliver', message: incoming() }, OWNER_LOCAL)).toMatchObject({ error: 'REMOTE_ONLY' })
+    expect(await t.ask({ action: 'status', ids: [] }, OWNER_LOCAL)).toMatchObject({ error: 'REMOTE_ONLY' })
+    expect(await t.ask({ action: 'who', agentIds: [] }, OWNER_LOCAL)).toMatchObject({ error: 'REMOTE_ONLY' })
+    expect(await t.ask({ action: 'deliver', message: incoming('api', { machineId: 'm1', agentId: 'lead' }) }, OWNER_REMOTE)).toMatchObject({ error: 'NOT_FROM_THERE' })
+    expect(t.delivered).toHaveLength(0)
+    const down = setup({ backendStatus: 500 })
+    expect(await down.ask({ action: 'deliver', message: incoming() }, OWNER_REMOTE)).toMatchObject({ error: 'DIRECTORY_UNAVAILABLE' })
+  })
+
+  it('refuses a hand-over once too many messages wait on this machine', async () => {
+    const t = setup()
+    for (let i = 0; i < LIMITS.waiting; i++) {
+      const m = { ...incoming(), id: `m${String(i).padStart(7, '0')}` }
+      await t.ask({ action: 'deliver', message: m }, OWNER_REMOTE)
+      t.deliveryEvent({ deliveryId: t.delivered.at(-1)![2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
+    }
+    expect(await t.ask({ action: 'deliver', message: { ...incoming(), id: 'mzzzzzzz' } }, OWNER_REMOTE)).toMatchObject({ error: 'MAILBOX_FULL' })
+  })
+
   it('refuses a message for an agent outside the sender\'s tabs, and one that is not a message', async () => {
     const t = setup()
     const answer = await t.ask({ action: 'deliver', message: incoming('web') }, OWNER_REMOTE)
@@ -244,6 +270,35 @@ describe('the roster note and the directory', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(waiting('%2')).toEqual([])
     t.service.stop()
+  })
+
+  it('keeps the notes it put in the store, withdraws a gone harness\'s, and sweeps old files nothing waits on', async () => {
+    vi.useFakeTimers()
+    const t = setup()
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    const fs = require('node:fs') as typeof import('node:fs')
+    const state = () => JSON.parse(fs.readFileSync(join(root, 'state', 'state.json'), 'utf8'))
+    expect(Object.keys(state().notes).sort()).toEqual(['api', 'lead'])
+    // api's harness is gone: its note goes with it.
+    t.agents.splice(1, 1)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(Object.keys(state().notes)).toEqual(['lead'])
+    expect(t.inbox.paneDir('%2') && fs.existsSync(t.inbox.paneDir('%2')!)).toBe(false)
+    t.service.stop()
+    // A file nothing here waits on, from a service long gone: swept at the next start once it is old.
+    t.inbox.put('%7', 'm0000999-aaaa', { session: 'gone', text: 'stale' })
+    const old = (Date.now() - SWEEP_AFTER_MS - 1000) / 1000
+    fs.utimesSync(join(t.inbox.paneDir('%7')!, 'm0000999-aaaa.json'), old, old)
+    t.inbox.put('%8', 'fresh', { session: 'other daemon', text: 'fresh' })
+    const again = startAgentMessages(fakeCore({ dataDir: root, daemon: { machineId: () => 'm1', port: 18473 }, agents: { live: () => t.agents, displayName: (s) => (s as unknown as { title: string }).title, terminalAvailable: () => true }, account: { backend: t.backend } }),
+      { stateDir: join(root, 'state'), inboxRoot: join(root, 'inbox-root'), now: () => Date.now() })
+    again.start()
+    expect(t.inbox.waiting('%7', 'm0000999-aaaa')).toBe(false)
+    expect(t.inbox.waiting('%8', 'fresh')).toBe(true)
+    again.reconnected?.()
+    again.stop()
   })
 
   it('fails a waiting delivery once its tab turns Agent Messages off', async () => {

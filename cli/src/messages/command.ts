@@ -38,7 +38,8 @@ export function parseSendArgs(argv: readonly string[], read: (path: string) => s
       if (argv[i + 1] === undefined) throw new MessageError('USAGE', SEND_USAGE)
       file = argv[++i]
     } else if (value === '--help' || value === '-h') throw new MessageError('USAGE', SEND_USAGE)
-    else if (value.startsWith('--')) throw new MessageError('USAGE', SEND_USAGE)
+    // After the recipients, a word that starts with dashes is the message's own (a Markdown `---`, `--force`).
+    else if (value.startsWith('-') && !words.length) throw new MessageError('USAGE', SEND_USAGE)
     else words.push(value)
   }
   const [to, ...rest] = words
@@ -62,7 +63,14 @@ export function paneOwner(pane: string, tmux: (args: string[]) => string = (args
 
 /** One recipient's line: what became of the message for them. */
 export function formatSent(reply: Record<string, unknown>): string {
-  if (typeof reply.roster === 'string') return reply.roster
+  if (typeof reply.roster === 'string') {
+    const recent = (Array.isArray(reply.recent) ? reply.recent as Record<string, unknown>[] : []).map((m) => {
+      const who = Array.isArray(m.to) ? `to ${(m.to as unknown[]).join(', ')}` : `from ${String(m.from)}`
+      const first = String(m.text ?? '').split('\n')[0]
+      return `  [${String(m.id)} ${who}] ${first.length > 160 ? `${first.slice(0, 157)}…` : first} (${String(m.state)})`
+    })
+    return recent.length ? `${reply.roster}\n\nYour last messages:\n${recent.join('\n')}` : reply.roster
+  }
   const id = String(reply.id ?? '')
   const lines = (Array.isArray(reply.recipients) ? reply.recipients as Record<string, unknown>[] : []).map((r) => {
     const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : ''

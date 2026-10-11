@@ -9,7 +9,7 @@
  *   back when the agent turns out to be working.
  * A file the hook took leaves its name in `claimed/`, which is how the service hears it was delivered.
  */
-import { chmodSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** What one inbox file holds: the text, and the engine conversation it is for. A hook in any other conversation
@@ -95,6 +95,18 @@ export class PaneInbox {
     } catch { return false }
   }
 
+  /** What the hook has taken, by `<pane number>-<key>`: read once for a whole pump. */
+  claimedNames(): Set<string> {
+    try { return new Set(readdirSync(join(this.root, 'claimed')).map((name) => name.replace(/\.json$/, ''))) } catch { return new Set() }
+  }
+
+  /** The keys waiting in one pane's inbox: read once per pane for a whole pump. */
+  keys(pane: string): Set<string> {
+    const dir = this.paneDir(pane)
+    if (!dir) return new Set()
+    try { return new Set(readdirSync(dir).filter((n) => n.endsWith('.json')).map((n) => n.slice(0, -'.json'.length))) } catch { return new Set() }
+  }
+
   /** Whether an item still waits for the hook. */
   waiting(pane: string, key: string): boolean {
     const dir = this.paneDir(pane)
@@ -119,6 +131,24 @@ export class PaneInbox {
       const match = /^(\d+)-(.+)\.json$/.exec(name)
       return match ? [[`%${match[1]}`, match[2]] as [string, string]] : []
     })
+  }
+
+  /** Everything waiting in every pane's inbox, with when it was put there: what a sweep looks at. */
+  entries(): Array<{ pane: string; key: string; at: number }> {
+    const out: Array<{ pane: string; key: string; at: number }> = []
+    let panes: string[] = []
+    try { panes = readdirSync(join(this.root, 'inbox')) } catch { return out }
+    for (const number of panes) {
+      if (!/^\d{1,9}$/.test(number)) continue
+      let names: string[] = []
+      try { names = readdirSync(join(this.root, 'inbox', number)) } catch { continue }
+      for (const name of names) {
+        const match = /^(.+)\.json$/.exec(name)
+        if (!match || !KEY.test(match[1])) continue
+        try { out.push({ pane: `%${number}`, key: match[1], at: statSync(join(this.root, 'inbox', number, name)).mtimeMs }) } catch { /* taken meanwhile */ }
+      }
+    }
+    return out
   }
 
   private tidy(dir: string): void {

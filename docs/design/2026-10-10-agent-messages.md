@@ -83,14 +83,15 @@ Agent traffic never interrupts the person. Harness alerts only when the rate lim
 
 ```
 harness send <name>[,<name>…] "text"      # or --text-file PATH
-harness send                              # who is in this tab, and the rules
+harness send                              # who is in this tab, the rules, and your last messages
 ```
 
 `<name>` is a harness's name as the roster shows it; a unique prefix is enough. The command prints the message
 ID and each recipient's state.
 
 When a tab with Agent Messages on has two or more harnesses, each agent receives a short note through the
-messages hook (below) at its next prompt or tool call, and again when the roster changes:
+messages hook (below) at its next tool call, and again when the roster changes. An agent whose context was
+compacted runs `harness send` alone to read them, and its last few messages, again:
 
 ```
 [Harness] Agent Messages are on in tab "app". Teammates:
@@ -123,43 +124,55 @@ already type into any pane.
 The backend keeps one record per tab, `agent_message_tabs` (`{userId, tabId, enabled}`, absent means off),
 beside the desk; the desk's format does not change, because a backend pod that has not upgraded drops a tab
 whose JSON it does not know (`desk.ts` `parseTabs`). `GET /api/agent-messages` answers every tab with its
-owned panes (`machineId`, `agentId`) and its flag; `PATCH /api/agent-messages/tabs/:tabId` sets the flag and
-publishes `agent_messages_changed`. The service reads the directory as Swarm did (polled every 15 s, read
-again on `desk_changed` and `agent_messages_changed`, and fresh before each send).
+owned panes (`machineId`, `agentId`) and its flag, and the machines' names; `PATCH /api/agent-messages/tabs/:tabId`
+sets the flag and publishes the account's existing `desk_changed`. The window reads and sets the flag through the
+daemon's proxy, like `/api/desk`, so drawing the tabs never starts the service. The service reads the directory as
+Swarm did: polled every 15 s, read again on `desk_changed`, and fresh before each send.
 
 A message goes only to harnesses that share a tab with the sender, in a tab whose flag is on. The sender's
-daemon checks; the recipient's daemon checks again before delivering.
+daemon checks; the recipient's daemon checks again before delivering, and holds its deliveries until it has read
+the directory. Only another of the owner's machines hands a message over (`deliver`), never a process on this
+one, and never naming this machine as the sender.
 
 ### Delivery
 
 Each recipient's daemon owns its delivery. A message for an agent on another machine is handed to that
 machine's daemon over the existing paired E2EE relay, as Swarm's were (`agent_messages` in the
-application-frame sets), and that daemon reports its state back.
+application-frame sets); the sender's daemon keeps it in an outbox until that machine takes it, and asks it later
+what became of it.
 
 A delivery waits in the recipient daemon's `agent-messages/` state until it is delivered. **It never
 expires** and is never dropped. Two routes race for it, and an atomic rename decides which one takes it:
 
 1. **The messages hook, while the agent works.** Claude Code 2.1.296 and Codex 0.162.1 both accept
    `hookSpecificOutput.additionalContext` from a PostToolUse hook and add it to the model's context before
-   its next request. The service writes the message to the pane's inbox file; the hook claims it by
-   renaming it, prints it, and leaves a receipt the service reads. No keystroke touches the pane, so a draft
-   or an open permission dialog is never at risk, and the text does not arrive as the person's.
+   its next request. The service writes the message to the pane's inbox file; the hook claims it by renaming
+   it and prints it. No keystroke touches the pane, so a draft or an open permission dialog is never at risk,
+   and the text does not arrive as the person's.
 2. **A typed prompt, when the agent is idle.** A hook only fires on a tool call, so an idle agent is woken by
    the core's existing team delivery: written only into an empty composer, never over a draft, a dialog or
    a running turn (`teamHold`), never pressed Enter on twice. The service reclaims the inbox file before it
-   says the delivery may be written, so the two routes never both deliver. A refusal because the agent is
-   working puts the file back for the hook.
+   says the delivery may be written, so the two routes never both deliver. A refusal that proves nothing was
+   typed (the agent is working, a draft, a dialog) puts the file back for the hook; one that may have left text
+   (`enter_withheld`, `paste_failed`) ends the delivery there. The core holds a delivery behind a running turn
+   until the turn ends: one it has held 20 s is parked, given back to the hook and no longer writable. A
+   restart, or a new core, gives every attempt in flight back to the hook.
 
-The hook is `hook/messages.mjs`, a separate command from the core's `notify.mjs`, which stays free of
-model-visible output (#684, `coreIsolation.spec.ts`). The engines' hook contracts declare it for PostToolUse
-and UserPromptSubmit, so the daemon installs it at start like the others, and Codex's review record lists it
-as reviewed. Engines read hooks when a session starts, so sessions started before the install fall back to
-route 2. The installed command is a shell test that exits at once unless the pane has an inbox file, so a
-tool call with nothing waiting pays one `sh` start. A Codex sub-agent runs its hooks from its parent's pane;
-the inbox records the parent's conversation ID and the hook delivers only to that session.
+The hook is the daemon's own command, apart from the core's `notify.mjs`, which stays free of model-visible output
+(#684, `coreIsolation.spec.ts`). The daemon writes its script into `~/.harness/agent-messages/hook.mjs` rather than
+shipping a second file beside `cli.js` (engines/kit/messagesHook.ts). The engines' hook contracts declare it for
+PostToolUse; the daemon installs it at start in a preparation of its own after the notify hooks, so a settings file
+it cannot write costs only this route, never a launch. Codex's review record lists it as reviewed. Engines read hooks
+when a session starts, so sessions started before the install fall back to route 2. The installed command is a shell
+test that exits at once unless the pane has an inbox folder, so a tool call with nothing waiting pays one `sh` start.
 
-States: **queued**, **delivered** (claimed by the hook, or a typed prompt that started a turn), **failed**
-(the recipient left the tab, the flag was turned off, or its harness is gone), each with the time and route.
+Each inbox file names the conversation it is for, and the hook delivers it to that conversation only: a Codex
+sub-agent runs its hooks from its parent's pane, a Claude Code sub-agent's tool calls carry their own `agent_id`,
+and a pane number tmux gives out again is another's. A stopped harness's files are withdrawn and put back when it
+returns; a start sweeps old files nothing waits on.
+
+States: **queued**, **delivered** (claimed by the hook, or typed; "unconfirmed" when the core could not say),
+**failed** (the recipient left the tab or the flag was turned off), each with the time, the route and a reason.
 
 ### Limits
 
@@ -186,9 +199,12 @@ stay. The prompt-scope plumbing in the core goes in a later change of its own.
 
 - Unit: the service, directory, store, mailbox and both delivery routes at 100% (`npm run test:core`); the
   hook script; the backend routes.
-- End to end on the fake engines: an idle recipient gets a typed prompt; a working one gets the hook's
-  context at its next tool call and nothing is typed; a draft or dialog is never touched; flag off refuses;
-  a recipient on a second daemon receives and the sender sees `delivered`; a restart loses nothing and
-  delivers nothing twice.
+- End to end on the real daemon with the fake engines (`e2e/agentMessages.e2e.ts`): off until used, on by saved
+  state; `send` from a pane through a signed-in daemon whose directory the fake backend answers; an idle recipient
+  gets a typed prompt; working Claude Code and Codex agents get the hook's context at the next tool call with
+  nothing typed; flag off refuses; a hand-over from a process on this machine is refused.
+- In unit tests (`messages/*.spec.ts`): drafts, dialogs and refusals that may have typed; parking; restarts and a
+  new core giving attempts back; a moved, stopped or restarted harness; the hand-over to another machine and its
+  status over a fake relay. Not yet end to end: two daemons over the real relay.
 - Measured: the hook's cost per tool call with nothing waiting.
 - Not claimed: model behavior (whether agents ask at the right moments) until a real team runs on it.
