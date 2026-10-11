@@ -294,7 +294,15 @@ Experimental switches are account state. `AppNotifier.experimentalFeatures` bind
 identifies the account, clears on sign-out/account change, and rejects stale responses. It uses
 `/api/experimental-settings`, refreshes on account invalidations and a 30-second fallback poll, and
 shows changes only after server acknowledgement. Do not restore the old unscoped local keys at startup.
-Swarm collaboration keeps its existing account settings RPC. The creature switch opens the account's
+Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collaboration: its
+flag is per tab, not an Experimental switch — `GET /api/agent-messages` and
+`PATCH /api/agent-messages/tabs/:tabId` through the CLI like the desk, read after sign-in, after a
+toggle, on `desk_changed`, the desk safety-net poll and the backend coming back; a 404 (an older CLI
+or backend) offers no ⇄ at all, and the ⇄ waits for the first answer (`agentMessagesOffered`, which
+also needs a desk tab). Traffic arrives as `messages_changed` — but a daemon sends that only to its
+own computer's windows, so `AgentMessagesRemoteWatch` reads the last messages of each tab that is on
+from its other machines every 15 s while the window is in front. A tab's log is the
+`agent_messages` `history` request to every daemon with a pane in it, merged by message id. The creature switch opens the account's
 `ZooController` collection; disabling it hides the creature without deleting eggs, individuals or progress.
 Window-only preview collections are test/render fixtures, not a user setting.
 
@@ -414,9 +422,13 @@ add a kind there, not at the call site.
   repaint on a theme flip.
 - The [workspace status bar](design/workspace-status-bar.md) places system-font tabs and global actions at the top,
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
-  Tabs center their name/status group without permanent number prefixes; Command replaces
-  the status with the resolved shortcut beside the name. Tab and pane close marks are small
-  and quiet, with larger click targets. Terminal panes end with matching
+  Tabs center their name/status group without permanent number prefixes. One revealed state
+  — hovering a tab, or holding Command for every tab — replaces the status with the resolved
+  shortcut and shows Agent Messages' ⇄ just left of ×; at rest only a tab whose agents are
+  messaging keeps a bright ⇄ (`lib/agent_messages/`, `AgentMessagesController` on
+  `AppNotifier.agentMessages`, its own notifier so traffic never rebuilds the workspace;
+  `SwarmTabButton` mirrors it natively). Revealing never moves the title. Tab and pane close
+  marks are small and quiet, with larger click targets. Terminal panes end with matching
   plain-text agent/model selectors and close at every width. Hovering the right
   or bottom edge reveals its split icon; zoom stays in commands, menus and keyboard
   shortcuts. Only distinct domain-harness icons stay on the left.

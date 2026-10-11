@@ -45,6 +45,7 @@ import '../shared/theme/workspace_bar_style.dart';
 import '../theme/app_theme.dart';
 import 'engine_identity.dart';
 import 'harness_agent_control.dart';
+import '../agent_messages/pane_message_mark.dart';
 import 'harness_activity_mark.dart';
 import 'grid_model_picker.dart';
 import 'pane_header_actions.dart';
@@ -2877,7 +2878,10 @@ class _TerminalHeader extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
+                      // Four parts to an Agent Messages mark's one while it
+                      // shows; alone, the title has all the room.
                       Flexible(
+                        flex: 4,
                         child: Tooltip(
                           message: identityDetail,
                           waitDuration: const Duration(milliseconds: 500),
@@ -2906,6 +2910,12 @@ class _TerminalHeader extends StatelessWidget {
                         app: notifier,
                         machineId: session.machineId,
                         agentId: session.agentId,
+                      ),
+                      PaneMessageMarkView(
+                        controller: notifier.agentMessages,
+                        machineId: session.machineId,
+                        agentId: session.agentId,
+                        style: titleStyle,
                       ),
                       if ((status != null && !leadingStatus) ||
                           starting != null ||

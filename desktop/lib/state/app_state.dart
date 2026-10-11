@@ -25,6 +25,7 @@ import 'first_arrival.dart';
 import 'harness_monitor_controller.dart';
 import 'agent_handoff_file.dart';
 import 'agent_switch_handoff.dart';
+import '../agent_messages/agent_messages.dart';
 import '../api/api_client.dart';
 import '../viewer/sign_in_browser.dart';
 import '../viewer/direct_link.dart';
@@ -116,8 +117,6 @@ import '../usage/models_menu_controller.dart';
 import '../usage/remote_usage.dart';
 import '../usage/usage_accounts.dart';
 import '../orchestrator/orchestrator_controller.dart';
-import '../teams/team_controller.dart';
-import '../teams/swarm_settings_controller.dart';
 import '../notify/agent_alerts.dart';
 import '../notify/alert_sounds.dart';
 import '../notify/system_notifications.dart';
@@ -1391,91 +1390,98 @@ class AppNotifier extends ChangeNotifier {
   Iterable<TerminalPane> get allPanes => swarms.expand((s) => s.panes).toSet();
   String get activeSwarmId => activeSwarm.id;
 
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): each tab's
+  /// flag, the traffic the daemons push as `messages_changed`, and the marks it
+  /// leaves on panes. Its own notifier, so traffic never rebuilds the workspace.
+  late final agentMessages = AgentMessagesController(
+    read: () => api.readAgentMessageTabs(),
+    write: (tabId, enabled) => api.setAgentMessages(tabId, enabled),
+    request: (machineId, payload) => _conn(machineId).request(
+      'agent_messages',
+      payload: payload,
+      timeout: const Duration(seconds: 8),
+    ),
+    nameOf: (machineId, agentId) =>
+        stateOf(machineId)?.agents
+            .where((agent) => agent.id == agentId)
+            .firstOrNull
+            ?.displayName,
+  );
+
+  /// Whether [tabId] has Agent Messages to offer: a tab the desk holds, since
+  /// the backend keeps the flag per desk tab, once the daemon and backend have
+  /// answered for it. The Store, Devices and Companions, an orchestrator or a
+  /// draft tab, a window before it joins the desk, and an older CLI or backend
+  /// get no ⇄, menu row or command.
+  bool agentMessagesOffered(String tabId) {
+    final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
+    return swarm != null &&
+        _desk.enabled &&
+        _deskTracks(swarm) &&
+        isDeskId(swarm.id) &&
+        agentMessages.loaded;
+  }
+
+  /// The machines of the owner's with a harness in [tabId], and this
+  /// computer: every daemon that may hold part of the tab's log. A shared
+  /// machine's harnesses never take part.
+  Set<String> _agentMessageMembers(String tabId) {
+    final tab = swarms.where((swarm) => swarm.id == tabId).firstOrNull;
+    return {
+      ?localMachineState?.machine.machineId,
+      for (final pane in tab?.panes ?? const <TerminalPane>[])
+        if (pane.agentId != null &&
+            machineStates[pane.machineId]?.machine.isShared != true)
+          pane.machineId,
+    };
+  }
+
+  /// Of [_agentMessageMembers], those that can answer now.
+  List<String> agentMessageMachines(String tabId) => [
+    for (final id in _agentMessageMembers(tabId))
+      if (machineStates[id] case final machine?
+          when !machine.machine.isShared &&
+              !machine.needsLink &&
+              machine.nodeOnline != false &&
+              machine.connectionStatus == ConnectionStatus.connected)
+        id,
+  ];
+
+  /// [tabId]'s Agent Messages log, from every daemon that may hold part of it.
+  Future<AgentMessageLog> readAgentMessages(String tabId) =>
+      agentMessages.history(
+        tabId,
+        agentMessageMachines(tabId),
+        expected: _agentMessageMembers(tabId),
+      );
+
+  /// The tabs with Agent Messages on, each with its connected machines other
+  /// than this computer: their daemons' `messages_changed` reaches only their
+  /// own computer's windows, so [agentMessagesRemote] asks them instead. In a
+  /// browser every machine is another computer.
+  List<AgentMessagesRemoteTab> agentMessagesRemoteTabs() {
+    final local = localMachineState?.machine.machineId;
+    return [
+      for (final swarm in swarms)
+        if (agentMessagesOffered(swarm.id) && agentMessages.isOn(swarm.id))
+          if ([
+                for (final id in agentMessageMachines(swarm.id))
+                  if (id != local) id,
+              ]
+              case final remote when remote.isNotEmpty)
+            (tabId: swarm.id, machineIds: remote),
+    ];
+  }
+
+  /// Polls [agentMessagesRemoteTabs] while the window is in front; the
+  /// workspace starts it.
+  late final agentMessagesRemote = AgentMessagesRemoteWatch(
+    controller: agentMessages,
+    foreground: foreground,
+    tabs: agentMessagesRemoteTabs,
+  );
+
   final _orchestratorProjects = <String, OrchestratorController>{};
-  final _teamControllers = <String, TeamController>{};
-  final _channelControllers = <String, TeamController>{};
-  SwarmSettingsController? _swarmSettings;
-  SwarmSettingsController get swarmSettings =>
-      _swarmSettings ??= SwarmSettingsController(
-        request: (payload) {
-          final gateway = channelGateway(localMachineState?.machine.machineId);
-          if (gateway == null) {
-            throw const TeamRequestError(
-              'Connect one of your machines to configure tab collaboration.',
-            );
-          }
-          return teamRequest(gateway, payload);
-        },
-      );
-
-  /// The first hop may change; the request still names its original tab and
-  /// the daemon routes it to that tab's saved host. Observation links cannot
-  /// carry owner collaboration commands.
-  String? channelGateway(String? preferredMachineId) {
-    final candidates = <MachineState>[
-      ?machineStates[preferredMachineId],
-      ...machineStates.values,
-    ].where((state) => !state.machine.isShared);
-    return (candidates
-                .where(
-                  (state) =>
-                      state.connectionStatus == ConnectionStatus.connected,
-                )
-                .firstOrNull ??
-            candidates.firstOrNull)
-        ?.machine
-        .machineId;
-  }
-
-  TeamController channelController(String tabId, String gatewayMachineId) =>
-      _channelControllers.putIfAbsent(tabId, () {
-        late final TeamController controller;
-        controller = TeamController(
-          channelTabId: tabId,
-          request: (payload) {
-            final machineId =
-                controller.team?['machineId'] as String? ??
-                channelGateway(gatewayMachineId);
-            if (machineId == null) {
-              throw const TeamRequestError(
-                'Connect one of your machines to use tab collaboration.',
-              );
-            }
-            return teamRequest(machineId, payload);
-          },
-        );
-        return controller;
-      });
-
-  Future<Map<String, dynamic>> teamRequest(
-    String machineId,
-    Map<String, dynamic> payload,
-  ) async {
-    try {
-      return await _conn(
-        machineId,
-      ).request('team', payload: payload, timeout: const Duration(seconds: 35));
-    } on WsRequestFailure catch (e) {
-      throw TeamRequestError(
-        e.code == 'UNSUPPORTED'
-            ? 'Update Harness on this machine to use agent collaboration.'
-            : e.toString(),
-        uncertain: const {
-          'UNCONFIRMED',
-          'DISCONNECTED',
-          'TEAM_UNAVAILABLE',
-        }.contains(e.code),
-      );
-    }
-  }
-
-  TeamController teamController(String machineId) =>
-      _teamControllers.putIfAbsent(
-        machineId,
-        () => TeamController(
-          request: (payload) => teamRequest(machineId, payload),
-        ),
-      );
 
   Future<Map<String, dynamic>> orchestratorRequest(
     String machineId,
@@ -5289,6 +5295,8 @@ class AppNotifier extends ChangeNotifier {
       if (refetch && !machinesRefreshing) unawaited(retryMachines());
       if (currentUser == null) unawaited(_loadProfile());
       _deskEnsure(_authRevision);
+      // A daemon whose backend was away answered the last read with an error.
+      if (_desk.enabled) unawaited(agentMessages.refresh());
     }
     notifyListeners();
   }
@@ -5548,6 +5556,7 @@ class AppNotifier extends ChangeNotifier {
   void _clearAccountWorkspace({bool notices = true}) {
     if (notices) _clearDeviceNoticeState();
     experimentalFeatures.bind(null);
+    agentMessages.reset();
     _agentChanges.clear();
     ++_layoutRevision;
     // Sign-out sends the desk nothing: the tabs closing here are this window
@@ -5597,16 +5606,6 @@ class AppNotifier extends ChangeNotifier {
       controller.dispose();
     }
     _orchestratorProjects.clear();
-    for (final controller in _teamControllers.values) {
-      controller.dispose();
-    }
-    _teamControllers.clear();
-    for (final controller in _channelControllers.values) {
-      controller.dispose();
-    }
-    _channelControllers.clear();
-    _swarmSettings?.dispose();
-    _swarmSettings = null;
     final starter = Swarm(id: 'swarm-${_nextSwarmId++}');
     swarms
       ..clear()
@@ -7066,6 +7065,10 @@ class AppNotifier extends ChangeNotifier {
           _desk.enabled &&
           _desk.pending.isEmpty) {
         unawaited(_deskFetch());
+      }
+      // So are Agent Messages' flags (desk_changed); this catches a missed one.
+      if (!_disposed && status == AppStatus.authenticated && _desk.enabled) {
+        unawaited(agentMessages.refresh());
       }
       unawaited(_rereadMachinesInBackground(pushed: false));
     });
@@ -10763,7 +10766,13 @@ class AppNotifier extends ChangeNotifier {
   ///
   /// Reads the focused pane rather than taking an id, so every route into a
   /// harness clears it without each one having to remember to.
-  void _seeFocusedAgent() => seeWatchedAgents();
+  void _seeFocusedAgent() {
+    seeWatchedAgents();
+    // Its Agent Messages mark has done its job once the person is looking.
+    if (focusedPane case TerminalPane(:final machineId, :final agentId?)) {
+      agentMessages.seen(machineId, agentId);
+    }
+  }
 
   String? _eventAgentId(
     MachineState machine,
@@ -15387,6 +15396,8 @@ class AppNotifier extends ChangeNotifier {
       return;
     }
     _desk.enabled = true;
+    // Each tab's Agent Messages flag lives beside the desk, read once it is.
+    unawaited(agentMessages.refresh());
     // Tabs from before the desk carry per-window ids (`swarm-N`) two computers
     // would both mint. Give them desk ids once; the layout store keys by the
     // same string, so it follows on the next save.
@@ -16665,11 +16676,10 @@ class AppNotifier extends ChangeNotifier {
       _orchestratorProjects['$machineId/${payload['id']}']?.changed();
       return;
     }
-    if (type == 'team_changed') {
-      _teamControllers[machineId]?.changed();
-      for (final controller in _channelControllers.values) {
-        controller.changed();
-      }
+    if (type == 'messages_changed') {
+      // Before the activity check below: this payload is traffic between
+      // harnesses, never a turn of the pane's own.
+      agentMessages.handleEvent(payload);
       return;
     }
     // Only terminal protocol frames visit the session pool. Heartbeats, dial
@@ -16974,7 +16984,11 @@ class AppNotifier extends ChangeNotifier {
         break;
       case 'desk_changed':
         unawaited(experimentalFeatures.refresh());
-        if (_swarmSettings case final settings?) unawaited(settings.refresh());
+        // Turning Agent Messages on or off for a tab says `desk_changed` too,
+        // with the desk itself unchanged (backend routes/agentMessages.ts).
+        if (status == AppStatus.authenticated) {
+          unawaited(agentMessages.refresh());
+        }
         // Another window — on another computer, or this one — changed the
         // tabs. The payload is only the revision; the document is fetched.
         final deskRevision = payload['revision'];
@@ -17480,16 +17494,8 @@ class AppNotifier extends ChangeNotifier {
     _modelManager?.dispose();
     harnessMonitor.dispose();
     _modelsMenu?.dispose();
-    for (final controller in _teamControllers.values) {
-      controller.dispose();
-    }
-    _teamControllers.clear();
-    for (final controller in _channelControllers.values) {
-      controller.dispose();
-    }
-    _channelControllers.clear();
-    _swarmSettings?.dispose();
-    _swarmSettings = null;
+    agentMessagesRemote.dispose();
+    agentMessages.dispose();
     for (final project in _orchestratorProjects.values) {
       project.dispose();
     }
