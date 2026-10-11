@@ -19,7 +19,9 @@ export const hooks: HookContract = {
     events: [{ event: 'SessionStart' }, { event: 'SessionEnd' }, { event: 'UserPromptSubmit' }, { event: 'Stop' }, { event: 'StopFailure' }],
     timeout: 5,
     // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
-    inbox: { event: 'PostToolUse' },
+    // Its reply, `harness send`, is allowed in the person's permission rules: auto mode's check refused a
+    // Harness command outright, and a person away from the pane cannot answer a question.
+    inbox: { event: 'PostToolUse', allow: { list: ['permissions', 'allow'], rule: 'Bash(harness send:*)' } },
     commandNamesHome: false,
     upToDate: { command: 'first-ours', matcher: false },
     messages: {

@@ -45,9 +45,9 @@ export interface HookSettings {
   /**
    * Agent Messages' own block (kit/messagesHook.ts), apart from notify.mjs's: at this event the waiting messages
    * of the agent's pane become the model's context. One block, for every tool, in the person's settings beside
-   * the others; absent for an engine with no such event.
+   * the others; absent for an engine with no such event. `allow` lets the agent reply with `harness send`.
    */
-  inbox?: { event: string }
+  inbox?: { event: string; allow?: SendAllowance }
   /** The command names this home as the engine's (`--codex-home`): a profile's sessions are in its own store. */
   commandNamesHome: boolean
   /**
@@ -79,6 +79,15 @@ export interface HookSettings {
    */
   reviewed?: HookReviewRecord
 }
+
+/**
+ * `harness send` allowed in the engine's own permission rules, so a teammate's reply never waits on a
+ * permission question. Three agents on two machines, 2026-10-11: one's replies to the lead sat in a local
+ * file for hours because Claude Code's permission check refused the command that would have carried them. Either a rule
+ * added to a list in the settings file (`list`, the person's other rules kept), or a rules file of the
+ * engine's that Harness owns whole (`file`, in the settings' home).
+ */
+export type SendAllowance = { list: readonly [string, string]; rule: string } | { file: string; rule: string }
 
 /**
  * An engine's record of hooks a person reviewed: in its config file in the same home, a table per hook keyed

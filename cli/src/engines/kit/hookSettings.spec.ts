@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -148,4 +148,51 @@ it('reports a held malformed file even when an engine declares no malformed-file
   expect(await installHookSettings('codex', { ...codex.settings, messages }, 19473, home)).toBe(false)
   expect(error).toHaveBeenCalledWith(codex.settings.messages.failed, expect.any(SyntaxError))
   expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{not-json')
+})
+
+it('allows harness send in Claude Code beside the person\'s own rules, once', async () => {
+  const home = join(root, 'claude'); mkdirSync(home)
+  const file = join(home, claude.settings.file)
+  writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'], deny: ['Bash(rm:*)'], defaultMode: 'auto' } }))
+  expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+  const first = readFileSync(file, 'utf8')
+  expect(JSON.parse(first).permissions).toEqual({ allow: ['Bash(npm test:*)', 'Bash(harness send:*)'], deny: ['Bash(rm:*)'], defaultMode: 'auto' })
+  expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+  expect(readFileSync(file, 'utf8')).toBe(first)
+})
+
+it.each([['permissions as text', 'ask'], ['permissions as a list', ['Bash(ls)']], ['allow as an object', { allow: { Bash: true } }]])(
+  'leaves Claude Code permissions in a shape it does not know as they are: %s', async (_, permissions) => {
+    const home = join(root, 'claude'); mkdirSync(home)
+    const file = join(home, claude.settings.file)
+    writeFileSync(file, JSON.stringify({ permissions }))
+    expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+    const settings = JSON.parse(readFileSync(file, 'utf8'))
+    expect(settings.permissions).toEqual(permissions)
+    expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR))
+  })
+
+it('allows harness send in a Codex rules file of its own, leaving the person\'s rules alone', async () => {
+  const home = join(root, 'codex')
+  const own = join(home, 'rules', 'default.rules')
+  mkdirSync(join(home, 'rules'), { recursive: true })
+  writeFileSync(own, 'prefix_rule(pattern=["git", "push"], decision="allow")\n')
+  expect(await installHookSettings('codex', codex.settings, 19473, home)).toBe(true)
+  const rules = join(home, 'rules', 'harness.rules')
+  expect(readFileSync(rules, 'utf8')).toBe('# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n'
+    + 'prefix_rule(pattern=["harness", "send"], decision="allow")\n')
+  expect(statSync(rules).mode & 0o777).toBe(0o600)
+  expect(readFileSync(own, 'utf8')).toBe('prefix_rule(pattern=["git", "push"], decision="allow")\n')
+  const written = statSync(rules).ino
+  expect(await installHookSettings('codex', codex.settings, 19473, home)).toBe(true)
+  expect(statSync(rules).ino).toBe(written)
+})
+
+it('launches Codex when its rules file cannot be written, and says so', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const home = join(root, 'codex'); mkdirSync(home)
+  writeFileSync(join(home, 'rules'), 'a file where the folder goes')
+  expect(await installHookSettings('codex', codex.settings, 19473, home)).toBe(true)
+  expect(warn).toHaveBeenCalledWith(`[hooks] could not allow harness send in ${join(home, 'rules', 'harness.rules')} (the engine asks before each one):`, expect.any(String))
+  expect(JSON.parse(readFileSync(join(home, 'hooks.json'), 'utf8')).hooks.PostToolUse[0].hooks[0].command).toBe(messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR))
 })
