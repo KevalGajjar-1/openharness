@@ -45,7 +45,7 @@ export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDep
   }
   const { vault } = deps
   const flows = new Flows(vault, env)
-  const bridge = createBridge(vault, { key: () => String(vault.file('bridge.json').key ?? '') })
+  const bridge = createBridge(vault, { key: () => String(vault.file('bridge.json').key ?? ''), harnessKey: () => String(vault.file('harness-key.json').key ?? '') })
   bridge.unref()
   listen(bridge, deps.port, deps.retryMs)
   try { sync(vault, env) } catch { /* A config that cannot be written now is written at the next connect. */ }

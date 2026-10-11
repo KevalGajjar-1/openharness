@@ -38,8 +38,15 @@ describe('agents a service owns', () => {
     // A stopped one leaves the dial's wheel; a gone one leaves every list.
     cloud.doors.publish([harness({ state: 'stopped' })])
     expect(clients.sendCommander).toHaveBeenLastCalledWith({ type: 'agent_deleted', payload: { agentId: 'cloud_1' } })
+    // On the dial's wheel while it runs, and what it is doing for its working card.
+    cloud.doors.publish([harness({ activity: 'Reading code' }), harness({ agentId: 'cloud_2', state: 'stopped' })])
+    expect(cloud.dialRows()).toEqual([expect.objectContaining({ agentId: 'cloud_1', engine: 'devin-cloud', displayName: 'fix it', tmuxPane: '', transcriptPath: null,
+      registeredAt: Date.parse('2026-10-11T10:00:00.000Z') })])
+    expect(cloud.activity('cloud_1')).toBe('Reading code')
+    expect(cloud.activity('cloud_2')).toBeNull()
+    expect(cloud.activity('cloud_9')).toBeNull()
     cloud.doors.publish('nonsense' as never)
-    expect(clients.send).toHaveBeenLastCalledWith({ type: 'agent_deleted', payload: { agentId: 'cloud_1' } })
+    expect(clients.send).toHaveBeenCalledWith({ type: 'agent_deleted', payload: { agentId: 'cloud_1' } })
     expect(cloud.owns('cloud_1')).toBe(false)
   })
 
@@ -101,6 +108,14 @@ describe('agents a service owns', () => {
     expect(await cloud.stop('cloud_1')).toEqual({ deleted: true })
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'CLOUD_FAILED', detail: 'down' })
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'X' })
+  })
+
+  it('says "stopping" when the maker is slow to stop, so the connection waits on no vendor', async () => {
+    const service = port()
+    service.stopHarness.mockImplementation(() => new Promise(() => {}))
+    const { cloud } = setup(service)
+    cloud.doors.publish([harness()])
+    expect(await cloud.stop('cloud_1', 5)).toEqual({ deleted: true, detail: 'Stopping. Its pane says when it has.' })
   })
 
   it('refuses with a reason while the service is off', async () => {

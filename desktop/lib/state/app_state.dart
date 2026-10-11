@@ -84,7 +84,7 @@ import '../shared/theme/app_theme.dart' as grid;
 import '../terminal/remote_media_download.dart';
 import 'take_over.dart';
 import '../widgets/engine_identity.dart'
-    show allEngines, engineIdentity, isTerminalEngine;
+    show allEngines, engineIdentity, isCloudAgentId, isTerminalEngine;
 import '../store/store_screen.dart' show openStoreAgent;
 import 'dial_status.dart';
 import 'grid_pictures.dart';
@@ -11156,7 +11156,9 @@ class AppNotifier extends ChangeNotifier {
       final reply = await _conn(machineId).request(
         'cloud_send',
         payload: {'agentId': agentId, 'text': text},
-        timeout: const Duration(seconds: 70),
+        // Longer than the machine waits on its cloud service (3 min, CLI
+        // core/api.ts LONG_ANSWERS): a maker answering slowly is not a failure.
+        timeout: const Duration(seconds: 200),
       );
       if (reply['error'] == null) return null;
       final detail = reply['detail'];
@@ -11166,17 +11168,6 @@ class AppNotifier extends ChangeNotifier {
     } catch (_) {
       return 'It could not be sent. Try again.';
     }
-  }
-
-  /// Answer [question] as the dial does (`question_response`, keyed by the
-  /// question's own id): one of its choices or the person's words. What came of
-  /// it arrives as the question closing; a refusal leaves it open.
-  void answerQuestion(PendingQuestion question, String answer) {
-    _conn(question.machineId).sendRaw('question_response', {
-      'requestId': question.requestId,
-      'agentId': question.agentId,
-      'answers': {question.answerKey: answer},
-    });
   }
 
   /// The rows of [sessionId] on [machineId] before [beforeTurn], or its last
@@ -12065,6 +12056,26 @@ class AppNotifier extends ChangeNotifier {
         'SESSION_STOP_FAILED',
         'INVALID_SESSION',
       };
+      // A cloud agent's service refuses in words a person reads ("Add your
+      // Devin API key…"), and a retry of the same New Harness gets the same
+      // harness (its `creationId`), so none of these is left unconfirmed.
+      const cloudRefusals = {
+        'NOT_CONNECTED',
+        'INVALID_REQUEST',
+        'CONNECTIONS_UNAVAILABLE',
+        'CLOUD_FAILED',
+        'BUSY',
+        'RATE_LIMITED',
+        'UNREACHABLE',
+        'SERVICE_UNAVAILABLE',
+      };
+      final cloudRefusal =
+          isCloudAgentId(choices['engine'] as String?) &&
+          cloudRefusals.contains(failure.code);
+      if (cloudRefusal) {
+        creation._refusal = failure.code;
+        return creation._complete(failure.detail ?? 'Could not start it.');
+      }
       if (refusedBeforeLaunch.contains(failure.code)) {
         creation._refusal = failure.code;
         if (failure.code == 'INVALID_CWD' && choices['projectSource'] != null) {

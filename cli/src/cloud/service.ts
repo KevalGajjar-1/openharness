@@ -29,6 +29,11 @@ interface Entry {
   /** When it last changed: one unchanged for a day is no longer looked at. */
   changedAt: number
   failures: number
+  /** Whether the agent has said anything since the person last wrote: until it has, a maker still reporting
+   *  "waiting for you" is reporting the wait the person just answered (core rule 6, evidence newer than state). */
+  heard: boolean
+  /** The New Harness that made it (`creationId`): a retry of the same one gets this harness, never a second. */
+  creationId?: string
 }
 
 export interface TranscriptMessage { id: string; from: 'agent' | 'person'; text: string; at: string }
@@ -49,6 +54,9 @@ const WORKING_MS = 10_000
 const WAITING_MS = 30_000
 const BACKOFF_MAX_MS = 5 * 60_000
 const QUIET_MS = 24 * 60 * 60_000
+/** The least time between looks, even for a maker that waits for news itself: one that answers at once must
+ *  never be asked again at once, for a day. */
+const LOOK_MIN_MS = 5_000
 const TRANSCRIPT_MAX = 500
 
 /** `owner/name` from a GitHub address or the pair itself, or null. */
@@ -76,6 +84,10 @@ export function startCloudService(options: CloudServiceOptions) {
   const timers = new Map<string, unknown>()
   /** One thing at a time per harness: a look and a message never cross. */
   const queues = new Map<string, Promise<unknown>>()
+  /** The look in flight, by harness: the person's words cut short a long wait (Fo's reply waits 40 s) rather
+   *  than queue behind it. */
+  const looking = new Map<string, AbortController>()
+  const interrupt = (agentId: string): void => { looking.get(agentId)?.abort() }
   let stopped = false
 
   // Each maker's connection, found by where it points, for a minute at a time; a refusal finds it again.
@@ -103,7 +115,7 @@ export function startCloudService(options: CloudServiceOptions) {
   const save = (): void => {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     const temp = `${stateFile}.${process.pid}.tmp`
-    writeFileSync(temp, JSON.stringify({ harnesses: [...entries.values()].map(({ harness, remote, question, changedAt }) => ({ harness, remote, question, changedAt })) }), { mode: 0o600 })
+    writeFileSync(temp, JSON.stringify({ harnesses: [...entries.values()].map(({ harness, remote, question, changedAt, creationId }) => ({ harness, remote, question, changedAt, creationId })) }), { mode: 0o600 })
     renameSync(temp, stateFile)
   }
   const transcript = (agentId: string): TranscriptMessage[] => {
@@ -148,7 +160,13 @@ export function startCloudService(options: CloudServiceOptions) {
   const apply = (entry: Entry, update: CloudUpdate): boolean => {
     const before = JSON.stringify([entry.harness, entry.remote, entry.question?.text])
     const seen = new Set(transcript(entry.harness.agentId).slice(-TRANSCRIPT_MAX).map((message) => message.id))
-    for (const message of update.messages) if (!seen.has(message.id)) record(entry, { ...message, from: 'agent' })
+    for (const message of update.messages) {
+      if (seen.has(message.id)) continue
+      record(entry, { ...message, from: 'agent' })
+      entry.heard = true
+    }
+    // "Waiting for you" with nothing said since the person wrote is the wait they just answered: not a new one.
+    if (update.state === 'needs_input' && !entry.heard) update = { ...update, state: undefined, question: undefined }
     if (update.state) entry.harness.state = update.state
     if (update.activity !== undefined) entry.harness.activity = update.activity
     if (update.branch !== undefined) entry.harness.branch = update.branch
@@ -176,10 +194,16 @@ export function startCloudService(options: CloudServiceOptions) {
     const entry = entries.get(agentId)
     if (!entry || stopped || !watching(entry)) return
     let update: CloudUpdate
+    const controller = new AbortController()
+    looking.set(agentId, controller)
+    const started = now()
     try {
-      update = await adapters[entry.harness.agent].poll(entry.remote)
+      update = await adapters[entry.harness.agent].poll(entry.remote, controller.signal)
       entry.failures = 0
     } catch (error) {
+      // Cut short by the person's words: they are next in line, and look again after.
+      if (controller.signal.aborted) return
+    
       entry.failures += 1
       const said = error instanceof CloudError ? error.message : `${CLOUD_AGENTS[entry.harness.agent].name} could not be reached.`
       log(`[cloud] ${agentId} look failed (${entry.failures}): ${error instanceof Error ? error.name : 'error'}`)
@@ -187,15 +211,33 @@ export function startCloudService(options: CloudServiceOptions) {
       schedule(agentId, Math.min(BACKOFF_MAX_MS, WORKING_MS * 2 ** entry.failures))
       return
     }
+    finally {
+      if (looking.get(agentId) === controller) looking.delete(agentId)
+    }
     if (apply(entry, update)) touched(entry)
-    if (watching(entry)) schedule(agentId, update.waited ? 0 : entry.harness.state === 'needs_input' ? WAITING_MS : WORKING_MS)
+    const waitedLong = update.waited && now() - started >= LOOK_MIN_MS
+    if (watching(entry)) schedule(agentId, waitedLong ? 0 : update.waited ? LOOK_MIN_MS : entry.harness.state === 'needs_input' ? WAITING_MS : WORKING_MS)
   })
 
   const refused = (error: unknown, agent?: CloudAgentId): { ok: false; error: string; detail: string } => error instanceof CloudError
     ? { ok: false, error: error.code, detail: error.message }
     : { ok: false, error: 'CLOUD_FAILED', detail: `${agent ? CLOUD_AGENTS[agent].name : 'The cloud agent'} could not be reached. Try again.` }
 
-  const create: CloudPort['create'] = async (request) => {
+  /** New Harnesses still starting at their maker, by `creationId`: a retry while one starts gets its answer. */
+  const creating = new Map<string, ReturnType<CloudPort['create']>>()
+
+  const create: CloudPort['create'] = (request) => {
+    // The same New Harness asked again (a window that timed out waiting): the harness it made, not a second.
+    const creationId = typeof request.creationId === 'string' && request.creationId ? request.creationId.slice(0, 120) : undefined
+    if (!creationId) return createNew(request, undefined)
+    const made = [...entries.values()].find((entry) => entry.creationId === creationId)
+    if (made) return Promise.resolve({ ok: true, agent: cloudAgentFrame(made.harness) })
+    const pending = creating.get(creationId) ?? createNew(request, creationId).finally(() => creating.delete(creationId))
+    creating.set(creationId, pending)
+    return pending
+  }
+
+  const createNew = async (request: Record<string, unknown>, creationId: string | undefined): ReturnType<CloudPort['create']> => {
     const agent = request.engine
     if (!isCloudAgent(agent)) return { ok: false, error: 'INVALID_ENGINE', detail: 'That is not a cloud agent.' }
     const task = typeof request.prompt === 'string' ? request.prompt.trim() : ''
@@ -222,6 +264,8 @@ export function startCloudService(options: CloudServiceOptions) {
       question: null,
       changedAt: now(),
       failures: 0,
+      heard: false,
+      ...(creationId ? { creationId } : {}),
     }
     entries.set(entry.harness.agentId, entry)
     record(entry, { id: `person-${now()}`, from: 'person', text: task, at })
@@ -233,7 +277,7 @@ export function startCloudService(options: CloudServiceOptions) {
     return { ok: true, agent: cloudAgentFrame(entry.harness) }
   }
 
-  const deliver = (agentId: string, text: string): Promise<CloudResult> => serial(agentId, async () => {
+  const deliver = (agentId: string, text: string): Promise<CloudResult> => { interrupt(agentId); return serial(agentId, async () => {
     const entry = entries.get(agentId)
     if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
     const words = text.trim()
@@ -245,22 +289,30 @@ export function startCloudService(options: CloudServiceOptions) {
       return refused(error, entry.harness.agent)
     }
     record(entry, { id: `person-${now()}`, from: 'person', text: words, at: new Date(now()).toISOString() })
+    entry.heard = false
     entry.harness.state = 'working'
     entry.harness.activity = null
     ask(entry, null)
     touched(entry)
     schedule(agentId, 2_000)
     return { ok: true }
-  })
+  }) }
 
   const answer = async (agentId: string, requestId: string, answers: Record<string, string>): Promise<CloudResult> => {
     const entry = entries.get(agentId)
-    if (!entry?.question || entry.question.requestId !== requestId) return { ok: false, error: 'STALE_QUESTION', detail: 'That question was already answered.' }
+    const question = entry?.question
+    if (!entry || !question || question.requestId !== requestId) return { ok: false, error: 'STALE_QUESTION', detail: 'That question was already answered.' }
     const words = Object.values(answers).filter((value) => typeof value === 'string' && value.trim()).join('\n')
-    return deliver(agentId, words)
+    // Taken at once, before anything waits: a second answer (the dial and the window both) finds it answered.
+    entry.question = null
+    options.core.unask(agentId, question.requestId)
+    const result = await deliver(agentId, words)
+    // Not taken: the question stands, asked again.
+    if (!result.ok && !entry.question && entry.harness.state === 'needs_input') ask(entry, { text: question.text, choices: question.choices })
+    return result
   }
 
-  const stopHarness = (agentId: string): Promise<CloudResult> => serial(agentId, async () => {
+  const stopHarness = (agentId: string): Promise<CloudResult> => { interrupt(agentId); return serial(agentId, async () => {
     const entry = entries.get(agentId)
     if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
     const adapter = adapters[entry.harness.agent]
@@ -272,7 +324,7 @@ export function startCloudService(options: CloudServiceOptions) {
     ask(entry, null)
     touched(entry)
     return adapter.stop ? { ok: true } : { ok: true, detail: `${CLOUD_AGENTS[entry.harness.agent].name} keeps working on its own.` }
-  })
+  }) }
 
   const requests: ServiceRequests = {
     cloud_transcript: (payload, asker) => {
@@ -305,7 +357,8 @@ export function startCloudService(options: CloudServiceOptions) {
     const saved = JSON.parse(readFileSync(stateFile, 'utf8')) as { harnesses?: Array<Omit<Entry, 'failures'>> }
     for (const raw of saved.harnesses ?? []) {
       if (!raw?.harness?.agentId || !isCloudAgent(raw.harness.agent) || !raw.remote?.id) continue
-      entries.set(raw.harness.agentId, { harness: raw.harness, remote: raw.remote, question: null, changedAt: raw.changedAt ?? now(), failures: 0 })
+      entries.set(raw.harness.agentId, { harness: raw.harness, remote: raw.remote, question: null, changedAt: raw.changedAt ?? now(), failures: 0, heard: true,
+        ...(typeof raw.creationId === 'string' ? { creationId: raw.creationId } : {}) })
     }
   } catch { /* None yet. */ }
   for (const entry of entries.values()) if (watching(entry)) schedule(entry.harness.agentId, 1_000)

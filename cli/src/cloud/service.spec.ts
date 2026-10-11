@@ -268,6 +268,95 @@ describe('a cloud harness', () => {
   })
 })
 
+describe('what the review found', () => {
+  it('cuts a long wait short when the person writes, rather than queueing their words behind it', async () => {
+    let aborted = false
+    const fo = maker({ id: 'fo', poll: vi.fn((_remote, signal?: AbortSignal) => new Promise<CloudUpdate>((resolve, reject) => {
+      signal?.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')) })
+    })) })
+    const service = start({ fo })
+    await service.port.create({ engine: 'fo', prompt: 'book a haircut' })
+    const agentId = published()[0].agentId
+    for (const [, timer] of timers) timer.fn()
+    timers.clear()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(await service.port.deliver(agentId, 'make it 10')).toEqual({ ok: true })
+    expect(aborted).toBe(true)
+    // Cut short is not a failure: nothing says it could not be reached.
+    expect(published()[0].activity).toBeNull()
+    service.stop()
+  })
+
+  it('never looks again at once at a maker that answered at once', async () => {
+    const fo = maker({ id: 'fo' })
+    const service = start({ fo })
+    await service.port.create({ engine: 'fo', prompt: 'book a haircut' })
+    fo.looks.push({ messages: [], state: 'working', waited: true })
+    const due = [...timers.values()]
+    timers.clear()
+    for (const timer of due) timer.fn()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect([...timers.values()].map((timer) => timer.ms)).toEqual([5_000])
+    service.stop()
+  })
+
+  it('takes a question\'s answer once, and asks it again when the maker did not take it', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    const agentId = published()[0].agentId
+    devin.looks.push({ messages: [{ id: 'm1', text: 'Which branch?', at: 'x' }], state: 'needs_input', question: { text: 'Which branch?', choices: ['main'] } })
+    await tick()
+    const requestId = doors.ask.mock.calls[0][1] as string
+    const [first, second] = await Promise.all([service.port.answer(agentId, requestId, { answer: 'main' }), service.port.answer(agentId, requestId, { answer: 'main' })])
+    expect([first.ok, second.ok]).toEqual([true, false])
+    expect(devin.send).toHaveBeenCalledTimes(1)
+    // Refused by the maker: the question stands again, under a new id.
+    devin.looks.push({ messages: [{ id: 'm2', text: 'And the tests?', at: 'x' }], state: 'needs_input', question: { text: 'And the tests?', choices: [] } })
+    await tick()
+    const again = doors.ask.mock.calls.at(-1)![1] as string
+    devin.send = vi.fn(async () => { throw new CloudError('BUSY', 'Devin Cloud is still working.') })
+    expect(await service.port.answer(agentId, again, { answer: 'yes' })).toMatchObject({ ok: false, error: 'BUSY' })
+    expect(doors.ask.mock.calls.at(-1)![2]).toEqual({ text: 'And the tests?', choices: [] })
+    service.stop()
+  })
+
+  it('does not ask again the wait the person just answered', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    const agentId = published()[0].agentId
+    devin.looks.push({ messages: [{ id: 'm1', text: 'Which branch?', at: 'x' }], state: 'needs_input', question: { text: 'Which branch?', choices: [] } })
+    await tick()
+    await service.port.answer(agentId, doors.ask.mock.calls[0][1] as string, { answer: 'main' })
+    doors.ask.mockClear()
+    // Devin has not caught up: still "waiting for you", nothing new said.
+    devin.looks.push({ messages: [], state: 'needs_input' })
+    await tick()
+    expect(doors.ask).not.toHaveBeenCalled()
+    expect(published()[0].state).toBe('working')
+    service.stop()
+  })
+
+  it('makes one harness for one New Harness, however often the window asks', async () => {
+    let release!: () => void
+    const devin = maker({ start: vi.fn(() => new Promise((resolve) => { release = () => resolve({ remote: { id: 'd1' }, links: [] }) })) as never })
+    const service = start({ 'devin-cloud': devin })
+    const request = { engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api', creationId: 'c-1' }
+    const first = service.port.create(request)
+    const retried = service.port.create(request)
+    release()
+    const [a, b] = await Promise.all([first, retried])
+    expect(devin.start).toHaveBeenCalledTimes(1)
+    expect(a.ok && b.ok && a.agent.id === b.agent.id).toBe(true)
+    const later = await service.port.create(request)
+    expect(later.ok && a.ok && later.agent.id === a.agent.id).toBe(true)
+    expect(published()).toHaveLength(1)
+    service.stop()
+  })
+})
+
 describe('what the apps ask', () => {
   it('reads a harness\'s conversation, from where the pane has read to', async () => {
     const devin = maker()

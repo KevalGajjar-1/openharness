@@ -47,6 +47,9 @@ function readBody(request: IncomingMessage): Promise<Buffer | null> {
 export interface BridgeOptions {
   /** The capability agents' addresses carry (agents.ts bridgeKey), read per request. */
   key: () => string
+  /** Harness's own capability (agents.ts harnessKey), never in an agent's configuration: only it lists the
+   *  connections or calls a key-only connection's API. Absent, those two addresses answer nothing. */
+  harnessKey?: () => string
 }
 
 type Target = { kind: 'mcp'; code: string } | { kind: 'api'; code: string; path: string } | { kind: 'list' }
@@ -54,11 +57,14 @@ type Target = { kind: 'mcp'; code: string } | { kind: 'api'; code: string; path:
 export function createBridge(vault: Store, options: BridgeOptions): Server {
   const target = (url: string): Target | null => {
     const parts = new URL(url, 'http://127.0.0.1').pathname.replace(/^\/|\/$/g, '').split('/')
-    const key = options.key()
     const given = Buffer.from(parts[0])
-    if (!key || given.length !== Buffer.byteLength(key) || !timingSafeEqual(given, Buffer.from(key))) return null
-    if (parts.length === 2 && parts[1] === 'connections') return { kind: 'list' }
+    const matches = (key: string): boolean => !!key && given.length === Buffer.byteLength(key) && timingSafeEqual(given, Buffer.from(key))
+    const harness = matches(options.harnessKey?.() ?? '')
+    if (!harness && !matches(options.key())) return null
     if (parts.length === 3 && parts[2] === 'mcp') return { kind: 'mcp', code: parts[1] }
+    // An agent's key reaches MCP servers only: the list and the API keys are Harness's alone.
+    if (!harness) return null
+    if (parts.length === 2 && parts[1] === 'connections') return { kind: 'list' }
     if (parts.length >= 4 && parts[2] === 'api') return { kind: 'api', code: parts[1], path: `/${parts.slice(3).join('/')}` }
     return null
   }

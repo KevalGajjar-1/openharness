@@ -8,7 +8,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FakeGateway, FakeService } from '../../testing/connectorServers.js'
-import { bridgeKey, sync } from './agents.js'
+import { bridgeKey, harnessKey, sync } from './agents.js'
 import { createBridge } from './bridge.js'
 import { CATALOG, services } from './catalog.js'
 import { addApiKey, addCustom, cards, customCode, disconnect, finish, Flows, signInFor } from './connect.js'
@@ -149,6 +149,7 @@ describe('the bridge', () => {
 describe('key-only connections for the cloud agents', () => {
   let port: number
   let key: string
+  let agentKey: string
   const seen: { method: string, url: string, auth: string, body: string }[] = []
   let status = 200
   let api: string
@@ -166,8 +167,9 @@ describe('key-only connections for the cloud agents', () => {
     await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
     api = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`
     closers.push(() => { upstream.close(); upstream.closeAllConnections() })
-    key = bridgeKey(vault)
-    const bridge = createBridge(vault, { key: () => String(vault.file('bridge.json').key) })
+    key = harnessKey(vault)
+    agentKey = bridgeKey(vault)
+    const bridge = createBridge(vault, { key: () => String(vault.file('bridge.json').key), harnessKey: () => String(vault.file('harness-key.json').key) })
     await new Promise<void>(resolve => bridge.listen(0, '127.0.0.1', resolve))
     port = (bridge.address() as { port: number }).port
     closers.push(() => { bridge.close(); bridge.closeAllConnections() })
@@ -203,6 +205,11 @@ describe('key-only connections for the cloud agents', () => {
     expect((await send('GET', `/${key}/fo/api/v1/x`)).status).toBe(404)
     expect((await send('GET', `/wrong/devin/api/v3/self`)).status).toBe(404)
     expect((await send('GET', `/${key}/devin/other/v3/self`)).status).toBe(404)
+    // The key in every agent's MCP entry reaches no API key and lists nothing.
+    expect(JSON.stringify(sync(vault, env))).not.toContain(key)
+    expect((await send('GET', `/${agentKey}/connections`)).status).toBe(404)
+    expect((await send('GET', `/${agentKey}/devin/api/v3/self`)).status).toBe(404)
+    expect(seen.filter((call) => call.url.startsWith('/v3/self'))).toHaveLength(1)
   })
 
   it('adds a key from the command, read from stdin rather than the command line', async () => {

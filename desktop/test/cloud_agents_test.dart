@@ -12,6 +12,7 @@ import 'package:harness/state/new_harness.dart';
 import 'package:harness/state/workspace_status.dart';
 import 'package:harness/widgets/cloud_chat_pane.dart';
 import 'package:harness/widgets/engine_identity.dart';
+import 'package:harness/ws/ws_conn.dart';
 
 import 'support/rename_connection.dart';
 import 'swarm_screen_test.dart' show mount;
@@ -241,12 +242,11 @@ void main() {
       expect(find.text('1) 9:30'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('cloud-choice-0')));
       await tester.pumpAndSettle();
-      expect(connection.raw.single.$1, 'question_response');
-      expect(connection.raw.single.$2, {
-        'requestId': 'cloud_q_1',
-        'agentId': 'cloud_1',
-        'answers': {'answer': '9:30'},
-      });
+      // Answered as words for it, so a refusal can be said: the service takes them as the answer.
+      expect(connection.sent, [
+        {'agentId': 'cloud_1', 'text': '9:30'},
+      ]);
+      expect(connection.raw, isEmpty);
       await tester.tap(find.byTooltip('Close Pane'));
       expect(closed, 1);
     },
@@ -378,6 +378,21 @@ void main() {
     );
     expect(connection.creates.single.containsKey('repositoryUrl'), isFalse);
     expect(connection.creates.single.containsKey('cwd'), isFalse);
+
+    // Refused by the cloud service: its own words, never "not confirmed".
+    connection.refuse = {
+      'error': 'NOT_CONNECTED',
+      'detail':
+          'Connect Fo in Connections (Add custom, https://mcp.api.wajo.ai/fo).',
+    };
+    final again = NewHarnessController(app, machineId: 'm', engine: 'fo');
+    addTearDown(again.dispose);
+    again.setTask('book a haircut');
+    expect(await again.create(), NewHarnessOutcome.failed);
+    expect(
+      again.error,
+      'Connect Fo in Connections (Add custom, https://mcp.api.wajo.ai/fo).',
+    );
   });
 
   testWidgets(
@@ -435,6 +450,7 @@ void main() {
 /// A connection that makes the cloud harness New Harness asks for.
 class CreateConnection extends CloudConnection {
   final creates = <Map<String, dynamic>>[];
+  Map<String, dynamic>? refuse;
 
   @override
   Future<Map<String, dynamic>> request(
@@ -444,6 +460,15 @@ class CreateConnection extends CloudConnection {
   }) async {
     if (type == 'agent_create') {
       creates.add(Map.of(payload));
+      // As the real connection does: an error reply is thrown, not returned.
+      if (refuse case final refusal?) {
+        throw WsRequestFailure(
+          responseType: 'agent_create_result',
+          code: refusal['error'] as String,
+          detail: refusal['detail'] as String?,
+          payload: refusal,
+        );
+      }
       return {
         'agent': cloudFrame(
           id: 'cloud_9',

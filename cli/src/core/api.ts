@@ -528,6 +528,9 @@ export const LONG_ANSWERS: Readonly<Record<string, Readonly<Record<string, numbe
     launchTarget: 3 * MINUTE, privateGridName: 2 * MINUTE, lists: 2 * MINUTE,
   },
   store: { dsh_install: 30 * MINUTE, dsh_update: 30 * MINUTE, dshMaterialize: 6 * MINUTE },
+  // A cloud agent's maker answers on its own time: Fo's reply waits 40 s, and a busy Fo is retried for half a
+  // minute more. A wait shorter than that said "not running" of words that were then sent anyway.
+  cloud: { create: 3 * MINUTE, deliver: 3 * MINUTE, answer: 3 * MINUTE, stopHarness: 2 * MINUTE, cloud_send: 3 * MINUTE },
 }
 
 /** The orchestrator (services/orchestrator.ts): its projects, for the apps and for the agents it runs. */

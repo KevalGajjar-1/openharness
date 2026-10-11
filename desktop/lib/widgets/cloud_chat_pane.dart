@@ -116,29 +116,21 @@ class _CloudChatPaneState extends State<CloudChatPane> {
     });
   }
 
+  /// The person's words, typed or a choice tapped, as words for it
+  /// (`cloud_send`), which its service takes as the answer to an open question
+  /// too. Answered, so a refusal is said here and the words stay in the prompt.
   Future<void> _send([String? words]) async {
     final text = (words ?? _prompt.text).trim();
     if (text.isEmpty || _sending) return;
-    final question = widget.notifier.questionFor(
-      widget.machineId,
-      widget.agent.id,
-    );
     setState(() {
       _sending = true;
       _error = null;
     });
-    String? refused;
-    if (question != null) {
-      // An answer to its question, as the dial answers one: the question closes
-      // when its maker has it.
-      widget.notifier.answerQuestion(question, text);
-    } else {
-      refused = await widget.notifier.sendCloudMessage(
-        widget.machineId,
-        widget.agent.id,
-        text,
-      );
-    }
+    final refused = await widget.notifier.sendCloudMessage(
+      widget.machineId,
+      widget.agent.id,
+      text,
+    );
     if (!mounted) return;
     setState(() {
       _sending = false;

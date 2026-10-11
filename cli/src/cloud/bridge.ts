@@ -3,7 +3,7 @@
  * connection's credential, so this service holds none (services/AGENTS.md, "Do not hold credentials").
  * A connection is found by where it points (Fo's MCP server, Devin's API), not by what the person named it.
  */
-import { bridgeKey, bridgePort } from '../lib/connectors/agents.js'
+import { bridgePort, harnessKey } from '../lib/connectors/agents.js'
 import { Store } from '../lib/connectors/store.js'
 import { CLOUD_AGENTS, type CloudAgentId } from '../lib/cloudAgents.js'
 import { CloudError } from './types.js'
@@ -18,7 +18,8 @@ export interface Bridge {
   api(code: string, method: string, path: string, body?: unknown, timeoutMs?: number): Promise<{ status: number; json: Record<string, unknown> }>
 }
 
-export function connectionsBridge(base: () => string = () => `http://127.0.0.1:${bridgePort()}/${bridgeKey(new Store())}`): Bridge {
+/** Through Harness's own key (agents.ts `harnessKey`), never the one in the agents' configurations. */
+export function connectionsBridge(base: () => string = () => `http://127.0.0.1:${bridgePort()}/${harnessKey(new Store())}`): Bridge {
   return {
     async connections() {
       const answer = await fetch(`${base()}/connections`, { signal: AbortSignal.timeout(10_000) })

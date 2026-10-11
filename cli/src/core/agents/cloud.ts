@@ -98,6 +98,21 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
     /** Every cloud harness's frame, for `agents_list`. */
     frames: (): CloudAgentFrame[] => [...harnesses.values()].map(cloudAgentFrame),
     owns: (agentId: string): boolean => harnesses.has(agentId),
+    /** What a working cloud harness is doing, for the dial's working card; null when it says nothing. */
+    activity: (agentId: string): string | null => {
+      const harness = harnesses.get(agentId)
+      return harness && (harness.state === 'working' || harness.state === 'starting') ? harness.activity : null
+    },
+    /**
+     * The running cloud harnesses as the dial lists agents (services/fleetRouter.ts reads an agent's id, its
+     * start, its engine and its name): rows with no pane, no transcript and no process, so nothing that reads a
+     * terminal agent's files finds one to read. A stopped one is off the wheel, as a stopped agent is.
+     */
+    dialRows: (): Array<Record<string, unknown>> => [...harnesses.values()].filter((harness) => harness.state !== 'stopped').map((harness) => ({
+      agentId: harness.agentId, sessionId: harness.agentId, engine: harness.agent, displayName: harness.name, runtimeProfile: null,
+      registeredAt: Date.parse(harness.createdAt), lastHookAt: Date.parse(harness.updatedAt), active: true,
+      tmuxPane: '', cwd: '', projectDir: '', transcriptPath: null, runtimes: [], primaryRuntimeKey: '',
+    })),
     /** `agent_create` for a cloud agent, answered as the socket answers one (`{ agent }`, or the refusal); null for any other engine. */
     create(payload: Record<string, unknown>): Promise<Record<string, unknown>> | null {
       if (!isCloudAgent(payload.engine)) return null
@@ -119,11 +134,21 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
         .then((result): QuestionAnswerResult => (result.ok ? { ok: true }
           : { ok: false, error: result.error === 'STALE_QUESTION' ? 'STALE_QUESTION' : 'ANSWER_FAILED', detail: result.detail ?? '' }))
     },
-    /** Stop Harness for a cloud harness, answered as `agent_delete` is; null when it is not one. */
-    stop(agentId: string): Promise<Record<string, unknown>> | null {
+    /**
+     * Stop Harness for a cloud harness, answered as `agent_delete` is; null when it is not one. The socket waits
+     * on this in the connection's line, so a maker slower than a few seconds is answered "stopping" and its
+     * harness's frame says when it has: the window's other requests never wait behind a vendor.
+     */
+    stop(agentId: string, quickMs = 3_000): Promise<Record<string, unknown>> | null {
       if (!harnesses.has(agentId)) return null
-      return call((cloud) => cloud.stopHarness(agentId), DOWN)
+      const stopped = call((cloud) => cloud.stopHarness(agentId), DOWN)
         .then((result) => (result.ok ? { deleted: true, ...(result.detail ? { detail: result.detail } : {}) } : { error: result.error, ...(result.detail ? { detail: result.detail } : {}) }))
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stopping = new Promise<Record<string, unknown>>((resolve) => {
+        timer = setTimeout(() => resolve({ deleted: true, detail: 'Stopping. Its pane says when it has.' }), quickMs)
+        timer.unref?.()
+      })
+      return Promise.race([stopped, stopping]).finally(() => clearTimeout(timer))
     },
   }
 }

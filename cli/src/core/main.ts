@@ -778,6 +778,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The dial's working card: what a Claude Code or Codex pane's footer says, read here so the pane never
     // leaves the core.
     activityText: async (agentId) => {
+      // A cloud harness says what it is doing on its frame ("Calling Hair Lab").
+      if (cloudAgents?.owns(agentId)) return cloudAgents.activity(agentId)
       const session = registry.resolve(agentId)
       if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
       const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
@@ -785,6 +787,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     },
     // The same footer for a Harness Pro, with its timer beside it (the agent's sentence comes from the cards).
     activitySnapshot: async (agentId) => {
+      if (cloudAgents?.owns(agentId)) {
+        const text = cloudAgents.activity(agentId)
+        return text ? { text } : null
+      }
       const session = registry.resolve(agentId)
       if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
       const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
@@ -1270,6 +1276,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     call: (type, payload, waitMs) => serviceLinks.call('devices', type, payload, waitMs),
     state: () => ({ desk: appPaneAgents, foreground: appWindowForeground, swarms: appSwarmsLatest, unread: appUnreadLatest,
       focus: windowFocus(), engines: registry.active().map((agent) => agent.engine), commanders: backend.hasCommander() }),
+    cloudRows: () => cloudAgents?.dialRows() ?? [],
   })
   // The Wi-Fi device in the devices' process (core/wifiLink.ts): its sessions' requests and what the agents do,
   // in order; on each connection, what the core holds for it (core/wifi.ts).
@@ -2477,9 +2484,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     modelTarget: (selection) => (ports.models ?? MODELS_OFF).launchTarget(selection),
   })
   // A cloud agent is made by its service (core/agents/cloud.ts); every other engine launches here.
+  // Answered when the service answers, never in the connection's line: the window's next requests go on.
   backend.createProvider = async (payload, asker, answer) => {
     const made = cloud.create(payload)
-    if (made) answer(await made)
+    if (made) void made.then(answer)
     else await launches.create(payload, asker, answer)
   }
   backend.createStatusProvider = launches.createStatus
@@ -2490,12 +2498,17 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const submitAgent = inputs.submitAgent
   // Words for a cloud harness go to its service, and a delivery among them is settled as the pane's are.
   backend.onMessage = (id, content, deliveryId) => {
+    // An Agent Messages turn its mailbox no longer wants written waits, as a pane's does (core/input.ts).
+    if (cloud.owns(id) && deliveryId?.startsWith('team:') && !(ports.messages?.canWrite(deliveryId) ?? false)) {
+      deliveries.settled({ deliveryId, sessionId: id, state: 'rejected', reason: 'team_waiting_control' })
+      return
+    }
     const sent = cloud.deliver(id, content)
     if (!sent) { submitAgent(id, content, deliveryId); return }
     if (deliveryId) void sent.then((result) => deliveries.settled({ deliveryId, sessionId: id, state: result.ok ? 'delivered' : 'rejected', ...(result.ok ? {} : { reason: result.error }) }))
   }
   backend.messageProvider = (payload) => {
-    const agentId = typeof payload.agentId === 'string' ? payload.agentId : ''
+    const agentId = typeof payload.agentId === 'string' ? payload.agentId : typeof payload.sessionId === 'string' ? payload.sessionId : ''
     if (cloud.owns(agentId)) { void cloud.deliver(agentId, typeof payload.content === 'string' ? payload.content : ''); return }
     inputs.messageRequest(payload)
   }
