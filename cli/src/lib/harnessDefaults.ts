@@ -18,11 +18,17 @@ export function harnessPermissionEnvironment(engine: AgentEngine, env: Record<st
   return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission: opencodePermission(config, permissionMode) }) }
 }
 
-/** Fresh own-provider launches only. Restores and explicit model routes keep their choices. */
+/** Fresh own-provider launches only. Restores, explicit model routes and a package's own model keep their choices. */
 export function freshHarnessEnvironment(engine: AgentEngine, env: Record<string, string> = {},
   explicitRoute = false, permissionMode = DEFAULT_HARNESS_PERMISSION): Record<string, string> {
   if (engine !== DEFAULT_HARNESS_ENGINE || explicitRoute) return env
   const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT || '{}')
+  // A package that names its own model keeps it. Memories reads a person's whole message history, so it
+  // pins a free model whose provider keeps nothing and trains on nothing (store/agents/memories/harness.json)
+  // rather than the default above, whose terms let its maker train on what it is sent.
+  if (typeof config.model === 'string' && config.model) {
+    return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission: opencodePermission(config, permissionMode) }) }
+  }
   const modelId = DEFAULT_HARNESS_MODEL.split('/')[1]!
   const provider = config.provider?.opencode ?? {}
   const model = provider.models?.[modelId] ?? {}

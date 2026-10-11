@@ -35,3 +35,13 @@ it('does not replace an explicit route, a restored conversation, or another agen
   expect(freshHarnessEnvironment('opencode', env, true)).toBe(env)
   expect(freshHarnessEnvironment('codex', env)).toBe(env)
 })
+
+it("keeps the model a package pins, with the launch's approvals, and adds no effort of its own", () => {
+  const pinned = { model: 'opencode/space-bunny-free', small_model: 'opencode/space-bunny-free' }
+  const result = JSON.parse(freshHarnessEnvironment('opencode', { OPENCODE_CONFIG_CONTENT: JSON.stringify(pinned) }).OPENCODE_CONFIG_CONTENT!)
+  expect(result).toEqual({ ...pinned, permission: 'allow' })
+  const asked = JSON.parse(freshHarnessEnvironment('opencode', { OPENCODE_CONFIG_CONTENT: JSON.stringify(pinned) }, false, 'ask').OPENCODE_CONFIG_CONTENT!)
+  expect(asked).toEqual({ ...pinned, permission: 'ask' })
+  // An empty name is no choice: the default applies.
+  expect(JSON.parse(freshHarnessEnvironment('opencode', { OPENCODE_CONFIG_CONTENT: '{"model":""}' }).OPENCODE_CONFIG_CONTENT!).model).toBe(DEFAULT_HARNESS_MODEL)
+})

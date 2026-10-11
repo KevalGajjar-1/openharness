@@ -28,7 +28,9 @@ appears. Memory text is shown as text; nothing in it can run in the pane.
 
 A short profile of how you work, built from your own words across every agent, every line with its
 sources. Ask the agent: **build my About You**. It runs on the agent and model you picked for this
-harness, as a turn you see in the chat. It lives at `~/.harness/memory/about-you.md`; the previous
+harness, as a turn you see in the chat. Created from the Store's Essentials, Memories starts on OpenCode
+with Space Bunny Free, a free model whose provider keeps no data and trains on none, and builds it
+right away; switch to Claude Code, Codex or any other agent from the pane header. It lives at `~/.harness/memory/about-you.md`; the previous
 version is kept beside it. Each build is numbered one past the highest any machine has seen, so
 machines agree on the newest without trusting their clocks.
 
