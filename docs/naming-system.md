@@ -61,6 +61,7 @@ and **Browser**. Technical documentation may still call the terminal interface a
 | **Connections** | Service accounts available to agents running as the same local user on a Harness computer. | Open Connections; connect GitHub. |
 | **Viewer** | A surface for inspecting or interacting with work. | The game viewer; the HTML preview. |
 | **This computer** | The local execution machine. | Run on This computer. |
+| **Cloud** | An agent maker's own servers, as a place a harness runs beside the computers. A **cloud agent** runs there, reached through its maker's API rather than as a terminal program. | Start Devin in Devin's cloud; Fo runs only in Fo's cloud. |
 | **Store** | The catalog of reusable harnesses and viewers. | Install a harness from the Store. |
 | **Conversation** | An agent's conversation history, including histories started outside Harness. | Provider usage counts native conversations. |
 | **Recorded run** | A saved demonstration of a harness doing work. | Watch the recorded run in the Store. |
