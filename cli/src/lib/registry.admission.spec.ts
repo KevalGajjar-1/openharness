@@ -1,6 +1,6 @@
 import type { Server } from 'node:http'
 import type { HookServerHandlers } from '../hookServer.js'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -169,6 +169,20 @@ it.each([false, true])('verifies prepared registration facts under a fresh budge
   clock.now = 10_000
   if (replaced) {
     rmSync(transcript); writeFileSync(transcript, header())
+    expect(() => staged.commit()).toThrow('changed')
+    unchanged(before)
+  } else expect(staged.commit()?.entry.sessionId).toBe(A)
+})
+it.each([false, true])('retains the complete bounded home pool across a disk wait (changed root=%s)', async changed => {
+  const homes = Array.from({ length: 63 }, (_, index) => join(root, 'profiles', String(index), 'config', 'native', 'codex'))
+  for (const directory of homes) mkdirSync(join(directory, 'sessions'), { recursive: true })
+  writeFileSync(join(root, 'data', 'engine-homes.json'), JSON.stringify({ codex: homes }))
+  const before = snapshot(), staged = registry.prepareRegistration(input())!
+  await Promise.resolve()
+  clock.now = 10_000
+  if (changed) {
+    const directory = join(homes.at(-1)!, 'sessions')
+    renameSync(directory, `${directory}.old`); mkdirSync(directory)
     expect(() => staged.commit()).toThrow('changed')
     unchanged(before)
   } else expect(staged.commit()?.entry.sessionId).toBe(A)
