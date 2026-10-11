@@ -246,7 +246,7 @@ class AgentMessagesController extends ChangeNotifier {
     required this.request,
     required this.nameOf,
     DateTime Function()? now,
-    this.flowingFor = const Duration(seconds: 5),
+    this.flowingFor = const Duration(seconds: 10),
     this.remoteRecency = const Duration(seconds: 60),
     this.markLife = const Duration(seconds: 5),
   }) : now = now ?? DateTime.now;

@@ -109,7 +109,7 @@ Hovering a tab reveals Agent Messages' 💬 and × at its right, 💬 just left 
 stays. Tabs show no shortcut hint, and holding Command changes nothing on them.
 At rest a tab shows only its name and status. While its agents message each
 other, the status slot shows 💬 in Agent Messages' color (the accent blue,
-`AppPalette.accentOnSurface`), mirrored every half second, for 5 seconds after
+`AppPalette.accentOnSurface`), mirrored every half second, for 10 seconds after
 the last message, then the tab's status again. The hover 💬 is grey while off and in that color
 while on; its tooltip says what a click
 does ("Agent messages off · click to turn on", "Agent messages on · click to

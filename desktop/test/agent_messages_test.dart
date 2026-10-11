@@ -237,7 +237,7 @@ void main() {
   });
 
   group('traffic', () {
-    test('a tab flows for 5 seconds after its last message', () {
+    test('a tab flows for 10 seconds after its last message', () {
       fakeAsync((async) {
         backend.tabs = {'tab': true};
         final messages = controller();
@@ -252,7 +252,7 @@ void main() {
         async.elapse(const Duration(seconds: 3));
         messages.handleEvent(_sent(state: 'delivered'));
         expect(messages.trafficFor('tab'), 2);
-        async.elapse(const Duration(seconds: 4));
+        async.elapse(const Duration(seconds: 9));
         expect(messages.isFlowing('tab'), isTrue);
         final before = notified;
         async.elapse(const Duration(seconds: 1));
@@ -498,7 +498,7 @@ void main() {
           return {
             'messages': [
               recent('m0000001', ago: const Duration(minutes: 5)),
-              // Past the 5 s a tab flows, within a round of the remote
+              // Past the 10 s a tab flows, within a round of the remote
               // watch's: still news when a round first sees it.
               recent('m0000002', ago: const Duration(seconds: 30)),
             ],
@@ -551,7 +551,7 @@ void main() {
         );
         async.flushMicrotasks();
         expect(messages.isFlowing('tab'), isTrue);
-        async.elapse(const Duration(seconds: 19));
+        async.elapse(const Duration(seconds: 24));
         expect(messages.isFlowing('tab'), isTrue);
         async.elapse(const Duration(seconds: 1));
         expect(messages.isFlowing('tab'), isFalse);
