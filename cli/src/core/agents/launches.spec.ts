@@ -120,6 +120,15 @@ describe('agent_create, refused before any pane exists', () => {
     expect(dispatch).toHaveBeenCalledOnce()
   })
 
+  it('names models when its selected-model request rejects before native preparation', async () => {
+    vi.mocked(parseNewAgentModel).mockReturnValue({ state: 'ok', selection: { model: 'fixture-model', grid: 'fixture-grid' } })
+    const prepareCreate = vi.fn()
+    const run = setup({ prepareCreate, modelTarget: async () => { throw Error('models disconnected') } })
+    await run.ask({ creationId: CREATION, engine: 'claude', cwd: '/fixture/work' })
+    await vi.waitFor(() => expect(run.replies[0]).toMatchObject({ state: 'pending', held: { service: 'models' } }))
+    expect(prepareCreate).not.toHaveBeenCalled()
+  })
+
   it.each(['model', 'native'] as const)('retains durable cancellation while %s preparation settles', async phase => {
     vi.mocked(parseNewAgentModel).mockReturnValue({ state: 'ok', selection: { model: 'fixture-model', grid: 'fixture-grid' } })
     const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))

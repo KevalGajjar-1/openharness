@@ -1,7 +1,7 @@
 /** Eager preparation shared by every way core starts a native engine. */
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { permissionFlagToVerify, type PermissionLaunchChoice } from '../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../lib/engineInstall.js'
 import { engineHooks } from './hooks.js'
@@ -77,6 +77,10 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
   }
   try { nativeHookLocations(selected) } catch { return waiting('Waiting to confirm native engine locations.') }
   const environment = Object.freeze(selected)
+  const initialHomes = nativeHookLocations(environment)
+  const implicitHome = engine === 'claude' && !source.claudeHome
+    && initialHomes.CLAUDE_PROJECTS_DIR === join(initialHomes.CLAUDE_HOME, 'projects') ? initialHomes.CLAUDE_HOME
+    : engine === 'codex' && !source.codexHome ? initialHomes.CODEX_HOME : null
   const output = engine === 'opencode' ? await read(executable.command, OPENCODE_VERSION.args, environment) : null
   const opencodeMajor = output === null ? null : parseMajor(OPENCODE_VERSION, output)
   // Unknown is an observation of this attempt, never a permanent installed-file answer.
@@ -117,16 +121,21 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
           : engine === 'opencode' ? await hooks.installOpencodePlugin(port, { ...executable, major: opencodeMajor! }, options)
           : await installers[engine]?.(port, options) ?? true
         if (!installed || !executable.current() || !owner() || [...dependencies, ...confirmed].some(proof => !proof.current())) return false
-        // A login shell can move the session store without an explicit profile
-        // in the request. Discovery must know that same home before dispatch.
-        if (engine === 'claude' || engine === 'codex') deps.confirmHome?.(engine, home)
+        // A login shell can move the session store without an explicit profile.
+        // Codex's explicit/generated profiles belong to their registry row;
+        // adopting them globally would refresh a held package's hooks at boot
+        // before its Store dependencies are ready.
+        if ((engine === 'claude' || engine === 'codex') && home === implicitHome) deps.confirmHome?.(engine, home)
         if (!executable.current() || !owner() || [...dependencies, ...confirmed].some(proof => !proof.current())) return false
         // The command locations and the proofs become dispatch authority together.
         // A failed or pending replacement can never expose B with A's proof set.
         selectedEnvironment = Object.freeze(chosen); proofs = Object.freeze(confirmed)
         valid = true; prepared = true
         return true
-      } catch { return false } finally { preparing = false }
+      } catch (error) {
+        console.warn(`[launch] native hook preparation held · ${error instanceof Error ? error.message : error}`)
+        return false
+      } finally { preparing = false }
     },
     async permission(choice) {
       const flag = permissionFlagToVerify(engine, choice)

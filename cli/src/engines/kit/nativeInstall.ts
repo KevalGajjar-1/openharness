@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { buildEngineInstallationArgv } from '../../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../../lib/engineInstall.js'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
@@ -41,7 +41,11 @@ function readRecord(file: string): { text: string; file: string; stamp: string; 
   const paths = new NativePaths(new NativeEvidenceBudget(250))
   const location = paths.resolveSync(file, true), facts = paths.snapshot()
   if (!location) {
-    if (!paths.absentLeaf(file)) throw Error('Unconfirmed missing installation route')
+    // An ancestor may be an ordinary alias, such as macOS /var. Absence
+    // belongs to the observed physical parent, never a dangling leaf alias.
+    const parent = paths.resolveSync(dirname(file), true)
+    if (!parent?.info.isDirectory() || !paths.absentLeaf(join(parent.path, basename(file)))) throw Error('Unconfirmed missing installation route')
+    paths.verify()
     throw Object.assign(Error('Missing installation record'), { code: 'ENOENT' })
   }
   if (lstatSync(file).isSymbolicLink()) throw Error('Aliased installation record')

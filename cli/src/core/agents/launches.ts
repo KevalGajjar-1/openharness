@@ -150,10 +150,12 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
       const input = structuredClone(saved.input) as CreateInput
       if (!ENGINES.includes(input.engine) || typeof input.cwd !== 'string' || input.resumeSessionId) return null
       if (saved.selection) {
+        authority.hold(modelHold)
         const target = await modelTarget(saved.selection as NewAgentModel)
         if (!authority.current()) return null
         if (!target) { authority.hold(modelHold); return null }
         input.grid = target
+        authority.hold(launchHold)
       }
       const ready = await prepareCreate(input, { ...authority, label: saved.label }, { local: saved.local })
       if (!authority.current()) return null
@@ -364,7 +366,7 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, for
         }
         const operation = durableNative
           ? pending.start(creationId, fingerprint, { kind: 'native-create-v1', input,
-            selection: model.state === 'ok' ? model.selection : null, label: buildHarnessSessionLabel(engine), local: asker.local }, launchHold)
+            selection: model.state === 'ok' ? model.selection : null, label: buildHarnessSessionLabel(engine), local: asker.local }, model.state === 'ok' ? modelHold : launchHold)
           : model.state === 'ok'
           ? pending.start(creationId, fingerprint, { kind: 'model-create-v1', input, selection: model.selection, projectFolder, local: asker.local }, modelHold)
           : receipts.run(creationId, fingerprint, () => executeCreate(input, projectFolder, asker.local, create, true))
