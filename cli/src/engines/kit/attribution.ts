@@ -23,7 +23,18 @@ export interface AttributionFiles {
 
 /** The argv for `line`, or none where the person's settings say not to add it. */
 export function attributionArgsIn(contract: AttributionContract, line: string, files: AttributionFiles): string[] {
-  return contract.kind === 'setting' ? settingArgs(contract, line, files) : instructionArgs(contract, line, files)
+  return contract.kind === 'setting' ? settingArgs(contract, line, files) : instructionArgs(contract, [attributionInstruction(contract, line)], files)
+}
+
+/** One instruction for an instruction engine: its text, and what in the person's own value says it is there already. */
+export interface Instruction { text: string; mark: string }
+
+/** The pull request line as an instruction engine is told it. */
+export const attributionInstruction = (contract: InstructionAttribution, line: string): Instruction => ({ text: fill(contract.instruction, 'line', line), mark: line })
+
+/** The argv that gives an instruction engine [instructions] after the person's own value, in one config value. */
+export function instructionsArgsIn(contract: InstructionAttribution, instructions: readonly Instruction[], files: AttributionFiles): string[] {
+  return instructions.length ? instructionArgs(contract, instructions, files) : []
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -66,7 +77,7 @@ function settingArgs(contract: SettingAttribution, line: string, files: Attribut
   return contract.args.map((arg) => fill(arg, 'settings', settings))
 }
 
-function instructionArgs(contract: InstructionAttribution, line: string, files: AttributionFiles): string[] {
+function instructionArgs(contract: InstructionAttribution, instructions: readonly Instruction[], files: AttributionFiles): string[] {
   const config = join(files.home, contract.file)
   // A folder's own config: the engine reads it over the person's, and `-c` would replace it. Left alone. Looked for
   // up to the home folder, not in it: `~/.codex/config.toml` is the person's own config, not a folder's.
@@ -82,8 +93,10 @@ function instructionArgs(contract: InstructionAttribution, line: string, files: 
   const toml = files.read(config)
   const theirs = toml === null ? { state: 'absent' as const } : topLevelEntry(toml, contract.key)
   if (theirs.state === 'unreadable') return []
-  if (theirs.state === 'set' && theirs.value.includes(line)) return []
-  const instruction = fill(contract.instruction, 'line', line)
+  // What their value holds already is not said twice.
+  const ours = instructions.filter(({ mark }) => !(theirs.state === 'set' && theirs.value.includes(mark)))
+  if (!ours.length) return []
+  const instruction = ours.map(({ text }) => text).join('\n\n')
   const value = theirs.state === 'set' && theirs.value ? `${theirs.value}\n\n${instruction}` : instruction
   return contract.args.map((arg) => fill(arg, 'value', JSON.stringify(value)))
 }

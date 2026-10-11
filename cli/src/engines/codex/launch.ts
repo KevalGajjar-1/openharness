@@ -112,4 +112,6 @@ export const launch: EngineLaunch = {
       + 'to commit messages.',
     args: ['-c', 'developer_instructions={value}'],
   },
+  // Beside the attribution's instruction, in the one `developer_instructions` value (facets/launch.ts).
+  harnessInstructions: { kind: 'attribution' },
 }

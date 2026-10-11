@@ -33,7 +33,7 @@ import { harnessEnvToClear } from '../dsh/launch.js'
 import type { DshLaunchAnswer } from '../dsh/launchWire.js'
 import { scmLaunchEnv } from '../scm/scmProjects.js'
 import type { ScmLaunchRecord } from '../scm/types.js'
-import { startedByAgentArgs, type StartedBy } from './agentAttribution.js'
+import { agentLaunchArgs, joinedInstructions, type StartedBy } from './agentAttribution.js'
 import type { CreationAuthority } from './agentCreationReceipt.js'
 import type { publishGridConfigDir } from './publishedGridConfig.js'
 import { nativeHookLocations } from '../engines/kit/nativeLocations.js'
@@ -277,12 +277,12 @@ export async function prepareLaunchOverrides(
     if (source.agent && supportsNamedAgent(engine, opencodeMajor)) {
       overrides = { ...overrides, extraArgs: [...overrides.extraArgs, ...namedAgentArgs(engine, source.agent, opencodeMajor)] }
     }
-    // A harness another agent started keeps its pull request line on every relaunch, in the slot `agent_create`
-    // gave it: last. Read again each time, with the person's switch and settings as they are now.
-    const attribution = startedByAgentArgs(engine, source.startedBy, {
+    // What Harness tells the agent rides every relaunch, in the slot `agent_create` gave it: last. Read again each
+    // time, with the person's switches and settings as they are now.
+    const told = agentLaunchArgs(engine, source.startedBy, {
       cwd: source.cwd ?? null, profile: source.codexHome, environment: native?.environment, read: deps.readAttribution,
     })
-    if (attribution.length) overrides = { ...overrides, extraArgs: [...overrides.extraArgs, ...attribution] }
+    if (told.length) overrides = { ...overrides, extraArgs: joinedInstructions(engine, [...overrides.extraArgs, ...told]) }
     return { ok: true, overrides: { ...overrides, ...(native ? { native, env: { ...overrides.env, ...native.environment } } : {}), clearEnv: [...overrides.clearEnv, ...harnessEnvToClear(overrides.env)] } }
   } }
 }
