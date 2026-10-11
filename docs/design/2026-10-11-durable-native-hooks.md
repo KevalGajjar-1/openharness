@@ -8,6 +8,26 @@ same delivery ID is accepted after restart. Receipt
 `20261011T072723.699358Z-96575` records those assertion failures and the unchanged
 passing Linux/macOS golden.
 
+Implementation checkpoint (October 11): the immutable journal and read-only
+registration preparation are implemented, but are not yet connected to HTTP
+admission or native client outboxes. This is not a completed delivery boundary.
+Journal receipt `20261011T111043.022808Z-75081` passed TypeScript and 38 tests,
+including every first-initialization fsync boundary, both directory-creation
+interruptions, competing claims, immutable result retries and completion near the
+actual history limit. Registry receipt `20261011T111651.613829Z-3216` passed
+TypeScript, the prior admission cases except the three recorded restart regressions,
+new staged-claim tests, transcript proofs and the unchanged Linux/macOS delivery
+golden. A controlled ten-second disk wait preserves the prepared native facts;
+replacement during that wait still holds.
+
+Independent storage review found and prompted fixes for stale consumed records,
+iterator redirection, descriptor acquisition races, terminal capacity, unconfirmed
+visible results, interrupted initialization and claim revocation. The mechanics
+review found no remaining storage blocker; process contention, HTTP integration,
+native conversation ordering, client migration and final acceptance remain open.
+The same review found mutable staged registration inputs and expired evidence
+budgets; preparation now copies inputs and retains facts verified with fresh budgets.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,
@@ -25,7 +45,13 @@ wall-clock time. An immutable witness outside the record directory names its
 identity and durable frontier: a missing or replaced history is unavailable
 evidence, never an empty history that permits replay. The existing bounded native publication mechanism supplies
 asynchronous file and directory sync, route/owner checks and actual-I/O capacity
-retention. Existing corrupt, unsafe or contradictory records hold the delivery;
+retention. An exclusive bootstrap intent precedes directory creation; authority
+pins both directory identities and a permanent seal confirms initialization before
+any intake. All three records live outside the history directories. An incomplete
+bootstrap may recover only empty private directories; established missing metadata
+holds. This detects individual namespace and receipt loss, not erasure of all
+independent outside evidence; a higher-level catalog must retain that boundary.
+Existing corrupt, unsafe or contradictory records hold the delivery;
 they are not absence. No record or user data is deleted to admit another event.
 
 Healthy completed and held replies retain the former protocol. Distinct native
@@ -71,6 +97,9 @@ cursors. One stalled disk operation retains its actual I/O slot, while a bounded
 reply keeps unrelated control responsive. Scans start after readiness, yield between
 bounded batches, and cannot discard an old receipt to make room for a new delivery.
 Shutdown revokes future effects before waiting for any outstanding operation.
+Each process history is capped at 4,096 records, reserving claim and terminal
+records before intake. This fits the complete final verification's operation
+budget; the 196,608-record global allowance is not a safe per-process limit.
 The starting resource budget is 64 pending deliveries per process, 65,536 retained
 deliveries and 256 process namespaces, with 16 MiB of retained active payload and
 256 MiB of immutable disk history. Count metadata and linked obligations too.

@@ -1,0 +1,382 @@
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, type opendirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { createNativeHookJournal, type NativeHookIntake } from './nativeHookJournal.js'
+
+const fault = vi.hoisted(() => ({ fail: false, onSync: undefined as ((fd: number) => void) | undefined,
+  beforeOpen: undefined as ((path: string) => void) | undefined,
+  openDirectory: undefined as ((path: string, open: typeof opendirSync) => ReturnType<typeof opendirSync>) | undefined,
+  deferSync: undefined as ((fd: number, callback: (error: Error | null) => void) => boolean) | undefined,
+  afterMkdir: undefined as ((path: string) => void) | undefined,
+}))
+vi.mock('node:fs', async original => {
+  const fs = await original<typeof import('node:fs')>()
+  return { ...fs,
+  openSync: (path: string, flags: number, mode?: number) => { fault.beforeOpen?.(path); return fs.openSync(path, flags, mode) },
+  opendirSync: (path: string, options: Parameters<typeof opendirSync>[1]) => fault.openDirectory?.(path, fs.opendirSync) ?? fs.opendirSync(path, options),
+  mkdirSync: (...args: Parameters<typeof fs.mkdirSync>) => { const result = fs.mkdirSync(...args); fault.afterMkdir?.(String(args[0])); return result },
+  fsync: (_fd: number, callback: (error: Error | null) => void) => {
+    fault.onSync?.(_fd)
+    if (fault.deferSync?.(_fd, callback)) return
+    queueMicrotask(() => callback(fault.fail ? Error('fixture disk confirmation unavailable') : null))
+  },
+}})
+let root: string, directory: string
+const processKey = 'linux:fixture-boot\u0000codex\u00005100\u0000t:1234'
+const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+const intake = (id = 'fixture-delivery-0001', agentId = 'agent-one'): NativeHookIntake => ({
+  id, agentId, fingerprint: hash(id), conversationId: 'conversation-one', firedAt: 1791590400123,
+  payload: { prompt: 'fixture prompt', runtimeHints: [{ backend: 'tmux', paneId: '%1' }] },
+})
+const journal = (options: Partial<Parameters<typeof createNativeHookJournal>[0]> = {}) => createNativeHookJournal({ directory, processKey, ...options })
+beforeEach(() => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'native-hook-journal-')))
+  directory = join(root, 'history'); fault.fail = false; fault.onSync = undefined
+  fault.beforeOpen = undefined; fault.openDirectory = undefined; fault.deferSync = undefined; fault.afterMkdir = undefined
+})
+afterEach(() => {
+  fault.fail = false; fault.onSync = undefined; fault.beforeOpen = undefined; fault.openDirectory = undefined; fault.deferSync = undefined; fault.afterMkdir = undefined
+  rmSync(root, { recursive: true, force: true })
+})
+
+it('retains immutable intake and completed receipts across reconstructed cores', async () => {
+  const original = journal(), body = intake()
+  const pending = original.retain(body)
+  body.payload.prompt = 'caller changed its object'
+  expect((await pending).intake.payload.prompt).toBe('fixture prompt')
+  const recovered = journal()
+  expect((await recovered.snapshot()).deliveries.get(body.id)?.intake.payload.prompt).toBe('fixture prompt')
+  const claim = await recovered.claim(body.id, body.agentId)
+  claim.verify()
+  await claim.finish({ status: 200, reply: { ok: true }, promptAt: body.firedAt })
+  expect(() => claim.verify()).toThrow('already completed')
+  expect((await journal().retain(intake())).result).toEqual({ status: 200, reply: { ok: true }, promptAt: body.firedAt })
+  await expect(journal().claim(body.id, body.agentId)).rejects.toThrow('cannot dispatch')
+  await expect(journal().retain({ ...intake(), fingerprint: hash('changed') })).rejects.toThrow('HOOK_DELIVERY_CONFLICT')
+})
+
+it('shares effect order between different agent views of the same native process', async () => {
+  const a = journal(), b = journal()
+  const first = intake(), second = intake('fixture-delivery-0002', 'agent-two')
+  await a.retain(first); await b.retain(second)
+  const claimed = await a.claim(first.id, first.agentId)
+  await expect(b.claim(second.id, second.agentId)).rejects.toThrow('earlier native hook effect')
+  await expect(journal().claim(first.id, first.agentId)).rejects.toThrow('earlier native hook effect')
+  await claimed.finish({ status: 200, reply: { ok: true } })
+  const next = await b.claim(second.id, second.agentId)
+  next.verify()
+  await next.finish({ status: 200, reply: { ok: true } })
+  expect((await journal().snapshot()).active).toBeUndefined()
+})
+
+it('never transfers a crashed publisher’s claim to a new caller', async () => {
+  const original = journal(), body = intake()
+  await original.retain(body)
+  const claimed = await original.claim(body.id, body.agentId)
+  original.close()
+  expect(() => claimed.verify()).toThrow('owner changed')
+  await expect(claimed.finish({ status: 200 })).rejects.toThrow('owner changed')
+  const recovered = journal()
+  expect((await recovered.snapshot()).active?.token).toBe(claimed.token)
+  await expect(recovered.claim(body.id, body.agentId)).rejects.toThrow('earlier native hook effect')
+})
+
+it('allows only the exclusive effect publisher to dispatch under contention', async () => {
+  const a = journal(), b = journal(), body = intake()
+  await a.retain(body)
+  const attempts = await Promise.allSettled([a.claim(body.id, body.agentId), b.claim(body.id, body.agentId)])
+  const owned = attempts.filter(attempt => attempt.status === 'fulfilled')
+  expect(owned).toHaveLength(1)
+  expect(attempts.filter(attempt => attempt.status === 'rejected')).toHaveLength(1)
+  expect((await journal().snapshot()).active?.token).toBe(owned[0]!.value.token)
+})
+
+it.each(['witness', 'authority', 'directory', 'bootstrap', 'seal'])('holds a missing %s without making completed delivery new', async lost => {
+  const original = journal(), body = intake()
+  await original.retain(body)
+  const claim = await original.claim(body.id, body.agentId)
+  await claim.finish({ status: 200, reply: { ok: true } })
+  if (lost === 'directory') {
+    renameSync(directory, `${directory}.preserved`); mkdirSync(directory, { mode: 0o700 })
+  } else unlinkSync(['authority', 'bootstrap', 'seal'].includes(lost) ? `${directory}.${lost}`
+    : join(lost === 'witness' ? `${directory}.witnesses` : directory, '00000002.json'))
+  await expect(journal().retain(body)).rejects.toThrow()
+  expect(readdirSync(`${directory}.witnesses`).filter(name => /^\d/.test(name)).length).toBe(lost === 'witness' ? 2 : 3)
+})
+
+it('recovers only the last exact mirror without granting an interrupted claim to its reader', async () => {
+  const original = journal(), body = intake()
+  await original.retain(body)
+  const claim = await original.claim(body.id, body.agentId)
+  const file = join(directory, '00000001.json'), bytes = readFileSync(file, 'utf8')
+  unlinkSync(file)
+  const recovered = await journal().snapshot()
+  expect(recovered.active?.token).toBe(claim.token)
+  expect(readFileSync(file, 'utf8')).toBe(bytes)
+  await expect(journal().claim(body.id, body.agentId)).rejects.toThrow('earlier native hook effect')
+  unlinkSync(join(directory, '00000000.json'))
+  await expect(journal().snapshot()).rejects.toThrow()
+})
+
+it.each(['bytes', 'mode', 'alias', 'process'])('holds changed %s authority without rewriting it', async changed => {
+  await journal().retain(intake())
+  const file = join(directory, '00000000.json')
+  if (changed === 'bytes') writeFileSync(file, readFileSync(file, 'utf8') + ' ')
+  if (changed === 'mode') chmodSync(file, 0o666)
+  if (changed === 'alias') { renameSync(file, join(root, 'foreign')); symlinkSync(join(root, 'foreign'), file) }
+  const bytes = readFileSync(file, 'utf8')
+  await expect(journal(changed === 'process' ? { processKey: 'another-boot-and-process' } : {}).snapshot()).rejects.toThrow()
+  expect(readFileSync(file, 'utf8')).toBe(bytes)
+})
+
+it('does not create a journal for a revoked owner', async () => {
+  await expect(journal({ current: () => false }).retain(intake())).rejects.toThrow('owner changed')
+  expect(existsSync(directory)).toBe(false)
+})
+
+it('checks fresh ownership after every asynchronous disk confirmation', async () => {
+  let current = true
+  const original = journal({ current: () => current })
+  await original.retain(intake())
+  fault.onSync = () => { current = false }
+  await expect(original.claim(intake().id, intake().agentId)).rejects.toThrow()
+  fault.onSync = undefined
+  expect((await journal().snapshot()).deliveries.get(intake().id)?.result).toBeUndefined()
+})
+
+it('does not acknowledge an intake whose durability cannot be confirmed', async () => {
+  const original = journal()
+  await original.snapshot()
+  fault.fail = true
+  await expect(original.retain(intake())).rejects.toThrow('fixture disk confirmation unavailable')
+  fault.fail = false
+  expect((await original.snapshot()).deliveries.size).toBe(0)
+})
+
+it('counts concurrent reservations before acknowledging its pending capacity', async () => {
+  const a = journal({ pendingCapacity: 1 }), b = journal({ pendingCapacity: 1 })
+  await a.snapshot()
+  const accepted = await Promise.allSettled([a.retain(intake()), b.retain(intake('fixture-delivery-0002'))])
+  expect(accepted.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+  await expect(b.retain(intake('fixture-delivery-0003'))).rejects.toThrow('too many pending')
+})
+
+it('holds bounded history without deleting an older delivery', async () => {
+  const original = journal({ maxRecords: 3 })
+  await original.retain(intake())
+  await (await original.claim(intake().id, intake().agentId)).finish({ status: 200 })
+  await expect(original.retain(intake('fixture-delivery-0002'))).rejects.toThrow('record capacity')
+  expect((await journal().snapshot()).deliveries.get(intake().id)?.result).toEqual({ status: 200 })
+})
+
+it('holds oversized history before publishing any intake', async () => {
+  const original = journal({ maxBytes: 100 })
+  await expect(original.retain(intake())).rejects.toThrow('byte capacity')
+  expect((await journal().snapshot()).deliveries.size).toBe(0)
+})
+
+it('reserves claim and terminal slots before acknowledging intake', async () => {
+  await expect(journal({ maxRecords: 2 }).retain(intake())).rejects.toThrow('terminal outcomes')
+  expect((await journal().snapshot()).length).toBe(0)
+  const full = journal({ maxRecords: 6 })
+  await full.retain(intake()); await full.retain(intake('fixture-delivery-0002'))
+  await expect(full.retain(intake('fixture-delivery-0003'))).rejects.toThrow('terminal outcomes')
+  await (await full.claim(intake().id, intake().agentId)).finish({ status: 200 })
+  await (await full.claim('fixture-delivery-0002', intake().agentId)).finish({ status: 200 })
+  expect((await full.snapshot()).length).toBe(6)
+})
+
+it('keeps terminal byte capacity and refuses oversized results before publication', async () => {
+  const full = journal({ maxBytes: 48_000 })
+  await full.retain(intake())
+  await expect(full.retain(intake('fixture-delivery-0002'))).rejects.toThrow('terminal outcomes')
+  const claimed = await full.claim(intake().id, intake().agentId)
+  await expect(claimed.finish({ content: 'x'.repeat(16_384) })).rejects.toThrow('byte limit')
+  await claimed.finish({ content: 'x'.repeat(16_000) })
+  expect((await full.snapshot()).deliveries.get(intake().id)?.result?.content).toHaveLength(16_000)
+})
+
+it('allows a later intake to be inspected and resolved while an earlier one lacks evidence', async () => {
+  await journal().retain(intake()); await journal().retain(intake('fixture-delivery-0002'))
+  const claimed = await journal().claim('fixture-delivery-0002', intake().agentId)
+  await claimed.finish({ status: 200, reply: { ignored: true, reason: 'delegated' } })
+  expect((await journal().snapshot()).deliveries.get(intake().id)?.result).toBeUndefined()
+})
+
+it.each(['authority', 'record'])('refuses a %s leaf redirected between observation and descriptor acquisition', async leaf => {
+  await journal().retain(intake())
+  const file = leaf === 'authority' ? `${directory}.authority` : join(directory, '00000000.json')
+  fault.beforeOpen = path => {
+    if (path !== file) return
+    fault.beforeOpen = undefined
+    renameSync(file, join(root, 'foreign')); symlinkSync(join(root, 'foreign'), file)
+  }
+  await expect(journal().snapshot()).rejects.toThrow()
+  expect(readFileSync(file, 'utf8')).toBe(readFileSync(join(root, 'foreign'), 'utf8'))
+})
+
+it.each(['authority', 'record'])('refuses a %s made public between observation and descriptor acquisition', async leaf => {
+  await journal().retain(intake())
+  const file = leaf === 'authority' ? `${directory}.authority` : join(directory, '00000000.json')
+  fault.beforeOpen = path => { if (path === file) { fault.beforeOpen = undefined; chmodSync(file, 0o666) } }
+  await expect(journal().snapshot()).rejects.toThrow('unsafe journal record')
+})
+
+it('refuses an actual directory iterator acquired through a temporary ancestor redirect', async () => {
+  await journal().retain(intake())
+  const old = join(root, 'old'); mkdirSync(old, { mode: 0o700 })
+  fault.openDirectory = (path, open) => {
+    if (path !== directory) return open(path)
+    fault.openDirectory = undefined
+    renameSync(directory, `${directory}.original`); renameSync(old, directory)
+    const iterator = open(directory)
+    renameSync(directory, old); renameSync(`${directory}.original`, directory)
+    return iterator
+  }
+  await expect(journal().snapshot()).rejects.toThrow()
+  expect(readdirSync(directory)).toEqual(['00000000.json'])
+})
+
+it('refuses earlier record versions changed during a later recovery slice', async () => {
+  await journal().snapshot()
+  let previous: string | null = null
+  for (let index = 0; index < 65; index++) {
+    const bytes = JSON.stringify({ version: 1, processKey, index, previous,
+      event: { kind: 'intake', intake: intake(`fixture-delivery-${String(index).padStart(4, '0')}`) } })
+    for (const dir of [directory, `${directory}.witnesses`]) writeFileSync(join(dir, `${String(index).padStart(8, '0')}.json`), bytes, { mode: 0o600 })
+    previous = hash(bytes)
+  }
+  fault.beforeOpen = path => {
+    if (path !== join(directory, '00000032.json')) return
+    fault.beforeOpen = undefined
+    setImmediate(() => {
+      for (const dir of [directory, `${directory}.witnesses`]) {
+        const file = join(dir, '00000000.json'); writeFileSync(file, readFileSync(file, 'utf8') + ' ')
+      }
+    })
+  }
+  await expect(journal().snapshot()).rejects.toThrow('changed after recovery')
+})
+
+it('keeps private interrupted staging files without mistaking them for receipt authority', async () => {
+  await journal().retain(intake())
+  const stage = join(directory, '.harness-hook-00000000-0000-0000-0000-000000000000.tmp')
+  writeFileSync(stage, 'incomplete stage', { mode: 0o600 })
+  expect((await journal().snapshot()).length).toBe(1)
+  expect(readFileSync(stage, 'utf8')).toBe('incomplete stage')
+})
+
+it('requires a fresh durable confirmation before returning a visible completed result', async () => {
+  const original = journal(), body = intake()
+  await original.retain(body)
+  const claim = await original.claim(body.id, body.agentId)
+  fault.onSync = fd => {
+    if (fstatSync(fd).isDirectory() && existsSync(join(directory, '00000002.json'))) fault.fail = true
+  }
+  await expect(claim.finish({ status: 200 })).rejects.toThrow('fixture disk confirmation unavailable')
+  expect(() => claim.verify()).toThrow('completing')
+  fault.onSync = undefined
+  expect((await journal().snapshot()).deliveries.get(body.id)?.result).toEqual({ status: 200 })
+  await expect(journal().retain(body)).rejects.toThrow('fixture disk confirmation unavailable')
+  await expect(journal().retain(intake('fixture-delivery-0002'))).rejects.toThrow('fixture disk confirmation unavailable')
+  fault.fail = false
+  await journal().retain(intake('fixture-delivery-0002'))
+  const successor = await journal().claim('fixture-delivery-0002', body.agentId)
+  successor.verify()
+  expect(() => claim.verify()).toThrow('completing')
+  await expect(claim.finish({ status: 201 })).rejects.toThrow('original hook result cannot change')
+  await claim.finish({ status: 200 })
+  expect(() => claim.verify()).toThrow('already completed')
+  expect((await journal().retain(body)).result).toEqual({ status: 200 })
+})
+
+it('keeps a visible result behind disk confirmation while another reader arrives', async () => {
+  const original = journal(), body = intake()
+  await original.retain(body)
+  const claim = await original.claim(body.id, body.agentId)
+  let release: ((error: Error | null) => void) | undefined
+  let reached!: () => void
+  const waiting = new Promise<void>(resolve => { reached = resolve })
+  fault.deferSync = (fd, callback) => {
+    if (!release && fstatSync(fd).isDirectory() && existsSync(join(directory, '00000002.json'))) {
+      release = callback; reached(); return true
+    }
+    return false
+  }
+  const finishing = claim.finish({ status: 200 })
+  expect(() => claim.verify()).toThrow('completing')
+  await waiting
+  try { await expect(journal().retain(body)).rejects.toThrow() }
+  finally { fault.deferSync = undefined; release!(null); await finishing }
+  expect((await journal().retain(body)).result).toEqual({ status: 200 })
+})
+
+it('captures the immutable terminal value before its first asynchronous boundary', async () => {
+  await journal().retain(intake())
+  const claim = await journal().claim(intake().id, intake().agentId)
+  const result = { status: 200, nested: { outcome: 'original' } }
+  const finishing = claim.finish(result)
+  result.nested.outcome = 'x'.repeat(32_000)
+  await finishing
+  expect((await journal().retain(intake())).result).toEqual({ status: 200, nested: { outcome: 'original' } })
+})
+
+it('recovers an interrupted first initialization at every file and directory confirmation', async () => {
+  let syncs = 0
+  fault.onSync = () => { syncs++ }
+  await journal().snapshot()
+  fault.onSync = undefined
+  expect(syncs).toBeGreaterThan(10)
+  for (let failAt = 1; failAt <= syncs; failAt++) {
+    const isolated = join(root, `interrupted-${failAt}`)
+    let attempted = 0
+    fault.onSync = () => { if (++attempted === failAt) fault.fail = true }
+    await expect(journal({ directory: isolated }).snapshot(), `confirmation ${failAt}`).rejects.toThrow('fixture disk confirmation unavailable')
+    fault.onSync = undefined; fault.fail = false
+    const recovered = journal({ directory: isolated })
+    expect((await recovered.retain(intake())).intake.id).toBe(intake().id)
+    expect((await recovered.snapshot()).length).toBe(1)
+  }
+}, 30_000)
+
+it.each(['history', 'witnesses'])('recovers a first initialization interrupted after creating %s', async which => {
+  fault.afterMkdir = path => {
+    if (path === (which === 'history' ? directory : `${directory}.witnesses`)) throw Error('fixture initializer exited')
+  }
+  await expect(journal().snapshot()).rejects.toThrow('fixture initializer exited')
+  fault.afterMkdir = undefined
+  expect((await journal().retain(intake())).intake.id).toBe(intake().id)
+})
+
+it('adopts the same exclusive bootstrap when two initializers compete', async () => {
+  const attempts = await Promise.allSettled([journal().snapshot(), journal().snapshot()])
+  expect(attempts.some(result => result.status === 'fulfilled')).toBe(true)
+  const token = readFileSync(`${directory}.bootstrap`, 'utf8')
+  await journal().retain(intake())
+  expect(readFileSync(`${directory}.bootstrap`, 'utf8')).toBe(token)
+  expect((await journal().snapshot()).length).toBe(1)
+})
+
+it('can finish and reconstruct a retained delivery at the actual per-process history limit', async () => {
+  await journal().snapshot()
+  let previous: string | null = null, lastResult: string | null = null
+  for (let index = 0; index < 4_092; index++) {
+    const delivery = intake(`fixture-delivery-${String(Math.floor(index / 3)).padStart(4, '0')}`)
+    const event = index % 3 === 0 ? { kind: 'intake', intake: delivery }
+      : index % 3 === 1 ? { kind: 'claim', id: delivery.id, agentId: delivery.agentId, token: delivery.id, predecessor: lastResult }
+      : { kind: 'result', id: delivery.id, token: delivery.id, value: { status: 200 } }
+    const bytes = JSON.stringify({ version: 1, processKey, index, previous, event })
+    for (const dir of [directory, `${directory}.witnesses`]) writeFileSync(join(dir, `${String(index).padStart(8, '0')}.json`), bytes, { mode: 0o600 })
+    previous = hash(bytes)
+    if (index % 3 === 2) lastResult = previous
+  }
+  const full = journal({ maxRecords: 196_608 }), last = intake('fixture-final-delivery')
+  await full.retain(last)
+  await expect(full.retain(intake('fixture-capacity-held'))).rejects.toThrow('terminal outcomes')
+  await (await full.claim(last.id, last.agentId)).finish({ status: 200 })
+  const recovered = await journal().snapshot()
+  expect(recovered.length).toBe(4_095)
+  expect(recovered.deliveries.get(last.id)?.result).toEqual({ status: 200 })
+}, 30_000)
