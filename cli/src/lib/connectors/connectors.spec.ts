@@ -13,7 +13,7 @@ import { createBridge } from './bridge.js'
 import { CATALOG, services } from './catalog.js'
 import { addApiKey, addCustom, cards, customCode, disconnect, finish, Flows, signInFor } from './connect.js'
 import * as gateway from './gateway.js'
-import { LocalSignIn } from './oauth.js'
+import { LocalSignIn, probe } from './oauth.js'
 import { forgetPage, PageServer, rememberPage, runningPage } from './page.js'
 import { refresh } from './renew.js'
 import { call, OFFICIAL_HOSTS } from './call.js'
@@ -62,6 +62,14 @@ describe('signing in from this computer (MCP OAuth)', () => {
     for (const name of ['tokens.json', 'clients.json']) expect(statSync(join(vault.root, name)).mode & 0o777).toBe(0o600)
     await signIn(fake)
     expect(fake.registered).toHaveLength(1)
+  })
+
+  it('signs in to a server that answers its handshake to anyone but says it is protected', async () => {
+    const fake = await service()
+    fake.openHandshake = true
+    expect(await probe(fake.base + '/mcp')).toMatchObject({ kind: 'oauth' })
+    finish(vault, 'fo', await signIn(fake), undefined, env)
+    expect(vault.token('fo')).toMatchObject({ source: 'dcr', mcp_entry: { headers: { Authorization: 'Bearer access-1' } } })
   })
 
   it('refuses a callback for another sign-in', async () => {
