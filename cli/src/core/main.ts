@@ -1933,9 +1933,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     localClient: () => ({ kind: 'desktop', name: terminalHintMachineName().slice(0, 64), machineId: backend.machineId }),
   })
   localWsServerRef = localWsServer
-  // Every engine's hooks, pointed at the port the local server actually bound (core/engines/hooks.ts).
-  const installedHooks = env.DISABLE_HOOK_INSTALL ? undefined
-    : await installEngineHooks(hookPort, { only: env.HOOK_INSTALL_ENGINES, loginShell: loginShellEnvPromise })
+  // Teardown owns the controller as soon as the background pass starts after readiness.
+  let installedHooks: ReturnType<typeof installEngineHooks> | undefined
 
   // Each transcript line, through its engine's normalizer, into the funnel (core/transcripts/ingest.ts).
   const ingest = createIngest({
@@ -2665,6 +2664,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   daemonBoot.openRequests = null
   coreLink.ready()
   console.log('[cli] ready')
+  // Each launch confirms its own hooks. Startup never waits on any vendor's disk or probe.
+  installedHooks = env.DISABLE_HOOK_INSTALL ? undefined
+    : installEngineHooks(hookPort, { only: env.HOOK_INSTALL_ENGINES, loginShell: loginShellEnvPromise })
   // Ready first, never after a service: the agents the boot held for one are launched now, in the background.
   void heldLaunches.restoreHeld()
   externalResumes.open()

@@ -10,6 +10,7 @@ import { chooseHookAgent, type HookServerHandlers } from '../../hookServer.js'
 import { confirmHomes, recoverEngineHomes } from '../../lib/engineHomes.js'
 import { createHomeAdoptions } from './homeAdoptions.js'
 import * as nativeHooks from '../../engines/nativeHooks.js'
+import type { NativeHookOptions } from '../../engines/kit/nativeLocations.js'
 import type { OpencodeLaunchSnapshot } from '../../engines/launchControl.js'
 import { sid } from '../../lib/log.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
@@ -227,15 +228,15 @@ export interface InstallEngineHooksOptions {
 /**
  * The other engines' declarations are installed in their original order, without an optional import.
  */
-const OTHER_INSTALLERS: Array<[string, (port: number) => void | boolean | Promise<unknown>]> = [
+const OTHER_INSTALLERS: Array<[string, (port: number, options: NativeHookOptions) => void | boolean | Promise<unknown>]> = [
   ['cursor', nativeHooks.installCursorHooks],
-  ['opencode', nativeHooks.installOpencodePlugin],
+  ['opencode', (port, options) => nativeHooks.installOpencodePlugin(port, undefined, options)],
   ['kilo', nativeHooks.installKiloPlugin],
   ['pi', nativeHooks.installPiExtension],
   // A self-update refreshes plugin files here; running engine processes pick them up according to each
   // vendor's own plugin reload lifecycle.
   ['amp', nativeHooks.installAmpPlugin],
-  ['hermes', nativeHooks.installHermesHooks],
+  ['hermes', (port, options) => nativeHooks.installHermesHooks(port, undefined, options)],
   ['devin', nativeHooks.installDevinHooks],
   ['commandcode', nativeHooks.installCommandCodeHooks],
   ['grok', nativeHooks.installGrokHooks],
@@ -250,11 +251,12 @@ const OTHER_INSTALLERS: Array<[string, (port: number) => void | boolean | Promis
  * files owned by thirteen different CLIs, and one that is malformed, read-only or mid-write is not
  * a reason for the other twelve to go uninstalled — let alone for the daemon not to come up.
  *
- * Claude Code's and Codex's first, then the other engines, all in line before any restored pane starts.
- * An unavailable interpreter cannot delay this step. A vendor whose settings throw is named and skipped;
- * durable launch holds for preparation failures are a separate behavior change. Never rejects.
+ * Core starts this after readiness. Every launch separately confirms the hooks it
+ * needs; an unrelated vendor's disk or version probe cannot delay control. The
+ * controller is returned immediately so shutdown can revoke every pending write.
+ * `settled` observes this initial pass, never readiness. It does not reject.
  */
-export async function installEngineHooks(port: number, options: InstallEngineHooksOptions = {}): Promise<{ close(): void }> {
+export function installEngineHooks(port: number, options: InstallEngineHooksOptions = {}): { close(): void; settled: Promise<void> } {
   const pending: Promise<void>[] = []
   const hookStep = (vendor: string, install: () => void | boolean | Promise<unknown>): void => {
     if (options.only && !options.only.has(vendor)) return
@@ -288,8 +290,8 @@ export async function installEngineHooks(port: number, options: InstallEngineHoo
   })
   adoptions.submit(options.environment ?? process.env)
   void options.loginShell?.then(adoptions.submit, error => console.warn(`[hooks] login-shell homes unavailable · ${error instanceof Error ? error.message : error}`))
-  for (const [engine, hooks] of Object.entries(engineHooks)) hookStep(engine, () => hooks.install(port))
-  for (const [vendor, install] of OTHER_INSTALLERS) hookStep(vendor, () => install(port))
-  await Promise.all(pending)
-  return { close: adoptions.close }
+  const nativeOptions = { current: adoptions.current }
+  for (const [engine, hooks] of Object.entries(engineHooks)) hookStep(engine, () => hooks.install(port, nativeOptions))
+  for (const [vendor, install] of OTHER_INSTALLERS) hookStep(vendor, () => install(port, nativeOptions))
+  return { close: adoptions.close, settled: Promise.all(pending).then(() => {}) }
 }
