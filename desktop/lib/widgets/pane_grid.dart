@@ -1681,7 +1681,7 @@ class _PaneContent extends StatelessWidget {
             notifier,
             pane.machineId,
           ).ignore(),
-          secondaryLabel: review ? 'Your devices' : null,
+          secondaryLabel: review ? 'Machines' : null,
           onSecondary: review
               ? () => showDeviceListReview(context, notifier)
               : null,

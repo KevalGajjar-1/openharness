@@ -12,8 +12,8 @@ import '../../shared/widgets/skeleton.dart';
 import '../../state/account_devices.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
-import 'account_device_detail.dart';
-import 'account_device_history.dart';
+import '../../widgets/account_device_detail.dart';
+import '../../widgets/account_device_history.dart';
 
 /// What "Trust again" says when the list it would trust is another account's than the one signed in to.
 const otherAccountMessage =

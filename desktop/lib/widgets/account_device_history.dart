@@ -2,15 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/relative_time.dart';
-import '../../shared/theme/app_theme.dart' as grid;
-import '../../shared/widgets/app_dialog.dart';
-import '../../state/app_state.dart';
-import '../../theme/app_theme.dart';
-import '../../viewer/device_history.dart';
+import '../core/relative_time.dart';
+import '../shared/theme/app_theme.dart' as grid;
+import '../shared/widgets/app_dialog.dart';
+import '../state/app_state.dart';
+import '../theme/app_theme.dart';
+import '../viewer/device_history.dart';
 import 'account_device_detail.dart';
 
-/// Settings ▸ Your devices ▸ History… — every device added to or removed from the account, newest
+/// Machines ▸ History… — every device added to or removed from the account, newest
 /// first, as this end verified the log. A device that was removed stays in it, named as it was.
 Future<void> showAccountDeviceHistory(BuildContext context, AppNotifier app) =>
     showAppDialog<void>(

@@ -602,6 +602,10 @@ class _AgentStop {
 /// machine answering its agent list, a push, the dial turning, a handoff.
 enum AttachIntent { person, automatic }
 
+/// Machines asked for from outside the workspace ([AppNotifier.requestMachines]): the device to
+/// select there, or the first phone or app.
+typedef MachinesRequest = ({String? devicePub, bool phones});
+
 class AppNotifier extends ChangeNotifier {
   final AuthSession session;
 
@@ -4056,6 +4060,27 @@ class AppNotifier extends ChangeNotifier {
   /// Explicit setup navigation must remain available even when a browser has
   /// another connected machine and suppresses its automatic startup picker.
   String? get requestedMachineLink => _requestedMachineLink;
+
+  MachinesRequest? _machinesRequest;
+
+  /// Machines was asked for from outside the workspace — a device band, the review line under a
+  /// password prompt — and the workspace has not opened it yet.
+  MachinesRequest? get machinesRequest => _machinesRequest;
+
+  /// Opens Machines, where the account's computers, phones and apps are listed: [devicePub] selects
+  /// that device, [phones] the first phone or app.
+  void requestMachines({String? devicePub, bool phones = false}) {
+    if (_disposed) return;
+    _machinesRequest = (devicePub: devicePub, phones: phones);
+    notifyListeners();
+  }
+
+  /// The workspace takes the request it is about to open.
+  MachinesRequest? takeMachinesRequest() {
+    final request = _machinesRequest;
+    _machinesRequest = null;
+    return request;
+  }
 
   void acknowledgeMachineLinkRequest(String machineId) {
     if (_requestedMachineLink == machineId) _requestedMachineLink = null;
@@ -7667,7 +7692,7 @@ class AppNotifier extends ChangeNotifier {
   bool get baselineSeenLocally => _baselineSeenLocally;
 
   /// Viewer builds only: this app's copy of the device log is frozen, so it pins no machine from it
-  /// until someone reviews the list (Settings ▸ Your devices). A machine asking for its password says so.
+  /// until someone reviews the list (Machines). A machine asking for its password says so.
   bool get deviceListNeedsReview => _deviceListFrozen;
   bool _deviceListFrozen = false;
 
@@ -7850,8 +7875,7 @@ class AppNotifier extends ChangeNotifier {
     systemNotifications.postNotice(
       id: 'harness-device:${notice.pub}',
       title: 'New device on your account',
-      body:
-          '${notice.sentence} Not yours? Remove it in Settings ▸ Your devices.',
+      body: '${notice.sentence} Not yours? Remove it in Machines.',
       devicePub: notice.pub,
     );
     notifyListeners();

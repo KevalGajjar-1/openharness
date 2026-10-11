@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/relative_time.dart';
-import '../../shared/theme/app_theme.dart' as grid;
-import '../../shared/widgets/app_dialog.dart';
-import '../../shared/widgets/fingerprint_text.dart';
-import '../../state/account_devices.dart';
-import '../../state/app_state.dart';
-import '../../theme/app_theme.dart';
+import '../core/relative_time.dart';
+import '../shared/theme/app_theme.dart' as grid;
+import '../shared/widgets/app_dialog.dart';
+import '../shared/widgets/fingerprint_text.dart';
+import '../state/account_devices.dart';
+import '../state/app_state.dart';
+import '../theme/app_theme.dart';
 
 /// What removing a device does, said in the confirm and nowhere else so the two entry points (the list
 /// row and the detail) cannot word it differently.
