@@ -104,10 +104,23 @@ shared 10-point upper corners, 8-point outward lower shoulders and 6-point top
 inset. Keep space after `+` available for dragging the window. Scroll overflow
 and reveal the selected tab on keyboard navigation. Narrow viewports can show
 smaller tabs while preserving their controls.
-The right accessory reveals × on hover. While Command is held, the actual
-shortcut replaces the status beside the name without changing the tab width.
-Hover never moves the title. Cmd-W, remapped shortcuts, native menu access,
-and middle-click closing remain available.
+A tab has one revealed state: hovering it reveals that tab, holding Command
+reveals every tab. Revealed, the actual shortcut replaces the status beside the
+name, and Agent Messages' ⇄ and × show at the right, ⇄ just left of ×
+([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)). At rest a tab
+shows only its name and status, plus a bright ⇄ for about a minute after its
+agents last messaged each other. The ⇄ is dim and struck through while Agent
+Messages are off, dim while on and quiet; its tooltip says what a click does
+("Agent messages off · click to turn on", "Agent messages on · click to turn
+off", "Agents messaging · click to turn off"), and a click toggles that tab's
+flag at once, going back if the backend refuses. The Store tab has no ⇄.
+Revealing never changes the tab width or moves the title: an idle tab shows its
+shortcut after the name, and only a name that would run into ⇄ gives up its
+tail. × (16 points wide) and ⇄ (18) are 32-point-tall targets whose width is
+reserved on both sides of the centered name, so a 128-point tab still draws its
+name beside a status. The tab's menu and File carry Agent Messages (a checkmark)
+and Show Agent Messages beside Rename Tab and Close Tab. Cmd-W, remapped
+shortcuts, native menu access, and middle-click closing remain available.
 Preserve reorder, rename, keyboard focus, and terminal sessions. Cmd-T opens a
 tab. Cmd-O opens the shared picker with `#` for projects; Cmd-P opens it directly
 on harnesses. Cmd-Shift-P opens commands (`>`). The projects list has
@@ -141,6 +154,12 @@ utility tabs have no harness activity mark. Keep the existing engine icon.
 The mark replaces the native tab's old orange attention indicator; it adds no
 new bar, counter, badge, or permanent legend. Hover and accessibility descriptions
 explain each symbol.
+
+Right after the activity mark, a pane header briefly says Agent Messages traffic:
+`→ api` on the sender's pane and `← lead` on each recipient's, in quieter title
+ink, for about five seconds or until that pane is focused (`PaneMessageMarkView`,
+which listens to `AgentMessagesController` itself so the cached header never
+rebuilds). A sender the rate limit stopped shows `→ rate limited` in warning ink.
 
 ![Activity marks in existing tabs and pane headers, rendered with synthetic state at 640 px](images/workspace-activity.png)
 
