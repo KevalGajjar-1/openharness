@@ -62,9 +62,10 @@ holding ⌘ changes nothing on them (owner, 2026-10-11).
 | On, messages flowing | `app 💬` (the status slot, animated) | `app 💬    💬 ×` | turns off |
 
 While agents in the tab message each other, its status slot (where the working spinner, ✓ and ? go)
-shows 💬 in Agent Messages' color, its two bubbles trading sides every half second, for 15 seconds after
-the last message; then it shows the tab's status again. The color is the terminal theme's magenta, as
-the status marks take theirs; with status colors off it is the terminal's foreground. Reduce Motion
+shows 💬 in Agent Messages' color, its two bubbles trading sides every half second, for 5 seconds after
+the last message (as long as the pane marks), then the tab's status again. The color is the design
+system's accent blue (`AppPalette.accentOnSurface`), its one color for "on" and selection; it stays
+clear of the status marks' cyan, green, yellow and red, and the bubbles' shape carries the meaning too. Reduce Motion
 holds it still. At rest a tab gives its name the whole width; when hovered, a name that would run into
 💬 and × moves left only as far as they need, then gives up its tail.
 

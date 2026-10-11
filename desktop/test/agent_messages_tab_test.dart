@@ -354,7 +354,7 @@ void main() {
       reason: 'the tab says it, as the native tab does',
     );
     semantics.dispose();
-    await tester.pump(const Duration(seconds: 15));
+    await tester.pump(const Duration(seconds: 5));
     expect(messaging, findsNothing, reason: 'back to its status');
     await tester.pumpWidget(const SizedBox());
   });

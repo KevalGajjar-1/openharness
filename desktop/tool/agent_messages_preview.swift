@@ -74,7 +74,8 @@ private func mark(_ glyph: String, _ label: String, dark: Int64, light: Int64) -
 private let working = mark("⠋", "Working", dark: 0xff11a8cd, light: 0xff1b7c83)
 private let needsInput = mark("?", "Needs your input", dark: 0xffe5e510, light: 0xff4d2d00)
 private let ready = mark("✓", "Finished · unread", dark: 0xff0dbc79, light: 0xff116329)
-private func messagesInk(_ dark: Bool) -> Int64 { dark ? 0xffbc3fbc : 0xff8250df }
+// AppPalette.accentOnSurface: AppDesktop.focusDark, and the accent in light.
+private func messagesInk(_ dark: Bool) -> Int64 { dark ? 0xff8ba9ff : 0xff2f5bea }
 
 private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [PreviewTab], active: String,
                            activeMessages: Bool?) -> (NSWindow, SwarmTitlebar) {

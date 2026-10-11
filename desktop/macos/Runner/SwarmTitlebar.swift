@@ -2229,8 +2229,8 @@ private final class SwarmTabStrip: NSView {
     revealActiveAfterLayout = revealActiveAfterLayout || nextActiveId != activeId
     activeId = nextActiveId
     // Agent Messages' color: its 💬 when on, and the status slot while agents
-    // message. The pane's terminal magenta, as the other marks take theirs.
-    let messagesColor = statusColor(state["agentMessagesInk"], fallback: .systemPurple)
+    // message. Flutter sends the accent blue (AppPalette.accentOnSurface).
+    let messagesColor = statusColor(state["agentMessagesInk"], fallback: .controlAccentColor)
     let ids = rows.compactMap { $0["id"] as? String }
     let previousOrder = tabs.map(\.swarmId)
     tabOrderChanged = tabOrderChanged || ids != previousOrder
@@ -2641,7 +2641,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     }
   }
   /// Agent Messages' color: the 💬 when on, and the slot while messaging.
-  var messagesColor = NSColor.systemPurple {
+  var messagesColor = NSColor.controlAccentColor {
     didSet { if messagesColor != oldValue { updateMessagesControls() } }
   }
   /// Agents in this tab messaged one another a moment ago: the status slot

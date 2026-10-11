@@ -2045,11 +2045,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
             },
           },
       ],
-      // Agent Messages' color, as the status marks take theirs: the 💬 while
-      // on, and a tab's status slot while its agents message.
-      'agentMessagesInk':
-          (prefs.color ? terminalTheme.magenta : terminalTheme.foreground)
-              .toARGB32(),
+      // Agent Messages' color: the 💬 while on, and a tab's status slot while
+      // its agents message. The design system's one accent, blue, as a mark.
+      'agentMessagesInk': grid.AppPalette.accentOnSurface.toARGB32(),
       // The File menu's Agent Messages checkmark, for the active tab.
       'activeAgentMessages': app.agentMessagesOffered(app.activeSwarmId)
           ? app.agentMessages.isOn(app.activeSwarmId)
@@ -7731,8 +7729,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ];
       final toolHeight = workspaceBarControlHeight(context);
       final prefs = appearancePrefsStore.value.prompt;
-      // Agent Messages' color, beside the status marks' own.
-      final messagesColor = prefs.color ? theme.magenta : theme.foreground;
+      // Agent Messages' color: the design system's accent blue, as a mark.
+      final messagesColor = grid.AppPalette.accentOnSurface;
       final storeWidth = math.min(
         WorkspaceStoreButton.widthOf(context),
         math.max(0.0, constraints.maxWidth - cell.width * 22),

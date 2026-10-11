@@ -423,8 +423,8 @@ add a kind there, not at the call site.
 - The [workspace status bar](design/workspace-status-bar.md) places system-font tabs and global actions at the top,
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
   Tabs center their name/status group and show no shortcut hint (Command changes nothing on
-  them). Hovering a tab shows Agent Messages' 💬 — grey off, the terminal's magenta on — just
-  left of ×; while its agents message, the status slot shows an animated 💬 for 15 s instead
+  them). Hovering a tab shows Agent Messages' 💬 — grey off, accent blue on — just
+  left of ×; while its agents message, the status slot shows an animated 💬 for 5 s instead
   (`lib/agent_messages/`, `AgentMessagesController` on `AppNotifier.agentMessages`, its own
   notifier so traffic never rebuilds the workspace; `MessagingMark`; `SwarmTabButton` mirrors
   it natively). At rest the name has the whole tab; hovered, it moves left only as far as 💬

@@ -41,8 +41,8 @@ class DesktopWorkspaceTab extends StatefulWidget {
   /// This tab's Agent Messages, or null where a tab has none (the Store).
   final TabMessagesState? agentMessages;
 
-  /// Agent Messages' color, for the 💬 while on: the terminal's magenta, as
-  /// the status marks take their colors from it.
+  /// Agent Messages' color, for the 💬 while on: the accent blue
+  /// (`AppPalette.accentOnSurface`), the design system's color for "on".
   final Color? messagesColor;
   final VoidCallback? onToggleAgentMessages;
   final String? tooltip, activityLabel;
