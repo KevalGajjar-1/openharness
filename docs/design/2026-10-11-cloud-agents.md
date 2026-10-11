@@ -1,6 +1,6 @@
 # Cloud agents
 
-October 11, 2026. Proposal. Replaces provider machines (`provider/`, `backend/src/lib/providerLink.ts`).
+October 11, 2026. Approved, except where noted under Decisions. Replaces provider machines (`provider/`, `backend/src/lib/providerLink.ts`).
 
 Some agents never run on your computer. Fo runs errands from its maker's servers: it calls, emails and
 books. Devin writes code in its own cloud machines. Neither has a terminal program for Harness to start
@@ -38,6 +38,50 @@ started from New Harness. They are not a second product beside the panes.
   A Devin pane's footer reads `Devin's cloud  api  (fix-flaky)  #42`: the repository, branch and pull
   request from the session, as for any pane.
 
+- **Devin in two places.** Devin stays one agent. The Computer selector in New Harness, which today
+  lists This Mac and the remote computers, gains **Devin's cloud** below a divider, only while the agent
+  has a cloud. Fo's selector reads Fo's cloud and cannot change. Choosing the cloud changes what the
+  form asks for. Repo becomes a GitHub repository Devin can reach rather than a folder: a local folder
+  carries its GitHub remote over, and its tooltip says uncommitted changes stay on the computer. Model,
+  Approvals, Worktree and Branch give way to the session's ACU limit.
+
+  ```
+   Devin       This Mac        api
+   ┌───────────────────────────────────────────────────────────┐
+   │ fix the flaky login test                                  │
+   └───────────────────────────────────────────────────────────┘
+   Model   Approvals   Worktree   Branch             New Harness
+
+   Devin       Devin's cloud   autonomous/api
+   ┌───────────────────────────────────────────────────────────┐
+   │ fix the flaky login test                                  │
+   └───────────────────────────────────────────────────────────┘
+   Up to 5 ACUs                                      New Harness
+
+               ┌───────────────┐
+               │ This Mac      │
+               │ studio-mini   │
+               │───────────────│
+               │ Devin's cloud │
+               └───────────────┘
+  ```
+
+  On This Mac it is today's terminal pane running the Devin CLI. In the cloud it is a chat pane whose
+  footer carries the session's branch and pull request like any pane's:
+
+  ```
+   fix flaky login ⠹                                    Devin  ×
+  ──────────────────────────────────────────────────────────────
+   you    fix the flaky login test
+   Devin  Found a race in session refresh; fixing it.
+   Devin  Opened #42. Tests pass.
+   ❯ _
+  ──────────────────────────────────────────────────────────────
+                      Devin's cloud  api  (devin/fix-login)  #42
+  ```
+
+  Stop Harness puts the session to sleep, which stops its ACUs; opening it again from ⌘P wakes it. A
+  running harness does not move between places; start another.
 - When the agent waits for the person, the harness is in **Harnesses needing input** with its choices,
   on the desktop, the phone and the device's question screen, like any other harness.
 - **Stop Harness** puts the agent's work to sleep where the agent allows it (Devin), and says so where it
@@ -215,13 +259,16 @@ in one change, once the A2A adapter exists. Nobody uses them, so nothing migrate
    the backend, which wakes the computer's service, so a cloud harness can tell the person it needs them
    while no window is open.
 
-## Decisions for the owner
+## Decisions
 
-1. **"Cloud"** as the place a harness runs, entered in the Naming System.
-2. **The core change**: agents owned by a service.
-3. **Retire the provider protocol for A2A.**
-4. **Devin as one agent with two places**, rather than a second "Devin (cloud)" agent. The engine id
-   `devin` is the CLI today.
-5. **The chat pane mockup**, before any UI code.
-6. This revises the October 5 rule that Harness drives only agents that are terminal programs: cloud
-   agents are the exception, through this one service and port.
+Answered by the owner on October 11:
+
+1. **Cloud agents**: "Cloud" is the place a harness runs, entered in the Naming System. Approved.
+2. **The core change**: agents owned by a service. Approved.
+3. **Retire the provider protocol for A2A.** Approved.
+4. **Devin as one agent with two places**, through the Computer selector (above), rather than a second
+   "Devin (cloud)" agent. The engine id `devin` stays the CLI. Open: the owner asked how it works.
+5. **The chat pane mockup.** Approved.
+6. **Harness drives both kinds of agent**: terminal programs on the person's computers, and cloud
+   agents through their makers' APIs. This replaces the October 5 rule that it drives only terminal
+   programs.
