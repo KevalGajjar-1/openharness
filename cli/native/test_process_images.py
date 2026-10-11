@@ -256,8 +256,9 @@ class ProcessImagesTest(unittest.TestCase):
                            env={**os.environ, 'LC_ALL': '', 'LC_TIME': 'C'}).stdout.decode().strip()
         self.assertEqual(row['startMarker'], expected)
 
-    def control(self, pids, parent=0, *, stub=False, case='stable', okay=True):
-        result = subprocess.run([str(self.stub if stub else self.probe), '--control', '2000', str(parent), *map(str, pids)],
+    def control(self, pids, parent=0, *, stub=False, case='stable', okay=True, descriptors=True):
+        mode = 'control' if descriptors else 'identity'
+        result = subprocess.run([str(self.stub if stub else self.probe), '--' + mode, '2000', str(parent), *map(str, pids)],
                                 capture_output=True, timeout=5, env={**os.environ, 'PROBE_FIXTURE_CASE': case})
         if not okay:
             self.assertEqual(result.returncode, 75)
@@ -265,7 +266,7 @@ class ProcessImagesTest(unittest.TestCase):
             return
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual(records.pop(0), {'schema': 2, 'mode': 'control', 'parent': parent, 'children': []})
+        self.assertEqual(records.pop(0), {'schema': 2, 'mode': mode, 'parent': parent, 'children': []})
         self.assertEqual([row['pid'] for row in records], pids)
         return records
 
@@ -284,6 +285,32 @@ class ProcessImagesTest(unittest.TestCase):
                      'children-full', 'children-denied', 'command-denied', 'command-full', 'command-changed']:
             with self.subTest(case=case):
                 self.control([7], parent=7, stub=True, case=case, okay=False)
+
+    def test_identity_does_not_require_descriptors_but_retains_every_process_fence(self):
+        for case in ['short-fds', 'full-fds', 'fd-changed', 'fd-denied', 'fd-capacity-grew']:
+            with self.subTest(case=case):
+                [row] = self.control([7], stub=True, case=case, descriptors=False)
+                self.assertEqual(row['fds'], [])
+        for case in ['denied', 'short-info', 'pid-reused', 'exec-changed', 'command-denied', 'command-changed']:
+            with self.subTest(case=case):
+                self.control([7], stub=True, case=case, descriptors=False, okay=False)
+
+    def test_identity_reads_an_active_private_process_while_its_descriptor_pool_changes(self):
+        script = ('import os, sys, threading\n'
+                  'def churn():\n'
+                  '  while True:\n'
+                  '    fds = [fd for _ in range(64) for fd in os.pipe()]\n'
+                  '    for fd in fds: os.close(fd)\n'
+                  'threading.Thread(target=churn, daemon=True).start()\n'
+                  'print("ready", flush=True)\n'
+                  'sys.stdin.read()\n')
+        child = self.launch([sys.executable, '-c', script])
+        self.wait_ready(child)
+        [before] = self.control([child.pid], descriptors=False)
+        for _ in range(20):
+            [after] = self.control([child.pid], descriptors=False)
+            self.assertEqual(after, before)
+            self.assertEqual(after['fds'], [])
 
     def test_control_excludes_a_proven_unreaped_zombie(self):
         self.control([7], parent=7, stub=True, case='zombie-child')

@@ -102,6 +102,7 @@ import { probeTerminalAgents } from '../lib/terminalAgentDiscovery.js'
 import { RECONCILE_PASS_DEADLINE_MS, TerminalAgentReconciler } from '../lib/terminalAgentReconciler.js'
 import { Watcher } from '../watcher/watcher.js'
 import { startHookServer } from '../hookServer.js'
+import { createNativeHookOwnerReader } from '../engines/kit/nativeHookOwner.js'
 import { connectToMaster } from '../harnessd/coreLink.js'
 import { createTerminalOpener } from './terminals/open.js'
 import { createTerminalSessions } from './terminals/sessions.js'
@@ -1708,6 +1709,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   // Which agent a hook belongs to, and what a SessionEnd means (core/engines/hooks.ts).
   const engineHooks = createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending: restorePanes.pending, syncSession })
+  const nativeHookOwners = createNativeHookOwnerReader()
   const { server: hookServer, port: hookPort, localSocket, startRecovery: recoverNativeHooks,
     stopRecovery: stopNativeHooks, recoveryReady } = await startHookServer(daemonPort(), {
     onAutonomousDeviceRequest: async (method, target, body) => {
@@ -1739,6 +1741,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     resolveHookAgent: engineHooks.resolveHookAgent,
     hookAdmissionBlocked: id => launchCancelled(id),
     onAdmissionHeld: engineHooks.onAdmissionHeld,
+    readNativeHookOwner: nativeHookOwners,
+    captureNativeHookCaller: nativeHookOwners.captureCaller,
     onNativeRecoveryReady: entry => { void attachSession(entry, true).catch(error => console.warn('[hooks] recovered attach held', error)) },
     onAdmissionStop: attach.holdAdmissionStop,
     captureAdmissionStop: attach.captureAdmissionStop,

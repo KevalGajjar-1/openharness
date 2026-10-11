@@ -9,6 +9,7 @@ import { secureStateDirectory } from '../../lib/secureState.js'
 import { inspectHookFile, runHookPreparation } from './nativeHookFiles.js'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
+import type { NativeHookOwner } from './nativeHookOwner.js'
 
 export class NativeHookJournalHeld extends Error {
   constructor(detail: string) { super(`Native hook delivery is held: ${detail}`); this.name = 'NativeHookJournalHeld' }
@@ -35,6 +36,7 @@ export interface NativeHookIntake {
   agentId: string
   conversationId: string
   firedAt?: number
+  owner?: NativeHookOwner
   payload: Record<string, unknown>
 }
 type Event = { kind: 'intake'; intake: NativeHookIntake }
@@ -108,6 +110,9 @@ function validIntake(value: unknown): value is NativeHookIntake {
     && typeof value.agentId === 'string' && value.agentId.length > 0 && value.agentId.length <= 200
     && typeof value.conversationId === 'string' && value.conversationId.length <= 200
     && (value.firedAt === undefined || Number.isSafeInteger(value.firedAt) && Number(value.firedAt) > 0)
+    && (value.owner === undefined || object(value.owner) && typeof value.owner.key === 'string' && value.owner.key.length > 0
+      && value.owner.key.length <= 512 && typeof value.owner.evidence === 'string' && value.owner.evidence.length > 0
+      && value.owner.evidence.length <= 128_000)
     && object(value.payload) && Buffer.byteLength(JSON.stringify(value)) <= 300_000
 }
 
@@ -190,7 +195,7 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     }
     return { history: identity(lstatSync(directory, { bigint: true })), witnesses: identity(lstatSync(witnesses, { bigint: true })) }
   }
-  const authority = async () => {
+  const readAuthority = async () => {
     check()
     let bootstrap = read(bootstrapFile)
     let saved = read(authorityFile)
@@ -257,6 +262,19 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     const verify = () => { verifyAuthority(); sealed!.verify() }
     verify()
     return { verify, records: [bootstrap, saved, sealed] }
+  }
+  let authorityFlight: ReturnType<typeof readAuthority> | undefined
+  const authority = async () => {
+    check()
+    // Recovery and HTTP admission can discover a new process together. Share
+    // only their in-progress namespace initialization, never an effect claim
+    // or a completed disk observation. Each resumed reader fences it again.
+    const flight = authorityFlight ??= readAuthority()
+    try {
+      const owned = await flight
+      check(); owned.verify()
+      return owned
+    } finally { if (authorityFlight === flight) authorityFlight = undefined }
   }
   const snapshot = async (repairAllowed = true): Promise<Snapshot> => {
     const owned = await authority(), verifyAuthority = owned.verify

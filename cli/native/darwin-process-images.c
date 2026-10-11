@@ -123,9 +123,9 @@ static int control_birth(pid_t pid, struct proc_bsdinfo *info) {
     return control_step() && birth(pid, info) && info->pbi_status != SZOMB
         && !(info->pbi_flags & PROC_FLAG_INEXIT);
 }
-static int same_birth(const struct proc_bsdinfo *a, const struct proc_bsdinfo *b) {
+static int same_birth(const struct proc_bsdinfo *a, const struct proc_bsdinfo *b, int descriptors) {
     return a->pbi_start_tvsec == b->pbi_start_tvsec && a->pbi_start_tvusec == b->pbi_start_tvusec
-        && a->pbi_ppid == b->pbi_ppid && a->pbi_nfiles == b->pbi_nfiles
+        && a->pbi_ppid == b->pbi_ppid && (!descriptors || a->pbi_nfiles == b->pbi_nfiles)
         && !memcmp(a->pbi_comm, b->pbi_comm, sizeof(a->pbi_comm));
 }
 static int control_command_digest(pid_t pid, unsigned char *out) {
@@ -174,7 +174,7 @@ static int control_fds(pid_t pid, struct control_row *row, int *total) {
     for (int index = 1; index < row->fd_count; index++) if (row->fds[index - 1].fd == row->fds[index].fd) return 0;
     return 1;
 }
-static int control_read(pid_t pid, struct control_row *row, int *fds) {
+static int control_read(pid_t pid, struct control_row *row, int *fds, int descriptors) {
     struct proc_bsdinfo before, after;
     char final_image[PROC_PIDPATHINFO_MAXSIZE];
     unsigned char final_digest[CC_SHA256_DIGEST_LENGTH];
@@ -183,13 +183,13 @@ static int control_read(pid_t pid, struct control_row *row, int *fds) {
     if (!control_birth(pid, &before) || !control_step()
         || !image_path(pid, row->image, sizeof(row->image), &size)
         || !control_command_digest(pid, row->command_digest)
-        || !control_fds(pid, row, fds) || !control_step()
+        || (descriptors && !control_fds(pid, row, fds)) || !control_step()
         || !image_path(pid, final_image, sizeof(final_image), &final_size)
         || !control_command_digest(pid, final_digest)
-        || !control_birth(pid, &after) || !same_birth(&before, &after)
+        || !control_birth(pid, &after) || !same_birth(&before, &after, descriptors)
         || size != final_size || memcmp(row->image, final_image, size)
         || memcmp(row->command_digest, final_digest, sizeof(final_digest))) return 0;
-    row->parent = before.pbi_ppid; row->fd_capacity = before.pbi_nfiles;
+    row->parent = before.pbi_ppid; row->fd_capacity = descriptors ? before.pbi_nfiles : 0;
     row->seconds = before.pbi_start_tvsec; row->micros = before.pbi_start_tvusec;
     memcpy(row->command, before.pbi_comm, sizeof(before.pbi_comm));
     return row->command[0] != 0;
@@ -217,7 +217,7 @@ static int control_children(pid_t parent, pid_t *children) {
     for (int index = 1; index < live; index++) if (children[index] == children[index - 1]) return -1;
     return live;
 }
-static int control_main(int argc, char **argv) {
+static int control_main(int argc, char **argv, int descriptors) {
     if (argc < 5 || argc > CONTROL_PIDS + 4) return 64;
     pid_t timeout, parent = 0, pids[CONTROL_PIDS], first_children[CONTROL_PIDS], last_children[CONTROL_PIDS];
     if (!parse_pid(argv[2], &timeout) || timeout > 3000
@@ -234,13 +234,13 @@ static int control_main(int argc, char **argv) {
     struct control_row *first = calloc(count, sizeof(*first)), *last = calloc(count, sizeof(*last));
     if (!first || !last || first_count < 0) goto done;
     int fds = 0;
-    for (int i = 0; i < count; i++) if (!control_read(pids[i], &first[i], &fds)) goto done;
+    for (int i = 0; i < count; i++) if (!control_read(pids[i], &first[i], &fds, descriptors)) goto done;
     fds = 0;
-    for (int i = 0; i < count; i++) if (!control_read(pids[i], &last[i], &fds)
+    for (int i = 0; i < count; i++) if (!control_read(pids[i], &last[i], &fds, descriptors)
         || memcmp(&first[i], &last[i], sizeof(first[i]))) goto done;
     final_count = control_children(parent, last_children);
     if (final_count != first_count || memcmp(first_children, last_children, first_count * sizeof(pid_t)) || !control_step()) goto done;
-    printf("{\"schema\":2,\"mode\":\"control\",\"parent\":%d,\"children\":[", parent);
+    printf("{\"schema\":2,\"mode\":\"%s\",\"parent\":%d,\"children\":[", descriptors ? "control" : "identity", parent);
     for (int i = 0; i < first_count; i++) printf("%s%d", i ? "," : "", first_children[i]);
     puts("]}");
     for (int i = 0; i < count; i++) {
@@ -265,7 +265,8 @@ done:
 }
 
 int main(int argc, char **argv) {
-    if (argc >= 2 && !strcmp(argv[1], "--control")) return control_main(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--control")) return control_main(argc, argv, 1);
+    if (argc >= 2 && !strcmp(argv[1], "--identity")) return control_main(argc, argv, 0);
     if (argc < 3 || argc > MAX_PIDS + 2 || strcmp(argv[1], "--paths") != 0) return 64;
     pid_t pids[MAX_PIDS];
     for (int i = 2; i < argc; ++i) {

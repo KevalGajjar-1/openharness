@@ -51,6 +51,45 @@ and synchronous registration dispatch precedes the terminal slot. Review of thos
 fixes and separate-process contention evidence remain outstanding. Exact native
 birth evidence and durable Stop correlation are still open blockers.
 
+The next checkpoint, validated through October 11 at 13:36 UTC, supplies precise
+kernel boot and process-birth evidence, retaining the original caller ancestry
+before asynchronous resolution. Revalidation still checks the Registry's declared
+executable. The identity-only native probe excludes changing file descriptors;
+descriptor completeness remains required by consumers that actually need it.
+Unavailable caller evidence now receives a retryable hold rather than a terminal
+ignored acknowledgement. Recovery isolates unreadable sibling rows and restores
+its barrier after a failed ownership probe.
+
+Attachment recovery retains the first-turn replay request across overlapping
+attempts. Cancel revokes an in-flight candidate and replays its original byte
+boundary before any later prompt. Cursor passes the exact complete prefix and
+opened-file identity from that recovery fold to its watcher, so a prompt appended
+between folding and installing the watcher remains live. Rewrites, incomplete
+cutoffs and omitted history hold visibly. The recovery reader allows 64 MiB while
+the watcher prefix allows 32 MiB; a larger controlled Cursor prefix remains held.
+The complete bounded Cursor reader migration remains in the completion checklist.
+
+Independent review found and verified corrections for overlapping attachment
+requests, Cancel during attachment, recovery-barrier loss, Cursor's newer-EOF
+baseline, and blank prefixes falsely classified as omitted history. Private
+acceptance also reproduced recovery and admission racing one journal's namespace
+initialization; callers now share only in-progress authority verification, never
+completed disk observations or effect claims. Shutdown revokes every waiter.
+The reviewer approved this slice over `956dbc881`; full PR approval remains open.
+
+Receipt `20261011T133306.338423Z-24372` passed TypeScript, all 308 attachment/watcher/
+tail/golden cases with 100% attachment coverage, and all 43 journal cases. Receipt
+`20261011T133416.104343Z-30207` passed all 159 admission/core-hook/architecture/golden
+cases and both affected private daemon cases: a real native prompt held across
+Registry failure and Cursor Cancel superseding a linked Stop. Earlier failed
+receipts preserve the blank-prefix and initialization-race regressions; the
+passing acceptance followed the product fix, not a retry of unchanged source.
+Native client outboxes, complete global storage accounting, separate-process
+contention, durable linked Stop completion, final coverage/mutations and full CI
+remain required. These validation and review intervals overlap implementation;
+they are not summed as elapsed task time. PR #1172 is still draft, with no merge
+or publication.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,

@@ -11,10 +11,18 @@ const clock = vi.hoisted(() => ({ now: 0 }))
 vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => clock.now } }))
 
 const fault = vi.hoisted(() => ({ file: '', rename: false, directorySync: false, renamed: false, nativeSync: false,
+  nativeWritten: new Map<number, string>(), beforeNativeSync: undefined as ((text?: string) => void) | undefined,
   afterProof: undefined as (() => void) | undefined, beforeVerify: undefined as (() => void) | undefined }))
 vi.mock('fs', async original => {
   const actual = await original<typeof import('node:fs')>()
-  return { ...actual, fsync: (_fd: number, done: (error: Error | null) => void) => queueMicrotask(() => done(fault.nativeSync ? Error('fixture native confirmation unavailable') : null)),
+  return { ...actual, fsync: (_fd: number, done: (error: Error | null) => void) => {
+    fault.beforeNativeSync?.(fault.nativeWritten.get(_fd))
+    queueMicrotask(() => done(fault.nativeSync ? Error('fixture native confirmation unavailable') : null))
+  }, writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+    const result = actual.writeFileSync(...args)
+    if (typeof args[0] === 'number') fault.nativeWritten.set(args[0], String(args[1]))
+    return result
+  }, closeSync: (fd: number) => { fault.nativeWritten.delete(fd); return actual.closeSync(fd) },
     renameSync: (...args: Parameters<typeof actual.renameSync>) => {
     if (fault.rename && String(args[1]) === fault.file) throw new Error('fixture registry write failure')
     const result = actual.renameSync(...args)
@@ -59,6 +67,8 @@ const unchanged = (before: ReturnType<typeof snapshot>) => {
 beforeEach(async () => {
   clock.now = 0
   fault.nativeSync = false
+  fault.beforeNativeSync = undefined
+  fault.nativeWritten.clear()
   fault.rename = false; fault.directorySync = false; fault.renamed = false; fault.afterProof = undefined; fault.beforeVerify = undefined
   root = realpathSync(mkdtempSync(join(tmpdir(), 'registry-admission-')))
   home = join(root, 'codex'); file = join(root, 'data', 'registry.json'); fault.file = file
@@ -78,8 +88,11 @@ afterEach(async () => {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
   server = undefined
   fault.nativeSync = false
+  fault.beforeNativeSync = undefined
+  fault.nativeWritten.clear()
   fault.rename = false; fault.directorySync = false; fault.renamed = false; fault.afterProof = undefined; fault.beforeVerify = undefined
-  vi.restoreAllMocks(); vi.doUnmock('../engines/transcriptBindings.js'); vi.unstubAllEnvs(); vi.resetModules(); rmSync(root, { recursive: true, force: true })
+  vi.restoreAllMocks(); vi.doUnmock('../engines/transcriptBindings.js'); vi.doUnmock('../engines/kit/nativeHookJournal.js')
+  vi.unstubAllEnvs(); vi.resetModules(); rmSync(root, { recursive: true, force: true })
 })
 
 it.each(['', '{', '{"type":"session_meta"}\n'])('holds incomplete native evidence without promoting the terminal: %s', text => {
@@ -476,8 +489,102 @@ async function httpFixture(blocked: (agentId: string) => boolean = () => false, 
     })
     return { status: response.status, body: await response.json() }
   }
-  return { post, prompts, registered, reasons }
+  return { post, prompts, registered, reasons, startRecovery: started.startRecovery, recoveryReady: started.recoveryReady }
 }
+
+async function afterTerminal(run: (journal: ReturnType<typeof import('../engines/kit/nativeHookJournal.js')['createNativeHookJournal']>) => Promise<void>) {
+  vi.doMock('../engines/kit/nativeHookJournal.js', async original => {
+    const actual = await original<typeof import('../engines/kit/nativeHookJournal.js')>()
+    let once = false
+    return { ...actual, createNativeHookJournal: (options: Parameters<typeof actual.createNativeHookJournal>[0]) => {
+      const journal = actual.createNativeHookJournal(options)
+      return { ...journal, claim: async (...args: Parameters<typeof journal.claim>) => {
+        const claim = await journal.claim(...args)
+        return { ...claim, finish: async (value: Parameters<typeof claim.finish>[0]) => {
+          await claim.finish(value)
+          if (!once) { once = true; await run(actual.createNativeHookJournal(options)) }
+        } }
+      } }
+    } }
+  })
+}
+
+it('keeps attachment held for an intake appended while the preceding result completes', async () => {
+  await afterTerminal(async peer => {
+    await peer.retain({ id: 'fixture-concurrent-intake', fingerprint: 'b'.repeat(64), agentId: source,
+      conversationId: B, firedAt: Date.now() + 1000, payload: { engine: 'codex', sessionId: B,
+        transcriptPath: join(home, 'sessions', 'not-written.jsonl'), tmuxPane: '%2', cwd: root, hookEvent: 'UserPromptSubmit' } })
+  })
+  const f = await httpFixture()
+  expect(await f.post({}, { id: 'fixture-before-concurrent-intake' })).toEqual({ status: 200, body: { ok: true } })
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  expect(f.prompts).toEqual(['fixture prompt'])
+  expect(f.registered).toHaveBeenCalledOnce()
+})
+
+it('keeps a terminal acknowledgement when refreshing attachment recovery fails and retries without the completed effect', async () => {
+  await afterTerminal(async () => { fault.nativeSync = true })
+  const ready = vi.fn()
+  const f = await httpFixture(undefined, undefined, { onNativeRecoveryReady: ready })
+  const order = { id: 'fixture-complete-before-refresh', firedAt: Date.now() }
+  expect(await f.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  expect(f.reasons.at(-1)).toContain('Waiting for native hook recovery')
+  ready.mockClear(); fault.nativeSync = false
+  await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(expect.objectContaining({ agentId: source })), { timeout: 2_000 })
+  expect(f.reasons.at(-1)).toBeUndefined()
+  expect(await f.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  expect(f.prompts).toEqual(['fixture prompt'])
+  expect(f.registered).toHaveBeenCalledOnce()
+  expect(await f.post({ prompt: 'successor' }, { id: 'fixture-successor-after-refresh', firedAt: order.firedAt + 1 }))
+    .toEqual({ status: 200, body: { ok: true } })
+  expect(f.prompts).toEqual(['fixture prompt', 'successor'])
+})
+
+it('wakes a healthy recovered attachment while an earlier process has unreadable ownership', async () => {
+  const other = registry.openProcessAgent({ engine: 'codex', tmuxPane: '%3', cwd: root,
+    processIdentity: { pid: 5103, startMarker: 'fixture-other', executable: '<codex>' } })!.entry
+  const ready = vi.fn()
+  const f = await httpFixture(undefined, undefined, {
+    readNativeHookOwner: async row => {
+      if (row.agentId === source) throw Error('fixture process A unavailable')
+      return { key: `fixture-${row.processIdentity!.pid}`, evidence: 'fixture-image', verify() {} }
+    }, onNativeRecoveryReady: ready,
+  }, undefined, true)
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  expect(f.recoveryReady(other)).toBe(false)
+  f.startRecovery()
+  await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(expect.objectContaining({ agentId: other.agentId })), { timeout: 2_000 })
+  expect(f.recoveryReady(other)).toBe(true)
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  expect(ready).toHaveBeenCalledOnce()
+})
+
+it.each(['confirmation', 'native-probe'])('retries a recovered attachment after a transient %s failure without another hook', async failure => {
+  let unavailable = false
+  const ready = vi.fn(), held = new Map<string, string | undefined>()
+  const f = await httpFixture(undefined, undefined, {
+    readNativeHookOwner: async row => {
+      if (unavailable) throw Error('fixture native probe unavailable')
+      return { key: `fixture-${row.processIdentity!.pid}`, evidence: 'fixture-image', verify() {} }
+    }, onNativeRecoveryReady: ready, onAdmissionHeld: (id, reason) => { held.set(id, reason) },
+  }, undefined, true)
+  expect(await f.post({}, { id: 'fixture-recovery-transient', firedAt: Date.now() })).toEqual({ status: 200, body: { ok: true } })
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  f.startRecovery()
+  await vi.waitFor(() => expect(f.recoveryReady(registry.byAgent(source)!)).toBe(true))
+  if (failure === 'confirmation') fault.nativeSync = true
+  else unavailable = true
+  expect(await f.post({}, {}, 'turn-stop')).toMatchObject({ status: 202, body: { pending: false, retry: true } })
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(false)
+  expect(held.get(source)).toContain('Waiting for native hook recovery')
+  ready.mockClear()
+  fault.nativeSync = false; unavailable = false
+  await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(expect.objectContaining({ agentId: source })), { timeout: 2_000 })
+  expect(f.recoveryReady(registry.byAgent(source)!)).toBe(true)
+  expect(held.get(source)).toBeUndefined()
+  expect(f.prompts).toEqual(['fixture prompt'])
+})
 
 it('keeps each prompt through an HTTP registration write failure and credits it only after recovery', async () => {
   const f = await httpFixture()
@@ -595,6 +702,49 @@ it('revokes a bound hook before waiting for the HTTP server to close', async () 
   expect((await response).status).toBe(403)
   expect(stop).not.toHaveBeenCalled()
   await closing; server = undefined
+})
+
+it('reproves the engine after claim confirmation even while its saved registry row is unchanged', async () => {
+  const { IdentityReadUnavailable } = await import('../engines/kit/identityScan.js')
+  let generation = 'original', claimWritten = false
+  const prove = vi.fn(async (_row: unknown, expected?: { key: string; evidence: string }) => {
+    const proof = { key: `fixture-boot:codex:5102:${generation}`, evidence: generation, verify: () => {} }
+    if (expected && expected.key !== proof.key) throw new IdentityReadUnavailable('the native generation changed during disk confirmation')
+    return proof
+  })
+  const f = await httpFixture(undefined, undefined, { readNativeHookOwner: prove }, undefined, true)
+  const before = snapshot()
+  fault.beforeNativeSync = text => {
+    if (text?.includes('"kind":"claim"')) { claimWritten = true; generation = 'replacement' }
+  }
+  expect(await f.post({}, { id: 'fixture-native-generation', firedAt: Date.now() })).toEqual({ status: 200, body: { pending: true } })
+  expect(claimWritten).toBe(true)
+  expect(f.reasons.at(-1)).toContain('generation changed')
+  expect(f.prompts).toEqual([])
+  expect(f.registered).not.toHaveBeenCalled()
+  unchanged(before)
+})
+
+it('never replaces the original caller proof with a same-second successor selected after resolution waits', async () => {
+  const { IdentityReadUnavailable } = await import('../engines/kit/identityScan.js')
+  let generation = 'original'
+  const proof = () => ({ key: `fixture-boot:codex:5102:${generation}`, evidence: generation, verify() {} })
+  const captured = proof(), captures = vi.fn(async () => ({ owner: () => captured }))
+  const f = await httpFixture(undefined, undefined, {
+    captureNativeHookCaller: captures,
+    resolveHookAgent: async () => { generation = 'replacement'; return structuredClone(registry.byAgent(source)!) },
+    readNativeHookOwner: async (_row, expected) => {
+      if (expected && expected.key !== proof().key) throw new IdentityReadUnavailable('the original caller engine was replaced')
+      return proof()
+    },
+  }, undefined, true)
+  const before = snapshot()
+  expect(await f.post({ callerPid: 6102 }, { id: 'fixture-original-native-caller', firedAt: Date.now() }))
+    .toMatchObject({ status: 202, body: { pending: false, retry: true, detail: expect.stringContaining('original caller engine was replaced') } })
+  expect(captures).toHaveBeenCalledOnce()
+  expect(f.prompts).toEqual([])
+  expect(f.registered).not.toHaveBeenCalled()
+  unchanged(before)
 })
 
 it.each(['commandcode', 'grok', 'agy', 'copilot'] as const)('admits the %s SessionStart before its deterministic transcript directories exist', async engine => {
@@ -803,6 +953,62 @@ it('refuses an HTTP hook whose matched process changed at the real core resolver
   expect(row.sessionId).toBe('')
 })
 
+it('passes captured ancestry through the real resolver after the hook shell exits and the process record is delayed', async () => {
+  const discovery = await import('./terminalAgentDiscovery.js')
+  const table = [{ pid: 6102, parentPid: 5102, startMarker: 'fixture-start', executable: '<hook>', args: '' },
+    { pid: 5102, parentPid: 1, startMarker: 'fixture-start', executable: '<codex>', args: '' }]
+  vi.spyOn(discovery, 'processRows').mockImplementation(async () => [...table])
+  const row = registry.byAgent(source)!, original = { ...row.processIdentity! }
+  row.processIdentity = { ...original, pid: 4999, startMarker: 'old-exited-engine' }
+  const { createEngineHooks } = await import('../core/engines/hooks.js')
+  const hooks = createEngineHooks({ tmuxBackend: {}, syncSession: vi.fn(), registry,
+    agentReconciler: { triggerHint: vi.fn(async () => true), trigger: vi.fn() } as never })
+  const f = await httpFixture(undefined, undefined, {
+    captureNativeHookCaller: async () => {
+      table.shift()
+      return { owner: selected => {
+        if (selected.processIdentity?.pid !== original.pid) throw Error('not in captured caller ancestry')
+        return { key: 'fixture-original', evidence: 'fixture-original', source: 'caller' as const }
+      } }
+    }, resolveHookAgent: hooks.resolveHookAgent,
+  }, undefined, true)
+  expect(await f.post({ callerPid: 6102 }, { id: 'fixture-captured-before-record' }))
+    .toMatchObject({ status: 202, body: { pending: false, retry: true } })
+  expect(f.prompts).toEqual([])
+  row.processIdentity = original
+  await vi.waitFor(() => expect(f.prompts).toEqual(['fixture prompt']), { timeout: 3_000 })
+  expect(f.registered).toHaveBeenCalledOnce()
+  expect(registry.byAgent(source)?.sessionId).toBe(A)
+})
+
+it('keeps unavailable arrival evidence retryable at the real HTTP resolver instead of ignoring the delivery', async () => {
+  const discovery = await import('./terminalAgentDiscovery.js')
+  vi.spyOn(discovery, 'processRows').mockResolvedValue([
+    { pid: 6102, parentPid: 5102, startMarker: 'fixture-start', executable: '<hook>', args: '' },
+    { pid: 5102, parentPid: 1, startMarker: 'fixture-start', executable: '<codex>', args: '' },
+  ])
+  const { createEngineHooks } = await import('../core/engines/hooks.js')
+  const hooks = createEngineHooks({ tmuxBackend: {}, syncSession: vi.fn(), registry,
+    agentReconciler: { triggerHint: vi.fn(async () => true), trigger: vi.fn() } as never })
+  let unavailable = true
+  const f = await httpFixture(undefined, undefined, {
+    captureNativeHookCaller: async () => ({ owner: () => {
+      if (unavailable) throw Error('fixture arrival evidence unavailable')
+      return { key: 'fixture-original', evidence: 'fixture-original', source: 'caller' as const }
+    } }), resolveHookAgent: hooks.resolveHookAgent,
+  })
+  const delivery = { id: 'fixture-unavailable-arrival' }
+  expect(await f.post({ callerPid: 6102 }, delivery)).toMatchObject({
+    status: 202, body: { pending: false, retry: true, detail: expect.stringContaining('fixture arrival evidence unavailable') },
+  })
+  expect(f.prompts).toEqual([])
+  expect(f.registered).not.toHaveBeenCalled()
+  expect(registry.byAgent(source)?.sessionId).toBe('')
+  unavailable = false
+  expect((await f.post({ callerPid: 6102 }, delivery)).body).toEqual({ ok: true })
+  expect(f.prompts).toEqual(['fixture prompt'])
+})
+
 it.each(['cursor', 'commandcode'] as const)('retains %s Stop before recovered registration can attach or close a newer turn', async engine => {
   if (engine === 'commandcode') {
     const { commandcodeTranscriptPath } = await import('../engines/commandcode/contract.js')
@@ -923,7 +1129,7 @@ it('holds a same-owner linked Stop after interpretation recovered, without closi
   expect(holds).toEqual([false, true])
 })
 
-it.each(['before-followup', 'during-followup', 'during-registration', 'during-initial-resolution'] as const)('Cancel supersedes original Stop %s without closing a newer turn', async phase => {
+it.each(['before-followup', 'during-followup', 'during-registration', 'during-initial-resolution', 'during-native-capture'] as const)('Cancel supersedes original Stop %s without closing a newer turn', async phase => {
   const { createAttach } = await import('../core/transcripts/attach.js')
   const { createSessionNormalizers } = await import('../core/transcripts/normalizers.js')
   const owner = registry.openProcessAgent({ engine: 'cursor', tmuxPane: '%3', cwd: root,
@@ -939,6 +1145,10 @@ it.each(['before-followup', 'during-followup', 'during-registration', 'during-in
   const onAdmissionStop = vi.fn(() => false)
   const f = await httpFixture(() => false, 65_536, { onTurnStop, onAdmissionStop,
     captureAdmissionStop: attach.captureAdmissionStop,
+    ...(phase === 'during-native-capture' ? { captureNativeHookCaller: async () => {
+      await new Promise<void>(resolve => { finish = resolve })
+      return { owner: () => ({ key: 'fixture-original-cursor', evidence: 'fixture-original-cursor' }) }
+    } } : {}),
     resolveHookAgent: async () => {
       resolutions++
       if (phase === 'during-followup' && resolutions === 2 || phase === 'during-initial-resolution' && resolutions === 1) {
@@ -950,18 +1160,18 @@ it.each(['before-followup', 'during-followup', 'during-registration', 'during-in
   const body = { engine: 'cursor', sessionId: A, transcriptPath: undefined, tmuxPane: '%3', hookEvent: 'stop', prompt: undefined }
   if (phase === 'during-registration') fault.rename = true
   const registration = f.post(body, delivery)
-  if (phase === 'during-initial-resolution') await vi.waitFor(() => expect(finish).toBeDefined())
+  if (phase === 'during-initial-resolution' || phase === 'during-native-capture') await vi.waitFor(() => expect(finish).toBeDefined())
   else expect((await registration).body).toEqual(phase === 'during-registration' ? { pending: true } : { ok: true })
   const followup = phase === 'during-followup' ? f.post(body, delivery, 'turn-stop') : undefined
   if (followup) await vi.waitFor(() => expect(finish).toBeDefined())
   attach.beforeCancel(row)
   laterTurnOpen = true
-  if (phase === 'during-initial-resolution') {
+  if (phase === 'during-initial-resolution' || phase === 'during-native-capture') {
     // A retry must share the original cancellation witness, even when it could
     // resolve sooner after Cancel than the first request that was already taken.
     expect(await f.post(body, delivery)).toMatchObject({ status: 202, body: { pending: false, retry: true } })
     expect(await f.post({ ...body, title: 'different delivery' }, delivery)).toMatchObject({ status: 409 })
-    expect(resolutions).toBe(1)
+    expect(resolutions).toBe(phase === 'during-native-capture' ? 0 : 1)
   }
   fault.rename = false
   finish?.()
@@ -969,7 +1179,7 @@ it.each(['before-followup', 'during-followup', 'during-registration', 'during-in
   if (phase === 'during-registration') await vi.waitFor(() => expect(f.registered).toHaveBeenCalledOnce(), { timeout: 3_000 })
   expect((await (followup ?? f.post(body, delivery, 'turn-stop'))).body).toEqual({ ok: true, duplicate: true })
   expect(onTurnStop).not.toHaveBeenCalled()
-  expect(onAdmissionStop).toHaveBeenCalledTimes(phase === 'during-registration' || phase === 'during-initial-resolution' ? 0 : 1)
+  expect(onAdmissionStop).toHaveBeenCalledTimes(['during-registration', 'during-initial-resolution', 'during-native-capture'].includes(phase) ? 0 : 1)
   expect(laterTurnOpen).toBe(true)
   attach.forget(A)
 })

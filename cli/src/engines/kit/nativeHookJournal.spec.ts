@@ -71,6 +71,48 @@ it('shares effect order between different agent views of the same native process
   expect((await journal().snapshot()).active).toBeUndefined()
 })
 
+it('shares in-flight namespace initialization between background recovery and admission', async () => {
+  const active = journal()
+  let release!: () => void, delayed = false
+  fault.deferSync = (_fd, callback) => {
+    if (delayed) return false
+    delayed = true; release = () => callback(null); return true
+  }
+  const recovery = active.snapshot()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const admission = active.snapshot()
+  const combined = Promise.allSettled([recovery, admission])
+  release()
+  const results = await combined
+  expect(results.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+  for (const result of results) if (result.status === 'fulfilled') {
+    expect(result.value.deliveries.size).toBe(0)
+    result.value.verify()
+  }
+  // A completed read is never a cache: removed authority must hold the next read.
+  unlinkSync(`${directory}.seal`)
+  writeFileSync(join(directory, 'unrecognized'), 'fixture')
+  await expect(active.snapshot()).rejects.toThrow()
+})
+
+it.each(['close', 'owner change'] as const)('revokes every initialization waiter after %s', async reason => {
+  let current = true, release!: () => void, delayed = false
+  const active = journal({ current: () => current })
+  fault.deferSync = (_fd, callback) => {
+    if (delayed) return false
+    delayed = true; release = () => callback(null); return true
+  }
+  const recovery = active.snapshot()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const admission = active.snapshot(), combined = Promise.allSettled([recovery, admission])
+  if (reason === 'close') active.close()
+  else current = false
+  release()
+  const results = await combined
+  expect(results.map(result => result.status)).toEqual(['rejected', 'rejected'])
+  for (const result of results) if (result.status === 'rejected') expect(String(result.reason)).toContain('owner changed')
+})
+
 it('never transfers a crashed publisher’s claim to a new caller', async () => {
   const original = journal(), body = intake()
   await original.retain(body)

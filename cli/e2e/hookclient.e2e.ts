@@ -132,7 +132,12 @@ describe('the hook client', () => {
     await turn(client, agent.id, 'before registry hold')
     const file = join(d.dataDir, 'registry.json'), backup = file + '.fixture-backup'
     const accepted = () => [...d.log().matchAll(new RegExp(`\\[hooks\\] ${agent.sessionId.slice(0, 8)} UserPromptSubmit · engine=codex`, 'g'))].length
-    await until('the first native prompt acknowledgement', () => accepted() === 1)
+    await until('the first native prompt acknowledgement', async () => {
+      if (accepted() === 1) return true
+      const current = await row(client, agent.id)
+      throw Error(JSON.stringify({ acknowledgements: accepted(), identityHold: current?.identityHold,
+        interpretationHold: current?.interpretationHold }))
+    })
     // The fixture owns this entire data directory. A directory at the file's path
     // makes reads/writes fail even under a privileged CI account; no host chmod assumptions.
     renameSync(file, backup); mkdirSync(file)
@@ -195,14 +200,25 @@ setInterval(() => {}, 1000)
       const initial = await hook('sessionStart')
       expect(initial.status, JSON.stringify(initial)).toBeLessThan(300)
       expect(initial.body.ignored, JSON.stringify(initial)).toBeUndefined()
+      expect(initial.body.retry, JSON.stringify(initial)).toBeUndefined()
       await bound(client, agentId, sessionId)
       await until('the existing Cursor parser', () => new RegExp(`\\[agent\\] ${agentId.slice(0, 8)} attached · engine=cursor`).test(d.log()), 20_000)
       const delivery = 'fixture-cursor-stop-0001', firedAt = Date.now()
-      expect(await hook('stop', delivery, firedAt)).toEqual({ status: 200, body: { ok: true } })
+      await until('the durable Cursor Stop registration', async () => {
+        const response = await hook('stop', delivery, firedAt)
+        expect(response.status, JSON.stringify(response)).toBe(200)
+        if (response.body.pending === true) return false
+        expect(response.body).toEqual({ ok: true })
+        return true
+      }, 20_000, 100)
       const cancelled = client.next(frame => frame.agentId === agentId && frame.type === 'agent_activity'
-        && frame.payload?.activity?.state === 'idle', 20_000)
+        && frame.payload?.activity?.state === 'idle', 20_000, 'Cursor idle after Cancel')
       client.send('cancel', { agentId }); await cancelled
-      const later = client.next(isTurn('turn_started', agentId), 20_000)
+      await until('Cancel to clear the Cursor interpretation hold', async () => {
+        expect((await row(client, agentId))?.identityHold).toBeFalsy()
+        return true
+      }, 20_000)
+      const later = client.next(isTurn('turn_started', agentId), 20_000, 'the later Cursor turn')
       appendFileSync(transcriptPath, prompt('later Cursor turn'))
       expect((await later).payload?.userMessage).toBe('later Cursor turn')
       expect(await hook('stop', delivery, firedAt, 'turn-stop')).toEqual({ status: 200, body: { ok: true, duplicate: true } })

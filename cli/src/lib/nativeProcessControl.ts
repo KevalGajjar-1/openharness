@@ -47,14 +47,14 @@ function hex(value: unknown, max: number, allowNul = false): string {
 
 /** No prefixes, duplicate/missing rows, permissive JSON types or rounded inode numbers. */
 export function parseNativeProcessControl(output: string, pids: readonly number[], parent: number,
-  budget: NativeEvidenceBudget,
+  budget: NativeEvidenceBudget, includeDescriptors = true,
 ): NativeControlSnapshot {
   if (!output.endsWith('\n') || Buffer.byteLength(output) > 5 * 1024 * 1024) return nativeUnavailable('the native control reply is incomplete')
   const lines = output.slice(0, -1).split('\n'), rows = new Map<number, NativeControlRow>()
   if (lines.length !== pids.length + 1) return nativeUnavailable('the native control reply has an incomplete process pool')
   const json = (text: string) => { try { return JSON.parse(text) } catch { return nativeUnavailable('the native control reply is malformed') } }
   const header = json(lines.shift()!)
-  if (header?.schema !== 2 || header.mode !== 'control' || header.parent !== parent || !Array.isArray(header.children)
+  if (header?.schema !== 2 || header.mode !== (includeDescriptors ? 'control' : 'identity') || header.parent !== parent || !Array.isArray(header.children)
     || header.children.length > 32 || header.children.some((pid: unknown) => !validPid(pid) || pid === parent)
     || new Set(header.children).size !== header.children.length || (!parent && header.children.length)) {
     return nativeUnavailable('the native control reply has an ambiguous child pool')
@@ -66,7 +66,7 @@ export function parseNativeProcessControl(output: string, pids: readonly number[
     if (!row || !validPid(row.pid) || !pids.includes(row.pid) || rows.has(row.pid) || !uint(row.parentPid, 0x7fffffff)
       || !uint(row.startSeconds, Number.MAX_SAFE_INTEGER) || !row.startSeconds || !uint(row.startMicros, 999_999)
       || typeof row.commandDigest !== 'string' || !/^[a-f0-9]{64}$/.test(row.commandDigest)
-      || !Array.isArray(row.fds) || (fds += row.fds.length) > 4096) {
+      || !Array.isArray(row.fds) || (!includeDescriptors && row.fds.length) || (fds += row.fds.length) > 4096) {
       return nativeUnavailable('the native control reply has an invalid process record')
     }
     const command = hex(row.commandHex, 16), imagePath = hex(row.imageHex, 4095)
@@ -105,7 +105,7 @@ export function linuxProcessStat(text: string, pid: number): { command: string; 
   return { command: text.slice(start + 1, end), parentPid: Number(fields[1]), state: fields[0], startTicks }
 }
 
-function linuxControl(pids: readonly number[], parent: number, budget: NativeEvidenceBudget): NativeControlSnapshot {
+function linuxControl(pids: readonly number[], parent: number, budget: NativeEvidenceBudget, descriptors: boolean): NativeControlSnapshot {
   const bytes = (path: string, limit: number) => {
     budget.step()
     const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
@@ -172,7 +172,7 @@ function linuxControl(pids: readonly number[], parent: number, budget: NativeEvi
     let total = 0
     for (const pid of pids) {
       const before = metadata(pid), fds: NativeDescriptor[] = []
-      for (const fd of entries(`/proc/${pid}/fd`, 4096)) {
+      for (const fd of descriptors ? entries(`/proc/${pid}/fd`, 4096) : []) {
         budget.step()
         if (++total > 4096) return nativeUnavailable('the native descriptor pool exceeds its limit')
         const location = `/proc/${pid}/fd/${fd}`, path = readlinkSync(location)
@@ -207,10 +207,12 @@ function linuxControl(pids: readonly number[], parent: number, budget: NativeEvi
 
 /** No ps/lsof wait separates the last process and descriptor observations. This does not
  * freeze an external process; immutable core ownership is still checked by every caller. */
-export async function nativeProcessControl(pids: readonly number[], parent: number, budget: NativeEvidenceBudget): Promise<NativeControlSnapshot> {
+export async function nativeProcessControl(pids: readonly number[], parent: number, budget: NativeEvidenceBudget,
+  descriptors = true,
+): Promise<NativeControlSnapshot> {
   if (!pids.length || pids.length > 33 || pids.some(pid => !validPid(pid)) || new Set(pids).size !== pids.length
     || (parent !== 0 && (!validPid(parent) || !pids.includes(parent)))) return nativeUnavailable('the native control request is invalid')
-  if (process.platform === 'linux') return linuxControl(pids, parent, budget)
+  if (process.platform === 'linux') return linuxControl(pids, parent, budget, descriptors)
   if (process.platform !== 'darwin') return nativeUnavailable('native control evidence is unavailable on this platform')
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -220,7 +222,7 @@ export async function nativeProcessControl(pids: readonly number[], parent: numb
     if (!helper) return nativeUnavailable('the native control helper is unavailable')
     const timeout = budget.probe()
     const bytes = await new Promise<Buffer>((resolve, reject) => {
-      execFile(helper.path, ['--control', String(Math.min(timeout, 3000)), String(parent), ...pids.map(String)],
+      execFile(helper.path, [descriptors ? '--control' : '--identity', String(Math.min(timeout, 3000)), String(parent), ...pids.map(String)],
         { encoding: 'buffer', timeout, maxBuffer: 5 * 1024 * 1024, killSignal: 'SIGKILL', env: psEnv() },
         (error, stdout, stderr) => {
           if (error && ['ENOENT', 'ENOTDIR', 'EACCES', 'ENOEXEC'].includes(String(error.code))) invalidateProcessImageHelper(helper.key)
@@ -229,7 +231,7 @@ export async function nativeProcessControl(pids: readonly number[], parent: numb
         })
     })
     budget.step(bytes.length)
-    return parseNativeProcessControl(nativeText(bytes), pids, parent, budget)
+    return parseNativeProcessControl(nativeText(bytes), pids, parent, budget, descriptors)
   } catch (error) {
     if (error instanceof IdentityReadUnavailable) throw error
     return nativeUnavailable('the native control probe could not start')

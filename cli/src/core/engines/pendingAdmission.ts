@@ -118,7 +118,7 @@ export function createPendingAdmissions({ retryMs = 1_000, capacity = 64, isProc
     }
     if (decision.kind !== 'hold' && job.request.conclude) {
       try { decision = await job.request.conclude(decision) }
-      catch (error) { decision = { kind: 'hold', reason: `Waiting for durable hook outcome: ${error instanceof Error ? error.message : 'confirmation unavailable'}`.slice(0, 1024) } }
+      catch (error) { decision = { kind: 'hold', reason: `Waiting for durable hook admission: ${error instanceof Error ? error.message : 'confirmation unavailable'}`.slice(0, 1024) } }
     }
     if (!current(key, job)) { discard(key, job); return }
     if (decision.kind === 'hold') {
