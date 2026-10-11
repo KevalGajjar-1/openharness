@@ -51,6 +51,63 @@ describe('agents a service owns', () => {
     expect(cloud.owns('cloud_1')).toBe(false)
   })
 
+  it('makes the dial\'s turn cards from what changes: working, then what it said, as a terminal agent\'s turn', () => {
+    const { cloud, clients } = setup()
+    const cards = () => clients.sendCommander.mock.calls.map(([frame]) => frame).filter((frame) => frame.type === 'commander_event')
+    // New and working: the tile is told, since it is idle until it is.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip', said: null })])
+    expect(cards()).toEqual([{ type: 'commander_event', agentId: 'cloud_1', dbSessionId: 'cloud_1', payload: { kind: 'processing', text: 'Working…' } }])
+    expect(cloud.liveCards()).toEqual(cards())
+    // Still working, now saying what: no second start.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip', activity: 'Calling Hair Lab' })])
+    expect(cards()).toHaveLength(1)
+    expect(cloud.liveCards()).toEqual([{ type: 'commander_event', agentId: 'cloud_1', dbSessionId: 'cloud_1', payload: { kind: 'processing', text: 'Calling Hair Lab' } }])
+    // Its reply ends the turn: the recap and the text under it, named, and ringing.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip', state: 'idle', said: '## Booked\n\nBooked for **9:30** at Hair Lab. See you Saturday.', messages: 3 })])
+    expect(cards().at(-1)).toEqual({ type: 'commander_event', agentId: 'cloud_1', dbSessionId: 'cloud_1', name: 'trip',
+      payload: { kind: 'summary', recap: 'Booked for 9:30 at Hair Lab. See you Saturday.', text: 'Booked Booked for 9:30 at Hair Lab. See you Saturday.', notification: { id: 'cloud_1:3', kind: 'done' } } })
+    expect(cloud.recent('cloud_1')).toEqual([{ kind: 'summary', recap: 'Booked for 9:30 at Hair Lab. See you Saturday.', text: 'Booked Booked for 9:30 at Hair Lab. See you Saturday.', fullText: '## Booked\n\nBooked for **9:30** at Hair Lab. See you Saturday.' }])
+    expect(cloud.said('cloud_1')).toBe('## Booked\n\nBooked for **9:30** at Hair Lab. See you Saturday.')
+    expect(cloud.liveCards()).toEqual([])
+    // The same words again (a name changed) are not told twice.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'idle', said: '## Booked\n\nBooked for **9:30** at Hair Lab. See you Saturday.', messages: 3 })])
+    expect(cards()).toHaveLength(2)
+    // Waiting on the person: its question rings, not its words.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'working', said: '## Booked\n\nBooked for **9:30** at Hair Lab. See you Saturday.' })])
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'needs_input', said: 'Which one?\n1) 9:30\n2) 11:00', messages: 5 })])
+    expect(cards().at(-1)).toMatchObject({ payload: { kind: 'summary', notification: null } })
+    // A turn that ends with nothing said is done; one that failed says why.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'working', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'idle', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    expect(cards().at(-1)).toMatchObject({ payload: { kind: 'done', text: 'done' } })
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'starting', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'failed', activity: 'Fo answered 500.', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    expect(cards().at(-1)).toMatchObject({ payload: { kind: 'error', text: 'Fo answered 500.' } })
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'working', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    cloud.doors.publish([harness({ agent: 'fo', name: 'trip!', state: 'failed', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    expect(cards().at(-1)).toMatchObject({ payload: { kind: 'error', text: 'It stopped with an error.' } })
+    // Idle and changed, with nothing new said: nothing to tell.
+    const before = cards().length
+    cloud.doors.publish([harness({ agent: 'fo', name: 'renamed', state: 'failed', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    // Stopped: it leaves the wheel, and no card follows it.
+    cloud.doors.publish([harness({ agent: 'fo', name: 'renamed', state: 'working', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    cloud.doors.publish([harness({ agent: 'fo', name: 'renamed', state: 'stopped', said: 'Which one?\n1) 9:30\n2) 11:00' })])
+    expect(cards()).toHaveLength(before + 1)
+    expect(clients.sendCommander).toHaveBeenLastCalledWith({ type: 'agent_deleted', payload: { agentId: 'cloud_1' } })
+    // A list told again whole (a restart) is not news; nor is a harness first seen idle.
+    const { cloud: again, clients: fresh } = setup()
+    again.doors.publish([harness({ state: 'idle', said: 'Opened #42.' })])
+    again.doors.publish([harness({ state: 'idle', said: 'Opened #42.', name: 'x' })])
+    expect(fresh.sendCommander.mock.calls.filter(([frame]) => frame.type === 'commander_event')).toEqual([])
+    expect(again.recent('cloud_1')).toEqual([expect.objectContaining({ recap: 'Opened #42.' })])
+    // Nothing said yet; not one at all.
+    again.doors.publish([harness({ said: null })])
+    expect(again.recent('cloud_1')).toEqual([])
+    expect(again.said('cloud_1')).toBeUndefined()
+    expect(again.recent('a1')).toBeNull()
+    expect(again.said('a1')).toBeUndefined()
+  })
+
   it('shows its questions where questions show, and closes them', () => {
     const { cloud, clients, openQuestions, deviceInput } = setup()
     cloud.doors.publish([harness()])

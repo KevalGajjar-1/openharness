@@ -65,9 +65,15 @@ export interface CloudHarness {
   links: { label: string; url: string }[]
   /** How many messages its conversation holds: a client that shows it reads the conversation again when this moves. */
   messages: number
+  /** What it said last, for the dial's card: a terminal agent's turn ends with its answer the same way. Kept in
+   *  the core alone, never in a frame: the apps read the whole conversation. */
+  said?: string | null
   createdAt: string
   updatedAt: string
 }
+
+/** As much of its last words as the dial's longest card draws, and some over (lib/deviceRecap.ts). */
+export const SAID_MAX = 4_000
 
 const text = (value: unknown, max = 500): string | null => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null)
 const stamp = (value: unknown): string | null => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null)
@@ -94,6 +100,7 @@ export function cloudHarnessIn(raw: unknown): CloudHarness | null {
     branch: text(value.branch, 200),
     links,
     messages: typeof value.messages === 'number' && Number.isInteger(value.messages) && value.messages >= 0 ? value.messages : 0,
+    said: text(value.said, SAID_MAX),
     createdAt,
     updatedAt,
   }

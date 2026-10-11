@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CloudCore, CloudPort, CloudResult, ServiceRequests } from '../core/api.js'
-import { CLOUD_AGENT_IDS, CLOUD_AGENTS, cloudAgentFrame, isCloudAgent, type CloudAgentId, type CloudHarness } from '../lib/cloudAgents.js'
+import { CLOUD_AGENT_IDS, CLOUD_AGENTS, SAID_MAX, cloudAgentFrame, isCloudAgent, type CloudAgentId, type CloudHarness } from '../lib/cloudAgents.js'
 import { connectionFor, connectionsBridge, type Bridge } from './bridge.js'
 import { cursorAdapter } from './cursor.js'
 import { devinAdapter } from './devin.js'
@@ -129,6 +129,7 @@ export function startCloudService(options: CloudServiceOptions) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     appendFileSync(transcriptFile(entry.harness.agentId), `${JSON.stringify(message)}\n`, { mode: 0o600 })
     entry.harness.messages += 1
+    if (message.from === 'agent') entry.harness.said = message.text.slice(0, SAID_MAX)
   }
 
   const publish = (): void => {
@@ -369,6 +370,8 @@ export function startCloudService(options: CloudServiceOptions) {
     const saved = JSON.parse(readFileSync(stateFile, 'utf8')) as { harnesses?: Array<Omit<Entry, 'failures'>> }
     for (const raw of saved.harnesses ?? []) {
       if (!raw?.harness?.agentId || !isCloudAgent(raw.harness.agent) || !raw.remote?.id) continue
+      // A harness saved before it kept its last words finds them in its conversation.
+      if (typeof raw.harness.said !== 'string') raw.harness.said = transcript(raw.harness.agentId).filter((message) => message.from === 'agent').at(-1)?.text.slice(0, SAID_MAX) ?? null
       entries.set(raw.harness.agentId, { harness: raw.harness, remote: raw.remote, question: null, changedAt: raw.changedAt ?? now(), failures: 0, heard: true,
         ...(typeof raw.creationId === 'string' ? { creationId: raw.creationId } : {}) })
     }

@@ -818,6 +818,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       // The working tiles are the recaps' to say: asked, and sent to the dial when they answer.
       if (attached) for (const frame of openQuestions.values()) ports.devices?.card(frame)
       if (attached) void mirror.liveCards().then((cards) => { for (const frame of cards) ports.devices?.card(frame) })
+      if (attached) for (const frame of cloudAgents?.liveCards() ?? []) ports.devices?.card(frame)
     },
     // What a device or another machine asks of an agent here: the SAME handlers the backend socket
     // drives, called directly — the slash-command adaptation and the turn and question plumbing live there.
@@ -844,7 +845,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     turns: {
       send: (agentId, text) => backendRef?.onMessage?.(agentId, text),
       stop: (agentId) => backendRef?.onCancel?.(agentId),
-      recent: async (agentId, n) => mirror.recent(registry.resolve(agentId)?.sessionId || agentId, n),
+      recent: async (agentId, n) => cloudAgents?.recent(agentId) ?? mirror.recent(registry.resolve(agentId)?.sessionId || agentId, n),
       asks: async (agentId) => mirror.recentAsks(registry.resolve(agentId)?.sessionId || agentId),
       ...deliveries.turns,
     },
@@ -2704,7 +2705,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     wifiCore.card(withoutUpdate(card))
     const payload = card.payload as Record<string, unknown> | undefined
     const full = card.type === 'commander_event' && payload?.kind === 'summary' && typeof card.agentId === 'string'
-      ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) : undefined
+      ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) ?? cloudAgents?.said(card.agentId) : undefined
     ports.devices?.card(full ? { ...card, payload: { ...payload, fullText: full } } : card)
   }
 

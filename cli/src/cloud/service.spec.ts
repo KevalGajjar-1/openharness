@@ -204,6 +204,29 @@ describe('a cloud harness', () => {
     expect(await service.port.rename('cloud_none', 'x')).toMatchObject({ ok: false, error: 'UNKNOWN_AGENT' })
   })
 
+  it('keeps what it said last for the dial, and finds it in the conversation of a harness saved before it did', async () => {
+    const devin = maker()
+    const first = start({ 'devin-cloud': devin })
+    await first.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    expect(published()[0].said).toBeUndefined()
+    devin.looks.push({ messages: [{ id: 'm1', text: 'Opened #42.', at: 'x' }], state: 'idle' })
+    await tick()
+    expect(published()[0].said).toBe('Opened #42.')
+    first.stop()
+    const file = join(dataDir, 'cloud', 'harnesses.json')
+    const saved = JSON.parse(readFileSync(file, 'utf8'))
+    delete saved.harnesses[0].harness.said
+    writeFileSync(file, JSON.stringify(saved))
+    start({ 'devin-cloud': devin }).republish()
+    expect(published()[0].said).toBe('Opened #42.')
+    // Nothing said at all: nothing to find.
+    saved.harnesses[0].harness.said = null
+    writeFileSync(file, JSON.stringify(saved))
+    rmSync(join(dataDir, 'cloud', `${saved.harnesses[0].harness.agentId}.jsonl`))
+    start({ 'devin-cloud': devin }).republish()
+    expect(published()[0].said).toBeNull()
+  })
+
   it('is watched again after a restart, and tells a reconnected core everything again', async () => {
     const devin = maker()
     const first = start({ 'devin-cloud': devin })

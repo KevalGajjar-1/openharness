@@ -15,12 +15,18 @@ describe('cloud agents', () => {
   })
 
   it('keep nothing of a reported harness they cannot read', () => {
-    expect(cloudHarnessIn(harness)).toEqual(harness)
+    expect(cloudHarnessIn(harness)).toEqual({ ...harness, said: null })
+    // Its last words, kept to what the dial's longest card can use.
+    expect(cloudHarnessIn({ ...harness, said: `  ${'a'.repeat(5_000)}` })!.said).toHaveLength(4_000)
+    expect(cloudFrameHasNoWords()).toBe(true)
     for (const bad of [null, 'x', { ...harness, agentId: 'a1' }, { ...harness, agent: 'claude' }, { ...harness, state: 'odd' }, { ...harness, createdAt: 'never' }]) expect(cloudHarnessIn(bad)).toBeNull()
     expect(cloudHarnessIn({ ...harness, name: '', activity: 5, repository: '', links: [{ label: 'x', url: 'http://no' }, { url: 'https://a' }, null], messages: -1 }))
       .toMatchObject({ name: 'Devin Cloud', activity: null, repository: null, links: [], messages: 0 })
     expect(cloudHarnessIn({ ...harness, links: 'x', messages: 1.5 })).toMatchObject({ links: [], messages: 0 })
   })
+
+  // What it said stays in the core: the apps read the whole conversation.
+  const cloudFrameHasNoWords = (): boolean => !JSON.stringify(cloudAgentFrame({ ...harness, said: 'secret words' })).includes('secret words')
 
   it('travel as an agent\'s frame with no pane, its repository as its project', () => {
     expect(cloudAgentFrame(harness)).toMatchObject({

@@ -5,12 +5,17 @@
  * (`location: 'cloud'`), and puts their questions wherever questions show. What a person does to one comes
  * back here first: a New Harness for a cloud agent, words for it, an answer to its question, a rename and Stop
  * are handed to the service's port, and everything else goes on to the terminal agents' own paths.
+ *
+ * The dial reads a turn from its cards (lib/commander.ts): working as it starts, its answer as it ends. A cloud
+ * harness has no turns to read, so its cards are made here, from what changes between two lists.
  */
 import type { CloudCore, CloudPort, CloudResult } from '../api.js'
 import { CLOUD_DOWN } from '../api.js'
 import { cloudAgentFrame, cloudHarnessIn, isCloudAgent, type CloudAgentFrame, type CloudHarness } from '../../lib/cloudAgents.js'
 import type { AutonomousDeviceInput } from '../deviceInput.js'
 import type { QuestionAnswerResult } from '../../lib/questionController.js'
+import { deriveTurnSummary } from '../../lib/deviceRecap.js'
+import { splitSummary } from '../../lib/recapReads.js'
 
 type Frame = { type: string; agentId?: string; dbSessionId?: string; payload: Record<string, unknown> }
 
@@ -26,6 +31,14 @@ export interface CloudAgentsDeps {
 }
 
 const DOWN = async (): Promise<typeof CLOUD_DOWN> => CLOUD_DOWN
+const busy = (harness: CloudHarness): boolean => harness.state === 'working' || harness.state === 'starting'
+/** Its last words as the dial's recap and the text under it, or null when it has said nothing. */
+const recapOf = (harness: CloudHarness): { recap: string; text: string } | null => {
+  const summary = harness.said ? deriveTurnSummary(harness.said) : null
+  if (!summary) return null
+  const { recap, body } = splitSummary(summary)
+  return { recap, text: body }
+}
 
 export function createCloudAgents({ port, clients, openQuestions, deviceInput, log = (line) => console.log(line) }: CloudAgentsDeps) {
   let harnesses = new Map<string, CloudHarness>()
@@ -33,6 +46,36 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
   const asked = new Map<string, string>()
   /** The questions the dial was shown: only those with choices, since its question screen takes no words. */
   const onDial = new Set<string>()
+  /** The last words each harness's card told, so a list told again is not told twice. */
+  const told = new Map<string, string>()
+
+  const card = (harness: CloudHarness, payload: Record<string, unknown>): void => {
+    // The name rides a summary's outer frame, as a terminal agent's does: a notification's second line.
+    clients.sendCommander({ type: 'commander_event', agentId: harness.agentId, dbSessionId: harness.agentId, ...(payload.kind === 'summary' ? { name: harness.name } : {}), payload })
+  }
+  /**
+   * Its cards, from one list to the next: working as it starts; once it stops, what it said, or done. First seen
+   * (new, or a list told again whole after a restart), what it said is not news: the dial restores its tile by
+   * `recent`. Working is, since the tile is idle until told.
+   */
+  const cards = (before: CloudHarness | undefined, harness: CloudHarness): void => {
+    if (!before) told.set(harness.agentId, harness.said ?? '')
+    // Stopped, it leaves the dial's wheel (`sync`): there is no tile to tell.
+    if (harness.state === 'stopped') return
+    if (busy(harness)) {
+      if (!before || !busy(before)) card(harness, { kind: 'processing', text: harness.activity ?? 'Working…' })
+      return
+    }
+    if (!before) return
+    const recap = recapOf(harness)
+    if (recap && harness.said !== told.get(harness.agentId)) {
+      told.set(harness.agentId, harness.said!)
+      // Waiting on the person, its question rings instead (lib/agentNotifications.ts keeps the same rule).
+      card(harness, { kind: 'summary', ...recap, notification: harness.state === 'needs_input' ? null : { id: `${harness.agentId}:${harness.messages}`, kind: 'done' } })
+    } else if (busy(before)) {
+      card(harness, harness.state === 'failed' ? { kind: 'error', text: harness.activity ?? 'It stopped with an error.' } : { kind: 'done', text: 'done' })
+    }
+  }
 
   const sync = (harness: CloudHarness): void => {
     const frame: Frame = { type: 'agent_synced', payload: { agent: cloudAgentFrame(harness) } }
@@ -55,8 +98,13 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
       }
       const before = harnesses
       harnesses = next
-      for (const [agentId, harness] of next) if (JSON.stringify(before.get(agentId)) !== JSON.stringify(harness)) sync(harness)
-      for (const agentId of before.keys()) if (!next.has(agentId)) gone(agentId)
+      for (const [agentId, harness] of next) {
+        const prior = before.get(agentId)
+        if (JSON.stringify(prior) === JSON.stringify(harness)) continue
+        sync(harness)
+        cards(prior, harness)
+      }
+      for (const agentId of before.keys()) if (!next.has(agentId)) { told.delete(agentId); gone(agentId) }
     },
     ask(agentId, requestId, question) {
       if (!harnesses.has(agentId) || typeof requestId !== 'string' || !requestId.startsWith('cloud_q_') || typeof question?.text !== 'string') return
@@ -98,6 +146,19 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
     /** Every cloud harness's frame, for `agents_list`. */
     frames: (): CloudAgentFrame[] => [...harnesses.values()].map(cloudAgentFrame),
     owns: (agentId: string): boolean => harnesses.has(agentId),
+    /** Its last turn as the dial restores a tile (`agent_recent`), what it said; null when it is not one. */
+    recent: (agentId: string): Array<{ kind: 'summary'; recap: string; text: string; fullText: string }> | null => {
+      const harness = harnesses.get(agentId)
+      if (!harness) return null
+      const recap = recapOf(harness)
+      return recap ? [{ kind: 'summary', ...recap, fullText: harness.said! }] : []
+    },
+    /** All it said last, for a dial that draws a long recap; undefined when it is not one or said nothing. */
+    said: (agentId: string): string | undefined => harnesses.get(agentId)?.said ?? undefined,
+    /** The working cards, for a dial attaching mid-turn. */
+    liveCards: (): Frame[] => [...harnesses.values()].filter(busy).map((harness) => ({
+      type: 'commander_event', agentId: harness.agentId, dbSessionId: harness.agentId, payload: { kind: 'processing', text: harness.activity ?? 'Working…' },
+    })),
     /** What a working cloud harness is doing, for the dial's working card; null when it says nothing. */
     activity: (agentId: string): string | null => {
       const harness = harnesses.get(agentId)
