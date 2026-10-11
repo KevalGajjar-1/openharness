@@ -208,9 +208,46 @@ implementation and independent review overlapped from approximately 15:00 to
 15:17 UTC. The golden recording receipt reports `source_changed` as expected;
 unchanged baseline receipt `20261011T150105.879117Z-47508` is the passing evidence.
 This is storage machinery, not yet a shipped client: catalog sealing, global
-logical/physical budgets, cross-process staging, bundled client emission/replay,
+logical/physical budgets, production staging wiring, bundled client emission/replay,
 durable server Stop completion and final private acceptance remain required.
 No merge or publication occurred.
+
+The staging mechanics are now implemented behind an optional publication seam;
+production journals still use their former staging path until catalog integration.
+Eight immutable writer lanes bound payload scratch space. Exclusive ownership is
+remembered immediately after atomic metadata publication, before any fallible
+verification. Interrupted acquisition and initialization retain exact cleanup
+authority for retry by the same live writer. Complete initializer history,
+metadata bytes, directory iterator acquisition and authority rebinding are
+verified; missing history cannot create a new owner. Cleanup checks its generation
+and route before unlinking, survives request revocation, and confirms absence after
+actual directory flushes. A dead predecessor's cleanup has the same final fence.
+The shared disk limiter permits at most two actual flushes and 32 queued flushes;
+16 acquisition slots retain real work after a bounded reply expires. A refusal-only
+preflight skips full or live lanes, but never replaces full history verification
+before granting a new lease. No success cache or general record pruning was added.
+
+Receipt `20261011T162242.788937Z-24623` passed TypeScript, 59 focused publication/
+staging/golden cases and thirteen assertion-failing mutations. The earlier
+`20261011T161841.850935Z-4438` passed its functional checks but failed the newly
+added initializer mutation oracle: removing one redundant guard still held safely.
+The corrected mutant restores the original unsafe early-break scan and is rejected
+by the regression assertion. Receipt `20261011T162606.968009Z-39654` passed types
+and all 25 final OS-process, capacity, architecture and unchanged launch/journal
+golden cases. Real OS-process cases cover exclusive contention for the last lane,
+SIGKILL during a real file flush, and refusal to borrow a live writer's stage.
+Child exit and timeout cannot masquerade as successful contender holds.
+
+The final local capacity run recovered generation 8,192 in 1.43 seconds; its final
+lease fence took 0.82 ms and the largest timer callback gap was 22.8 ms. A free lane
+after full and live histories was acquired in 89 ms without enumerating either
+skipped history. This measures real metadata reads with mocked fsync callbacks;
+it does not establish physical flush latency or Linux CI acceptance. Independent
+review approved this staging-mechanics slice over `4c113bc67`, with its final
+process/capacity condition now met. Implementation, review and validation overlapped
+from approximately 15:29 to 16:27 UTC; receipt durations remain separate from that
+elapsed interval. Production catalog/budget wiring, client replay, linked Stop
+completion and overall PR review remain open. No merge, release or publication.
 
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
@@ -322,10 +359,10 @@ FD closure, stage removal and directory sync finish. Cleanup has narrow generati
 authority separate from the expired request: releasing in the caller's outer
 `finally`, or attempting cleanup with its revoked `attempt.flush`, is unsafe.
 Directory identity and destination filesystem remain pinned; cross-device
-publication holds. The proposed 8,192-generation lane cap requires recovery and
-final-fence measurements before adoption. Retained content and bounded staging
+publication holds. The 8,192-generation lane cap has the local recovery and
+final-fence evidence recorded above. Retained content and bounded staging
 bytes are distinct from filesystem block/inode allocation. This is independently
-reviewed design, not implemented staging capacity or final acceptance; no broader
+implemented staging machinery, not a production capacity boundary or final acceptance; no broader
 cleanup, record pruning or user-data deletion is authorized by it.
 
 Linked Cursor/Command Code Stop reserves a durable completion obligation with

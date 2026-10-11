@@ -12,6 +12,14 @@ export class HookPreparationHeld extends Error {
 const version = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.uid}:${info.mode}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
 const fileIdentity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.uid}:${info.mode}`
 export interface HookFilePublication { verify(): void }
+export interface HookFileStage {
+  path: string
+  verify(): void
+  /** Exact generation/route authority, independent of request revocation. */
+  verifyCleanup(): void
+  /** Called only after the real flush and descriptor/file cleanup settle. */
+  finish(): Promise<void>
+}
 export interface HookPreparationProof {
   files: readonly { file: string; target: string; stamp: string | null; facts: ReturnType<NativePaths['snapshot']> }[]
   current(): boolean
@@ -132,7 +140,8 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
   return {
     content, directory, stamp: before,
     verify, prepare,
-    async replace(next: string, attempt: HookPreparationAttempt, exclusive = false): Promise<HookFilePublication> {
+    async replace(next: string, attempt: HookPreparationAttempt, exclusive = false,
+      staging?: (destination: string) => HookFileStage): Promise<HookFilePublication> {
       attempt.verify(); prepare(next)
       if (exclusive && content !== null) throw new HookPreparationHeld('another owner already published this claim')
       if (content === next) {
@@ -157,16 +166,19 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
       // still require the exact old leaf (or its observed absence).
       const fresh = inspectHookFile(actual)
       if (fresh.content !== content) throw new HookPreparationHeld('the settings changed while their directory was prepared')
-      const temporary = join(parent, `.harness-hook-${randomUUID()}.tmp`)
+      const stage = staging?.(actual)
+      const temporary = stage?.path ?? join(parent, `.harness-hook-${randomUUID()}.tmp`)
       let fd: number | undefined
       let stagedIdentity: string | undefined
       try {
+        stage?.verify()
         fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode)
         stagedIdentity = fileIdentity(fstatSync(fd, { bigint: true }))
         if (content !== null) { fchmodSync(fd, mode); stagedIdentity = fileIdentity(fstatSync(fd, { bigint: true })) }
         writeFileSync(fd, next)
         const stagedVersion = version(fstatSync(fd, { bigint: true }))
         await attempt.flush(fd)
+        stage?.verify()
         if (version(fstatSync(fd, { bigint: true })) !== stagedVersion || version(lstatSync(temporary, { bigint: true })) !== stagedVersion) {
           throw new HookPreparationHeld('the staging file changed before publication')
         }
@@ -175,6 +187,7 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
         // route; only directories created above can replace an absent fact.
         verifyNativePathFacts(facts.filter(fact => fact.identity !== null))
         attempt.verify()
+        stage?.verify()
         if (exclusive) { linkSync(temporary, actual); unlinkSync(temporary) }
         else renameSync(temporary, actual)
         const committed = inspectHookFile(file)
@@ -191,12 +204,15 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
         }
         return { verify: published.verify }
       } finally {
-        try { if (fd !== undefined) closeSync(fd) } finally {
-          try {
-            if (fileIdentity(lstatSync(temporary, { bigint: true })) !== stagedIdentity) throw new HookPreparationHeld('the staging file changed before cleanup')
-            unlinkSync(temporary)
-          } catch (error) { if (!missing(error)) throw error }
-        }
+        try {
+          try { if (fd !== undefined) closeSync(fd) } finally {
+            try {
+              if (fileIdentity(lstatSync(temporary, { bigint: true })) !== stagedIdentity) throw new HookPreparationHeld('the staging file changed before cleanup')
+              stage?.verifyCleanup()
+              unlinkSync(temporary)
+            } catch (error) { if (!missing(error)) throw error }
+          }
+        } finally { await stage?.finish() }
       }
     },
     async remove(attempt: HookPreparationAttempt): Promise<HookFilePublication> {
@@ -296,6 +312,32 @@ function dispatchFlushes(): void {
   }
 }
 
+/** Every native hook writer shares actual disk capacity. Cleanup supplies its
+ * generation proof here, independently of an expired request's authority. */
+export async function flushHookFile(fd: number, check: () => void, cancellations = new Set<() => void>()): Promise<void> {
+  check()
+  if (!MAX_FLUSHES) throw new HookPreparationHeld('filesystem capacity cannot spare a disk confirmation')
+  if (flushQueue.size >= 32) throw new HookPreparationHeld('the disk confirmation queue is occupied')
+  await new Promise<void>((done, reject) => {
+    const cancel = () => {
+      flushQueue.delete(start); cancellations.delete(cancel)
+      reject(new HookPreparationHeld('the queued disk confirmation was revoked'))
+    }
+    const start = () => {
+      cancellations.delete(cancel)
+      try { check() } catch (error) { reject(error); return }
+      activeFlushes++
+      const settled = (error: Error | null) => {
+        activeFlushes--; dispatchFlushes()
+        if (error) reject(error); else done()
+      }
+      try { fsync(fd, settled) } catch (error) { settled(error as Error) }
+    }
+    cancellations.add(cancel); flushQueue.add(start); dispatchFlushes()
+  })
+  check()
+}
+
 /** A caller keeps its own aliases even when it later follows a newer publisher. */
 export function hookPreparationRoutes(files: readonly string[]): { verify(): void; keys: string[]; facts: ReturnType<NativePaths['snapshot']> } {
   if (!files.length || files.length > 32) throw new HookPreparationHeld('the destination set exceeds its limit')
@@ -347,28 +389,7 @@ export async function runHookPreparation<T>(files: readonly string[], work: (att
   const attempt: HookPreparationAttempt = {
     check, verify,
     observe: (file, inspect) => { observations.set(file, inspect) },
-    async flush(fd) {
-      check()
-      if (!MAX_FLUSHES) throw new HookPreparationHeld('filesystem capacity cannot spare a disk confirmation')
-      await new Promise<void>((done, reject) => {
-        const cancel = () => {
-          flushQueue.delete(start); cancellations.delete(cancel)
-          reject(new HookPreparationHeld('the queued disk confirmation was revoked'))
-        }
-        const start = () => {
-          cancellations.delete(cancel)
-          try { check() } catch (error) { reject(error); return }
-          activeFlushes++
-          const settled = (error: Error | null) => {
-            activeFlushes--; dispatchFlushes()
-            if (error) reject(error); else done()
-          }
-          try { fsync(fd, settled) } catch (error) { settled(error as Error) }
-        }
-        cancellations.add(cancel); flushQueue.add(start); dispatchFlushes()
-      })
-      check()
-    },
+    flush: fd => flushHookFile(fd, check, cancellations),
   }
   let timer: ReturnType<typeof setTimeout> | undefined
   const pending: PendingPreparation = { identity: options.identity, keys, revoke, reply: Promise.resolve(), waiters: 0 }
