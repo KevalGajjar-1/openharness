@@ -425,6 +425,51 @@ it('holds a missing announced transcript on the actual HTTP path and retries com
   expect(registry.bySession(A)?.agentId).toBe(source)
 })
 
+it('recovers an owned pending native delivery after the hook server restarts', async () => {
+  const order = { id: 'fixture-restart-pending', firedAt: Date.now() }
+  const before = await httpFixture()
+  rmSync(transcript)
+  expect(await before.post({}, order)).toEqual({ status: 200, body: { pending: true } })
+  expect(before.prompts).toEqual([])
+  await new Promise<void>(resolve => server!.close(() => resolve()))
+  server = undefined
+  const recovered = await httpFixture()
+  expect(recovered.prompts).toEqual([])
+  writeFileSync(transcript, header())
+  await vi.waitFor(() => expect(recovered.prompts).toEqual(['fixture prompt']), { timeout: 4_000 })
+  expect(registry.bySession(A)?.agentId).toBe(source)
+  expect(await recovered.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  expect(recovered.prompts).toEqual(['fixture prompt'])
+  expect(recovered.registered).toHaveBeenCalledOnce()
+})
+
+it('keeps completed native delivery acknowledgements across a hook server restart', async () => {
+  const order = { id: 'fixture-restart-complete', firedAt: Date.now() }
+  const before = await httpFixture()
+  expect(await before.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  expect(before.prompts).toEqual(['fixture prompt'])
+  await new Promise<void>(resolve => server!.close(() => resolve()))
+  server = undefined
+  const recovered = await httpFixture()
+  expect(await recovered.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  expect(recovered.prompts).toEqual([])
+  expect(recovered.registered).not.toHaveBeenCalled()
+})
+
+it('keeps immutable native delivery payload conflicts across a hook server restart', async () => {
+  const order = { id: 'fixture-restart-conflict', firedAt: Date.now() }
+  const before = await httpFixture()
+  expect(await before.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  await new Promise<void>(resolve => server!.close(() => resolve()))
+  server = undefined
+  const recovered = await httpFixture()
+  expect(await recovered.post({ prompt: 'rewritten delivery' }, order)).toEqual({
+    status: 409, body: { pending: false, error: 'HOOK_DELIVERY_CONFLICT' },
+  })
+  expect(recovered.prompts).toEqual([])
+  expect(recovered.registered).not.toHaveBeenCalled()
+})
+
 it.each(['commandcode', 'grok', 'agy', 'copilot'] as const)('admits the %s SessionStart before its deterministic transcript directories exist', async engine => {
   const agent = registry.openProcessAgent({ engine, tmuxPane: '%3', cwd: root,
     processIdentity: { pid: 5103, startMarker: 'fixture-start', executable: `<${engine}>` } })!.entry
