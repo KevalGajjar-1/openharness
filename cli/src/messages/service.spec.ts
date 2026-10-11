@@ -225,7 +225,8 @@ describe('from the owner\'s other machines', () => {
       t.deliveryEvent({ deliveryId: t.delivered.at(-1)![2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
     }
     expect(await t.ask({ action: 'deliver', message: { ...incoming(), id: 'mzzzzzzz' } }, OWNER_REMOTE)).toMatchObject({ error: 'MAILBOX_FULL' })
-  })
+    // Five hundred deliveries, each saved to disk: about five seconds on a busy machine.
+  }, 30_000)
 
   it('refuses a message for an agent outside the sender\'s tabs, and one that is not a message', async () => {
     const t = setup()

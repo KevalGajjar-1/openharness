@@ -24,7 +24,6 @@ import { findLiveSession, findResumedTranscript } from '../../lib/sessionRepair.
 import type { StoppedAgentStore } from '../../lib/stoppedAgents.js'
 import { conversationKey, type ConversationOwners } from './conversationOwners.js'
 import type { DiscoveredTerminalAgent } from '../../lib/terminalAgentDiscovery.js'
-import type { SwarmPromptScopes } from '../../teams/promptScope.js'
 
 /** Between session-binding attempts for a process whose engine store is not resolvable yet. */
 const REPAIR_RETRY_MS = 60_000
@@ -65,7 +64,6 @@ export interface BindDeps {
   announceSession: (session: RegisteredSession) => void
   stoppedAgents: Pick<StoppedAgentStore, 'save' | 'finishResume' | 'get'>
   syncRecapPool: () => void
-  teams: Pick<SwarmPromptScopes, 'forget'>
   input: Pick<SessionInputController, 'forget'>
   deviceInput: Pick<AutonomousDeviceInput, 'forget'>
   /** Where Copilot, Grok and agy keep their sessions. */
@@ -75,7 +73,7 @@ export interface BindDeps {
 }
 
 export function createBinding({
-  registry, mirror, forgetSession, clients, attachSession, announceSession, stoppedAgents, syncRecapPool, teams,
+  registry, mirror, forgetSession, clients, attachSession, announceSession, stoppedAgents, syncRecapPool,
   input, deviceInput, homes, owners,
 }: BindDeps) {
   /**
@@ -411,7 +409,6 @@ export function createBinding({
     })
     if (!result || !result.isNew) return
     if (previousOwner && previousOwner.agentId !== result.entry.agentId) {
-      teams.forget(previousOwner.agentId)
       input.forget(previousOwner.agentId)
       deviceInput.forget(previousOwner.agentId)
       announceSession(previousOwner)

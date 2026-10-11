@@ -16,7 +16,6 @@ import type { RegisteredSession, registry } from '../../lib/registry.js'
 import type { RuntimeProfileManager } from '../../lib/runtimeProfile.js'
 import type { SessionInputController } from '../../lib/sessionInput.js'
 import type { StoppedAgentStore } from '../../lib/stoppedAgents.js'
-import type { SwarmPromptScopes } from '../../teams/promptScope.js'
 import type { Watcher } from '../../watcher/watcher.js'
 import type { SessionNormalizers } from '../transcripts/normalizers.js'
 import type { RelaunchMarks } from '../transcripts/relaunch.js'
@@ -44,7 +43,6 @@ export interface ForgetDeps {
   runtimeProfiles: Pick<RuntimeProfileManager, 'forget'>
   watcher: Pick<Watcher, 'removeSession'>
   stopHeartbeat: (sessionId: string) => void
-  teams: Pick<SwarmPromptScopes, 'forget'>
   input: Pick<SessionInputController, 'forget'>
   deviceInput: Pick<AutonomousDeviceInput, 'forget'>
   detachDsh: (agentId: string) => void
@@ -56,7 +54,7 @@ export interface ForgetDeps {
 
 export function createForgetSession({
   registry, stoppedAgents, syncRecapPool, normalizers, forgetAttach, turnStartedAt, neverFoldedHistory, replayedFirstTurn, relaunchMarks,
-  clearAgyIdleWatch, cursorDiscovery, cursorSubagents, runtimeProfiles, watcher, stopHeartbeat, teams, input,
+  clearAgyIdleWatch, cursorDiscovery, cursorSubagents, runtimeProfiles, watcher, stopHeartbeat, input,
   deviceInput, detachDsh, mirror, clients, dataDir, onRemoved, owners,
 }: ForgetDeps) {
   /** Release a mutable session binding, or remove the process-owned agent everywhere. */
@@ -116,7 +114,6 @@ export function createForgetSession({
     runtimeProfiles.forget(sessionId)
     void watcher.removeSession(sessionId)
     stopHeartbeat(sessionId)
-    teams.forget(announceId)
     input.forget(announceId)
     deviceInput.forget(announceId)
     if (!opts.keepAgent) { detachDsh(announceId); onRemoved?.(announceId) }

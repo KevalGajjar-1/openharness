@@ -76,7 +76,6 @@ function setup(over: Partial<BindDeps> = {}) {
     announceSession: vi.fn(),
     stoppedAgents: { save: vi.fn(), finishResume: vi.fn(), get: vi.fn(() => null) },
     syncRecapPool: vi.fn(),
-    teams: { forget: vi.fn() },
     input: { forget: vi.fn() },
     deviceInput: { forget: vi.fn() },
     homes: { copilot: '/copilot', grok: '/grok', agy: '/agy' },
@@ -739,7 +738,6 @@ describe('binding a running process to its session', () => {
       run.bySession.set('r', previous)
       vi.mocked(run.deps.registry.register).mockReturnValue({ entry: agent({ sessionId: 'r' }), ...meta({ isNew: true }) } as never)
       await run.binding.bindObservedAgent(observed({ resumeSessionId: 'r' } as Partial<DiscoveredTerminalAgent>))
-      expect(run.deps.teams.forget).toHaveBeenCalledWith('old')
       expect(run.deps.input.forget).toHaveBeenCalledWith('old')
       expect(run.deps.deviceInput.forget).toHaveBeenCalledWith('old')
       expect(run.deps.announceSession).toHaveBeenCalledWith(previous)

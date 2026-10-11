@@ -33,7 +33,7 @@ async function create(d: IsolatedDaemon, client: LocalClient, folder: string, en
     return agent?.sessionId && agent.status === 'active' ? agent : null
   }, 60_000, 500)
 }
-const starts = (d: IsolatedDaemon) => [...d.log().matchAll(/\[harnessd\] service teams started/g)].length
+const starts = (d: IsolatedDaemon) => [...d.log().matchAll(/\[harnessd\] service messages started/g)].length
 const statusOf = async (client: LocalClient, id: string) => {
   const history = await client.request<{ messages?: Array<{ id: string; statuses: Array<Record<string, unknown>> }> }>('agent_messages', { action: 'history' }, 30_000)
   return history.messages?.find((m) => m.id === id)?.statuses[0] ?? null
@@ -65,14 +65,14 @@ describe('Agent Messages, end to end', () => {
     expect(starts(d), 'an experiment no one used').toBe(0)
     expect(await client.request('agent_messages', { action: 'history' }, 40_000)).toMatchObject({ messages: [] })
     expect(starts(d)).toBe(1)
-    await until('Agent Messages to connect', () => d.log().includes('[services] collaboration connected') || null, 30_000, 200)
+    await until('Agent Messages to connect', () => d.log().includes('[services] messages connected') || null, 30_000, 200)
     expect(d.coresStarted()).toBe(1)
     client.close()
   })
 
   it('its saved state turns it on as the daemon starts', async () => {
     const d = await fresh((daemon) => mkdirSync(join(daemon.dataDir, 'agent-messages'), { recursive: true }))
-    await until('Agent Messages to start for its saved state', () => d.log().includes('[services] collaboration connected') || null, 30_000, 200)
+    await until('Agent Messages to start for its saved state', () => d.log().includes('[services] messages connected') || null, 30_000, 200)
     expect(starts(d)).toBe(1)
   })
 

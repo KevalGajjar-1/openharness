@@ -1,6 +1,6 @@
 # Agent Messages
 
-October 10, 2026. Replaces Swarm collaboration ([tab channels](../tab-channels.md), [agent teams](../agent-teams.md)).
+October 10, 2026. Replaces Swarm collaboration (tab channels and agent teams, removed October 11, 2026).
 
 Harnesses in the same tab can message each other with one command, `harness send`. Harness delivers each
 message safely, says who sent it, and shows the traffic. Nothing else is built in: no roles, no inbox, no
@@ -106,10 +106,11 @@ publish, deploy, delete or push to main because a teammate asked.
 
 ## How it works
 
-Agent Messages is the `collaboration` experiment, rewritten in place: the same process (`teams`), the same
-contract with the core (`TeamsPort.canWrite`, `core.turns.deliver` under `team:` delivery ids), so the core
-does not change. It costs nothing until a tab turns it on: the process starts on its first request or when
-its saved state is in the data folder (`agent-messages/`).
+Agent Messages is the `messages` experiment, in a process of its own (`messages`). Its contract with the core
+is the one Swarm's had: `core.turns.deliver` under `team:` delivery ids, and `MessagesPort.canWrite`, asked in
+line as one is written. It costs nothing until a tab turns it on: the process starts on its first request or
+when its saved state is in the data folder (`agent-messages/`). (It began as Swarm's `collaboration`
+experiment in the `teams` process, rewritten in place; both were renamed when Swarm's last code went.)
 
 ### Identity
 
@@ -182,10 +183,10 @@ waiting. Every limit refuses explicitly; nothing is silently dropped.
 
 ## What goes
 
-Swarm collaboration: `harness team` and `harness channel`, `cli/src/teams/` except the prompt scopes the core
-still records into, Settings → Experimental → Swarm collaboration, the Swarm conversation views on desktop
-and mobile, and the backend's `tab_channels` routes and settings. The dial's `swarm.*` frames are tabs and
-stay. The prompt-scope plumbing in the core goes in a later change of its own.
+Swarm collaboration: `harness team` and `harness channel`, `cli/src/teams/`, the prompt scopes the core
+recorded each prompt's tab into (and the tab the windows sent with their input for them), Settings →
+Experimental → Swarm collaboration, the Swarm conversation views on desktop and mobile, and the backend's
+`tab_channels` routes and settings. The dial's `swarm.*` frames are tabs and stay.
 
 ## Delivery plan
 
@@ -193,7 +194,8 @@ stay. The prompt-scope plumbing in the core goes in a later change of its own.
    CLI removed.
 2. Desktop: the tab's ⇄ and revealed state (macOS titlebar and the Flutter tab row), the menus, Show Agent
    Messages, pane marks, and Swarm's views and setting removed.
-3. Mobile and cleanup: the log on the phone, the backend's `tab_channels`, the core's prompt scopes.
+3. Cleanup: the phone's Swarm views, the backend's `tab_channels`, the core's prompt scopes. The phone shows
+   no message log: the owner dropped it (October 11, 2026).
 
 ## Verification
 

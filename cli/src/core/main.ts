@@ -157,7 +157,7 @@ import { createEngineHooks, installEngineHooks, installOpencodePluginBeforeSpawn
 import { createCursorDiscovery } from './engines/cursorDiscovery.js'
 import { createCursorTaskHooks, loadPendingCursorTasks } from './engines/cursorTasks.js'
 import { databaseHistory, hermesDb } from './transcripts/databaseHistory.js'
-import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, TEAMS_FALLBACKS, TEAMS_REQUESTS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type TeamsPort, type WindowFocus } from './api.js'
+import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
 import { createServiceHost, testFaults } from './serviceHost.js'
 import { startStalls } from './stall.js'
 import { createServiceLinks, type ServiceLinks } from './serviceLinks.js'
@@ -178,7 +178,7 @@ import { answerExperimentQuery, createForExperiment } from './experimentQueries.
 import { createOrchestratorLink } from './orchestratorLink.js'
 import { daemonCommand } from '../lib/daemonCommand.js'
 import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, servicesTheMasterRuns } from '../harnessd/services.js'
-import { createTeamsLink, teamsOutOfProcess } from './teamsLink.js'
+import { createMessagesLink } from './messagesLink.js'
 import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
 import { localSocketPath, refuseServedDataFolder, type LocalSocketServer } from '../lib/localSocket.js'
@@ -739,7 +739,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     gridModelsChanged: () => { void backendRef?.pushGridModels() },
     privateGridName: async () => backendRef?.gridName() ?? null,
     machineName: () => backendRef?.machineName() ?? null,
-    // An experiment's account-wide settings (Tab collaboration's tab channels), signed in by this core.
+    // An experiment's account-wide settings (Agent Messages' tabs), signed in by this core.
     backend: (method, path, body) => proxyBackend(method, path, body),
     onNotice: (listener) => experimentHooks.onNotice(listener),
     dshInstallStatus: (status) => backendRef?.send({ type: 'dsh_install_status', payload: status }),
@@ -918,13 +918,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   backend.useWifi(wifiCore.fromGateway)
   const gatewayOps = gateway.ops
   daemonBoot.openRequests = () => backend.openRequests()
-  const teams: TeamsPort = {
-    prepare: (...args) => ports.teams?.prepare(...args) ?? (() => {}),
-    started: (...args) => ports.teams?.started(...args),
-    raw: (...args) => ports.teams?.raw(...args),
-    forget: (agentId) => ports.teams?.forget(agentId),
-    canWrite: (deliveryId) => ports.teams?.canWrite(deliveryId) ?? false,
-  }
   // This machine's viewers, served to a client over its connection by the viewers (core/viewerStreams.ts).
   backend.viewerStreams = createViewerStreams(() => ports.viewers, (connId, type, payload) => backend.sendViewerFrame(connId, type, payload))
 
@@ -976,7 +969,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       return { kind: client.role === 'device' ? 'device' : 'web', name: label }
     },
     streamingAvailable: tmuxBackend != null,
-    onScopedInput: (id, bytes, tabId, pasted) => teams.raw(id, bytes, tabId, pasted),
     diagnostic: (event, fields) => console.log(`[terminal-stream] ${event}`, fields),
     // The keystroke prewarm (grid-reads-without-waking issue 03): typing into a pane whose agent runs on
     // a sleeping grid starts that grid while the person types. Here, in the daemon's own input path, so
@@ -1117,12 +1109,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     resolve: (id) => registry.resolve(id),
     byAgent: (agentId) => registry.byAgent(agentId),
     terminal: terminalControl,
-    teams: {
-      prepare: (id, text, tabId, deliveryId) => teams.prepare(id, text, tabId, deliveryId),
-      delivery: (event) => {
-        deliveries.settled(event)
-      },
-      canWrite: (deliveryId) => teams.canWrite(deliveryId),
+    deliveries: {
+      settled: (event) => deliveries.settled(event),
+      // Whether Agent Messages still wants one of its typed deliveries written (core/messagesLink.ts).
+      canWrite: (deliveryId) => ports.messages?.canWrite(deliveryId) ?? false,
     },
     device: () => wifiCore.feed,
     clients: backend,
@@ -1233,13 +1223,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     { call: (type, payload, waitMs) => serviceLinks.call('viewers', type, payload, waitMs), buffered: () => serviceLinks.buffered('viewers') })
   // How the core tells workspaces in their own process what to do, and answers them (core/workspacesLink.ts).
   const workspacesLink = createWorkspacesLink(coreApi, (frame) => serviceLinks.notify('workspaces', frame), forgetAgentProject)
-  // Tab collaboration and teams, an experiment: the prompt scopes and the teams beside them, both in its process
-  // or both in this one (core/teamsLink.ts), which keeps the scopes' changes from the moment it is on.
-  const teamsOut = teamsOutOfProcess(outOfProcess)
-  const teamsLink = createTeamsLink({ notify: (frame) => serviceLinks.notify('teams', frame), off: true })
+  // Agent Messages in its own process: which of its deliveries may be written, as it last said (core/messagesLink.ts).
+  const messagesLink = createMessagesLink()
   // An experiment asked for, and the account's notices for those that hear them (core/experiments.ts).
   const experimentHooks = createExperimentHooks({ want: (service) => coreLink.want(service), notify: (service, frame) => serviceLinks.notify(service, frame),
-    outOfProcess, experiments, onWant: { collaboration: () => teamsLink.on() } })
+    outOfProcess, experiments })
   backend.onAccountNotice = (notice) => experimentHooks.notice(notice)
   // What the Store in its own process tells the core: an install's progress, and that what is installed changed (core/storeLink.ts).
   const storeLink = createStoreLink(coreApi, invalidateInstalledDsh, (type, payload) => serviceLinks.call('store', type, payload))
@@ -1287,7 +1275,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       : service === 'workspaces' ? workspacesLink.answer(query, payload)
       : service === 'store' ? storeLink.answer(query, payload)
       : service === 'models' ? modelsLink.answer(query, payload)
-      : service === 'teams' || service === 'collaboration' ? teamsLink.answer(query, payload)
+      : service === 'messages' ? messagesLink.answer(query, payload)
       : service === 'devices' ? devicesLink.answer(query, payload)
       : service === 'wifi' ? wifiLink.answer(query, payload)
       : service === 'handoff' ? answerConversationQuery(coreApi, query, payload, authority)
@@ -1310,7 +1298,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       if (service === 'search') { searchGeneration++; externalResumes?.wake() }
       if (service === 'usage') usageLink.connected()
       if (service === 'gateway') gatewayLink?.connected()
-      if (service === 'teams') teamsLink.on()
       if (service === 'devices') devicesLink.connected()
       if (service === 'wifi') wifiCore.started(appVoiceFocus ?? null)
       devicesWake.connected(service)
@@ -1338,8 +1325,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   serviceLinksRef = serviceLinks
   // A request a service declared goes to it: in its own process, or in this one (core/serviceHost.ts).
-  backend.serviceRouter = (type, payload, asker, reply) => (teamsOut && teamsLink.route(type, payload, asker, reply))
-    || serviceLinks.route(type, payload, asker, reply) || serviceHost.route(type, payload, asker, reply)
+  backend.serviceRouter = (type, payload, asker, reply) => serviceLinks.route(type, payload, asker, reply) || serviceHost.route(type, payload, asker, reply)
   // The connection that asked closed: the services abort what it asked, wherever they run.
   backend.onConnectionClosed = (connId) => { serviceLinks.closeConnection(connId); serviceHost.closeConnection(connId) }
   // Session search (services/search.ts): in this process, or in its own (services/searchProcess.ts),
@@ -1373,10 +1359,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (outOfProcess.has('sharing')) ports.sharing = createSharingLink({ call: (type, payload) => serviceLinks.call('sharing', type, payload), notify: (frame) => serviceLinks.notify('sharing', frame) })
   else serviceHost.start('sharing', inline!.startSharing, coreApi, SHARING_FALLBACKS, SHARE_REQUESTS)
   backend.observers = { receive: (connId, type, payload) => ports.sharing?.observer(connId, type, payload), closeAll: () => ports.sharing?.linkDown() }
-  // Tab collaboration and teams (services/collaboration.ts): in their own process, or in this one behind the
-  // service host's guard (a fault there costs no message its write), the prompt scopes the service's own.
-  if (teamsOut) ports.teams = teamsLink.scopes
-  else serviceHost.start('teams', inline!.startTeamsInCore, coreApi, TEAMS_FALLBACKS, TEAMS_REQUESTS)
+  // Agent Messages (services/messages.ts): in its own process once it is on, or in this one behind the service
+  // host's guard (a fault there costs no message its write).
+  if (outOfProcess.has('messages')) ports.messages = messagesLink.port
+  else serviceHost.start('messages', inline!.startMessagesInCore, coreApi, MESSAGES_FALLBACKS, MESSAGES_REQUESTS)
   // The harnesses installed here, and installing, updating and removing one (services/store.ts): in this
   // process, or beside the viewers in theirs (services/storeProcess.ts).
   if (outOfProcess.has('store')) ports.store = storeLink.port
@@ -1477,7 +1463,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     search: sessionSearch,
     turnStartedAt,
     input,
-    teams,
     deviceInput,
     submission: submissions,
     device: () => wifiCore.feed,
@@ -1513,7 +1498,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     runtimeProfiles,
     watcher,
     stopHeartbeat,
-    teams,
     input,
     deviceInput,
     detachDsh,
@@ -1531,7 +1515,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // A terminal is never the dial's business, and `syncSession` forces that for it anyway.
     announceSession: session => announceSession(session, { device: false }),
     invalidateTerminalControl,
-    forgetInput: agentId => { forgetRestartRevision(agentId); teams.forget(agentId); input.forget(agentId); deviceInput.forget(agentId) },
+    forgetInput: agentId => { forgetRestartRevision(agentId); input.forget(agentId); deviceInput.forget(agentId) },
     detachDsh,
     syncRecapPool,
     warn: (message, error) => console.warn(message, error),
@@ -1551,7 +1535,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     announceSession,
     stoppedAgents,
     syncRecapPool,
-    teams,
     input,
     deviceInput,
     homes: { copilot: env.COPILOT_HOME, grok: env.GROK_HOME, agy: env.AGY_HOME },
@@ -1571,7 +1554,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     syncRecapPool,
     attachSession,
     invalidateTerminalControl,
-    teams,
     input,
     deviceInput,
     questionWatcher,
@@ -1745,7 +1727,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onAdmissionStop: attach.holdAdmissionStop,
     captureAdmissionStop: attach.captureAdmissionStop,
     onRegistered: handleRegistered,
-    onPromptSubmitted: (id, text) => teams.started(id, text, 'hook', registry.byAgent(id)?.engine),
     onSessionEnd: engineHooks.onSessionEnd,
     // What the engines' own hooks say about a turn (core/turns/turnHooks.ts).
     onTurnStart: turnHooks.onTurnStart,
@@ -2470,10 +2451,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   backend.forkProvider = launches.fork
 
   const submitAgent = inputs.submitAgent
-  backend.onMessage = (id, content, deliveryId, tabId) => submitAgent(id, content, deliveryId, tabId)
+  backend.onMessage = (id, content, deliveryId) => submitAgent(id, content, deliveryId)
   backend.messageProvider = inputs.messageRequest
   backend.onCancelOrchestratorMessage = id => input.cancelDelivery(id)
-  deliveries.ready() // The input is wired: what was delivered meanwhile (a teams' queue resuming) is written now.
+  deliveries.ready() // The input is wired: what was delivered meanwhile (Agent Messages' queue resuming) is written now.
 
   // Keep the log file under its cap. This daemon writes it through an inherited stdout fd, so a size
   // check on a timer is the only place that can see it grow — `prepareLogFile` at spawn time alone

@@ -1,7 +1,7 @@
 /**
  * One `agent_messages` request to a machine's daemon, through this daemon's own local socket: to another of the
- * owner's machines the daemon carries it over the paired E2EE relay (localWsServer `machine_select`), as Swarm's
- * team requests went. `harness send` reaches its own daemon the same way.
+ * owner's machines the daemon carries it over the paired E2EE relay (localWsServer `machine_select`). `harness
+ * send` reaches its own daemon the same way.
  */
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'

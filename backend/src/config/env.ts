@@ -17,9 +17,6 @@ const envSchema = z.object({
   // Same MongoDB (and database) as the agent-manager — backend owns `users` +
   // `machines`; reads `managers`/`machine_nodes` via raw queries when needed.
   DATABASE_URL: z.string().default('mongodb://localhost:27017/harness?replicaSet=rs0'),
-  // Module availability only. Each account must separately opt in in Experimental;
-  // no settings record means OFF. False disables the whole module for operators.
-  HARNESS_CHANNELS: z.string().default('true').transform(v => v === 'true'),
 
   // Redis for the cross-instance data bus. Behind a load balancer an agent's web socket and its
   // manager socket may land on different backend instances; Redis pub/sub bridges them

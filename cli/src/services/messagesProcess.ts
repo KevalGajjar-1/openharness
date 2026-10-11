@@ -1,6 +1,6 @@
 /**
- * Agent Messages in the teams' own process (`harness __service teams,collaboration`): an experiment, started only
- * once it is on (core/api.ts `EXPERIMENTS`). The same service as in the core's process (services/collaboration.ts,
+ * Agent Messages in its own process (`harness __service messages`): an experiment, started only once it is on
+ * (core/api.ts `EXPERIMENTS`). The same service as in the core's process (services/messages.ts,
  * messages/service.ts), on the core's API as a process reaches it (services/processCoreApi.ts), and what a mailbox
  * in another process needs besides:
  * - The core asks in line, as it writes a typed delivery, whether it may still be written. This process tells the
@@ -11,7 +11,7 @@
  *   mailbox reads them and they are a second old.
  */
 import type { BackendNotice, DaemonAddress } from '../core/api.js'
-import { startCollaboration } from './collaboration.js'
+import { startAgentMessages } from '../messages/service.js'
 import { runServiceProcess, type CoreConnection, type ServiceProcess } from './process.js'
 import { agentsIn, daemonIn, processCoreApi, type ShownAgent } from './processCoreApi.js'
 import { turnsLink } from './turnsLink.js'
@@ -27,7 +27,7 @@ export const WATCHED = 1_000
 /** How old the agents it read may be before its mailbox's next look asks again. */
 export const AGENTS_FRESH_MS = 1_000
 
-export interface CollaborationServiceOptions {
+export interface MessagesServiceOptions {
   dataDir: string
   socketPath: string
   machineId: string
@@ -35,13 +35,13 @@ export interface CollaborationServiceOptions {
   /** Swapped in tests for one that does not touch the real socket or process. */
   run?: typeof runServiceProcess
   /** Swapped in tests for a service that keeps nothing on disk and polls no account. */
-  start?: typeof startCollaboration
+  start?: typeof startAgentMessages
   now?: () => number
   setTimer?: (run: () => void, ms: number) => unknown
   clearTimer?: (timer: unknown) => void
 }
 
-export function runCollaborationService(options: CollaborationServiceOptions): ServiceProcess {
+export function runMessagesService(options: MessagesServiceOptions): ServiceProcess {
   const now = options.now ?? Date.now
   const setTimer = options.setTimer ?? ((run, ms) => { const timer = setInterval(run, ms); timer.unref?.(); return timer })
   const clearTimer = options.clearTimer ?? ((timer) => clearInterval(timer as ReturnType<typeof setInterval>))
@@ -76,7 +76,7 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
   let told = ''
   let ticking: unknown = null
 
-  const base = processCoreApi(options.dataDir, 'collaboration', {
+  const base = processCoreApi(options.dataDir, 'messages', {
     // Read in line by its mailbox's timer too: a copy a second old is asked for again, for its next look.
     live: () => { if (now() - readAt > AGENTS_FRESH_MS) void readAgents(); return live },
     ask, deliveries, daemon: () => daemon,
@@ -98,36 +98,36 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
       cancelDelivery: () => false,
     },
   }
-  const build = () => (options.start ?? startCollaboration)(api, { dataDir: options.dataDir, changed: () => tell() })
-  let collaboration = build()
+  const build = () => (options.start ?? startAgentMessages)(api, { dataDir: options.dataDir, changed: () => tell() })
+  let messages = build()
   /** The machine the running service was started under, and whether it was. */
   let builtFor: string | null = null
   let started = false
   /**
    * The service, started, for the machine this daemon serves as now. One started under another machine goes
-   * and a new one starts: a sign-in starts a new core under the account's machine, and the teams it ran
-   * inside used to go with the core they ran in, which this process outlives.
+   * and a new one starts: a sign-in starts a new core under the account's machine, and what the service
+   * keeps is that machine's, while this process outlives the core it started under.
    */
   const current = () => {
     const machine = daemon?.machineId() ?? null
-    if (machine === null) return collaboration
+    if (machine === null) return messages
     if (started && builtFor !== machine) {
-      collaboration.stop()
-      collaboration = build()
+      messages.stop()
+      messages = build()
       started = false
     }
     if (!started) {
       started = true
       builtFor = machine
-      collaboration.start()
+      messages.start()
     }
-    return collaboration
+    return messages
   }
 
   /** Tell the core which deliveries may be written now, when that changed or is due again; keep telling while any may. */
   function tell(): void {
     const until = now() + WRITABLE_FOR_MS
-    const writable = [...handed].filter((id) => collaboration.canWrite(id))
+    const writable = [...handed].filter((id) => messages.canWrite(id))
     const said = JSON.stringify(writable)
     if (said !== told || writable.length) {
       told = said
@@ -138,7 +138,7 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
   }
 
   const service = (options.run ?? runServiceProcess)({
-    name: 'collaboration',
+    name: 'messages',
     socketPath: options.socketPath,
     machineId: options.machineId,
     token: options.token,
@@ -147,7 +147,7 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
     },
     onEvent: (payload) => {
       if (deliveries.heard(payload)) { tell(); return }
-      // Heard once the service runs for a known machine: the channels it would read are that machine's.
+      // Heard once the service runs for a known machine: the tabs it would read are that machine's.
       if (started && payload.kind === 'notice' && payload.notice && typeof payload.notice === 'object') {
         for (const listener of noticeListeners) listener(payload.notice as BackendNotice)
       }
@@ -168,7 +168,7 @@ export function runCollaborationService(options: CollaborationServiceOptions): S
     stop: () => {
       if (ticking) clearTimer(ticking)
       ticking = null
-      collaboration.stop()
+      messages.stop()
       return service.stop()
     },
   }
