@@ -194,7 +194,24 @@ it('does not replay a dispatch whose reply was lost', async () => {
 
 it.each(['changed owner', 'foreign result', 'failed installer', 'unsafe result', 'orphan result', 'malformed result', 'contradictory result'])('holds %s without dispatch or a false completion', async kind => {
   const install = controller()
-  await install.ensure('opencode', recipe, environment, 'request', () => true)
+  if (kind === 'failed installer') fixture.onDirectoryOpen = () => {
+    fixture.onDirectoryOpen = undefined
+    writeFileSync(join(root, 'sibling'), 'changed during enumeration')
+  }
+  if (kind === 'failed installer') {
+    expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({
+      complete: false, detail: 'Waiting to confirm durable engine installation ownership.',
+    })
+    expect(fixture.onDirectoryOpen).toBeUndefined()
+    expect(install.dispatch).not.toHaveBeenCalled()
+    expect(existsSync(join(directory, '00000000.json'))).toBe(false)
+  }
+  // The failure injection below requires an actually dispatched fixture claim,
+  // not an earlier safe hold caused by unrelated directory churn.
+  await vi.waitFor(async () => {
+    expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ complete: false })
+    expect(install.dispatch).toHaveBeenCalledOnce()
+  }, { timeout: 3_000 })
   const file = join(directory, '00000000.json')
   if (kind === 'changed owner') writeFileSync(file, readFileSync(file, 'utf8') + ' ')
   else if (kind === 'orphan result') writeFileSync(join(directory, '00000001.json.result'), '{}', { mode: 0o600 })
