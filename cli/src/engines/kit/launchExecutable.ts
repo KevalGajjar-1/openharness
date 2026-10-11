@@ -29,7 +29,6 @@ const MAX_PROBES = 8
 /** No unavailable or negative shell answer is cached. A slot belongs to the
  * actual child until its callback, including timeout/oversized-output kills. */
 export async function launchEnvironment(shell?: string): Promise<NodeJS.ProcessEnv | null> {
-  if (process.env.NODE_ENV === 'test' && shell === undefined) return pickLocations(process.env)
   const interactive = interactiveEngineShell(shell)
   if (!interactive) return pickLocations(process.env)
   if (probing >= MAX_PROBES) return null

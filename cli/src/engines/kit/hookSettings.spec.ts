@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -35,27 +35,61 @@ it.each(['claude', 'codex'] as const)('publishes one current %s proof after both
   expect(content.hooks[settings.inbox!.event].some((block: { hooks: { command: string }[] }) => block.hooks.some(hook => hook.command === messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR)))).toBe(true)
 })
 
-it.each(['peer edit', 'another port'] as const)('holds when %s replaces required hooks between the two reservations', async change => {
+it.each(['both current', 'follower revoked', 'owner revoked'] as const)('joins the complete Messages stage with caller authority: %s', async state => {
+  const home = join(root, 'claude'), file = join(home, claude.settings.file)
+  const inspect = preparations.inspectHookFile
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(done => { enter = done })
+  const gate = new Promise<void>(done => { release = done })
+  let paused = false
+  vi.spyOn(preparations, 'inspectHookFile').mockImplementation((path, mode) => {
+    const observed = inspect(path, mode)
+    return { ...observed, replace: async (next, attempt, exclusive) => {
+      if (!paused && path === file && next.includes('harness-agent-messages')) {
+        paused = true; enter(); await gate
+      }
+      return observed.replace(next, attempt, exclusive)
+    } }
+  })
+  const proofs: HookPreparationProof[] = []
+  const options = { confirmed: (proof: HookPreparationProof) => { proofs.push(proof) } }
+  let owner = true, follower = true
+  const startup = installHookSettings('claude', claude.settings, 19473, home, { ...options, current: () => owner })
+  await entered
+  const launch = installHookSettings('claude', claude.settings, 19473, home, { ...options, current: () => follower })
+  if (state === 'follower revoked') follower = false
+  if (state === 'owner revoked') owner = false
+  release()
+  expect(await Promise.all([startup, launch])).toEqual(state === 'owner revoked' ? [false, false] : [true, follower])
+  expect(proofs).toHaveLength(state === 'owner revoked' ? 0 : follower ? 2 : 1)
+  expect(proofs.every(proof => proof.current())).toBe(true)
+  expect(readFileSync(file, 'utf8').includes('harness-agent-messages')).toBe(owner)
+})
+
+it.each(['peer edit', 'another port'] as const)('holds when %s changes required hook authority during publication', async change => {
   const home = join(root, 'claude'), file = join(home, claude.settings.file)
   const run = preparations.runHookPreparation
   let intercepted = false, peerBytes = ''
-  vi.spyOn(preparations, 'runHookPreparation').mockImplementation(async (files, work, options) => {
-    if (!intercepted && options?.identity?.startsWith('["agent-messages",')) {
-      intercepted = true
-      if (change === 'another port') expect(await installHookSettings('claude', claude.settings, 19474, home)).toBe(true)
-      else {
-        const settings = JSON.parse(readFileSync(file, 'utf8')); delete settings.hooks.SessionStart
-        writeFileSync(file, JSON.stringify(settings))
+  vi.spyOn(preparations, 'runHookPreparation').mockImplementation((files, work, options) => run(files, attempt => work({
+    ...attempt, async flush(fd) {
+      await attempt.flush(fd)
+      if (!intercepted && existsSync(file)) {
+        intercepted = true
+        if (change === 'another port') expect(await installHookSettings('claude', claude.settings, 19474, home)).toBe(false)
+        else {
+          const settings = JSON.parse(readFileSync(file, 'utf8')); delete settings.hooks.SessionStart
+          writeFileSync(file, JSON.stringify(settings))
+        }
+        peerBytes = readFileSync(file, 'utf8')
       }
-      peerBytes = readFileSync(file, 'utf8')
-    }
-    return run(files, work, options)
-  })
+    },
+  }), options))
   const confirmed = vi.fn()
   expect(await installHookSettings('claude', claude.settings, 19473, home, { confirmed })).toBe(false)
   expect(intercepted).toBe(true)
   expect(confirmed).not.toHaveBeenCalled()
   expect(readFileSync(file, 'utf8')).toBe(peerBytes)
+  if (change === 'another port') expect(await installHookSettings('claude', claude.settings, 19474, home)).toBe(true)
 })
 
 it('preserves marker-only commands and foreign siblings of the exact Messages hook without approving them', async () => {

@@ -287,3 +287,47 @@ both. The no-OpenCode golden assertion also returns to its unchanged former
 artifact alongside the deferred policy. No golden fixture bytes were rerecorded.
 All twelve deliberate mutations failed assertions in receipt
 `20261011T011530.711952Z-59124`; final core/golden gates and private e2e remain.
+
+## Whole-launch integration acceptance, October 11
+
+The installer mechanics landed as #1158. The subsequent integration retains one
+executable and location snapshot through launch, persists plain creation intent,
+publishes immutable grid configuration and fences the final pane command. Its
+native argv and grid artifacts were recorded before implementation in commits
+`6d61d7678` and `23ba641c2`; their bytes remain unchanged.
+
+The first complete end-to-end run of #1160 (`38114019652`, head `aeea2b5a7`)
+failed. It identified these integration corrections:
+
+- A valid parent alias on macOS must not look like an unreadable installation
+  history. Absence is checked at the resolved parent while retaining and
+  reverifying the original route. A dangling leaf still holds.
+- Isolated daemons running with `NODE_ENV=test` must capture the same launch shell
+  as production. Bypassing it selected the wrong moved home and provider.
+- A saved model request reports the models dependency before asking it, including
+  when its port rejects. It retains the original request through core restart.
+- Only the original implicit shell session home may enter the global adoption
+  catalog. Explicit or generated profiles remain session-scoped, including across
+  repeated preparation. A separate Claude transcript root does not make its
+  settings directory another conversation store. Store's existing byte-preservation
+  assertion remains unchanged.
+- Required notify hooks, optional Messages hooks and approvals share one bounded
+  reservation. Identical startup/launch callers join the whole operation and each
+  retain their own revocation check. A partial optional write cannot grant success.
+- Missing-engine tests now require a saved, visibly held creation with no new
+  agent, followed by one launch of that same ID after repair. Restart preserves
+  the running conversation until its executable is available.
+
+Receipt `20261011T053720.461991Z-79891` passed moved-home crash/resume recovery,
+model-request recovery, Store preservation, missing-engine recovery and the
+four-agent 160-turn soak. The receipt was not green: the update cases exposed an
+unnecessary Claude adoption and an obsolete restart error expectation.
+Their corrections passed typecheck, 231 focused tests including the unchanged
+hook golden, and both engine reinstall/restart cases in receipt
+`20261011T054232.269856Z-30462`.
+
+Independent review agreed with the immutable-home provenance and single
+reservation design. The frozen corrected head still needs its exact-head review,
+final coverage, mutation checks, matched runtime cost and complete CI/end-to-end
+acceptance before landing. Startup maintenance still awaiting hooks is a separate
+recorded readiness move, not completed by this integration.

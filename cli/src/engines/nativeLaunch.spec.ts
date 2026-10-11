@@ -103,12 +103,12 @@ it.each(['claude', 'codex'] as const)('confirms the final %s home before acknowl
   const result = await inspectNativeLaunch(engine, {}, { confirmHome })
   if (!result.ok) throw Error('fixture held')
   const variable = engine === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'
-  const selected = `/fixture/selected-${engine}`
-  expect(await result.launch.prepareHooks(19473, () => true, { [variable]: selected })).toBe(false)
+  const selected = `/fixture/${engine}`
+  expect(await result.launch.prepareHooks(19473, () => true)).toBe(false)
   expect(confirmHome).toHaveBeenCalledWith(engine, selected)
   expect(result.launch.ready?.()).toBe(false)
   confirmHome.mockImplementation(() => {})
-  expect(await result.launch.prepareHooks(19473, () => true, { [variable]: selected })).toBe(true)
+  expect(await result.launch.prepareHooks(19473, () => true)).toBe(true)
   expect(result.launch.ready?.()).toBe(true)
   expect(result.launch.environment[variable]).toBe(selected)
 })
@@ -127,6 +127,19 @@ it('does not adopt a home when hooks fail or the owner is revoked', async () => 
   confirmHome.mockImplementation(() => { owner = false })
   expect(await result.launch.prepareHooks(19473, () => owner)).toBe(false)
   expect(result.launch.ready?.()).toBe(false)
+})
+
+it('does not adopt Claude settings as a session store when the daemon names a separate transcript root', async () => {
+  vi.mocked(captureLaunchExecutable).mockResolvedValueOnce({ state: 'ready',
+    executable: { command: '/fixture/engine', identity: 'fixture', current: () => true },
+    environment: { HOME: '/fixture/home', PATH: '/fixture/bin', CLAUDE_PROJECTS_DIR: '/fixture/archive' },
+  })
+  const confirmHome = vi.fn()
+  const result = await inspectNativeLaunch('claude', {}, { confirmHome })
+  if (!result.ok) throw Error(result.detail)
+  expect(await result.launch.prepareHooks(19473, () => true)).toBe(true)
+  expect(engineHooks.claude.installIn).toHaveBeenCalledWith(19473, '/fixture/home/.claude', expect.any(Object))
+  expect(confirmHome).not.toHaveBeenCalled()
 })
 
 it('bounds actual probe concurrency and recovers after the children settle', async () => {
@@ -194,4 +207,18 @@ it('rejects a permission reply from a prior preparation revision', async () => {
   fixture.pending.shift()!()
   expect(await answer).toBe('unknown')
   expect(await result.launch.permission({ bypassPermission: true })).toBe('supported')
+})
+
+it.each([
+  ['claude', 'explicit'], ['claude', 'generated'], ['codex', 'explicit'], ['codex', 'generated'],
+] as const)('keeps a %s %s profile scoped to its session across repeated preparations', async (engine, kind) => {
+  const confirmHome = vi.fn()
+  const home = '/fixture/session-profile', variable = engine === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'
+  const source = kind === 'explicit' ? engine === 'claude' ? { claudeHome: home } : { codexHome: home } : {}
+  const result = await inspectNativeLaunch(engine, source, { confirmHome })
+  if (!result.ok) throw Error(result.detail)
+  expect(await result.launch.prepareHooks(19473, () => true, kind === 'generated' ? { [variable]: home } : {})).toBe(true)
+  expect(result.launch.environment[variable]).toBe(home)
+  expect(await result.launch.prepareHooks(19473, () => true)).toBe(true)
+  expect(confirmHome).not.toHaveBeenCalled()
 })

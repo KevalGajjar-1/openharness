@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -52,6 +52,30 @@ it('reads installation obligations after reconstruction without creating a missi
   expect(await controller().status('opencode', 'request', () => true)).toEqual({ complete: true })
   expect(await controller().status('opencode', 'new-request', () => true)).toBeNull()
   expect(install.dispatch).toHaveBeenCalledOnce()
+})
+
+it('confirms missing installation history through a stable parent alias and recovers its later result', async () => {
+  const physical = join(root, 'physical'), alias = join(root, 'alias')
+  mkdirSync(physical, { mode: 0o700 }); symlinkSync(physical, alias)
+  directory = join(alias, 'claims')
+  const install = controller()
+  expect(await install.status('opencode', 'request', () => true)).toBeNull()
+  expect(existsSync(directory)).toBe(false)
+  await install.ensure('opencode', recipe, environment, 'request', () => true)
+  expect(install.dispatch).toHaveBeenCalledOnce()
+  complete()
+  expect(await controller().status('opencode', 'request', () => true)).toEqual({ complete: true })
+})
+
+it('does not treat a dangling authority leaf as missing through a parent alias', async () => {
+  const physical = join(root, 'physical'), alias = join(root, 'alias')
+  mkdirSync(physical, { mode: 0o700 }); symlinkSync(physical, alias)
+  directory = join(alias, 'claims')
+  symlinkSync(join(physical, 'missing-authority'), `${directory}.authority`)
+  const install = controller()
+  expect(await install.status('opencode', 'request', () => true)).toMatchObject({ complete: false })
+  expect(existsSync(directory)).toBe(false)
+  expect(install.dispatch).not.toHaveBeenCalled()
 })
 
 it('holds a failed installation across different request IDs and a reconstructed core', async () => {
