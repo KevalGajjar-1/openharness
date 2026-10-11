@@ -29,8 +29,8 @@ class HowItWorksPage extends StatelessWidget {
     (
       'Swarm',
       'A group of harnesses, shown together in the workspace. Add a harness to '
-          'include it. With Swarm collaboration enabled in Experimental settings, '
-          'their agents can consult peers in the same swarm.',
+          'include it. With Agent Messages on for it, its agents can message each '
+          'other.',
     ),
     (
       'Project',
