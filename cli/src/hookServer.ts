@@ -166,7 +166,7 @@ export interface HookServerHandlers {
    *  local write, so CSRF-guarded like a rename. */
   onDeskOps?: (body: unknown) => Promise<PairOutcome>
   /** GET /api/agent-messages — which tabs have Agent Messages on (docs/design/2026-10-10-agent-messages.md),
-   *  proxied like the desk: the window draws each tab's ⇄ from it without starting the experiment's process. */
+   *  proxied like the desk: the window draws each tab's chat icon from it without starting the experiment's process. */
   onAgentMessagesRead?: () => Promise<PairOutcome>
   /** PATCH /api/agent-messages/tabs/:tabId — turn Agent Messages on or off for one tab; a local write, so
    *  CSRF-guarded like the desk's ops. */
