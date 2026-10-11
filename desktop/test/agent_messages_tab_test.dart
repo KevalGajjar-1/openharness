@@ -7,19 +7,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/agent_messages/agent_messages.dart';
 import 'package:harness/shared/theme/app_icons.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
+import 'package:harness/state/harness_activity.dart' show activityFrameInterval;
 import 'package:harness/widgets/desktop_workspace_tab.dart';
+import 'package:harness/widgets/harness_activity_mark.dart';
 
 import 'support/agent_messages_api.dart';
 import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp;
 
-/// The tab's ⇄ and the one revealed state (docs/design/2026-10-10-agent-messages.md,
-/// "The tab"): hovering a tab or holding Command reveals the shortcut, ⇄ and ×;
-/// at rest only a tab whose agents are messaging keeps a bright ⇄.
+/// The tab's Agent Messages (docs/design/2026-10-10-agent-messages.md, "The
+/// tab"): hovering a tab reveals ⇄ — grey while off, its color while on — and
+/// ×; while agents message, the status slot shows ⇄ in place of the status.
 typedef _Spec = ({String id, TabMessagesState? messages, bool working});
 
+const _messagesColor = Color(0xffbc3fbc);
+
 Widget _host(
-  ValueNotifier<bool> command,
   List<_Spec> tabs, {
   Brightness brightness = Brightness.dark,
   void Function(String id)? onToggle,
@@ -42,11 +45,10 @@ Widget _host(
                   id: tab.id,
                   label: tab.id,
                   selected: index == 0,
-                  shortcutHint: '⌘${index + 1}',
-                  showShortcuts: command,
                   onSelect: () => onSelect?.call(tab.id),
                   onClose: () {},
                   agentMessages: tab.messages,
+                  messagesColor: _messagesColor,
                   onToggleAgentMessages: () => onToggle?.call(tab.id),
                   activityLabel: tab.working ? 'Working' : null,
                   activity: tab.working
@@ -68,21 +70,16 @@ Widget _host(
 Finder _messages(String id) => find.byKey(ValueKey('tab-agent-messages:$id'));
 Finder _close(String id) => find.byKey(ValueKey('tab-close:$id'));
 Finder _label(String id) => find.byKey(ValueKey('tab-label:$id'));
-Finder _hint(String id) => find.byKey(ValueKey('tab-shortcut:$id'));
-Finder _struck(String id) => find.descendant(
-  of: _messages(id),
-  matching: find.byKey(const ValueKey('agent-messages-struck')),
-);
 
 /// The ink the ⇄ glyph is drawn in, while the pointer is not on it.
-double _glyphAlpha(WidgetTester tester, String id) => IconTheme.of(
+Color _glyph(WidgetTester tester, String id) => IconTheme.of(
   tester.element(
     find.descendant(
       of: _messages(id),
       matching: find.byIcon(AppIcons.arrowRightLeft),
     ),
   ),
-).color!.a;
+).color!;
 
 String _tooltip(WidgetTester tester, String id) => tester
     .widget<Tooltip>(
@@ -90,137 +87,112 @@ String _tooltip(WidgetTester tester, String id) => tester
     )
     .message!;
 
-void main() {
-  late ValueNotifier<bool> command;
-  setUp(() => command = ValueNotifier(false));
-  tearDown(() => command.dispose());
+Future<TestGesture> _hover(WidgetTester tester, String id) async {
+  final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+  await mouse.addPointer(location: tester.getCenter(_label(id)));
+  addTearDown(mouse.removePointer);
+  await tester.pump();
+  return mouse;
+}
 
+void main() {
   for (final brightness in Brightness.values) {
-    testWidgets(
-      'off: nothing at rest; revealed, ⌘1 and a struck dim ⇄ beside × '
-      '(${brightness.name})',
-      (tester) async {
-        final toggled = <String>[];
-        await tester.pumpWidget(
-          _host(
-            command,
-            [(id: 'app', messages: TabMessagesState.off, working: false)],
-            brightness: brightness,
-            onToggle: toggled.add,
-          ),
-        );
-        expect(_messages('app').hitTestable(), findsNothing);
-        expect(_close('app').hitTestable(), findsNothing);
-        expect(_hint('app'), findsNothing);
-        final title = tester.getRect(_label('app'));
-        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-        await mouse.addPointer(location: title.center);
-        addTearDown(mouse.removePointer);
-        await tester.pump();
-        expect(_hint('app'), findsOneWidget);
-        expect(_messages('app').hitTestable(), findsOneWidget);
-        expect(_close('app').hitTestable(), findsOneWidget);
-        expect(_struck('app'), findsOneWidget);
-        expect(_glyphAlpha(tester, 'app'), closeTo(.45, .01));
-        expect(
-          _tooltip(tester, 'app'),
-          'Agent messages off · click to turn on',
-        );
-        final messages = tester.getRect(_messages('app'));
-        final close = tester.getRect(_close('app'));
-        expect(
-          close.left - messages.right,
-          DesktopWorkspaceTab.accessoryGap,
-          reason: '⇄ sits left of ×, past a gap that neither takes',
-        );
-        await tester.tapAt(Offset(close.left - 1.5, close.center.dy));
-        await tester.pump();
-        expect(toggled, isEmpty, reason: 'a click just off × toggles nothing');
-        expect(
-          messages.size,
-          const Size(DesktopWorkspaceTab.messagesWidth, 32),
-        );
-        expect(tester.getRect(_label('app')), title, reason: 'never moves');
-        expect(
-          tester.getRect(_hint('app')).right,
-          lessThanOrEqualTo(messages.left),
-        );
-      },
-    );
+    testWidgets('off: nothing at rest; hovered, a grey ⇄ beside × '
+        '(${brightness.name})', (tester) async {
+      final toggled = <String>[];
+      await tester.pumpWidget(
+        _host(
+          [(id: 'app', messages: TabMessagesState.off, working: false)],
+          brightness: brightness,
+          onToggle: toggled.add,
+        ),
+      );
+      expect(_messages('app').hitTestable(), findsNothing);
+      expect(_close('app').hitTestable(), findsNothing);
+      final title = tester.getRect(_label('app'));
+      await _hover(tester, 'app');
+      expect(_messages('app').hitTestable(), findsOneWidget);
+      expect(_close('app').hitTestable(), findsOneWidget);
+      final grey = _glyph(tester, 'app');
+      expect(grey.a, closeTo(.45, .01));
+      expect(
+        grey.withValues(alpha: 1),
+        grid.AppTheme.surfacePalette.foreground,
+        reason: 'off is the tab ink, quiet: grey',
+      );
+      expect(find.text('⌘1'), findsNothing, reason: 'tabs show no shortcut');
+      expect(_tooltip(tester, 'app'), 'Agent messages off · click to turn on');
+      final messages = tester.getRect(_messages('app'));
+      final close = tester.getRect(_close('app'));
+      expect(
+        close.left - messages.right,
+        DesktopWorkspaceTab.accessoryGap,
+        reason: '⇄ sits left of ×, past a gap that neither takes',
+      );
+      await tester.tapAt(Offset(close.left - 1.5, close.center.dy));
+      await tester.pump();
+      expect(toggled, isEmpty, reason: 'a click just off × toggles nothing');
+      expect(messages.size, const Size(DesktopWorkspaceTab.messagesWidth, 32));
+      expect(
+        tester.getRect(_label('app')),
+        title,
+        reason: 'a name with room never moves',
+      );
+    });
   }
 
-  testWidgets('on and quiet: a dim ⇄ only when revealed', (tester) async {
+  testWidgets('on: hovered, ⇄ in Agent Messages\' color', (tester) async {
     await tester.pumpWidget(
-      _host(command, [
-        (id: 'app', messages: TabMessagesState.on, working: true),
-      ]),
+      _host([(id: 'app', messages: TabMessagesState.on, working: true)]),
     );
     expect(_messages('app').hitTestable(), findsNothing);
     expect(find.byKey(const ValueKey('status:app')), findsOneWidget);
-    command.value = true;
-    await tester.pump();
+    await _hover(tester, 'app');
     expect(_messages('app').hitTestable(), findsOneWidget);
-    expect(_struck('app'), findsNothing);
-    expect(_glyphAlpha(tester, 'app'), closeTo(.45, .01));
+    final ink = _glyph(tester, 'app');
+    expect(ink.withValues(alpha: 1), _messagesColor);
+    expect(ink.a, closeTo(.85, .01));
     expect(_tooltip(tester, 'app'), 'Agent messages on · click to turn off');
-    expect(_hint('app'), findsOneWidget);
-    expect(find.byKey(const ValueKey('status:app')), findsNothing);
-  });
-
-  testWidgets('flowing: a bright ⇄ at rest, without ×', (tester) async {
-    await tester.pumpWidget(
-      _host(command, [
-        (id: 'app', messages: TabMessagesState.flowing, working: false),
-      ]),
+    expect(
+      find.byKey(const ValueKey('status:app')),
+      findsOneWidget,
+      reason: 'hover keeps the status',
     );
-    expect(_messages('app').hitTestable(), findsOneWidget);
-    expect(_close('app').hitTestable(), findsNothing);
-    expect(_hint('app'), findsNothing);
-    expect(_glyphAlpha(tester, 'app'), 1);
-    expect(_tooltip(tester, 'app'), 'Agents messaging · click to turn off');
-    command.value = true;
-    await tester.pump();
-    expect(_close('app').hitTestable(), findsOneWidget);
-    expect(_glyphAlpha(tester, 'app'), 1);
   });
 
-  testWidgets('Command reveals every tab; hover reveals only its own', (
+  testWidgets('flowing: no ⇄ or × at rest — the status slot says it', (
     tester,
   ) async {
     await tester.pumpWidget(
-      _host(command, [
+      _host([(id: 'app', messages: TabMessagesState.flowing, working: false)]),
+    );
+    expect(_messages('app').hitTestable(), findsNothing);
+    expect(_close('app').hitTestable(), findsNothing);
+    await _hover(tester, 'app');
+    expect(_glyph(tester, 'app').withValues(alpha: 1), _messagesColor);
+    expect(_tooltip(tester, 'app'), 'Agents messaging · click to turn off');
+  });
+
+  testWidgets('hover reveals only its own tab', (tester) async {
+    await tester.pumpWidget(
+      _host([
         (id: 'one', messages: TabMessagesState.off, working: false),
         (id: 'two', messages: TabMessagesState.on, working: true),
         (id: 'store', messages: null, working: false),
       ]),
     );
-    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-    await mouse.addPointer(location: tester.getCenter(_label('one')));
-    addTearDown(mouse.removePointer);
-    await tester.pump();
+    final mouse = await _hover(tester, 'one');
     expect(_close('one').hitTestable(), findsOneWidget);
     expect(_close('two').hitTestable(), findsNothing);
-    expect(_hint('two'), findsNothing);
-    await mouse.moveTo(const Offset(900, 300));
+    expect(_messages('two').hitTestable(), findsNothing);
+    await mouse.moveTo(tester.getCenter(_label('store')));
     await tester.pump();
-    command.value = true;
-    await tester.pump();
-    for (final id in ['one', 'two', 'store']) {
-      expect(_close(id).hitTestable(), findsOneWidget, reason: id);
-      expect(_hint(id), findsOneWidget, reason: id);
-    }
-    expect(_messages('one').hitTestable(), findsOneWidget);
-    expect(_messages('two').hitTestable(), findsOneWidget);
+    expect(_close('store').hitTestable(), findsOneWidget);
     expect(
       _messages('store'),
       findsNothing,
       reason: 'the Store tab has no Agent Messages',
     );
-    command.value = false;
-    await tester.pump();
-    for (final id in ['one', 'two', 'store']) {
-      expect(_close(id).hitTestable(), findsNothing, reason: id);
-    }
   });
 
   testWidgets('clicking ⇄ toggles that tab without selecting it', (
@@ -229,7 +201,6 @@ void main() {
     final toggled = <String>[], selected = <String>[];
     await tester.pumpWidget(
       _host(
-        command,
         [
           (id: 'one', messages: TabMessagesState.off, working: false),
           (id: 'two', messages: TabMessagesState.flowing, working: false),
@@ -238,6 +209,7 @@ void main() {
         onSelect: selected.add,
       ),
     );
+    await _hover(tester, 'two');
     await tester.tap(_messages('two'));
     await tester.pump();
     expect(toggled, ['two']);
@@ -246,21 +218,21 @@ void main() {
 
   testWidgets('the ⇄ has a label and a state', (tester) async {
     final semantics = tester.ensureSemantics();
-    final toggled = <String>[];
     await tester.pumpWidget(
-      _host(command, [
+      _host([
         (id: 'app', messages: TabMessagesState.flowing, working: false),
         (id: 'off', messages: TabMessagesState.off, working: false),
-      ], onToggle: toggled.add),
+      ]),
     );
+    // Hidden at rest: off the semantics tree until revealed, but the tab
+    // itself still offers the action.
+    expect(find.semantics.byLabel('Agent Messages').evaluate(), isEmpty);
+    final mouse = await _hover(tester, 'app');
     final on = tester.getSemantics(_messages('app'));
     expect(on.label, 'Agent Messages');
     expect(on.hint, 'Agents messaging · click to turn off');
     expect(on.getSemanticsData().flagsCollection.isToggled, Tristate.isTrue);
-    // Hidden at rest: off the semantics tree until revealed, but the tab
-    // itself still offers the action.
-    expect(find.semantics.byLabel('Agent Messages').evaluate(), hasLength(1));
-    command.value = true;
+    await mouse.moveTo(tester.getCenter(_label('off')));
     await tester.pump();
     final off = tester.getSemantics(_messages('off'));
     expect(off.getSemanticsData().flagsCollection.isToggled, Tristate.isFalse);
@@ -271,6 +243,49 @@ void main() {
     ];
     expect(actions, containsAll(['Close tab', 'Turn Agent Messages on']));
     semantics.dispose();
+  });
+
+  testWidgets('the messaging mark trades its arrows every half second', (
+    tester,
+  ) async {
+    final clock = ActivityClock(now: tester.binding.clock.now);
+    addTearDown(clock.dispose);
+    Future<void> show({bool reduce = false}) => tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(disableAnimations: reduce),
+          child: Center(
+            child: MessagingMark(color: _messagesColor, clock: clock),
+          ),
+        ),
+      ),
+    );
+    Finder mirrored = find.byKey(const ValueKey('messaging-mark:mirrored'));
+    Finder plain = find.byKey(const ValueKey('messaging-mark:plain'));
+    await show();
+    expect(clock.running, isTrue);
+    final seen = <bool>{};
+    for (var i = 0; i < 10; i++) {
+      expect(
+        mirrored.evaluate().length + plain.evaluate().length,
+        1,
+        reason: 'one ⇄ at a time',
+      );
+      seen.add(mirrored.evaluate().isNotEmpty);
+      expect(
+        mirrored.evaluate().isNotEmpty,
+        MessagingMark.mirroredAt(clock.frame),
+      );
+      await tester.pump(activityFrameInterval);
+    }
+    expect(seen, {true, false}, reason: 'both sides within a second');
+    expect(find.semantics.byLabel('Agents messaging'), isNotNull);
+    await show(reduce: true);
+    for (var i = 0; i < 10; i++) {
+      expect(plain, findsOneWidget, reason: 'Reduce Motion holds it still');
+      await tester.pump(activityFrameInterval);
+    }
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('the workspace strip offers ⇄ only on desk tabs, once answered', (
@@ -294,6 +309,35 @@ void main() {
     await app.agentMessages.refresh();
     await tester.pump();
     expect(_messages(tab), findsNothing, reason: 'an older CLI or backend');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a messaging tab shows ⇄ in its status slot, then its status', (
+    tester,
+  ) async {
+    final app = createApp();
+    addTearDown(app.dispose);
+    final api = await joinAgentMessagesDesk(app);
+    final tab = app.activeSwarmId;
+    api.flags[tab] = true;
+    await app.agentMessages.refresh();
+    await mount(tester, app);
+    final messaging = find.byKey(ValueKey('tab-messaging:$tab'));
+    expect(messaging, findsNothing);
+    app.agentMessages.handleEvent({
+      'tabId': tab,
+      'messageId': 'm0000001',
+      'at': 1,
+      'from': {'machineId': 'studio', 'agentId': 'lead'},
+      'to': [
+        {'machineId': 'laptop', 'agentId': 'api', 'state': 'queued'},
+      ],
+    });
+    await tester.pump();
+    expect(messaging, findsOneWidget);
+    expect(_messages(tab).hitTestable(), findsNothing, reason: 'no ⇄ button');
+    await tester.pump(const Duration(seconds: 15));
+    expect(messaging, findsNothing, reason: 'back to its status');
     await tester.pumpWidget(const SizedBox());
   });
 }

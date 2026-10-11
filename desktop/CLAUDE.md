@@ -422,12 +422,13 @@ add a kind there, not at the call site.
   repaint on a theme flip.
 - The [workspace status bar](design/workspace-status-bar.md) places system-font tabs and global actions at the top,
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
-  Tabs center their name/status group without permanent number prefixes. One revealed state
-  — hovering a tab, or holding Command for every tab — replaces the status with the resolved
-  shortcut and shows Agent Messages' ⇄ just left of ×; at rest only a tab whose agents are
-  messaging keeps a bright ⇄ (`lib/agent_messages/`, `AgentMessagesController` on
-  `AppNotifier.agentMessages`, its own notifier so traffic never rebuilds the workspace;
-  `SwarmTabButton` mirrors it natively). Revealing never moves the title. Tab and pane close
+  Tabs center their name/status group and show no shortcut hint (Command changes nothing on
+  them). Hovering a tab shows Agent Messages' ⇄ — grey off, the terminal's magenta on — just
+  left of ×; while its agents message, the status slot shows an animated ⇄ for 15 s instead
+  (`lib/agent_messages/`, `AgentMessagesController` on `AppNotifier.agentMessages`, its own
+  notifier so traffic never rebuilds the workspace; `MessagingMark`; `SwarmTabButton` mirrors
+  it natively). At rest the name has the whole tab; hovered, it moves left only as far as ⇄
+  and × need. Tab and pane close
   marks are small and quiet, with larger click targets. Terminal panes end with matching
   plain-text agent/model selectors and close at every width. Hovering the right
   or bottom edge reveals its split icon; zoom stays in commands, menus and keyboard

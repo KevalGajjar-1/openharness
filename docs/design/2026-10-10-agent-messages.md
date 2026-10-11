@@ -48,14 +48,21 @@ it is not a switchboard. Harness has no roles.
 
 ### The tab
 
-⇄ sits just left of ×. One revealed state replaces today's two (⌘ shows shortcuts, hover shows ×): hover
-reveals one tab, holding ⌘ reveals every tab.
+⇄ sits just left of ×, and hovering a tab shows both. Tabs show no shortcut (⌘1…⌘9 still work), and
+holding ⌘ changes nothing on them (owner, 2026-10-11).
 
-| State | Not hovered | Hovered or ⌘ held | Click ⇄ |
+| State | Not hovered | Hovered | Click ⇄ |
 |---|---|---|---|
-| Off (default) | `app` | `app ⌘1    ⇄̸ ×` | turns on |
-| On, quiet | `app` | `app ⌘1    ⇄ ×` (dim) | turns off |
-| On, messages flowing | `app    ⇄` (bright, about a minute after the last message) | `app ⌘1    ⇄ ×` (bright) | turns off |
+| Off (default) | `app ✓` | `app ✓    ⇄ ×` (⇄ grey) | turns on |
+| On, quiet | `app ✓` | `app ✓    ⇄ ×` (⇄ in color) | turns off |
+| On, messages flowing | `app ⇄` (the status slot, animated) | `app ⇄    ⇄ ×` | turns off |
+
+While agents in the tab message each other, its status slot (where the working spinner, ✓ and ? go)
+shows ⇄ in Agent Messages' color, its arrows trading places every half second, for 15 seconds after
+the last message; then it shows the tab's status again. The color is the terminal theme's magenta, as
+the status marks take theirs; with status colors off it is the terminal's foreground. Reduce Motion
+holds it still. At rest a tab gives its name the whole width; when hovered, a name that would run into
+⇄ and × moves left only as far as they need, then gives up its tail.
 
 Tooltips: "Agent messages off · click to turn on", "Agent messages on · click to turn off",
 "Agents messaging · click to turn off". The tab's right-click menu and the File menu gain **Agent Messages**

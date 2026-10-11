@@ -237,7 +237,7 @@ void main() {
   });
 
   group('traffic', () {
-    test('a tab flows for a minute after its last message', () {
+    test('a tab flows for 15 seconds after its last message', () {
       fakeAsync((async) {
         backend.tabs = {'tab': true};
         final messages = controller();
@@ -249,16 +249,20 @@ void main() {
         expect(messages.isFlowing('tab'), isTrue);
         expect(messages.stateOf('tab'), TabMessagesState.flowing);
         expect(messages.trafficFor('tab'), 1);
-        async.elapse(const Duration(seconds: 40));
+        async.elapse(const Duration(seconds: 10));
         messages.handleEvent(_sent(state: 'delivered'));
         expect(messages.trafficFor('tab'), 2);
-        async.elapse(const Duration(seconds: 59));
+        async.elapse(const Duration(seconds: 14));
         expect(messages.isFlowing('tab'), isTrue);
         final before = notified;
         async.elapse(const Duration(seconds: 1));
         expect(messages.isFlowing('tab'), isFalse);
         expect(messages.stateOf('tab'), TabMessagesState.on);
-        expect(notified, greaterThan(before), reason: 'the ⇄ dims by itself');
+        expect(
+          notified,
+          greaterThan(before),
+          reason: 'the status slot goes back by itself',
+        );
         expect(async.pendingTimers, isEmpty);
         messages.dispose();
       });
@@ -494,7 +498,9 @@ void main() {
           return {
             'messages': [
               recent('m0000001', ago: const Duration(minutes: 5)),
-              recent('m0000002', ago: const Duration(seconds: 10)),
+              // Past the 15 s a tab flows, within a round of the remote
+              // watch's: still news when a round first sees it.
+              recent('m0000002', ago: const Duration(seconds: 30)),
             ],
           };
         },
