@@ -14,6 +14,7 @@ import 'package:harness/widgets/cloud_chat_pane.dart';
 import 'package:harness/widgets/engine_identity.dart';
 
 import 'support/rename_connection.dart';
+import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp;
 
 /// A connection that answers the cloud requests as the CLI's cloud service does.
@@ -243,6 +244,16 @@ void main() {
     expect(connection.creates.single, containsPair('prompt', 'book a haircut saturday morning near me'));
     expect(connection.creates.single.containsKey('repositoryUrl'), isFalse);
     expect(connection.creates.single.containsKey('cwd'), isFalse);
+  });
+
+  testWidgets('in the workspace, a cloud harness\'s pane is its conversation, not a terminal waiting for one', (tester) async {
+    final (app, _) = await setUp(tester, cloudFrame(state: 'working', activity: 'Calling Hair Lab'));
+    await app.addAgentToSwarm('m', 'cloud_1');
+    await mount(tester, app);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byType(CloudChatPane), findsOneWidget);
+    expect(find.text('This harness has no available terminal.'), findsNothing);
+    expect(find.text('book a haircut saturday morning near me'), findsOneWidget);
   });
 
   test('the footer says where a cloud harness runs, where a computer\'s name goes', () async {
