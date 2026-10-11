@@ -388,7 +388,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
   // editor mounted so its text-input connection and composition survive.
   late GlobalKey _searchInputKey;
   final _tabScroll = ScrollController();
-  final _tabShortcutHints = ValueNotifier(false);
   ({String activeId, List<String> order, double viewport, List<double> widths})?
   _tabGeometry;
   bool _tabRevealScheduled = false;
@@ -605,7 +604,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
       },
       onHide: app.announceWindowForeground,
       onInactive: () {
-        _tabShortcutHints.value = false;
         app.announceWindowForeground();
       },
       // Whether the app is in front of anyone decides whether the model surfaces refresh at all
@@ -891,7 +889,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
     _searchDialogScope.dispose();
     _searchText.dispose();
     _tabScroll.dispose();
-    _tabShortcutHints.dispose();
     _canvasFocus.dispose();
     _shellFocus.dispose();
     _startSearchFocus.dispose();
@@ -2038,7 +2035,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
                 activity,
                 color: activityInk(activity),
               ),
-            // Agent Messages' ⇄; absent where a tab has none
+            // Agent Messages' 💬; absent where a tab has none
             // (AppNotifier.agentMessagesOffered). Flowing only while on.
             if (app.agentMessagesOffered(swarm.id)) ...{
               'agentMessages': app.agentMessages.isOn(swarm.id),
@@ -2048,6 +2045,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
             },
           },
       ],
+      // Agent Messages' color: the 💬 while on, and a tab's status slot while
+      // its agents message. The design system's one accent, blue, as a mark.
+      'agentMessagesInk': grid.AppPalette.accentOnSurface.toARGB32(),
       // The File menu's Agent Messages checkmark, for the active tab.
       'activeAgentMessages': app.agentMessagesOffered(app.activeSwarmId)
           ? app.agentMessages.isOn(app.activeSwarmId)
@@ -2373,7 +2373,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       case 'renameActive':
         unawaited(_rename(app.activeSwarmId));
       case 'toggleAgentMessages':
-        // From a tab's ⇄ or its menu (with its id), or the File menu (the
+        // From a tab's 💬 or its menu (with its id), or the File menu (the
         // active tab).
         unawaited(
           _toggleAgentMessages(
@@ -2732,9 +2732,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
     if (name != null) app.renameSwarm(id, name);
   });
 
-  /// Turn Agent Messages on or off for [id]. The ⇄ follows at once and goes
+  /// Turn Agent Messages on or off for [id]. The 💬 follows at once and goes
   /// back if the backend does not take it — and then says so where the click
-  /// was, since a ⇄ that quietly flips back reads as a click that missed.
+  /// was, since a 💬 that quietly flips back reads as a click that missed.
   Future<void> _toggleAgentMessages(String id) async {
     if (!app.agentMessagesOffered(id)) return;
     if (await app.agentMessages.toggle(id) || !mounted) return;
@@ -4075,8 +4075,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
   }
 
   bool _noteKey(KeyEvent event) {
-    // Paint hints only; the existing keymap still owns every shortcut.
-    _tabShortcutHints.value = HardwareKeyboard.instance.isMetaPressed;
     // Off, this is not here at all: every key goes where it went before.
     if (event is! KeyDownEvent || _zoo.daemons == DaemonsSwitch.off) {
       return false;
@@ -6324,7 +6322,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
     }
     if (machineId == null || start == null) {
       spoken?.cancelled();
-      await _newAgent(task: plan.prompt, placement: HarnessPlacement.currentTab);
+      await _newAgent(
+        task: plan.prompt,
+        placement: HarnessPlacement.currentTab,
+      );
       return;
     }
     final mode = taskRoutePermission(app, engine);
@@ -7728,6 +7729,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ];
       final toolHeight = workspaceBarControlHeight(context);
       final prefs = appearancePrefsStore.value.prompt;
+      // Agent Messages' color: the design system's accent blue, as a mark.
+      final messagesColor = grid.AppPalette.accentOnSurface;
       final storeWidth = math.min(
         WorkspaceStoreButton.widthOf(context),
         math.max(0.0, constraints.maxWidth - cell.width * 22),
@@ -7806,24 +7809,23 @@ class _SwarmScreenState extends State<SwarmScreen> {
                       final swarm = shown[index];
                       final selected = app.activeSwarmId == swarm.id;
                       final activity = activities[index];
-                      final nameHint = workspaceTabTooltip(
-                        labels[index],
-                        swarm.name,
-                        clipped:
-                            DesktopWorkspaceTab.naturalWidth(
-                              context,
-                              labels[index],
-                              shortcutHint: _keymap.hint(
-                                'swarm.select_${index + 1}',
-                              ),
-                              hasActivity: activity != null,
-                            ) >
-                            _tabWidths[index],
-                      );
-                      final tabHint = [
-                        ?nameHint,
-                        if (activity != null) activity.label,
-                      ].join('\n');
+                      // A status cell animates only while its tab is in view.
+                      Widget tabStatus(Widget Function(bool visible) mark) =>
+                          ListenableBuilder(
+                            listenable: _tabScroll,
+                            builder: (context, _) {
+                              final left = _tabWidths
+                                  .take(index)
+                                  .fold(0.0, (a, b) => a + b);
+                              final offset = _tabScroll.hasClients
+                                  ? _tabScroll.offset
+                                  : 0.0;
+                              return mark(
+                                left < offset + tabsWidth &&
+                                    left + _tabWidths[index] > offset,
+                              );
+                            },
+                          );
                       return ReorderableDragStartListener(
                         key: ValueKey(swarm.id),
                         index: index,
@@ -7844,46 +7846,72 @@ class _SwarmScreenState extends State<SwarmScreen> {
                           // must not rebuild the workspace.
                           child: ListenableBuilder(
                             listenable: app.agentMessages,
-                            builder: (context, _) => DesktopWorkspaceTab(
-                              id: swarm.id,
-                              onRename: () => _rename(swarm.id),
-                              label: labels[index],
-                              selected: selected,
-                              showShortcuts: _tabShortcutHints,
-                              shortcutHint: _keymap.hint(
-                                'swarm.select_${index + 1}',
-                              ),
-                              tooltip: tabHint.isEmpty ? null : tabHint,
-                              activityLabel: activity?.label,
-                              onSelect: _shortcutsEnabled
-                                  ? () => app.selectSwarm(swarm.id)
-                                  : null,
-                              onClose: _shortcutsEnabled
-                                  ? () => unawaited(
-                                      app.requestCloseSwarm(swarm.id),
-                                    )
-                                  : null,
-                              agentMessages: app.agentMessagesOffered(swarm.id)
-                                  ? app.agentMessages.stateOf(swarm.id)
-                                  : null,
-                              onToggleAgentMessages: _shortcutsEnabled
-                                  ? () => unawaited(
-                                      _toggleAgentMessages(swarm.id),
-                                    )
-                                  : null,
-                              activity:
-                                  activity == null || activity.mark.isEmpty
-                                  ? null
-                                  : ListenableBuilder(
-                                      listenable: _tabScroll,
-                                      builder: (context, _) {
-                                        final left = _tabWidths
-                                            .take(index)
-                                            .fold(0.0, (a, b) => a + b);
-                                        final offset = _tabScroll.hasClients
-                                            ? _tabScroll.offset
-                                            : 0.0;
-                                        return ActivityMark(
+                            builder: (context, _) {
+                              // While its agents message, the status slot
+                              // shows 💬 in place of the tab's status, and
+                              // the tooltip and screen readers say so.
+                              final messaging =
+                                  app.agentMessagesOffered(swarm.id) &&
+                                  app.agentMessages.stateOf(swarm.id) ==
+                                      TabMessagesState.flowing;
+                              final status = [
+                                if (messaging) agentsMessagingLabel,
+                                ?activity?.label,
+                              ];
+                              final nameHint = workspaceTabTooltip(
+                                labels[index],
+                                swarm.name,
+                                clipped:
+                                    DesktopWorkspaceTab.naturalWidth(
+                                      context,
+                                      labels[index],
+                                      hasActivity:
+                                          activity != null || messaging,
+                                    ) >
+                                    _tabWidths[index],
+                              );
+                              final tabHint = [?nameHint, ...status].join('\n');
+                              return DesktopWorkspaceTab(
+                                id: swarm.id,
+                                onRename: () => _rename(swarm.id),
+                                label: labels[index],
+                                selected: selected,
+                                tooltip: tabHint.isEmpty ? null : tabHint,
+                                activityLabel: status.isEmpty
+                                    ? null
+                                    : status.join(', '),
+                                onSelect: _shortcutsEnabled
+                                    ? () => app.selectSwarm(swarm.id)
+                                    : null,
+                                onClose: _shortcutsEnabled
+                                    ? () => unawaited(
+                                        app.requestCloseSwarm(swarm.id),
+                                      )
+                                    : null,
+                                agentMessages:
+                                    app.agentMessagesOffered(swarm.id)
+                                    ? app.agentMessages.stateOf(swarm.id)
+                                    : null,
+                                onToggleAgentMessages: _shortcutsEnabled
+                                    ? () => unawaited(
+                                        _toggleAgentMessages(swarm.id),
+                                      )
+                                    : null,
+                                messagesColor: messagesColor,
+                                activity: messaging
+                                    ? tabStatus(
+                                        (visible) => MessagingMark(
+                                          key: ValueKey(
+                                            'tab-messaging:${swarm.id}',
+                                          ),
+                                          color: messagesColor,
+                                          visible: visible,
+                                        ),
+                                      )
+                                    : activity == null || activity.mark.isEmpty
+                                    ? null
+                                    : tabStatus(
+                                        (visible) => ActivityMark(
                                           key: ValueKey(
                                             'tab-activity:${swarm.id}',
                                           ),
@@ -7895,13 +7923,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                           ),
                                           emphasized: selected,
                                           tooltip: false,
-                                          visible:
-                                              left < offset + tabsWidth &&
-                                              left + _tabWidths[index] > offset,
-                                        );
-                                      },
-                                    ),
-                            ),
+                                          visible: visible,
+                                        ),
+                                      ),
+                              );
+                            },
                           ),
                         ),
                       );

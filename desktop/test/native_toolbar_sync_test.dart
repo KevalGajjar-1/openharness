@@ -230,8 +230,8 @@ void main() {
     final tab = app.activeSwarmId;
     Map row() => (updates().last['tabs'] as List).single as Map;
 
-    // Traffic alone rebuilds no workspace; it reaches the ⇄ only while on,
-    // since a struck ⇄ at rest would say nothing true.
+    // Traffic alone rebuilds no workspace; it reaches the tab only while on,
+    // since a tab that is off says nothing about agents messaging.
     app.agentMessages.handleEvent({'tabId': tab, 'messageId': 'm0000001'});
     await tester.idle();
     expect(row()['agentMessages'], isFalse);
@@ -246,7 +246,7 @@ void main() {
           ),
           (_) {},
         );
-    // ⇄ or the tab's menu turns it on for that tab.
+    // 💬 or the tab's menu turns it on for that tab.
     unawaited(native('toggleAgentMessages'));
     await tester.pumpAndSettle();
     expect(api.writes, [(tab, true)]);
@@ -275,7 +275,7 @@ void main() {
     await tester.idle();
     expect(row()['agentMessagesFlowing'], isFalse);
 
-    // An older CLI or backend: no ⇄, no menu row.
+    // An older CLI or backend: no 💬, no menu row.
     api.unsupported = true;
     await app.agentMessages.refresh();
     await tester.idle();

@@ -48,14 +48,27 @@ it is not a switchboard. Harness has no roles.
 
 ### The tab
 
-⇄ sits just left of ×. One revealed state replaces today's two (⌘ shows shortcuts, hover shows ×): hover
-reveals one tab, holding ⌘ reveals every tab.
+💬 stands for a chat icon: two speech bubbles (`bubble.left.and.bubble.right` on macOS, Lucide
+`messages-square` elsewhere), agents talking. It replaced ⇄, which read as machines moving data (owner,
+2026-10-11). Show Agent Messages uses a bubble with text lines.
 
-| State | Not hovered | Hovered or ⌘ held | Click ⇄ |
+💬 sits just left of ×, and hovering a tab shows both. Tabs show no shortcut (⌘1…⌘9 still work), and
+holding ⌘ changes nothing on them (owner, 2026-10-11).
+
+| State | Not hovered | Hovered | Click 💬 |
 |---|---|---|---|
-| Off (default) | `app` | `app ⌘1    ⇄̸ ×` | turns on |
-| On, quiet | `app` | `app ⌘1    ⇄ ×` (dim) | turns off |
-| On, messages flowing | `app    ⇄` (bright, about a minute after the last message) | `app ⌘1    ⇄ ×` (bright) | turns off |
+| Off (default) | `app ✓` | `app ✓    💬 ×` (💬 grey) | turns on |
+| On, quiet | `app ✓` | `app ✓    💬 ×` (💬 in color) | turns off |
+| On, messages flowing | `app 💬` (the status slot, animated) | `app 💬    💬 ×` | turns off |
+
+While agents in the tab message each other, its status slot (where the working spinner, ✓ and ? go)
+shows 💬 in Agent Messages' color, its two bubbles trading sides every half second, for 10 seconds after
+the last message (long enough to catch at a glance, short enough to stay a blip: replies take minutes),
+then the tab's status again. Traffic read from another machine's log lasts one 15 s poll round longer. The color is the design
+system's accent blue (`AppPalette.accentOnSurface`), its one color for "on" and selection; it stays
+clear of the status marks' cyan, green, yellow and red, and the bubbles' shape carries the meaning too. Reduce Motion
+holds it still. At rest a tab gives its name the whole width; when hovered, a name that would run into
+💬 and × moves left only as far as they need, then gives up its tail.
 
 Tooltips: "Agent messages off · click to turn on", "Agent messages on · click to turn off",
 "Agents messaging · click to turn off". The tab's right-click menu and the File menu gain **Agent Messages**
@@ -192,7 +205,7 @@ Experimental → Swarm collaboration, the Swarm conversation views on desktop an
 
 1. Daemon, CLI and backend: the service, `harness send`, the hook, the backend record and routes, Swarm's
    CLI removed.
-2. Desktop: the tab's ⇄ and revealed state (macOS titlebar and the Flutter tab row), the menus, Show Agent
+2. Desktop: the tab's 💬 and revealed state (macOS titlebar and the Flutter tab row), the menus, Show Agent
    Messages, pane marks, and Swarm's views and setting removed.
 3. Cleanup: the phone's Swarm views, the backend's `tab_channels`, the core's prompt scopes. The phone shows
    no message log: the owner dropped it (October 11, 2026).

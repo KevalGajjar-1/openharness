@@ -20,7 +20,6 @@ import 'package:harness/store/store_mark.dart';
 import 'package:harness/terminal/terminal_binary.dart';
 import 'package:harness/terminal/terminal_session.dart';
 import 'package:harness/widgets/pane_grid.dart';
-import 'package:harness/widgets/desktop_workspace_tab.dart';
 import 'package:harness/widgets/terminal_panel.dart';
 import 'package:harness/ws/local_cli_discovery.dart';
 import 'package:xterm/xterm.dart';
@@ -89,7 +88,7 @@ TerminalSession terminal(String id, List<TerminalBinaryFrame> input) =>
 
 void main() {
   testWidgets(
-    'tabs show names, reveal hover close and Command hints, and preserve Command-W',
+    'tabs show names, reveal hover close only, and preserve Command-W',
     (tester) async {
       final app = createApp();
       final first = app.activeSwarm;
@@ -110,35 +109,20 @@ void main() {
       await mouse.moveTo(tester.getCenter(label));
       await tester.pumpAndSettle();
       expect(close.hitTestable(), findsOneWidget);
-      // Hover reveals the tab: its shortcut follows the name, which keeps its
-      // place (only a name that would run into ⇄ gives up its tail).
+      // Hover reveals × (and 💬 where offered); tabs show no shortcut, and a
+      // name with room keeps its place.
       expect(find.text('⌘1'), findsNothing);
-      expect(find.text('⌘2'), findsOneWidget);
-      final revealedName = tester.getRect(label);
-      expect(revealedName.left, nameBounds.left);
+      expect(find.text('⌘2'), findsNothing);
+      expect(tester.getRect(label), nameBounds);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();
-      // Command reveals every tab, × included.
-      expect(find.text('⌘1'), findsOneWidget);
-      expect(find.text('⌘2'), findsOneWidget);
-      expect(close.hitTestable(), findsOneWidget);
+      // Command no longer reveals tabs.
+      expect(find.text('⌘1'), findsNothing);
       expect(
         find.byKey(ValueKey('tab-close:${first.id}')).hitTestable(),
-        findsOneWidget,
+        findsNothing,
       );
-      final commandName = tester.getRect(label);
-      final commandHint = tester.getRect(find.text('⌘2'));
-      expect(commandHint.left - commandName.right, closeTo(6, .1));
-      // Clear of ⇄'s slot, held left of × whether or not ⇄ is offered.
-      expect(
-        commandHint.right,
-        lessThanOrEqualTo(
-          tester.getRect(close).left -
-              DesktopWorkspaceTab.accessoryGap -
-              DesktopWorkspaceTab.messagesWidth,
-        ),
-      );
-      expect(commandName, revealedName);
+      expect(close.hitTestable(), findsOneWidget);
       expect(app.activeSwarm, same(second));
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();

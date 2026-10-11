@@ -1412,7 +1412,7 @@ class AppNotifier extends ChangeNotifier {
   /// the backend keeps the flag per desk tab, once the daemon and backend have
   /// answered for it. The Store, Devices and Companions, an orchestrator or a
   /// draft tab, a window before it joins the desk, and an older CLI or backend
-  /// get no ⇄, menu row or command.
+  /// get no 💬, menu row or command.
   bool agentMessagesOffered(String tabId) {
     final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
     return swarm != null &&

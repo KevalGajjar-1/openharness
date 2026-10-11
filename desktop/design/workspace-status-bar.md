@@ -96,7 +96,7 @@ Ties within one trait use pane order. Focus does not affect the name.
 This keeps `blender` useful beside coding tabs, uses project names when all work
 is code, and uses machine names for the same project on different computers.
 Tabs with identical contents can still share a name; their positions distinguish
-them, and holding Command reveals their actual shortcut hints. Preserve the full name for inspection when its visible label is truncated.
+them. Preserve the full name for inspection when its visible label is truncated.
 
 Center each name and its adjacent status as one group in compact, content-sized
 tabs, capped at 240 points. An idle name centers on its own. Use the
@@ -104,24 +104,24 @@ shared 10-point upper corners, 8-point outward lower shoulders and 6-point top
 inset. Keep space after `+` available for dragging the window. Scroll overflow
 and reveal the selected tab on keyboard navigation. Narrow viewports can show
 smaller tabs while preserving their controls.
-A tab has one revealed state: hovering it reveals that tab, holding Command
-reveals every tab. Revealed, the actual shortcut replaces the status beside the
-name, and Agent Messages' ⇄ and × show at the right, ⇄ just left of ×
-([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)). At rest a tab
-shows only its name and status, plus a bright ⇄ for about a minute after its
-agents last messaged each other while Agent Messages are on. The ⇄ is dim and
-struck through while off, dim while on and quiet; its tooltip says what a click
+Hovering a tab reveals Agent Messages' 💬 and × at its right, 💬 just left of ×
+([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)); its status
+stays. Tabs show no shortcut hint, and holding Command changes nothing on them.
+At rest a tab shows only its name and status. While its agents message each
+other, the status slot shows 💬 in Agent Messages' color (the accent blue,
+`AppPalette.accentOnSurface`), mirrored every half second, for 10 seconds after
+the last message, then the tab's status again. The hover 💬 is grey while off and in that color
+while on; its tooltip says what a click
 does ("Agent messages off · click to turn on", "Agent messages on · click to
 turn off", "Agents messaging · click to turn off"), and a click toggles that
 tab's flag at once, going back — with a notice — if the backend refuses. Only a
-tab the desk holds has a ⇄ (not the Store, Devices, Companions, an orchestrator
+tab the desk holds has a 💬 (not the Store, Devices, Companions, an orchestrator
 or a draft tab), and only once the daemon and backend have answered for Agent
-Messages; an older CLI or backend shows none. Revealing never changes the tab
-width or moves the title: an idle tab shows its shortcut after the name, and
-only a name that would run into ⇄ gives up its tail. × and ⇄ are 16-point-wide,
-32-point-tall targets with a 3-point dead gap between them, reserved on both
-sides of the centered name, so a 128-point tab still draws its name beside a
-status. The tab's menu and File carry Agent Messages (a checkmark)
+Messages; an older CLI or backend shows none. Hovering never changes the tab
+width. At rest the name and status have the whole tab, so a 128-point tab shows
+an ordinary name whole beside its status; hovered, a name that would run into 💬
+and × moves left only as far as they need, then gives up its tail. × and 💬 are
+16-point-wide, 32-point-tall targets with a 3-point dead gap between them. The tab's menu and File carry Agent Messages (a checkmark)
 and Show Agent Messages beside Rename Tab and Close Tab. Cmd-W, remapped
 shortcuts, native menu access, and middle-click closing remain available.
 Preserve reorder, rename, keyboard focus, and terminal sessions. Cmd-T opens a
