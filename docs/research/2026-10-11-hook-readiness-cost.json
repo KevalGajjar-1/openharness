@@ -6,94 +6,94 @@
   "samples": [
     {
       "bundle": "baseline",
-      "readyMs": 2623.153111,
+      "readyMs": 3435.8510210000004,
       "atReady": {
-        "cpuMs": 520,
-        "rssMiB": 87.13671875
+        "cpuMs": 590,
+        "rssMiB": 89.703125
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 418.1928069999999,
-          "coreCpuMs": 80,
-          "rssMiB": 88.3828125
+          "requestMs": 615.5347500000003,
+          "coreCpuMs": 100,
+          "rssMiB": 90.99609375
         },
         {
           "phase": "warm",
-          "requestMs": 307.15658600000006,
-          "coreCpuMs": 50,
-          "rssMiB": 89.89453125
+          "requestMs": 426.92185599999993,
+          "coreCpuMs": 60,
+          "rssMiB": 93.06640625
         }
       ]
     },
     {
       "bundle": "candidate",
-      "readyMs": 1375.9075359999997,
+      "readyMs": 1316.6243560000003,
       "atReady": {
-        "cpuMs": 420,
-        "rssMiB": 83.28515625
+        "cpuMs": 380,
+        "rssMiB": 82.46875
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 1120.6220399999993,
-          "coreCpuMs": 140,
-          "rssMiB": 86.5703125
-        },
-        {
-          "phase": "warm",
-          "requestMs": 322.70560000000023,
-          "coreCpuMs": 80,
-          "rssMiB": 87.41015625
-        }
-      ]
-    },
-    {
-      "bundle": "candidate",
-      "readyMs": 1313.8398690000004,
-      "atReady": {
-        "cpuMs": 370,
-        "rssMiB": 82.1796875
-      },
-      "launches": [
-        {
-          "phase": "cold",
-          "requestMs": 1151.817194000001,
+          "requestMs": 1172.0456189999995,
           "coreCpuMs": 150,
-          "rssMiB": 87.73046875
+          "rssMiB": 88.08984375
         },
         {
           "phase": "warm",
-          "requestMs": 317.89567400000124,
+          "requestMs": 339.5589570000002,
           "coreCpuMs": 80,
-          "rssMiB": 88.484375
+          "rssMiB": 89.37890625
+        }
+      ]
+    },
+    {
+      "bundle": "candidate",
+      "readyMs": 1423.3268260000004,
+      "atReady": {
+        "cpuMs": 400,
+        "rssMiB": 79.4765625
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 1472.9003919999996,
+          "coreCpuMs": 170,
+          "rssMiB": 85.953125
+        },
+        {
+          "phase": "warm",
+          "requestMs": 342.3992299999991,
+          "coreCpuMs": 100,
+          "rssMiB": 86.72265625
         }
       ]
     },
     {
       "bundle": "baseline",
-      "readyMs": 2753.0194659999997,
+      "readyMs": 3186.5190760000005,
       "atReady": {
-        "cpuMs": 530,
-        "rssMiB": 84.83203125
+        "cpuMs": 570,
+        "rssMiB": 85.578125
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 334.74585900000056,
-          "coreCpuMs": 80,
-          "rssMiB": 86.01171875
+          "requestMs": 405.82368400000087,
+          "coreCpuMs": 100,
+          "rssMiB": 87.0859375
         },
         {
           "phase": "warm",
-          "requestMs": 327.1341740000007,
+          "requestMs": 416.4405889999998,
           "coreCpuMs": 50,
-          "rssMiB": 88.12109375
+          "rssMiB": 88.26953125
         }
       ]
     }
   ],
-  "baseline": "740fb5286e3764cb9ee17642bf1dd98c47eb58ec (bundle from identical reviewed native-launch tree)",
-  "candidate": "ce7e34dc96906d34186e16990b87e5bd06edb83e",
-  "receipt": "20261011T070759.147272Z-17321"
+  "baseline": "6d9b787dd664388ab9279a947bd3417360a0c8f9",
+  "candidate": "bf9c0247879eaf28301b87637fadb3dd816d390f",
+  "receipt": "20261011T071228.478825Z-34936"
 }

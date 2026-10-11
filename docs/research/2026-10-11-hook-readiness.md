@@ -109,24 +109,30 @@ are involved. Two samples per tree are descriptive, not a performance threshold.
 
 | Median | Main | Readiness change |
 | --- | ---: | ---: |
-| Ready (ms) | 2,688 | 1,345 |
-| Core CPU at ready (ms) | 525 | 395 |
-| Core RSS at ready (MiB) | 86.0 | 82.7 |
-| First launch request (ms) | 376 | 1,136 |
-| Warm launch request (ms) | 317 | 320 |
-| Ready plus first launch (ms) | 3,065 | 2,481 |
+| Ready (ms) | 3,311 | 1,370 |
+| Core CPU at ready (ms) | 580 | 390 |
+| Core RSS at ready (MiB) | 87.6 | 81.0 |
+| First launch request (ms) | 511 | 1,322 |
+| Warm launch request (ms) | 422 | 341 |
+| Ready plus first launch (ms) | 3,822 | 2,692 |
 
 The first launch owns the preparation wait that formerly delayed every request.
-Warm launches retain fresh proof checks. Final production commit `ce7e34dc9`
-was measured alone in `20261011T070759.147272Z-17321`: it includes the alias,
-caller-limit and native-probe corrections. Bundle construction took 14.3 seconds;
-the four matched samples took 14.0 seconds. The initial cost receipts `20261011T062124.649240Z-13284` and
+Warm launches retain fresh proof checks. Main advanced with the Agent Messages
+cleanup in #1165 while validation ran. The final comparison uses fresh bundles of
+main `6d9b787dd` and merged candidate `bf9c02478`, including the alias, caller-limit
+and native-probe corrections. Baseline construction passed in
+`20261011T071120.736472Z-30164` (15.6 seconds); candidate construction and all four
+matched samples passed in `20261011T071228.478825Z-34936` (15.7 and 16.4 seconds,
+respectively). No other local heavy checks ran during measurement. The earlier
+comparison against main `740fb5286` also passed in `20261011T070759.147272Z-17321`;
+it is superseded by the comparison above. The initial cost receipts `20261011T062124.649240Z-13284` and
 `20261011T062250.241018Z-19378` failed on the collision; the corrected workload passed
 in `20261011T062724.898061Z-40203` without changing its launch assertions.
 
 This readiness slice began with the main golden at 05:16 UTC on October 11.
-Implementation, failure diagnosis and local validation overlapped through 07:08 UTC;
-individual receipts retain test durations. Independent review ran alongside checks.
+Implementation, failure diagnosis and local validation overlapped through 07:08 UTC.
+Integration of the new main and its matched cost comparison ran from 07:10 through
+07:13 UTC; individual receipts retain test durations. Independent review ran alongside checks.
 CI waiting and merge duration are recorded separately in the PR; publication is zero.
 The original daemon request began October 8 at 23:26:41 UTC, not at this slice's first
 workflow.
