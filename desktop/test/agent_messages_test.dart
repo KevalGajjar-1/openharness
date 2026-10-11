@@ -533,6 +533,33 @@ void main() {
       expect(messages.markFor('studio', 'lead'), isNull);
     });
 
+    test('remote traffic flows one round longer, so rounds renew it', () {
+      fakeAsync((async) {
+        final messages = AgentMessagesController(
+          read: backend.read,
+          write: backend.write,
+          request: (_, _) async => {
+            'messages': [recent('m0000004', ago: const Duration(seconds: 5))],
+          },
+          nameOf: (_, _) => null,
+          now: () => now,
+        );
+        unawaited(
+          messages.pollRemote([
+            (tabId: 'tab', machineIds: ['laptop']),
+          ], round: const Duration(seconds: 15)),
+        );
+        async.flushMicrotasks();
+        expect(messages.isFlowing('tab'), isTrue);
+        async.elapse(const Duration(seconds: 29));
+        expect(messages.isFlowing('tab'), isTrue);
+        async.elapse(const Duration(seconds: 1));
+        expect(messages.isFlowing('tab'), isFalse);
+        messages.dispose();
+        expect(async.pendingTimers, isEmpty);
+      });
+    });
+
     test('older messages are remembered, not announced', () async {
       final messages = AgentMessagesController(
         read: backend.read,

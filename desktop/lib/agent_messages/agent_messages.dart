@@ -432,11 +432,12 @@ class AgentMessagesController extends ChangeNotifier {
     _notify();
   }
 
-  /// [tabId]'s status shows ⇄ for [flowingFor] from now, and an open log
-  /// reads again.
-  void _flow(String tabId) {
+  /// [tabId]'s status shows ⇄ for [flowingFor] from now — longer when the
+  /// traffic was only read from another machine's log — and an open log reads
+  /// again.
+  void _flow(String tabId, [Duration extra = Duration.zero]) {
     _flowing.remove(tabId)?.cancel();
-    _flowing[tabId] = Timer(flowingFor, () {
+    _flowing[tabId] = Timer(flowingFor + extra, () {
       _flowing.remove(tabId);
       _notify();
     });
@@ -456,9 +457,14 @@ class AgentMessagesController extends ChangeNotifier {
   /// only to the windows on its own computer (the core's `clients.windows`), so
   /// traffic between harnesses on other machines would never reach this one.
   /// A message new to this window that moved within [remoteRecency] counts as
-  /// traffic, exactly as if its frame had arrived. One request at a time per
-  /// machine; a machine still answering the last round is skipped.
-  Future<void> pollRemote(Iterable<AgentMessagesRemoteTab> tabs) async {
+  /// traffic, exactly as if its frame had arrived, and flows for one [round]
+  /// longer: the next round can only renew it a round later, so ⇄ would
+  /// otherwise lapse between rounds while agents keep talking. One request at
+  /// a time per machine; a machine still answering the last round is skipped.
+  Future<void> pollRemote(
+    Iterable<AgentMessagesRemoteTab> tabs, {
+    Duration round = Duration.zero,
+  }) async {
     if (_disposed) return;
     final byMachine = <String, List<String>>{};
     for (final tab in tabs) {
@@ -468,11 +474,15 @@ class AgentMessagesController extends ChangeNotifier {
     }
     await Future.wait([
       for (final MapEntry(key: machineId, value: tabIds) in byMachine.entries)
-        if (!_polling.contains(machineId)) _poll(machineId, tabIds),
+        if (!_polling.contains(machineId)) _poll(machineId, tabIds, round),
     ]);
   }
 
-  Future<void> _poll(String machineId, List<String> tabIds) async {
+  Future<void> _poll(
+    String machineId,
+    List<String> tabIds,
+    Duration round,
+  ) async {
     final account = _account;
     _polling.add(machineId);
     try {
@@ -489,7 +499,7 @@ class AgentMessagesController extends ChangeNotifier {
           _markPanes(message.from, message.to);
         }
         if (moved) {
-          _flow(tabId);
+          _flow(tabId, round);
           _notify();
         }
       }
@@ -686,7 +696,7 @@ class AgentMessagesRemoteWatch {
     _timer = null;
     if (_disposed || !foreground.value) return;
     final targets = tabs();
-    if (targets.isNotEmpty) await controller.pollRemote(targets);
+    if (targets.isNotEmpty) await controller.pollRemote(targets, round: every);
     if (!_disposed && _started && foreground.value && _timer == null) {
       _timer = Timer(every, () => unawaited(poll()));
     }

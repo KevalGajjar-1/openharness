@@ -7811,21 +7811,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
                       final swarm = shown[index];
                       final selected = app.activeSwarmId == swarm.id;
                       final activity = activities[index];
-                      final nameHint = workspaceTabTooltip(
-                        labels[index],
-                        swarm.name,
-                        clipped:
-                            DesktopWorkspaceTab.naturalWidth(
-                              context,
-                              labels[index],
-                              hasActivity: activity != null,
-                            ) >
-                            _tabWidths[index],
-                      );
-                      final tabHint = [
-                        ?nameHint,
-                        if (activity != null) activity.label,
-                      ].join('\n');
                       // A status cell animates only while its tab is in view.
                       Widget tabStatus(Widget Function(bool visible) mark) =>
                           ListenableBuilder(
@@ -7863,64 +7848,88 @@ class _SwarmScreenState extends State<SwarmScreen> {
                           // must not rebuild the workspace.
                           child: ListenableBuilder(
                             listenable: app.agentMessages,
-                            builder: (context, _) => DesktopWorkspaceTab(
-                              id: swarm.id,
-                              onRename: () => _rename(swarm.id),
-                              label: labels[index],
-                              selected: selected,
-                              tooltip: tabHint.isEmpty ? null : tabHint,
-                              activityLabel: activity?.label,
-                              onSelect: _shortcutsEnabled
-                                  ? () => app.selectSwarm(swarm.id)
-                                  : null,
-                              onClose: _shortcutsEnabled
-                                  ? () => unawaited(
-                                      app.requestCloseSwarm(swarm.id),
-                                    )
-                                  : null,
-                              agentMessages: app.agentMessagesOffered(swarm.id)
-                                  ? app.agentMessages.stateOf(swarm.id)
-                                  : null,
-                              onToggleAgentMessages: _shortcutsEnabled
-                                  ? () => unawaited(
-                                      _toggleAgentMessages(swarm.id),
-                                    )
-                                  : null,
-                              messagesColor: messagesColor,
+                            builder: (context, _) {
                               // While its agents message, the status slot
-                              // shows ⇄ in place of the tab's status.
-                              activity:
+                              // shows ⇄ in place of the tab's status, and
+                              // the tooltip and screen readers say so.
+                              final messaging =
                                   app.agentMessagesOffered(swarm.id) &&
-                                      app.agentMessages.stateOf(swarm.id) ==
-                                          TabMessagesState.flowing
-                                  ? tabStatus(
-                                      (visible) => MessagingMark(
-                                        key: ValueKey(
-                                          'tab-messaging:${swarm.id}',
+                                  app.agentMessages.stateOf(swarm.id) ==
+                                      TabMessagesState.flowing;
+                              final status = [
+                                if (messaging) agentsMessagingLabel,
+                                ?activity?.label,
+                              ];
+                              final nameHint = workspaceTabTooltip(
+                                labels[index],
+                                swarm.name,
+                                clipped:
+                                    DesktopWorkspaceTab.naturalWidth(
+                                      context,
+                                      labels[index],
+                                      hasActivity:
+                                          activity != null || messaging,
+                                    ) >
+                                    _tabWidths[index],
+                              );
+                              final tabHint = [?nameHint, ...status].join('\n');
+                              return DesktopWorkspaceTab(
+                                id: swarm.id,
+                                onRename: () => _rename(swarm.id),
+                                label: labels[index],
+                                selected: selected,
+                                tooltip: tabHint.isEmpty ? null : tabHint,
+                                activityLabel: status.isEmpty
+                                    ? null
+                                    : status.join(', '),
+                                onSelect: _shortcutsEnabled
+                                    ? () => app.selectSwarm(swarm.id)
+                                    : null,
+                                onClose: _shortcutsEnabled
+                                    ? () => unawaited(
+                                        app.requestCloseSwarm(swarm.id),
+                                      )
+                                    : null,
+                                agentMessages:
+                                    app.agentMessagesOffered(swarm.id)
+                                    ? app.agentMessages.stateOf(swarm.id)
+                                    : null,
+                                onToggleAgentMessages: _shortcutsEnabled
+                                    ? () => unawaited(
+                                        _toggleAgentMessages(swarm.id),
+                                      )
+                                    : null,
+                                messagesColor: messagesColor,
+                                activity: messaging
+                                    ? tabStatus(
+                                        (visible) => MessagingMark(
+                                          key: ValueKey(
+                                            'tab-messaging:${swarm.id}',
+                                          ),
+                                          color: messagesColor,
+                                          visible: visible,
                                         ),
-                                        color: messagesColor,
-                                        visible: visible,
+                                      )
+                                    : activity == null || activity.mark.isEmpty
+                                    ? null
+                                    : tabStatus(
+                                        (visible) => ActivityMark(
+                                          key: ValueKey(
+                                            'tab-activity:${swarm.id}',
+                                          ),
+                                          activity: activity,
+                                          color: activityColor(
+                                            activity,
+                                            theme,
+                                            color: prefs.color,
+                                          ),
+                                          emphasized: selected,
+                                          tooltip: false,
+                                          visible: visible,
+                                        ),
                                       ),
-                                    )
-                                  : activity == null || activity.mark.isEmpty
-                                  ? null
-                                  : tabStatus(
-                                      (visible) => ActivityMark(
-                                        key: ValueKey(
-                                          'tab-activity:${swarm.id}',
-                                        ),
-                                        activity: activity,
-                                        color: activityColor(
-                                          activity,
-                                          theme,
-                                          color: prefs.color,
-                                        ),
-                                        emphasized: selected,
-                                        tooltip: false,
-                                        visible: visible,
-                                      ),
-                                    ),
-                            ),
+                              );
+                            },
                           ),
                         ),
                       );

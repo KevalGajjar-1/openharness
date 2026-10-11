@@ -324,7 +324,9 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
                                   style: messagesOn
                                       ? _accessoryStyle(
                                           widget.messagesColor ?? foreground,
-                                          .85,
+                                          MediaQuery.highContrastOf(context)
+                                              ? 1
+                                              : .85,
                                         )
                                       : _accessoryStyle(
                                           foreground,

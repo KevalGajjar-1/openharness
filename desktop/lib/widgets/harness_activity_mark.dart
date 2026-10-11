@@ -209,6 +209,9 @@ class _ActivityMarkState extends State<ActivityMark> {
   }
 }
 
+/// What a tab says while its agents message one another.
+const agentsMessagingLabel = 'Agents messaging';
+
 /// A tab's status cell while its agents message one another (Agent Messages):
 /// ⇄, mirrored every half second on the same clock as the spinner so its
 /// arrows trade places; still under Reduce Motion or when scrolled away.
@@ -222,6 +225,9 @@ class MessagingMark extends StatefulWidget {
   final Color color;
   final bool visible;
   final ActivityClock? clock;
+
+  /// The tab's status slot.
+  static const width = 16.0;
 
   /// Half a second per side: five of the spinner's 100ms frames.
   static bool mirroredAt(int frame) => (frame ~/ 5).isOdd;
@@ -277,21 +283,25 @@ class _MessagingMarkState extends State<MessagingMark> {
   @override
   Widget build(BuildContext context) {
     final mirrored = _listening && MessagingMark.mirroredAt(clock.frame);
+    // The tab's 16px status slot, the glyph centered in it: mirroring then
+    // turns the arrows in place instead of moving them.
     return Semantics(
-      label: 'Agents messaging',
+      label: agentsMessagingLabel,
       child: ExcludeSemantics(
         child: RepaintBoundary(
           child: SizedBox(
-            width: workspaceBarCellSizeOf(context).width,
-            child: Transform.flip(
-              key: ValueKey(
-                'messaging-mark:${mirrored ? 'mirrored' : 'plain'}',
-              ),
-              flipX: mirrored,
-              child: Icon(
-                AppIcons.arrowRightLeft,
-                size: 13,
-                color: widget.color,
+            width: MessagingMark.width,
+            child: Center(
+              child: Transform.flip(
+                key: ValueKey(
+                  'messaging-mark:${mirrored ? 'mirrored' : 'plain'}',
+                ),
+                flipX: mirrored,
+                child: Icon(
+                  AppIcons.arrowRightLeft,
+                  size: 13,
+                  color: widget.color,
+                ),
               ),
             ),
           ),

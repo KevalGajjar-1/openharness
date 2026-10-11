@@ -248,6 +248,7 @@ void main() {
   testWidgets('the messaging mark trades its arrows every half second', (
     tester,
   ) async {
+    final semantics = tester.ensureSemantics();
     final clock = ActivityClock(now: tester.binding.clock.now);
     addTearDown(clock.dispose);
     Future<void> show({bool reduce = false}) => tester.pumpWidget(
@@ -279,13 +280,18 @@ void main() {
       await tester.pump(activityFrameInterval);
     }
     expect(seen, {true, false}, reason: 'both sides within a second');
-    expect(find.semantics.byLabel('Agents messaging'), isNotNull);
+    expect(find.bySemanticsLabel(agentsMessagingLabel), findsOneWidget);
+    // Centered in the tab's 16px slot, so mirroring turns it in place.
+    final slot = tester.getRect(find.byType(MessagingMark));
+    expect(slot.width, MessagingMark.width);
+    expect(tester.getCenter(find.byType(Icon)), slot.center);
     await show(reduce: true);
     for (var i = 0; i < 10; i++) {
       expect(plain, findsOneWidget, reason: 'Reduce Motion holds it still');
       await tester.pump(activityFrameInterval);
     }
     await tester.pumpWidget(const SizedBox());
+    semantics.dispose();
   });
 
   testWidgets('the workspace strip offers ⇄ only on desk tabs, once answered', (
@@ -336,6 +342,17 @@ void main() {
     await tester.pump();
     expect(messaging, findsOneWidget);
     expect(_messages(tab).hitTestable(), findsNothing, reason: 'no ⇄ button');
+    final tooltip = tester.widget<Tooltip>(
+      find.ancestor(of: _label(tab), matching: find.byType(Tooltip)).first,
+    );
+    expect(tooltip.message, contains(agentsMessagingLabel));
+    final semantics = tester.ensureSemantics();
+    expect(
+      find.bySemanticsLabel(RegExp('$agentsMessagingLabel\$')),
+      findsOneWidget,
+      reason: 'the tab says it, as the native tab does',
+    );
+    semantics.dispose();
     await tester.pump(const Duration(seconds: 15));
     expect(messaging, findsNothing, reason: 'back to its status');
     await tester.pumpWidget(const SizedBox());
