@@ -1,7 +1,7 @@
 /**
  * Agent Messages (docs/design/2026-10-10-agent-messages.md): harnesses in a tab with Agent Messages on message
  * each other with `harness send`. This is the whole service, on the core's API, in the core's process or in its
- * own (services/collaboration.ts, services/collaborationProcess.ts):
+ * own (services/messages.ts, services/messagesProcess.ts):
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
  * - `history`: the windows' log of a tab.

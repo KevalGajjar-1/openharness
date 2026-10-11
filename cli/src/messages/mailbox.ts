@@ -58,7 +58,7 @@ export interface MailboxDeps {
   text(delivery: LocalDelivery, message: Message): string
   /** A delivery changed; the store is saved after. */
   changed(status: DeliveryStatus, delivery: LocalDelivery): void
-  /** Whether a typed attempt may be written changed: the teams' process tells the core. */
+  /** Whether a typed attempt may be written changed: its process tells the core (services/messagesProcess.ts). */
   writable?(): void
   now?(): number
 }

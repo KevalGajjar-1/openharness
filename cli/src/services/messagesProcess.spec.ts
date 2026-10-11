@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CoreApi } from '../core/api.js'
 import type { RegisteredSession } from '../lib/registry.js'
-import type { TeamsOptions, Teams } from './collaboration.js'
-import { AGENTS_FRESH_MS, runCollaborationService, WATCHED, WRITABLE_EVERY_MS, WRITABLE_FOR_MS } from './collaborationProcess.js'
+import type { AgentMessages, MessagesOptions } from '../messages/service.js'
+import { AGENTS_FRESH_MS, runMessagesService, WATCHED, WRITABLE_EVERY_MS, WRITABLE_FOR_MS } from './messagesProcess.js'
 import type { CoreConnection, ServiceProcessOptions } from './process.js'
 
 // The real default reaches a real socket: never in a test.
@@ -12,19 +12,19 @@ const OWNER = { local: true, owner: true }
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((settle) => setTimeout(settle, 0)) }
 const agent = (agentId: string) => ({ agentId, sessionId: `s-${agentId}`, engine: 'claude', cwd: '/w', displayName: agentId, terminalAvailable: true }) as unknown as RegisteredSession
 
-describe('Agent Messages in the teams\' own process', () => {
+describe('Agent Messages in its own process', () => {
   afterEach(() => vi.clearAllMocks())
 
   const setup = () => {
     let options: ServiceProcessOptions | null = null
     let api: CoreApi | null = null
-    let given: TeamsOptions | undefined
+    let given: MessagesOptions | undefined
     let clock = 10_000
     const timers: Array<{ run: () => void; ms: number; cleared: boolean }> = []
     const writable = new Set<string>()
     const calls: string[] = []
     const stop = vi.fn()
-    const service = runCollaborationService({
+    const service = runMessagesService({
       dataDir: '/data', socketPath: '/data/daemon-1.sock', machineId: 'm', token: 't',
       run: (o) => { options = o; return { stop } },
       now: () => clock,
@@ -40,7 +40,7 @@ describe('Agent Messages in the teams\' own process', () => {
           canWrite: (id) => writable.has(id),
           start: () => calls.push('start'),
           stop: () => calls.push('stop'),
-        } satisfies Teams
+        } satisfies AgentMessages
       },
     })
     return { options: options!, api: () => api!, given: () => given!, writable, timers, calls, service, stop, tick: (ms: number) => { clock += ms }, now: () => clock }
@@ -58,7 +58,7 @@ describe('Agent Messages in the teams\' own process', () => {
 
   it('starts once it knows the agents and the daemon, and answers on the agents as each request starts', async () => {
     const { options, calls } = setup()
-    expect(options).toMatchObject({ name: 'collaboration', socketPath: '/data/daemon-1.sock', machineId: 'm', token: 't' })
+    expect(options).toMatchObject({ name: 'messages', socketPath: '/data/daemon-1.sock', machineId: 'm', token: 't' })
     const link = core({ shown: { agents: [agent('a1')] }, daemon: { command: `'node' 'cli.js'`, port: 18473, machineId: 'm' } })
     options.onConnected!(link.connection)
     await flush()
@@ -215,7 +215,7 @@ describe('Agent Messages in the teams\' own process', () => {
       const { runServiceProcess } = await import('./process.js')
       const writable = new Set(['team:d1'])
       let api: CoreApi | null = null
-      const process = runCollaborationService({
+      const process = runMessagesService({
         dataDir: '/data', socketPath: '/s', machineId: 'm', token: 't',
         start: (given) => {
           api = given
@@ -236,7 +236,7 @@ describe('Agent Messages in the teams\' own process', () => {
 
   it('starts the real service when given none', async () => {
     const { runServiceProcess } = await import('./process.js')
-    runCollaborationService({ dataDir: '/data-that-is-not-there', socketPath: '/s', machineId: 'm', token: 't' }).stop()
+    runMessagesService({ dataDir: '/data-that-is-not-there', socketPath: '/s', machineId: 'm', token: 't' }).stop()
     expect(vi.mocked(runServiceProcess).mock.calls.at(-1)![0].requests.agent_messages).toBeTypeOf('function')
   })
 })
