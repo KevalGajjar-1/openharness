@@ -217,6 +217,18 @@ describe('a harness and the harnesses it started', () => {
     expect((await t.ask({ action: 'send', pane: '%1', to: 'abcde', text: 'x' })).error).toBe('UNKNOWN_RECIPIENT')
   })
 
+  it('keep the record of a harness another machine started here, from that machine only', async () => {
+    const t = setup()
+    const row = { at: 5, depth: 2, by: { machineId: 'm2', agentId: 'phone', name: 'phone', engine: 'claude' }, child: { machineId: 'm1', agentId: 'web', name: 'web' } }
+    expect(await t.ask({ action: 'started', row }, OWNER_REMOTE)).toEqual({ recorded: true })
+    expect(new Ledger(ledgerPath(root)).parentOf({ machineId: 'm1', agentId: 'web' })).toMatchObject({ depth: 2, by: { machineId: 'm2' } })
+    expect((await t.ask({ action: 'started', row }, OWNER_LOCAL)).error).toBe('REMOTE_ONLY')
+    expect((await t.ask({ action: 'started', row: { ...row, child: { ...row.child, machineId: 'm3' } } }, OWNER_REMOTE)).error).toBe('INVALID_RECORD')
+    expect((await t.ask({ action: 'started', row: { ...row, by: { ...row.by, machineId: 'm1' } } }, OWNER_REMOTE)).error).toBe('INVALID_RECORD')
+    expect((await t.ask({ action: 'started' }, OWNER_REMOTE)).error).toBe('INVALID_RECORD')
+    expect((await t.ask({ action: 'started', row: { ...row, child: { ...row.child, agentId: 'nobody' } } }, OWNER_REMOTE)).error).toBe('UNKNOWN_HARNESS')
+  })
+
   it('stay apart across machines: another machine checks against its own tabs', async () => {
     const t = setup({ tabs: [] })
     start('lead', 'phone', 'm2')

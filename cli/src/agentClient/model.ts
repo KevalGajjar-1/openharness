@@ -58,11 +58,10 @@ export function stateOf(frame: Frame): State {
 }
 
 /**
- * The harness on [pane] in [frames] (stopped ones included), when it is an agent: who is calling. Null only for a
- * person: a terminal's pane, or one Harness does not know. Matching live harnesses only made an agent the person,
- * with the person's right to close anything, whenever the daemon listed it offline for a moment or had just
- * stopped it (found by e2e/agentClient.e2e.ts). A live harness on the pane comes first: tmux numbers panes anew
- * after its server restarts, so a stopped harness's pane may now be someone else's.
+ * The harness on [pane] in [frames], when it is an agent: who is calling. Null only for a person: a terminal's pane,
+ * or one Harness does not know. Matching active harnesses only made an agent the person, with the person's right to
+ * close anything, whenever the daemon listed it offline for a moment (found by e2e/agentClient.e2e.ts). A stopped
+ * harness keeps no pane (`toStoppedProject`), so an old pane number never matches one.
  */
 export function callerOf(frames: Frame[], pane: string | undefined, machineId: string): Caller | null {
   if (!pane) return null
@@ -130,8 +129,9 @@ export interface LastTurn {
   ask: string | null
   answer: string
   tools: number
-  /** The turn ended (`done`), so a harness that is not working has finished it. */
-  finished: boolean
+  /** It has answered: there is text after its last tool call. A turn still at work may have said something since
+   *  its last tool too, so this alone never means done; `wait` also needs the screen idle, twice. */
+  answered: boolean
 }
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -139,6 +139,11 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
 /**
  * The last turn in [events], oldest first: the last ask, and the answer, which is the text after the turn's last
  * tool call (the narration before it is the working, not the result). Null when the page holds no ask.
+ *
+ * `done` says nothing here: Claude Code's and Codex's history readers end every newest page with one
+ * (`{ result: 'success' }`, claude/normalize.ts), whether the turn ended or not. Read as the end of the turn, it
+ * made `wait` return at once after a `send` and `show` print "success" for a turn of tool calls (the review of
+ * #1180).
  */
 export function lastTurn(events: HistoryEvent[]): LastTurn | null {
   let start = -1
@@ -146,11 +151,10 @@ export function lastTurn(events: HistoryEvent[]): LastTurn | null {
   if (start < 0) return null
   const turn = events.slice(start + 1)
   let lastTool = -1, tools = 0
-  turn.forEach((e, i) => { if (e.type === 'tool_start') tools++; if (e.type === 'tool_end') lastTool = i })
+  turn.forEach((e, i) => { if (e.type === 'tool_start') tools++; if (e.type === 'tool_end' || e.type === 'tool_start') lastTool = i })
   const said = (from: number) => turn.slice(from).filter((e) => e.type === 'text_delta').map((e) => text(e.payload?.content)).join('').trim()
-  const done = turn.find((e) => e.type === 'done')
-  const answer = said(lastTool + 1) || said(0) || text(done?.payload?.result).trim()
-  return { ask: text(events[start].payload?.content).trim() || null, answer, tools, finished: !!done }
+  const final = said(lastTool + 1)
+  return { ask: text(events[start].payload?.content).trim() || null, answer: final || said(0), tools, answered: !!final }
 }
 
 export const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value)

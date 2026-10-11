@@ -1733,9 +1733,10 @@ export async function run(engine, config = {}, { native = false } = {}) {
   setInterval(() => {}, 60_000)
 }
 
-/** The options both CLIs read a value after, and Codex's `resume <id>`: the word after one is not a prompt. */
+/** The options both CLIs read a value after, and Codex's `resume <id>` and `fork <id>`: the word after one is not a
+ *  prompt. */
 const TAKES_VALUE = new Set(['--model', '-m', '--permission-mode', '--resume', '-r', '--session-id', '--append-system-prompt',
-  '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval', 'resume'])
+  '--mcp-config', '--effort', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval', 'resume', 'fork'])
 
 /** The prompt at the end of the command line, when there is one. */
 function firstPromptOf(args) {

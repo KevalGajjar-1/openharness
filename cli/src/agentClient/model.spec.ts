@@ -80,7 +80,7 @@ describe('a harness as the agent verbs show it', () => {
     expect(matching('  ', rows)).toEqual([])
   })
 
-  it('reads the last turn: the ask, the answer after its last tool call, and whether it ended', () => {
+  it('reads the last turn: the ask, the answer after its last tool call, and whether it has answered', () => {
     const ev = (type: string, payload: Record<string, unknown> = {}) => ({ type, payload })
     expect(lastTurn([])).toBeNull()
     expect(lastTurn([ev('text_delta', { content: 'orphan' })])).toBeNull()
@@ -88,15 +88,17 @@ describe('a harness as the agent verbs show it', () => {
       ev('user_message', { content: 'old' }), ev('text_delta', { content: 'old answer' }), ev('done'),
       ev('user_message', { content: '  fix the test ' }), ev('text_delta', { content: 'Looking.' }),
       ev('tool_start'), ev('tool_end'), ev('tool_start'), ev('tool_end'),
-      ev('text_delta', { content: 'Fixed ' }), ev('text_delta', { content: 'it.' }), ev('done', { result: 'Fixed it.' }),
+      ev('text_delta', { content: 'Fixed ' }), ev('text_delta', { content: 'it.' }), ev('done', { result: 'success' }),
     ])
-    expect(turn).toEqual({ ask: 'fix the test', answer: 'Fixed it.', tools: 2, finished: true })
-    // Still working: the narration so far is all there is.
-    expect(lastTurn([ev('user_message', { content: 'go' }), ev('text_delta', { content: 'Starting.' }), ev('tool_start'), ev('tool_end')]))
-      .toEqual({ ask: 'go', answer: 'Starting.', tools: 1, finished: false })
-    expect(lastTurn([ev('user_message', { content: '' }), ev('done', { result: 'From the result.' })]))
-      .toEqual({ ask: null, answer: 'From the result.', tools: 0, finished: true })
-    expect(lastTurn([ev('user_message'), ev('done', { result: 7 })])).toEqual({ ask: null, answer: '', tools: 0, finished: true })
+    expect(turn).toEqual({ ask: 'fix the test', answer: 'Fixed it.', tools: 2, answered: true })
+    // Still working, as the history reader pages it: a `done` at the end of every newest page all the same.
+    expect(lastTurn([ev('user_message', { content: 'go' }), ev('text_delta', { content: 'Starting.' }), ev('tool_start'), ev('tool_end'), ev('done', { result: 'success' })]))
+      .toEqual({ ask: 'go', answer: 'Starting.', tools: 1, answered: false })
+    // A tool that has not answered yet is the turn's last word.
+    expect(lastTurn([ev('user_message', { content: 'go' }), ev('tool_start'), ev('done', { result: 'success' })]))
+      .toEqual({ ask: 'go', answer: '', tools: 1, answered: false })
+    expect(lastTurn([ev('user_message'), ev('text_delta', { content: 'Hi.' })])).toEqual({ ask: null, answer: 'Hi.', tools: 0, answered: true })
+    expect(lastTurn([ev('user_message', { content: 'x' }), ev('text_delta', { content: 7 })])).toEqual({ ask: 'x', answer: '', tools: 0, answered: false })
   })
 
   it('clips long text with an ellipsis', () => {

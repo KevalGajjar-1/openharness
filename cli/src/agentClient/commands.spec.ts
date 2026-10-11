@@ -270,23 +270,49 @@ describe('harness show', () => {
 })
 
 describe('harness wait', () => {
-  it('waits while it works, then says it is idle', async () => {
+  const inspects = (d: FakeDaemon) => d.requests.filter((r) => r.type === 'agent_close').length
+  const answered = (d: FakeDaemon, id: string) => d.pages.set(`s-${id}`, [{ events: [ev('user_message', { content: 'x' }), ev('text_delta', { content: 'Done.' }), ev('done')], hasMore: false }])
+
+  it('waits while it works, then says it is idle once it stays idle', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead'), frame('kid')]
     d.screens.set('kid', ['working', 'working', 'idle'])
     const h = harness(d)
     expect(await waitCommand(['kid'], h.deps)).toBe(EXIT.ok)
     expect(h.out).toEqual(['kid: idle · read it: harness show kid'])
+    expect(inspects(d)).toBe(4)
     expect(d.requests.filter((r) => r.type === 'agent_close').every((r) => r.payload.mode === 'inspect')).toBe(true)
   })
 
-  it('returns at once for a harness that already finished its turn', async () => {
+  it('reads no screen while the daemon says it is working', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('kid', { activity: { state: 'working' } })]
+    let looks = 0
+    d.extra.agents_list = () => ({ agents: [looks++ < 3 ? d.frames[0] : { ...d.frames[0], activity: { state: 'idle' } }] })
+    const h = harness(d)
+    expect(await waitCommand(['kid'], h.deps)).toBe(EXIT.ok)
+    expect(inspects(d)).toBe(2)
+  })
+
+  it('returns, after a second look, for a harness that has already answered', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('done')]
-    d.pages.set('s-done', [{ events: [ev('user_message', { content: 'x' }), ev('done')], hasMore: false }])
+    answered(d, 'done')
     const h = harness(d)
     expect(await waitCommand(['done', '--json'], h.deps)).toBe(EXIT.ok)
     expect(JSON.parse(h.out.join('\n'))).toEqual({ harnesses: [{ name: 'done', id: 'done', state: 'idle' }] })
+    expect(inspects(d)).toBe(2)
+  })
+
+  it('does not return on the turn before a message it was just sent', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('kid')]
+    answered(d, 'kid')
+    // Idle on the old turn, then the message is in its box, then it works on it, then it answers it.
+    d.screens.set('kid', ['idle', 'draft', 'working', 'idle'])
+    const h = harness(d)
+    expect(await waitCommand(['kid'], h.deps)).toBe(EXIT.ok)
+    expect(inspects(d)).toBe(5)
   })
 
   it('does not take a harness that has not begun its task for one that finished', async () => {
@@ -295,7 +321,15 @@ describe('harness wait', () => {
     d.screens.set('new', ['idle', 'idle', 'working', 'idle'])
     const h = harness(d)
     expect(await waitCommand(['new'], h.deps)).toBe(EXIT.ok)
-    expect(d.requests.filter((r) => r.type === 'agent_close')).toHaveLength(4)
+    expect(inspects(d)).toBe(5)
+  })
+
+  it('waits on an idle harness whose last turn has no answer yet, until it has one', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('k')]
+    d.pages.set('s-k', [{ events: [ev('user_message', { content: 'x' }), ev('tool_start'), ev('done')], hasMore: false }])
+    const h = harness(d)
+    expect(await waitCommand(['k', '--timeout', '10s'], h.deps)).toBe(EXIT.timeout)
   })
 
   it('gives up on a harness with nothing asked of it, once it is past starting', async () => {
@@ -303,7 +337,7 @@ describe('harness wait', () => {
     d.frames = [frame('blank', { createdAt: '2026-10-11T09:00:00Z' })]
     const h = harness(d)
     expect(await waitCommand(['blank'], h.deps)).toBe(EXIT.ok)
-    expect(d.requests.filter((r) => r.type === 'agent_close')).toHaveLength(3)
+    expect(inspects(d)).toBe(3)
     // Without a start time it is taken as old.
     const e = new FakeDaemon()
     e.frames = [frame('blank', { createdAt: undefined })]
@@ -336,7 +370,7 @@ describe('harness wait', () => {
     expect(g.out[0]).toBe('x: gone · it is gone')
   })
 
-  it('waits for all of several, or the first with --any; a name twice is one harness', async () => {
+  it('waits for all of several, listing once a round, or the first with --any; a name twice is one harness', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('a'), frame('b')]
     d.screens.set('a', ['working', 'idle'])
@@ -344,6 +378,9 @@ describe('harness wait', () => {
     const all = harness(d)
     expect(await waitCommand(['a,b', 'a'], all.deps)).toBe(EXIT.ok)
     expect(all.out).toEqual(['a: idle · read it: harness show a', 'b: idle · read it: harness show b'])
+    const lists = d.requests.filter((r) => r.type === 'agents_list').length
+    // The first list names them; then one a round, five rounds.
+    expect(lists).toBe(6)
     d.screens.set('a', ['working', 'idle'])
     d.screens.set('b', ['working'])
     const any = harness(d)
@@ -351,27 +388,37 @@ describe('harness wait', () => {
     expect(any.out).toEqual(['a: idle · read it: harness show a'])
   })
 
-  it('keeps waiting through a slow answer, a screen it cannot read, and an unknown state', async () => {
+  it('keeps waiting through a slow answer and a screen it cannot read', async () => {
     const d = new FakeDaemon()
-    d.frames = [frame('k', { activity: { state: 'working' } })]
+    d.frames = [frame('k')]
     let looks = 0
     d.extra.agent_close = () => {
       looks++
       if (looks === 1) throw new AgentClientError('TIMEOUT', 'slow')
       if (looks === 2) return { activity: 'unknown' }
-      if (looks === 3) return { activity: 'working' }
-      return { activity: 'draft' }
+      return looks === 3 ? { activity: 'working' } : { activity: 'idle' }
+    }
+    let lists = 0
+    d.extra.agents_list = () => {
+      // The daemon's own word is unknown while the screen cannot be read; then idle.
+      lists++
+      return { agents: [{ ...d.frames[0], activity: lists < 4 ? null : { state: 'idle' } }] }
     }
     const h = harness(d)
     expect(await waitCommand(['k', '--timeout', '0'], h.deps)).toBe(EXIT.ok)
-    expect(looks).toBe(4)
+    expect(looks).toBe(5)
   })
 
-  it('passes on a failure it cannot wait through', async () => {
+  it('passes on a failure it cannot wait through, and waits through a list that timed out', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('k')]
-    let first = true
-    d.extra.agents_list = () => { if (first) { first = false; return { agents: d.frames } } throw new AgentClientError('DISCONNECTED', 'The connection to Harness closed.') }
+    let n = 0
+    d.extra.agents_list = () => {
+      n++
+      if (n === 2) throw new AgentClientError('TIMEOUT', 'slow')
+      if (n === 3) throw new AgentClientError('DISCONNECTED', 'The connection to Harness closed.')
+      return { agents: d.frames }
+    }
     const h = harness(d)
     expect(await waitCommand(['k'], h.deps)).toBe(EXIT.failed)
     expect(h.err).toEqual(['The connection to Harness closed.'])
@@ -426,8 +473,8 @@ describe('harness close', () => {
     expect(h.err[1]).toBe('That is your own harness. The person closes it.')
     const person = harness(d, { pane: undefined })
     expect(await closeCommand(['theirs'], person.deps)).toBe(EXIT.ok)
-    // An agent the daemon has stopped, or lists offline, is still that agent: never the person.
-    d.frames = [frame('lead', { status: 'stopped' }), frame('theirs')]
+    // An agent the daemon lists offline for a moment is still that agent: never the person.
+    d.frames = [frame('lead', { status: 'offline' }), frame('theirs')]
     const stopped = harness(d)
     expect(await closeCommand(['theirs'], stopped.deps)).toBe(EXIT.failed)
     expect(stopped.err[0]).toMatch(/^You did not start theirs/)
@@ -470,19 +517,24 @@ describe('harness close', () => {
 })
 
 describe('harness new, run by an agent', () => {
-  it('is nothing outside a harness pane, or in a person\'s terminal, or when the daemon is away', async () => {
+  it('is nothing outside a harness pane or in a person\'s terminal; refuses when it cannot tell who is calling', async () => {
     const d = new FakeDaemon()
-    d.frames = [frame('sh', { engine: 'terminal', tmuxPane: '%9' })]
+    d.frames = [frame('sh', { engine: 'terminal', tmuxPane: '%9', status: 'offline' })]
     expect(await agentOrigin(harness(d, { pane: undefined }).deps)).toBeNull()
-    expect(await agentOrigin(harness(d, { pane: '%9' }).deps)).toBeNull()
-    expect(await agentOrigin(harness(d, { open: async () => { throw new Error('down') } }).deps)).toBeNull()
+    // A person's terminal, in any state: the core marks every session inactive as it starts.
+    expect(await agentOrigin(harness(d, { pane: '%9', where: () => ({ ...where, harnessPane: true }) }).deps)).toBeNull()
+    // The daemon did not answer: outside Harness, the person; in a pane Harness made, refused.
+    const down = async () => { throw new Error('down') }
+    expect(await agentOrigin(harness(d, { open: down }).deps)).toBeNull()
+    const unknown = (await agentOrigin(harness(d, { open: down, where: () => ({ ...where, harnessPane: true }) }).deps))!
+    await expect(unknown.check()).rejects.toThrow(/could not tell which harness/)
   })
 
   it('refuses from what is left of an agent whose harness is gone', async () => {
     const origin = (await agentOrigin(harness(new FakeDaemon(), { pane: '%gone', where: () => ({ ...where, harnessPane: true }) }).deps))!
-    expect(() => origin.check()).toThrow(/no longer running/)
+    await expect(origin.check()).rejects.toThrow(/no longer running/)
     expect(origin.prompt('x', 'm')).toBe('x')
-    origin.created('m', {})
+    expect(await origin.created('m', {})).toBeNull()
     expect(origin.next({})).toBe('')
   })
 
@@ -492,7 +544,7 @@ describe('harness new, run by an agent', () => {
     const h = harness(d)
     const origin = (await agentOrigin(h.deps))!
     expect(d.closed).toBe(true)
-    expect(() => origin.check()).not.toThrow()
+    await expect(origin.check()).resolves.toBeUndefined()
     expect(origin.prompt('review it', 'm')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]\n\nreview it')
     expect(origin.prompt('train it', 'mini')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself.]\n\ntrain it')
     // A task longer than a first message holds: the whole of it in a file, its start in the message.
@@ -503,10 +555,10 @@ describe('harness new, run by an agent', () => {
     expect(readFileSync(file, 'utf8')).toBe(long)
     expect(sent).toContain('It begins:\n\nReview all of it. xxx')
     expect(() => origin.prompt(long, 'mini')).toThrow(/another machine holds at most/)
-    origin.created('m', { id: 'kid', name: 'reviewer' })
-    origin.created('m', { name: 'no id' })
+    expect(await origin.created('m', { id: 'kid', name: 'reviewer' })).toBeNull()
+    expect(await origin.created('m', { name: 'no id' })).toBeNull()
     expect(h.ledger.all()).toEqual([{ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'reviewer' } }])
-    origin.created('m', { id: 'kid2', name: 7 })
+    await origin.created('m', { id: 'kid2', name: 7 })
     expect(h.ledger.all()[1].child.name).toBe('')
     expect(origin.next({ id: 'kid', name: 'reviewer' })).toBe('Read it: harness show reviewer · wait for it: harness wait reviewer · message it: harness send reviewer "…"')
     // A name that is a sentence, or Harness's own stand-in: the id's start instead.
@@ -516,38 +568,66 @@ describe('harness new, run by an agent', () => {
     expect(addressOf({ machineId: 'm', agentId: 'abcdef123456', name: 'x'.repeat(41), engine: 'claude' })).toBe('abcdef12')
   })
 
-  it('refuses past the limits: depth, live harnesses per harness and per machine, and starts in ten minutes', async () => {
+  it('keeps the record on the other machine too, and says when that machine could not keep it', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    const h = harness(d)
+    const asked: Array<[string, Record<string, unknown>]> = []
+    const origin = (await agentOrigin(h.deps, async (target, payload) => { asked.push([target.machineId, payload]); return { recorded: true } }))!
+    expect(await origin.created('mini', { id: 'far', name: 'gpu-job' })).toBeNull()
+    expect(asked).toEqual([['mini', { action: 'started', row: expect.objectContaining({ depth: 1, child: { machineId: 'mini', agentId: 'far', name: 'gpu-job' } }) }]])
+    const old = (await agentOrigin(h.deps, async () => { throw new Error('UNKNOWN_ACTION') }))!
+    expect(await old.created('mini', { id: 'far2', name: '' })).toBe('The harness runs on a machine whose Harness did not record who started it: there, its limits start from zero.')
+    expect(h.ledger.childrenOf({ machineId: 'm', agentId: 'lead' }).map((r) => r.child.agentId)).toEqual(['far', 'far2'])
+  })
+
+  it('refuses past the limits: depth, live harnesses per harness and per machine, and starts in ten minutes', () => {
     const l = new Ledger(ledgerPath(dir))
     const lead = { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }
-    const frames = [frame('lead')]
-    expect(spawnRefusal(lead, frames, l, 'm', NOW)).toBeNull()
-    // Depth.
+    const live = new Set(['m/lead'])
+    expect(spawnRefusal(lead, live, l, 'm', NOW)).toBeNull()
     l.append({ at: NOW, depth: SPAWN_LIMITS.depth, by: { ...lead, agentId: 'up' }, child: { machineId: 'm', agentId: 'deep', name: 'deep' } })
-    expect(spawnRefusal({ ...lead, agentId: 'deep' }, frames, l, 'm', NOW)).toMatch(/this far down/)
-    // Live per harness: here, listed; elsewhere, started in the last day.
+    expect(spawnRefusal({ ...lead, agentId: 'deep' }, live, l, 'm', NOW)).toMatch(/this far down/)
     for (let i = 0; i < SPAWN_LIMITS.livePerHarness - 1; i++) {
       started(l, 'lead', `k${i}`, 'm', NOW - 3_600_000)
-      frames.push(frame(`k${i}`))
+      live.add(`m/k${i}`)
     }
     started(l, 'lead', 'far', 'mini', NOW - 3_600_000)
-    expect(spawnRefusal(lead, frames, l, 'm', NOW)).toBe('You have 8 harnesses running. Close one you are done with first (harness close <name>).')
-    expect(spawnRefusal(lead, frames, l, 'm', NOW + 2 * 86_400_000)).toBeNull()
-    // Per machine.
+    expect(spawnRefusal(lead, live, l, 'm', NOW)).toBeNull()
+    live.add('mini/far')
+    expect(spawnRefusal(lead, live, l, 'm', NOW)).toBe('You have 8 harnesses running. Close one you are done with first (harness close <name>).')
     const crowd = new Ledger(ledgerPath(mkdtempSync(join(dir, 'crowd-'))))
-    const busy: Frame[] = []
+    const busy = new Set<string>()
     for (let i = 0; i < SPAWN_LIMITS.livePerMachine; i++) {
       crowd.append({ at: 0, depth: 1, by: { ...lead, agentId: `p${i}` }, child: { machineId: 'm', agentId: `c${i}`, name: `c${i}` } })
-      busy.push(frame(`c${i}`))
+      busy.add(`m/c${i}`)
     }
     expect(spawnRefusal(lead, busy, crowd, 'm', NOW)).toMatch(/^Agents have 40 harnesses running on this machine/)
-    // Starts in ten minutes, live or not.
     const quick = new Ledger(ledgerPath(mkdtempSync(join(dir, 'quick-'))))
     for (let i = 0; i < SPAWN_LIMITS.perWindow; i++) started(quick, 'lead', `q${i}`, 'm', NOW - 60_000)
-    expect(spawnRefusal(lead, [], quick, 'm', NOW)).toBe('You started 20 harnesses in 10 minutes. Wait, or work with the ones you have.')
-    // The origin says so as a refusal.
+    expect(spawnRefusal(lead, new Set(), quick, 'm', NOW)).toBe('You started 20 harnesses in 10 minutes. Wait, or work with the ones you have.')
+  })
+
+  it('counts what it started on other machines as those machines say, and a day of them when one cannot be asked', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead')]
-    const origin = (await agentOrigin(harness(d, { ledger: () => quick }).deps))!
-    expect(() => origin.check()).toThrow(AgentClientError)
+    const mini = new FakeDaemon('mini')
+    // Seven closed on mini: they free their places.
+    mini.frames = [frame('alive'), ...Array.from({ length: 7 }, (_, i) => frame(`gone${i}`, { status: 'stopped' }))]
+    const h = harness(d, { others: { mini } })
+    started(h.ledger, 'lead', 'alive', 'mini')
+    for (let i = 0; i < 7; i++) started(h.ledger, 'lead', `gone${i}`, 'mini')
+    await expect((await agentOrigin(h.deps))!.check()).resolves.toBeUndefined()
+    expect(mini.closed).toBe(true)
+    // An old one is not asked about.
+    started(h.ledger, 'lead', 'ancient', 'away', NOW - 8 * 24 * 3_600_000)
+    // A machine that cannot be asked: its last day's starts count.
+    for (let i = 0; i < 8; i++) started(h.ledger, 'lead', `x${i}`, 'offline', NOW - 3_600_000)
+    await expect((await agentOrigin(h.deps))!.check()).rejects.toThrow(/You have 9 harnesses running/)
+    const later = harness(d, { others: { mini }, now: () => NOW + 2 * 86_400_000 })
+    await expect((await agentOrigin(later.deps))!.check()).resolves.toBeUndefined()
+    const odd = new FakeDaemon('mini')
+    odd.extra.agents_list = () => ({ agents: 'nope' })
+    await expect((await agentOrigin(harness(d, { others: { mini: odd } }).deps))!.check()).rejects.toThrow(/You have 8 harnesses running/)
   })
 })

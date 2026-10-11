@@ -7,7 +7,7 @@
  * and by Agent Messages, which lets a harness and the harnesses it started message each other without a tab.
  * Like Agent Messages it is a collaboration scope, not a sandbox: any process of this user can write the file.
  */
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export interface LedgerMember { machineId: string; agentId: string }
@@ -24,9 +24,8 @@ export interface Started {
 /** The file, in the daemon's data folder. */
 export const ledgerPath = (dataDir: string): string => join(dataDir, 'agent-client', 'started.jsonl')
 
-/** Kept lines: the file is rewritten to its newest lines once it passes the size below. */
-export const KEEP = 5_000
-const COMPACT_BYTES = 2 * 1024 * 1024
+/** The file's size before it becomes the previous one: the two hold about 20,000 starts. */
+export const ROTATE_BYTES = 2 * 1024 * 1024
 
 const member = (v: unknown): v is LedgerMember => {
   const m = v as Record<string, unknown> | null
@@ -50,18 +49,26 @@ export function parseStarted(line: string): Started | null {
 const same = (a: LedgerMember, b: LedgerMember): boolean => a.machineId === b.machineId && a.agentId === b.agentId
 
 export class Ledger {
-  private cache: { mtimeMs: number; size: number; rows: Started[] } | null = null
+  private cache: { key: string; rows: Started[] } | null = null
   constructor(readonly path: string) {}
 
-  /** Every line, oldest first; an unreadable file is an empty one. Read again only when the file changed. */
+  /** Where the older lines went when the file passed its size. */
+  get previous(): string { return `${this.path}.1` }
+
+  /** Every line, oldest first: the previous file's, then this one's. An unreadable file is an empty one. Read again
+   *  only when either changed. */
   all(): Started[] {
-    let stat: { mtimeMs: number; size: number }
-    try { stat = statSync(this.path) } catch { return [] }
-    if (this.cache && this.cache.mtimeMs === stat.mtimeMs && this.cache.size === stat.size) return this.cache.rows
-    let text = ''
-    try { text = readFileSync(this.path, 'utf8') } catch { return [] }
-    const rows = text.split('\n').flatMap((line) => { const row = line ? parseStarted(line) : null; return row ? [row] : [] })
-    this.cache = { mtimeMs: stat.mtimeMs, size: stat.size, rows }
+    const files = [this.previous, this.path].map((path) => { try { const st = statSync(path); return { path, key: `${st.mtimeMs}:${st.size}` } } catch { return null } })
+    const key = files.map((f) => f?.key ?? '-').join('|')
+    if (this.cache?.key === key) return this.cache.rows
+    const rows: Started[] = []
+    for (const file of files) {
+      if (!file) continue
+      let text = ''
+      try { text = readFileSync(file.path, 'utf8') } catch { continue }
+      for (const line of text.split('\n')) { const row = line ? parseStarted(line) : null; if (row) rows.push(row) }
+    }
+    this.cache = { key, rows }
     return rows
   }
 
@@ -69,14 +76,9 @@ export class Ledger {
     mkdirSync(dirname(this.path), { recursive: true })
     // One short line with O_APPEND: two agents starting harnesses at once never interleave.
     appendFileSync(this.path, `${JSON.stringify(row)}\n`, { mode: 0o600 })
-    try {
-      if (statSync(this.path).size > COMPACT_BYTES) {
-        const kept = this.all().slice(-KEEP)
-        const tmp = `${this.path}.${process.pid}.tmp`
-        writeFileSync(tmp, kept.map((r) => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 })
-        renameSync(tmp, this.path)
-      }
-    } catch { /* a file that stays long is only slower to read */ }
+    // Past its size the file becomes the previous one, by a rename: a line appended meanwhile lands in one file or the
+    // other, both read. Rewriting the file in place lost a line appended during the rewrite (the review of #1180).
+    try { if (statSync(this.path).size > ROTATE_BYTES) renameSync(this.path, this.previous) } catch { /* rotated by another */ }
   }
 
   /** The line that says who started [m], or null when the person did. */

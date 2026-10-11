@@ -19,7 +19,7 @@ import { PaneInbox } from './inbox.js'
 import { Mailbox, type MailboxAgent } from './mailbox.js'
 import { LIMITS, MessageError, engineName, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
-import { Ledger, ledgerPath } from '../agentClient/ledger.js'
+import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
 import { MessageStore, type LocalDelivery } from './store.js'
 
 export interface MessagesOptions {
@@ -212,6 +212,18 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const mates = peers.map(teammate)
     const text = note(tabs.join('", "'), mates)
     return { text, signature: createHash('sha256').update(text).digest('hex').slice(0, 12) }
+  }
+
+  /**
+   * Another of the owner's machines started a harness here for one of its agents (`harness new @this-machine`): kept
+   * in this machine's record too, so the new harness's depth and this machine's limits count it.
+   */
+  function started(payload: Record<string, unknown>): Record<string, unknown> {
+    const row = parseStarted(JSON.stringify(payload.row ?? null))
+    if (!row || row.child.machineId !== self() || row.by.machineId === self()) throw new MessageError('INVALID_RECORD', 'That is not a harness another machine started here.')
+    if (!core.agents.live().some((s) => s.agentId === row.child.agentId)) throw new MessageError('UNKNOWN_HARNESS', 'No such harness on this machine.')
+    lineage.append(row)
+    return { recorded: true }
   }
 
   /** The harnesses an agent started, or the one that started it, as `harness send` alone lists them. */
@@ -479,7 +491,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         // A pane is only this machine's to name; a hand-over, its status and its names are another machine's
         // daemon's to ask, over the relay, never a process here's.
         const fromHere = ['send'].includes(String(payload.action))
-        if (['send', 'deliver', 'status', 'who'].includes(String(payload.action)) && asker.local !== fromHere) {
+        if (['send', 'deliver', 'status', 'who', 'started'].includes(String(payload.action)) && asker.local !== fromHere) {
           throw new MessageError(fromHere ? 'LOCAL_ONLY' : 'REMOTE_ONLY', fromHere ? 'harness send runs in a pane on this machine.' : 'Only another of your machines hands messages over.')
         }
         switch (payload.action) {
@@ -487,6 +499,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
           case 'deliver': return deliver(payload)
           case 'status': return statusOf(payload)
           case 'who': return whoAre(payload)
+          case 'started': return started(payload)
           case 'history': return history(payload)
           default: throw new MessageError('UNKNOWN_ACTION', 'Unknown Agent Messages request.')
         }

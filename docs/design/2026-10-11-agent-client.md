@@ -121,31 +121,47 @@ No core change, no new service.
 - **The line.** The daemon that owns the caller's pane (`@harness_daemon`, as `harness send` finds it), over its
   Unix socket, as a **tool**, not a window: a window's registration turns on the question watcher and counts as
   someone looking. `harness new` registered as a window too; it no longer does.
-- **Who is calling.** `$TMUX_PANE`, matched against every harness the daemon lists, stopped and offline ones
-  included: matching only live ones made an agent "the person" whenever the daemon listed it offline for a moment
-  (found by the end to end). A person's terminal, or a pane Harness did not make, is the person. A pane Harness
-  made whose harness it no longer knows is what is left of an agent: it may look, not close or start.
+- **Who is calling.** `$TMUX_PANE`, matched against the harnesses the daemon lists, offline ones included:
+  matching active ones only made an agent "the person" whenever the daemon listed it offline for a moment (found by
+  the end to end). A person's terminal (in any state: the core marks every session inactive as it starts), or a pane
+  Harness did not make, is the person. A pane Harness made whose harness it no longer knows is what is left of an
+  agent, and so is a caller the daemon did not answer about: they may look, not close or start.
+- **Listing.** Live harnesses only, unless a verb needs the stopped ones (`ps --all`, a name no live harness has,
+  a waited-on harness that left the list): with every stopped one the list took 128 ms against 10 ms here (391
+  harnesses, 21 live).
 - **`ps`**: `agents_list`, plus `agent_recent` (the daemon's stored turn summaries and the person's last asks,
   no transcript read) for up to 40 live harnesses. 0.8 s for 22 harnesses on the owner's Mac.
 - **`show`**: `agent_close` in `inspect` mode for needs-input (the screen, as the windows read it), and
   `session_get` with a `limit`, a page at a time from the end, at most four pages: never the whole transcript
   (the attach OOM, October 3). The answer is the text after the turn's last tool call.
-- **`wait`**: looks every 3 s with `inspect`. Done when it is not working and has finished something: a turn it
-  was seen working on, or one its transcript shows ended. A harness just started is idle for a moment before its
-  task is typed, so idle alone is not done; one with nothing asked of it two minutes after it started is.
+- **`wait`**: a round every 3 s: one live list per machine, and the screen (`inspect`) only for a harness the daemon
+  does not already call working. Done when it is idle on two looks in a row with the same last turn, and it either
+  worked while waited on or has answered (text after its last tool call). A draft in its box is not done. The history
+  readers end every newest page with a `done` event whether the turn ended or not, so `done` is never read as the
+  end (the review caught `wait` returning at once after a `send`). A harness with nothing asked of it two minutes
+  after it started is done. Cost per round here: a live list 10 ms, an inspect 29 to 48 ms, a transcript page 7 ms.
 - **`close`**: `agent_close`, `idle` mode (or `now`). An agent closes only what it started; the person anything.
 - **`new`**: `lib/newCommand.ts` asks `agentOrigin()` when run from an agent's pane: the limits, the header, the
-  record. It also stopped printing "Created" for a launch the daemon refused or could not confirm: with a
-  creation id the daemon answers `{state}`, and only `created` made a harness.
+  record. The limits count the caller's harnesses on other machines as those machines list them (one closed there
+  frees its place); a machine that cannot be asked has its last day's starts counted. A harness started on another
+  machine is recorded there too (Agent Messages' `started`, from another of the owner's machines only), so its depth
+  and that machine's limits count it; an older daemon there that cannot keep it is said in words. A launch the daemon
+  holds is asked after by its creation id for up to a minute, so a held launch is not left running with an agent's
+  task and no record. `new` also stopped printing "Created" for a launch the daemon refused or could not confirm.
+  Two starts at the same moment from one harness can both pass the limits: they count what was recorded before.
 - **`send`**: Agent Messages lets a harness and the harnesses it started message each other with no tab, on the
-  same machine (another machine checks deliveries against its own tabs and has no record of who started what).
-  It also takes the start of an id. Kept in a `started` log beside the tabs' logs.
+  same machine. It also takes the start of an id. Kept in a `started` log beside the tabs' logs. **Open for the
+  owner:** these messages pass even when the person has turned Agent Messages off in a tab the two share, and no
+  window shows the `started` log yet. Like every Agent Message they need the account's directory read.
 - **Another machine.** `new @mini` works as before; `show`, `wait` and `close` find a harness the caller started
   there through its record and reach it over the paired relay.
 
 ### Verified
 
-- Unit: the module (42 tests), `harness new` (16), Agent Messages (20, with lineage and id prefixes).
+- Unit: the module (47 tests), `harness new` (17), Agent Messages (21, with lineage, id prefixes and the
+  `started` record). An independent review found the `done` misreading, the day-long count of other machines'
+  harnesses, the limits restarting on another machine, a caller taken for the person on errors, held launches and
+  the ledger's compaction losing lines; each is fixed and tested above.
 - End to end on the real daemon with the fake engines (`e2e/agentClient.e2e.ts`, 10 s): from an agent's pane,
   `ps`, `new` with a task, `wait`, `show` (the header and the echoed answer), `send` both ways with no tab on,
   `close` refused for its own harness and for one its child did not start, then allowed for its child. The fake

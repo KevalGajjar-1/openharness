@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { KEEP, Ledger, ledgerPath, parseStarted, type Started } from './ledger.js'
+import { Ledger, ledgerPath, parseStarted, ROTATE_BYTES, type Started } from './ledger.js'
 
 const dirs: string[] = []
 const fresh = (): Ledger => {
@@ -51,16 +51,15 @@ describe('the ledger of who started which harness', () => {
     expect(ledger.all().map((r) => r.child.agentId)).toEqual(['a', 'b'])
   })
 
-  it('keeps its newest lines once the file grows past its size', () => {
+  it('moves its lines aside past its size, and still reads them', () => {
     const ledger = fresh()
     ledger.append(row('lead', 'first'))
-    const name = 'n'.repeat(400)
-    const big = (i: number): Started => ({ ...row('lead', `c${i}`, 1, i), child: { machineId: 'm', agentId: `c${i}`, name } })
-    writeFileSync(ledger.path, Array.from({ length: 6_000 }, (_, i) => JSON.stringify(big(i))).join('\n') + '\n')
-    ledger.append(big(6_000))
-    const kept = ledger.all()
-    expect(kept).toHaveLength(KEEP)
-    expect(kept.at(-1)?.child.agentId).toBe('c6000')
+    writeFileSync(ledger.path, `${JSON.stringify(row('lead', 'first'))}\n`.padEnd(ROTATE_BYTES + 1, ' ') + '\n')
+    ledger.append(row('lead', 'second'))
+    expect(existsSync(ledger.previous)).toBe(true)
+    expect(existsSync(ledger.path)).toBe(false)
+    ledger.append(row('lead', 'third'))
+    expect(ledger.all().map((r) => r.child.agentId)).toEqual(['first', 'second', 'third'])
   })
 
   it('checks every line it reads', () => {
