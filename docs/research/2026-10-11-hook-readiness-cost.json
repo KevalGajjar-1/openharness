@@ -1,0 +1,99 @@
+{
+  "nativeHooks": true,
+  "node": "v22.23.2",
+  "platform": "darwin",
+  "tmux": "tmux 3.5a",
+  "samples": [
+    {
+      "bundle": "baseline",
+      "readyMs": 2400.65947,
+      "atReady": {
+        "cpuMs": 530,
+        "rssMiB": 85.0703125
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 329.14057,
+          "coreCpuMs": 80,
+          "rssMiB": 87.1484375
+        },
+        {
+          "phase": "warm",
+          "requestMs": 315.82354399999986,
+          "coreCpuMs": 50,
+          "rssMiB": 88.34375
+        }
+      ]
+    },
+    {
+      "bundle": "candidate",
+      "readyMs": 1382.7350779999997,
+      "atReady": {
+        "cpuMs": 410,
+        "rssMiB": 82.83984375
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 1102.719779,
+          "coreCpuMs": 150,
+          "rssMiB": 87.8828125
+        },
+        {
+          "phase": "warm",
+          "requestMs": 316.75598100000025,
+          "coreCpuMs": 80,
+          "rssMiB": 89.765625
+        }
+      ]
+    },
+    {
+      "bundle": "candidate",
+      "readyMs": 1314.5518949999996,
+      "atReady": {
+        "cpuMs": 330,
+        "rssMiB": 81.9296875
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 1296.1247729999995,
+          "coreCpuMs": 180,
+          "rssMiB": 89.90234375
+        },
+        {
+          "phase": "warm",
+          "requestMs": 317.48370799999975,
+          "coreCpuMs": 80,
+          "rssMiB": 90.828125
+        }
+      ]
+    },
+    {
+      "bundle": "baseline",
+      "readyMs": 3119.57849,
+      "atReady": {
+        "cpuMs": 560,
+        "rssMiB": 86.6328125
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 337.87946399999964,
+          "coreCpuMs": 80,
+          "rssMiB": 88.4453125
+        },
+        {
+          "phase": "warm",
+          "requestMs": 307.37735900000007,
+          "coreCpuMs": 50,
+          "rssMiB": 89.51953125
+        }
+      ]
+    }
+  ],
+  "baseline": "740fb5286e3764cb9ee17642bf1dd98c47eb58ec (bundle from identical reviewed native-launch tree)",
+  "candidate": "readiness with bounded predecessor settling; before canonical-key and caller-limit review corrections",
+  "receipt": "20261011T062724.898061Z-40203"
+}

@@ -99,9 +99,9 @@ it('does not join installation for a different executable identity on the same p
   const first = install(4242, { command: '/fixture/one', identity: 'one', major: 1, current: () => true })
   const second = install(4242, { command: '/fixture/two', identity: 'two', major: 2, current: () => true })
   expect(await first).toBe(false)
-  // A changed executable cannot take a destination still owned by the old attempt.
-  expect(await second).toBe(false)
-  expect(await install(4242, { command: '/fixture/two', identity: 'two', major: 2, current: () => true })).toBe(true)
+  // The new executable waits for the old attempt to release its destinations,
+  // then obtains its own fresh proof instead of joining the old publication.
+  expect(await second).toBe(true)
 })
 
 it('keeps mixed foreign commands when refreshing Claude and Codex hooks', async () => {
@@ -401,4 +401,79 @@ it.each(['deadline', 'owner', 'executable'] as const)('checks %s after the last 
   expect(await install(4242, { command: '/fixture/opencode', identity: 'fixture', major: 2, current: () => executable },
     { timeoutMs: 10, current: () => owner, confirmed })).toBe(false)
   expect(confirmed).not.toHaveBeenCalled()
+})
+
+
+it.each(['direct', 'alias'] as const)('waits for startup maintenance before proving concurrent OpenCode launches through %s paths', async route => {
+  const { root, install, tui } = await fixture()
+  const alias = join(root, 'selected-config'); symlinkSync(root, alias)
+  const environment = route === 'alias' ? { HOME: join(root, 'HOME'), OPENCODE_PLUGIN_DIR: join(alias, 'plugin') } : undefined
+  probe.major = 2
+  let release!: () => void, began!: () => void
+  const disk = new Promise<void>(done => { release = done }), started = new Promise<void>(done => { began = done })
+  probe.beforeSync = async () => { probe.beforeSync = undefined; began(); await disk }
+  const maintenance = install(4242)
+  await started
+  const confirmed = vi.fn(), siblingConfirmed = vi.fn()
+  let answered = false
+  const snapshot = { command: '/fixture/opencode', identity: 'launch-executable', major: 2, current: () => true }
+  const launch = install(4242, snapshot, { environment, confirmed }).finally(() => { answered = true })
+  const sibling = install(4242, snapshot, { environment, confirmed: siblingConfirmed })
+  try {
+    for (let n = 0; n < 80; n++) await Promise.resolve()
+    expect(answered).toBe(false)
+    expect(confirmed).not.toHaveBeenCalled()
+  } finally { release() }
+  expect(await maintenance).toBe(false)
+  expect(await launch).toBe(true)
+  expect(await sibling).toBe(true)
+  expect(siblingConfirmed).toHaveBeenCalledOnce()
+  expect(siblingConfirmed.mock.calls[0][0].current()).toBe(true)
+  expect(confirmed).toHaveBeenCalledOnce()
+  expect(confirmed.mock.calls[0][0].current()).toBe(true)
+  expect(readFileSync(tui, 'utf8')).toContain('4242')
+})
+
+it.each(['owner', 'executable', 'deadline'] as const)('keeps %s authority while waiting for startup maintenance', async reason => {
+  const { install, tui } = await fixture()
+  probe.major = 2
+  let release!: () => void, began!: () => void, owner = true, executable = true
+  const disk = new Promise<void>(done => { release = done }), started = new Promise<void>(done => { began = done })
+  probe.beforeSync = async () => { probe.beforeSync = undefined; began(); await disk }
+  const maintenance = install(4242)
+  await started
+  const confirmed = vi.fn()
+  const launch = install(4242, { command: '/fixture/opencode', identity: 'launch-executable', major: 2, current: () => executable },
+    { current: () => owner, confirmed, timeoutMs: reason === 'deadline' ? 30 : 5_000 })
+  if (reason === 'owner') owner = false
+  if (reason === 'executable') executable = false
+  try {
+    if (reason === 'deadline') expect(await launch).toBe(false)
+  } finally { release() }
+  expect(await launch).toBe(false)
+  expect(await maintenance).toBe(false)
+  expect(confirmed).not.toHaveBeenCalled()
+  expect(() => readFileSync(tui)).toThrow()
+})
+
+
+it('bounds launch callers waiting for startup maintenance and recovers after overflow', async () => {
+  const { install } = await fixture()
+  probe.major = 2
+  let release!: () => void, began!: () => void
+  const disk = new Promise<void>(done => { release = done }), started = new Promise<void>(done => { began = done })
+  probe.beforeSync = async () => { probe.beforeSync = undefined; began(); await disk }
+  const maintenance = install(4242)
+  await started
+  const snapshot = { command: '/fixture/opencode', identity: 'launch-executable', major: 2, current: () => true }
+  const launches = Array.from({ length: 15 }, () => install(4242, snapshot))
+  let overflowReply: boolean | undefined
+  const overflow = install(4242, snapshot).then(reply => { overflowReply = reply })
+  try {
+    await vi.waitFor(() => expect(overflowReply).toBe(false), { timeout: 500 })
+  } finally { release(); await Promise.all([maintenance, ...launches, overflow]) }
+  await overflow
+  expect(await maintenance).toBe(false)
+  expect(await Promise.all(launches)).toEqual(Array(15).fill(true))
+  expect(await install(4242, snapshot)).toBe(true)
 })

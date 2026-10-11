@@ -249,15 +249,6 @@ console.log('┃'); setInterval(() => {}, 1000);
 `, { mode: 0o755 })
     await d.start()
     expect(d.log()).not.toContain('[fixture] legacy hooks stalled')
-    const hookFiles = ['cursor/hooks.json', 'opencode/plugins/launcher-register/tui.js', 'kilo/plugin/launcher-register.js',
-      'pi/agent/extensions/launcher-register.ts', 'amp/plugins/launcher-register.ts', 'hermes/config.yaml',
-      'devin/config.json', 'commandcode/settings.json', 'grok/hooks/harness.json', 'agy/hooks.json', 'copilot/hooks/harness.json']
-    await until('all selected native hooks to finish after readiness', () => hookFiles.every(file => {
-      try { return readFileSync(join(root, file), 'utf8').includes(String(d.port)) } catch { return false }
-    }), 10_000)
-    for (const file of hookFiles) {
-      expect(readFileSync(join(root, file), 'utf8'), file).toContain(String(d.port))
-    }
     const c = client = await LocalClient.connect(d)
     const row = async (id: string) => ((await c.request('agents_list', { includeStopped: true })).agents as Array<Record<string, any>>).find(one => one.id === id)
     const active = (id: string) => until('a native process to bind without optional hooks', async () => {
@@ -269,7 +260,17 @@ console.log('┃'); setInterval(() => {}, 1000);
       expect(result.error, JSON.stringify(result)).toBeUndefined()
       return active(result.agent.id)
     }
+    // Readiness must permit a cold launch while startup maintenance is still finishing.
     const native = await create('opencode')
+    const hookFiles = ['cursor/hooks.json', 'opencode/plugins/launcher-register/tui.js', 'kilo/plugin/launcher-register.js',
+      'pi/agent/extensions/launcher-register.ts', 'amp/plugins/launcher-register.ts', 'hermes/config.yaml',
+      'devin/config.json', 'commandcode/settings.json', 'grok/hooks/harness.json', 'agy/hooks.json', 'copilot/hooks/harness.json']
+    await until('all selected native hooks to finish after readiness', () => hookFiles.every(file => {
+      try { return readFileSync(join(root, file), 'utf8').includes(String(d.port)) } catch { return false }
+    }), 10_000)
+    for (const file of hookFiles) {
+      expect(readFileSync(join(root, file), 'utf8'), file).toContain(String(d.port))
+    }
     const sibling = await create(engine)
     const started = c.next(frame => frame.type === 'turn_started' && frame.agentId === sibling.id, 30_000)
     c.send('message', { agentId: sibling.id, content: '!slow 8000' }); await started

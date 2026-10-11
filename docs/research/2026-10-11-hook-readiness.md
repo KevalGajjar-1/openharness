@@ -28,11 +28,9 @@ requests while that exact child is still waiting. Releasing it then completes th
 hook installation. The former implementation becomes ready only after its deadline
 kills the child, so it fails this assertion.
 
-Focused validation passed types, architecture, startup ordering and 79 tests, with
+Initial focused validation passed types, architecture, startup ordering and 79 tests, with
 100% per-file statement, branch, function and line coverage of the hook coordinator.
-Receipt: `20261011T053403.766571Z-65433`. The final dependency integration, full core
-and master coverage, wiring mutations, private daemon acceptance, matched startup
-cost, independent review and PR checks remain required before landing. No release
+Receipt: `20261011T053403.766571Z-65433`. Final receipts and exact-head independent review are recorded in the PR. No release
 is authorized.
 
 The first full private hook lane (`20261011T060712.803551Z-48168`) passed seven
@@ -42,3 +40,61 @@ its private Codex configuration immediately after readiness, before background
 maintenance had created it. The fixture now waits for that file before taking
 its fault-injection snapshot. All hold, crash and no-replay assertions are unchanged.
 Both create and fork cases passed in `20261011T060955.203043Z-61813`.
+
+All five startup wiring mutations passed in `20261011T061203.293017Z-72305`:
+unchanged baselines were green, and each broken implementation failed assertions.
+The readiness mutant restores the real awaited startup path in a freshly built
+bundle. Final dependency #1160 landed as `740fb5286`; merging it into this branch
+changed no CLI source or fixture bytes.
+
+The matched workload exposed an immediate-launch race after readiness: OpenCode
+maintenance and the captured launch could revoke one another's file reservation.
+Different preparations now wait for the previous disk attempt to settle, within
+the launch's original deadline, then obtain their own fresh proof. Identical
+canonical destination pairs coordinate across parent aliases; each caller retains
+its original route evidence. At most sixteen callers can wait on one pair, and
+backpressure cannot supersede a caller already admitted. Different or partial
+destination sets cannot borrow another preparation's proof. Owner, executable,
+route and deadline checks remain required after every wait.
+
+The regression failed on the former coordination before this correction. Review
+then found the alias and waiting-capacity gaps; both have dedicated regressions.
+The all-vendor private acceptance now launches OpenCode immediately after readiness,
+before waiting for background hook files. It retains every Stop/resume assertion.
+Final affected validation `20261011T063338.662745Z-68201` passed types, 157 unit and
+golden checks, and all eight private daemon cases. Core's 2,503 tests and master's
+265 tests (one platform skip) passed all four 100% per-file coverage gates in
+`20261011T061515.849504Z-86437`; the final PR carries any subsequent affected checks.
+The earlier `20261011T061414.664196Z-81910` orchestration failed during merge conflict
+cleanup and a temporary npm executable issue; it is not a passing suite.
+
+## Matched startup workload
+
+[Raw samples](2026-10-11-hook-readiness-cost.json) retain four alternating runs of
+main and this change on the same private macOS workload, pinned Node 22.23.2 and
+tmux 3.5a, with all thirteen installers enabled. Each run starts a cold daemon and
+immediately creates two fake OpenCode sessions. No user homes, daemon or tmux server
+are involved. Two samples per tree are descriptive, not a performance threshold.
+
+| Median | Main | Readiness change |
+| --- | ---: | ---: |
+| Ready (ms) | 2,760 | 1,349 |
+| Core CPU at ready (ms) | 545 | 370 |
+| Core RSS at ready (MiB) | 85.9 | 82.4 |
+| First launch request (ms) | 334 | 1,199 |
+| Warm launch request (ms) | 312 | 317 |
+| Ready plus first launch (ms) | 3,094 | 2,548 |
+
+The first launch owns the preparation wait that formerly delayed every request.
+Warm launches retain fresh proof checks. Measurements preceded the canonical-key
+and caller-limit review corrections, which do not affect this workload's paths or
+concurrency. The initial cost receipts `20261011T062124.649240Z-13284` and
+`20261011T062250.241018Z-19378` failed on the collision; the corrected workload passed
+in `20261011T062724.898061Z-40203` without changing its launch assertions.
+
+This readiness slice began with the main golden at 05:16 UTC on October 11.
+Implementation, failure diagnosis and local validation overlapped through 06:35 UTC;
+individual receipts retain test durations. Independent review ran alongside checks.
+CI waiting and merge duration are recorded separately in the PR; publication is zero.
+The original daemon request began October 8 at 23:26:41 UTC, not at this slice's first
+workflow.

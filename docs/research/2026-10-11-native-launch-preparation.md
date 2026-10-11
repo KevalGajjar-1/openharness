@@ -1,7 +1,7 @@
 # Native launch preparation
 
 Status: hook durability mechanics landed as #1158 (`eef21b18b`, October 11
-at 01:30 UTC). Whole-launch integration is in reviewed PR #1160, awaiting final-head CI and merge. They are part of
+at 01:30 UTC). Whole-launch integration landed as #1160 (`740fb5286`, October 11 at 06:12:15 UTC). They are part of
 group 2 of the [daemon core checklist](2026-10-09-daemon-core-completion.md).
 The whole-launch integration below remains in progress in a separate worktree;
 neither group 2 nor the daemon refactor is complete. No release is authorized.
@@ -394,3 +394,17 @@ with review and validation. The final validation receipts above occupy
 05:45–06:04; the full remote run overlaps that interval. They are not added together
 as total elapsed time. Merge and publication remain zero at this checkpoint. No
 release is authorized.
+
+### Whole-launch landing
+
+[PR #1160](https://github.com/autonomous-ai/openharness/pull/1160) merged as
+`740fb5286e3764cb9ee17642bf1dd98c47eb58ec` at 06:12:15 UTC. Independent review
+approved exact head `757702c3c3f85d99039ea0e25c83f4cfa31aea0b` against
+`16569f3d27e1b51352904aded33e71971b7e2724`. Final automatic
+[CI 38116964017](https://github.com/autonomous-ai/openharness/actions/runs/38116964017)
+passed every head check, including `ci/required`. The merge helper verified the
+reviewed and tested trees match the squash result. Receipt
+`20261011T061203.067283Z-merge-1160` records the authorized merge; merge validation
+occupied 06:12:03–06:12:15, following the overlapping implementation/validation
+intervals above. No release occurred. Startup maintenance after readiness remains
+the separate next change.

@@ -19,6 +19,9 @@ mutations = [
     ('omit native vendors', hooks, 'of OTHER_INSTALLERS)', 'of OTHER_INSTALLERS.slice(0, 0))', golden, ''),
     ('ignore selected vendors', hooks, 'if (options.only && !options.only.has(vendor)) return', 'if (false) return', golden, ''),
     ('retain writes after shutdown', hooks, 'close: adoptions.close', 'close: () => {}', 'src/core/engines/hooks.spec.ts', 'returns shutdown authority'),
+    ('collide with startup maintenance', 'src/engines/nativeHooks.ts', 'if (previous && (previous.settling || previous.major !== undefined', 'if (previous && false && (previous.settling || previous.major !== undefined', 'src/engines/nativeHookPreparation.spec.ts', 'waits for startup maintenance'),
+    ('separate aliased destinations', 'src/engines/nativeHooks.ts', 'const reservation = JSON.stringify(routes.keys)', 'const reservation = root', 'src/engines/nativeHookPreparation.spec.ts', 'through alias paths'),
+    ('unbounded preparation callers', 'src/engines/nativeHooks.ts', 'if (group.users >= 16) return false', 'if (false) return false', 'src/engines/nativeHookPreparation.spec.ts', 'bounds launch callers'),
     ('await hooks before readiness', 'src/core/main.ts', before_ready, blocked_ready, 'e2e/eagerHooks.e2e.ts', 'becomes ready and serves control'),
 ]
 environment = dict(os.environ, TZ='UTC', TMPDIR='/tmp', HARNESS_CONNECTIONS_PORT='0')

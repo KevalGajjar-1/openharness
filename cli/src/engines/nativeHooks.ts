@@ -39,8 +39,18 @@ export const installHermesHooks = (port: number, selectedHome?: string, options?
     { ...options, createMissing: !!selectedHome && !!options?.environment })
 
 /** Install both discovery surfaces for v1; v2 must not load our incompatible v1 export. */
-interface OpencodeInstallation { port: number; executable?: string; major?: number | null; done: Promise<boolean>; proofs: HookPreparationProof[] }
+interface OpencodeInstallation { port: number; executable?: string; major?: number | null; settling?: boolean; done: Promise<boolean>; proofs: HookPreparationProof[] }
 const opencodeInstallations = new Map<string, { current: OpencodeInstallation; users: number }>()
+async function waitForInstallation(installation: OpencodeInstallation, deadline: number): Promise<boolean | null> {
+  const remaining = deadline - performance.now()
+  if (remaining <= 0) return null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([installation.done, new Promise<null>(done => {
+      timer = setTimeout(() => done(null), remaining)
+    })])
+  } finally { clearTimeout(timer) }
+}
 export async function installOpencodePlugin(port: number, snapshot?: OpencodeLaunchSnapshot, options: NativeHookOptions = {}): Promise<boolean> {
   const deadline = performance.now() + (options.timeoutMs ?? OPENCODE_VERSION.timeoutMs)
   const root = options.environment ? nativeHookLocations(options.environment).OPENCODE_PLUGIN_DIR : dirname(OPENCODE_LEGACY_PLUGIN.file)
@@ -50,10 +60,17 @@ export async function installOpencodePlugin(port: number, snapshot?: OpencodeLau
   let routes: ReturnType<typeof hookPreparationRoutes>
   try { routes = hookPreparationRoutes([legacyRule.file, tuiRule.file]) } catch { return false }
   const installation: OpencodeInstallation = { port, executable: snapshot?.identity, done: Promise.resolve(false), proofs: [] }
-  if (opencodeInstallations.size >= 128 && !opencodeInstallations.has(root)) return false
-  const group = opencodeInstallations.get(root) ?? { current: installation, users: 0 }
+  // Parent aliases can give startup and a captured launch different spellings
+  // for the same pair. Each caller still retains its own original route proof.
+  const reservation = JSON.stringify(routes.keys)
+  if (opencodeInstallations.size >= 128 && !opencodeInstallations.has(reservation)) return false
+  const previous = opencodeInstallations.get(reservation)?.current
+  const group = opencodeInstallations.get(reservation) ?? { current: installation, users: 0 }
+  // Include callers waiting before the lower-level disk reservation. Overflow
+  // cannot supersede an admitted owner or grow an unbounded promise chain.
+  if (group.users >= 16) return false
   group.current = installation; group.users++
-  opencodeInstallations.set(root, group)
+  opencodeInstallations.set(reservation, group)
   try {
   installation.done = (async () => {
     const values = pluginValues(port)
@@ -62,6 +79,17 @@ export async function installOpencodePlugin(port: number, snapshot?: OpencodeLau
     // A newer request may have installed an upgraded/downgraded engine's hooks
     // while this probe waited. Only the latest request can change those files.
     if (installation !== group.current || snapshot?.current() === false) return false
+    // Readiness can precede the maintenance write. A launch has a captured
+    // executable; maintenance does not, so their publications cannot be joined.
+    // Revoke the older owner through group.current, let its disk work settle,
+    // then inspect and prove this launch's own outputs within the same deadline.
+    if (previous && (previous.settling || previous.major !== undefined
+      && (previous.port !== port || previous.executable !== installation.executable || previous.major !== major))) {
+      installation.settling = true
+      const settled = await waitForInstallation(previous, deadline)
+      installation.settling = false
+      if (settled === null || installation !== group.current || snapshot?.current() === false || options.current?.() === false) return false
+    }
     // Keep the existing first-install route until installer-only continuation
     // can return through launch preparation. A missing executable also gives
     // null here; refusing it would prevent create from reaching its installer.
@@ -90,14 +118,9 @@ export async function installOpencodePlugin(port: number, snapshot?: OpencodeLau
     // A port change or continuing churn cannot make this caller wait forever.
     const remaining = deadline - performance.now()
     if (current.port !== port || current.executable !== installation.executable || snapshot?.current() === false || options.current?.() === false || remaining <= 0) return false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      const result = await Promise.race([current.done, new Promise<'timeout'>(done => {
-        timer = setTimeout(() => done('timeout'), remaining)
-      })])
-      if (result === 'timeout') return false
-      installed = result
-    } finally { clearTimeout(timer) }
+    const result = await waitForInstallation(current, deadline)
+    if (result === null) return false
+    installed = result
   }
   if (!installed || performance.now() >= deadline || options.current?.() === false || snapshot?.current() === false || current.proofs.some(proof => !proof.current())) return false
   if (performance.now() >= deadline) return false
@@ -107,5 +130,5 @@ export async function installOpencodePlugin(port: number, snapshot?: OpencodeLau
     try { routes.verify(); return proof.current() } catch { return false }
   } })
   return true
-  } finally { if (--group.users === 0) opencodeInstallations.delete(root) }
+  } finally { if (--group.users === 0) opencodeInstallations.delete(reservation) }
 }
