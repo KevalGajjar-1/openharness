@@ -120,6 +120,25 @@ export async function captureNativeHookOrigin(callerPid: number, budget: NativeE
   return inspectNativeHookOrigin({ version: 1, boot, callerPid, ancestry, ...(capturedRuntime ? { runtime: capturedRuntime } : {}) })
 }
 
+/** Routing and immutable helper preparation may await before a client can read
+ * its ancestry. A frozen numeric parent PID alone could then name a replacement.
+ * The still-running client must remain that original parent's exact child on
+ * both sides of capture. Reparenting holds instead of inventing a new origin. */
+export async function captureNativeHookClientOrigin(selfPid: number, callerPid: number, budget: NativeEvidenceBudget,
+  probe: NativeProbe, runtime?: Parameters<typeof captureNativeHookOrigin>[3],
+): Promise<NativeHookOrigin> {
+  const candidate = runtime && structuredClone(runtime)
+  if (!pid(selfPid) || selfPid === callerPid) return nativeUnavailable('the native hook client process is unavailable')
+  const before = (await probe([selfPid], budget)).rows.get(selfPid)
+  if (!before || before.parentPid !== callerPid) return nativeUnavailable('the original native hook caller exited before capture')
+  const identity = controlIdentity(before)
+  const origin = await captureNativeHookOrigin(callerPid, budget, probe, candidate)
+  const after = (await probe([selfPid], budget)).rows.get(selfPid)
+  budget.step()
+  if (!after || controlIdentity(after) !== identity) return nativeUnavailable('the original native hook caller changed during capture')
+  return origin
+}
+
 /** Selection is a restriction on fresh core proof, never native authority by itself. */
 export function nativeHookOriginCaller(input: unknown) {
   const origin = inspectNativeHookOrigin(input)

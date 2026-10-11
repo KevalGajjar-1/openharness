@@ -8,6 +8,35 @@ same delivery ID is accepted after restart. Receipt
 `20261011T072723.699358Z-96575` records those assertion failures and the unchanged
 passing Linux/macOS golden.
 
+Client coordination checkpoint (October 11, 20:16 UTC): all linked phases are
+retained before the first send. Retries preserve their original bytes, ID and
+native time, and use versioned mutation routes that an older core rejects before
+effects. An ownership receipt binds the exact endpoint as well as phase, ID,
+time and body hash; it never grants Cursor task-deletion authority. A paired
+client self/parent proof protects the entry-time caller from PID reuse while
+routing waits. Original Cursor routing is copied before that first proof yields.
+Deadline expiry revokes ACK publication and later phases while late openers keep
+their cleanup owner. Reconstructed outboxes must replay saved bytes directly,
+without recapturing the exited caller.
+
+Read-only journal enumeration now discards an observation invalidated solely by
+ancestor sibling activity, at most three times under the original path identities
+and one budget. Changed history, missing records and changed namespace authority
+still hold; no publication is retried by this read boundary.
+Receipt `20261011T201339.592433Z-37921` passed types (4.8 seconds) and all 99
+client/origin/journal/unchanged-golden cases (22.8 seconds).
+`20261011T201504.588400Z-44002` caught fourteen wiring mutations by assertion; the
+deadline mutant timed out because its fixture blocked every subsequent send.
+The fixture now delays only the first send, so broken next-phase dispatch reaches
+a decisive ownership assertion. `20261011T201604.314633Z-48560` passed the baseline
+and all fifteen assertion-failing mutants in 16.7 seconds. Independent review
+approved the scoped client/origin/journal slice over `860d2a4ac`, after fixes for
+mutable Cursor capture and cross-endpoint receipts. Implementation and review
+overlapped these separately recorded validation intervals. This checkpoint is not
+production client wiring: versioned server admission, durable Stop/event outcomes,
+saved-delivery replay and final PR acceptance remain open. Merge and publication
+remain zero for this draft PR.
+
 Implementation checkpoint (October 11): the immutable journal and read-only
 registration preparation are now connected to HTTP admission and background
 recovery. The three original restart regressions pass. Native client outboxes,

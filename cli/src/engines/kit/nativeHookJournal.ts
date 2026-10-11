@@ -131,50 +131,69 @@ function validIntake(value: unknown, maxBytes = 300_000): value is NativeHookInt
     && object(value.payload) && Buffer.byteLength(JSON.stringify(value)) <= maxBytes
 }
 
-/** A directory walk yields regularly and proves its complete, unchanged boundary. */
+class JournalAncestorChanged extends NativeHookJournalHeld {
+  constructor() { super('journal directory ancestor changed') }
+}
+
+/** A directory walk yields regularly and proves its complete, unchanged boundary.
+ * Ancestor sibling writes discard only this observation, never its original
+ * route identity or any published record. Repeated churn stays visibly held. */
 async function entries(path: string, limit: number, strict = false): Promise<{ names: string[]; inspected: number; verify(): void }> {
-  const paths = new NativePaths(new NativeEvidenceBudget()), location = paths.resolveSync(path)!, facts = paths.snapshot()
-  const route = new Map<string, string>()
-  for (let part = location.path;; part = dirname(part)) {
-    route.set(part, stamp(lstatSync(part, { bigint: true })))
-    if (part === dirname(part)) break
-  }
-  const verifyRoute = () => {
-    verifyNativePathFacts(facts)
-    for (const [part, expected] of route) if (stamp(lstatSync(part, { bigint: true })) !== expected) held('journal directory ancestor changed')
-  }
-  const before = stamp(lstatSync(path, { bigint: true }))
-  const iterator = opendirSync(location.path, { bufferSize: 32 })
-  const names: string[] = []
-  let began = performance.now(), inspected = 0
-  const verify = () => { if (stamp(lstatSync(path, { bigint: true })) !== before) held('journal directory changed during recovery') }
-  try {
-    verify(); verifyRoute()
-    for (;;) {
-      const entry = iterator.readSync()
-      if (!entry) break
-      if (++inspected > limit + 64) held('journal directory exceeds its entry limit')
-      // An interrupted exclusive publication can leave its private staging file.
-      // It carries no authority and is never removed by recovery.
-      if (entry.isFile() && /^\.harness-hook-[a-f0-9-]{36}\.tmp$/.test(entry.name)) {
-        if (strict) held('unbudgeted legacy staging file in allocated journal')
-        read(join(path, entry.name))
-        continue
+  const budget = new NativeEvidenceBudget(), paths = new NativePaths(budget), location = paths.resolveSync(path)!
+  for (let attempt = 0;; attempt++) {
+    paths.verify()
+    try {
+      const route = new Map<string, string>()
+      for (let part = location.path;; part = dirname(part)) {
+        budget.step()
+        route.set(part, stamp(lstatSync(part, { bigint: true })))
+        if (part === dirname(part)) break
       }
-      if (names.length >= limit) held('journal record capacity is exhausted')
-      if (!entry.isFile() || !/^\d{8}\.json$/.test(entry.name)) held('unrecognized journal entry')
-      names.push(entry.name)
-      if (names.length % 64 === 0 || performance.now() - began >= 20) {
-        await new Promise<void>(done => setImmediate(done)); began = performance.now(); verify()
+      const verifyRoute = () => {
+        paths.verify()
+        for (const [part, expected] of route) {
+          budget.step()
+          if (stamp(lstatSync(part, { bigint: true })) !== expected) throw new JournalAncestorChanged()
+        }
       }
+      const before = stamp(lstatSync(path, { bigint: true }))
+      const iterator = opendirSync(location.path, { bufferSize: 32 })
+      const names: string[] = []
+      let began = performance.now(), inspected = 0
+      const verify = () => { if (stamp(lstatSync(path, { bigint: true })) !== before) held('journal directory changed during recovery') }
+      try {
+        verify(); verifyRoute()
+        for (;;) {
+          const entry = iterator.readSync()
+          if (!entry) break
+          if (++inspected > limit + 64) held('journal directory exceeds its entry limit')
+          // An interrupted exclusive publication can leave its private staging file.
+          // It carries no authority and is never removed by recovery.
+          if (entry.isFile() && /^\.harness-hook-[a-f0-9-]{36}\.tmp$/.test(entry.name)) {
+            if (strict) held('unbudgeted legacy staging file in allocated journal')
+            read(join(path, entry.name))
+            continue
+          }
+          if (names.length >= limit) held('journal record capacity is exhausted')
+          if (!entry.isFile() || !/^\d{8}\.json$/.test(entry.name)) held('unrecognized journal entry')
+          names.push(entry.name)
+          if (names.length % 64 === 0 || performance.now() - began >= 20) {
+            await new Promise<void>(done => setImmediate(done)); began = performance.now(); budget.step(); verify()
+          }
+        }
+      } finally { iterator.closeSync() }
+      verify(); verifyRoute()
+      // An iterator redirected at an older directory must not report its shorter
+      // prefix as a complete frontier, even if path metadata appeared unchanged.
+      const next = join(path, `${String(names.length).padStart(8, '0')}.json`)
+      if (read(next)) held('journal enumeration omitted a later record')
+      verify(); verifyRoute()
+      return { names: names.sort(), inspected, verify }
+    } catch (error) {
+      if (!(error instanceof JournalAncestorChanged) || attempt >= 2) throw error
+      await new Promise<void>(done => setImmediate(done))
     }
-  } finally { iterator.closeSync() }
-  verify(); verifyRoute()
-  // An iterator redirected at an older directory must not report its shorter
-  // prefix as a complete frontier, even if path metadata appeared unchanged.
-  const next = join(path, `${String(names.length).padStart(8, '0')}.json`)
-  if (read(next)) held('journal enumeration omitted a later record')
-  return { names: names.sort(), inspected, verify }
+  }
 }
 
 export interface NativeHookJournalAuthority {

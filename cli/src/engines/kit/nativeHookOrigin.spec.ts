@@ -5,7 +5,7 @@ import type { RegisteredSession } from '../../lib/registry.js'
 import { controlIdentity, type NativeControlRow } from '../../lib/nativeProcessControlProbe.js'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { kernelBootId } from './nativeHookBoot.js'
-import { captureNativeHookOrigin, inspectNativeHookOrigin, nativeHookIdentityV1, nativeHookOriginCaller, nativeHookRouteV1,
+import { captureNativeHookOrigin, captureNativeHookClientOrigin, inspectNativeHookOrigin, nativeHookIdentityV1, nativeHookOriginCaller, nativeHookRouteV1,
   type NativeHookOrigin } from './nativeHookOrigin.js'
 
 vi.mock('./nativeHookBoot.js', () => ({ kernelBootId: vi.fn() }))
@@ -30,6 +30,56 @@ beforeEach(() => {
   processes = new Map([[43, native(43, 42)], [42, native()]])
 })
 afterEach(() => vi.restoreAllMocks())
+
+it('captures a routed client only while it remains the original caller\'s exact child', async () => {
+  processes.set(44, native(44, 43))
+  const origin = await captureNativeHookClientOrigin(44, 43, new NativeEvidenceBudget(), probe)
+  expect(origin.callerPid).toBe(43)
+  expect(origin.ancestry.map(member => member.pid)).toEqual([43, 42])
+  expect(probe.mock.calls[0][0]).toEqual([44])
+  expect(probe.mock.calls.at(-1)![0]).toEqual([44])
+})
+
+it('holds a reused caller PID after routing reparented the client', async () => {
+  processes.set(44, native(44, 1))
+  processes.set(43, { ...native(43, 42), birth: '99999' })
+  await expect(captureNativeHookClientOrigin(44, 43, new NativeEvidenceBudget(), probe)).rejects.toThrow('caller exited before capture')
+  expect(probe).toHaveBeenCalledTimes(1)
+})
+
+it('freezes the original Cursor tuple before awaiting the first client self proof', async () => {
+  processes.set(44, native(44, 43))
+  const candidate = { ...row(), engine: 'cursor' } as RegisteredSession
+  const saved = structuredClone(candidate)
+  let release!: () => void
+  const waiting = captureNativeHookClientOrigin(44, 43, new NativeEvidenceBudget(), async (pids, budget) => {
+    if (!release) await new Promise<void>(done => { release = done })
+    return await probe(pids, budget)
+  }, candidate)
+  candidate.agentId = 'replacement'; candidate.processIdentity!.pid = 99; candidate.runtimes[0].paneId = '%2'
+  release()
+  const captured = await waiting
+  expect(captured.runtime).toMatchObject({ agentId: saved.agentId, routeV1: nativeHookRouteV1(saved), process: { pid: 42 } })
+  expect(probe.mock.calls.some(([pids]) => pids.includes(99))).toBe(false)
+})
+
+it.each(['reparented', 'replaced', 'missing'])('holds a client %s while capturing the original prefix', async change => {
+  processes.set(44, native(44, 43))
+  let capturedSelf = false
+  const changingProbe = async (pids: readonly number[], budget: NativeEvidenceBudget) => {
+    if (pids[0] === 44 && capturedSelf) {
+      if (change === 'reparented') processes.get(44)!.parentPid = 1
+      if (change === 'replaced') processes.get(44)!.birth = '99999'
+      if (change === 'missing') processes.delete(44)
+      const value = processes.get(44)
+      return { parent: 0, children: [], rows: new Map(value ? [[44, value]] : []) }
+    }
+    const found = await probe(pids, budget)
+    if (pids[0] === 44) capturedSelf = true
+    return found
+  }
+  await expect(captureNativeHookClientOrigin(44, 43, new NativeEvidenceBudget(), changingProbe)).rejects.toThrow('caller changed during capture')
+})
 
 it.each(['linux', 'darwin'])('keeps a serializable %s caller prefix after the short-lived shell exits', async platform => {
   vi.mocked(kernelBootId).mockResolvedValue(boot.replace('linux', platform))

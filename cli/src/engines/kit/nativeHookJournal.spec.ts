@@ -371,6 +371,39 @@ it.each(['authority', 'record'])('refuses a %s made public between observation a
   await expect(journal().snapshot()).rejects.toThrow('unsafe journal record')
 })
 
+it('discards a journal enumeration invalidated by ancestor sibling churn before returning its frontier', async () => {
+  await journal().retain(intake())
+  let interrupted = false
+  fault.openDirectory = (path, open) => {
+    const iterator = open(path)
+    if (path === directory && !interrupted) {
+      interrupted = true
+      writeFileSync(join(root, 'unrelated-sibling'), 'fixture activity')
+    }
+    return iterator
+  }
+  const observed = await journal().snapshot().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }))
+  expect(observed.error).toBeUndefined()
+  const recovered = observed.value!
+  expect(interrupted).toBe(true)
+  expect(recovered.length).toBe(1)
+  expect([...recovered.deliveries.keys()]).toEqual([intake().id])
+  expect(readdirSync(directory)).toEqual(['00000000.json'])
+})
+
+it('bounds discarded journal enumeration to three attempts without writing from an invalidated read', async () => {
+  await journal().retain(intake())
+  let attempts = 0
+  fault.openDirectory = (path, open) => {
+    const iterator = open(path)
+    if (path === directory) writeFileSync(join(root, `sibling-${++attempts}`), 'fixture activity')
+    return iterator
+  }
+  await expect(journal().snapshot()).rejects.toThrow('journal directory ancestor changed')
+  expect(attempts).toBe(3)
+  expect(readdirSync(directory)).toEqual(['00000000.json'])
+})
+
 it('refuses an actual directory iterator acquired through a temporary ancestor redirect', async () => {
   await journal().retain(intake())
   const old = join(root, 'old'); mkdirSync(old, { mode: 0o700 })
