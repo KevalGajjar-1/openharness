@@ -657,9 +657,9 @@ static void *painted_entry(void *arg)
 
 static void pro_cable_test_small_stack(void)
 {
-    // (1) A real thread at the device's size: max(6144, PTHREAD_STACK_MIN). The OS minimum is 16 KB on macOS and
+    // (1) A real thread at the device's size: max(12288, PTHREAD_STACK_MIN). The OS minimum is 16 KB on macOS and
     // glibc, so this proves the parser runs on a thread of that kind, not that 6 KB is enough.
-    size_t want = 6144 > (size_t)PTHREAD_STACK_MIN ? 6144 : (size_t)PTHREAD_STACK_MIN;
+    size_t want = 12288 > (size_t)PTHREAD_STACK_MIN ? 12288 : (size_t)PTHREAD_STACK_MIN;
     pthread_attr_t attr;
     pthread_t th;
     CHECK(pthread_attr_init(&attr) == 0 && pthread_attr_setstacksize(&attr, want) == 0);
@@ -667,8 +667,8 @@ static void pro_cable_test_small_stack(void)
     pthread_attr_destroy(&attr);
 
     // (2) The real measurement: our own 64 KB stack, painted, and the deepest untouched byte read back. The parser
-    // plus the reader loop's own frames (decoder + 256 B read chunk, < 1.5 KB) must fit in 6144.
-    const size_t size = 64 * 1024;
+    // plus the reader loop's own frames (decoder + 256 B read chunk, < 1.5 KB) must fit in READER_STACK (cable_link.c, 12288).
+    const size_t size = 64 * 1024 > (size_t)PTHREAD_STACK_MIN ? 64 * 1024 : (size_t)PTHREAD_STACK_MIN;   // 128 KB minimum on aarch64 glibc
     unsigned char *stack = NULL;
     CHECK(posix_memalign((void **)&stack, 4096, size) == 0);
     memset(stack, PAINT, size);
@@ -679,8 +679,8 @@ static void pro_cable_test_small_stack(void)
     while (low < size && stack[low] == PAINT) low++;
     used_bytes = size - low;
     free(stack);
-    printf("pro_cable parser stack high-water: %zu B on the host (thread stack for case 1: %zu B)\n", used_bytes, want);
-    CHECK(used_bytes + 1536 <= 6144);
+    fprintf(stderr, "pro_cable parser stack high-water: %zu B on the host (thread stack for case 1: %zu B)\n", used_bytes, want);
+    CHECK(used_bytes + 1536 <= 12288);
 }
 
 static void test_settings(void)

@@ -22,7 +22,8 @@ python3 "$fw/scripts/gen_fonts.py" ${font_args[@]+"${font_args[@]}"} --out "$out
 # Stack guard. Pod's model, nav and glue run on the cable_link task (6 KB stack, under display_lock); the render
 # task (24 KB) draws. A frame over the limit overflows the small stack on the device ("Stack protection fault"),
 # so every function frame is capped at compile time: -Wframe-larger-than with -Werror fails the suite.
-cflags=(-std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize="${SANITIZERS:-undefined,bounds}"
+# -D_DEFAULT_SOURCE: glibc hides POSIX calls (strnlen, strcasecmp) under a strict -std=c11; newlib and macOS do not.
+cflags=(-std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -g -fsanitize="${SANITIZERS:-undefined,bounds}"
         -DHT_FACE_PX=720 -I"$disp" -I"$fw/main" -I"$here/host_stubs")
 objs=()
 build_obj() {   # build_obj <limit-bytes> <source>...
@@ -70,7 +71,7 @@ if [[ ! -f "$cjson/cJSON.c" ]]; then
     exit 1
 fi
 cable="$fw/main/cable"
-cc_flags=(-std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize="${SANITIZERS:-undefined,bounds}"
+cc_flags=(-std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -g -fsanitize="${SANITIZERS:-undefined,bounds}"
           -I"$fw/main" -I"$cable" -I"$here/host_esp" -I"$cjson")
 cobjs=()
 cable_obj() {   # cable_obj <limit-bytes> <source>...  (every frame capped, like the cable_link task's 6 KB stack needs)
@@ -84,7 +85,7 @@ cable_obj() {   # cable_obj <limit-bytes> <source>...  (every frame capped, like
 }
 cable_obj 1024 "$cable/pro_cable.c" "$cable/cable_json_guard.c" "$cable/cable_features.c" "$cable/cable_machines.c" \
                "$cable/cable_scroll.c" "$cable/cable_frame.c"
-cc -std=c11 -w -O1 -g -c -o "$out/cJSON.o" "$cjson/cJSON.c"
+cc -std=c11 -D_DEFAULT_SOURCE -w -O1 -g -c -o "$out/cJSON.o" "$cjson/cJSON.c"
 cc "${cc_flags[@]}" -o "$out/test_pro_cable" "$here/test_pro_cable.c" "${cobjs[@]}" "$out/cJSON.o" \
    -lpthread -lm
 "$out/test_pro_cable"

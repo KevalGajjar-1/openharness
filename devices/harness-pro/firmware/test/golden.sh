@@ -21,7 +21,7 @@ if [[ -n "${PRO_FONT:-}" ]]; then
     font_args=(--font "$PRO_FONT")
 fi
 /usr/local/bin/python3 "$fw/scripts/gen_fonts.py" ${font_args[@]+"${font_args[@]}"} --out "$out/pro_fonts.c"
-cc -std=c11 -Wall -Wextra -Werror -O1 -g -DHT_FACE_PX=720 -I"$disp" -I"$fw/main" -I"$here/host_stubs" \
+cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -g -DHT_FACE_PX=720 -I"$disp" -I"$fw/main" -I"$here/host_stubs" \
    -o "$out/pod_render" "$here/pod_render.c" "$fw"/main/pod/*.c "$disp/pro_canvas.c" "$disp/terminal.c" "$out/pro_fonts.c"
 
 screens=(tabs tabs:1 tabs:mock default default:tab default:talk recent chrome chrome:talk tab:{0..5} ota:0 ota:42 ota:100 ota:restart notice:updated notice:failed)

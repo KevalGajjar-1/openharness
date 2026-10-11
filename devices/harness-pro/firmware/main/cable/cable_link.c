@@ -73,11 +73,11 @@ static const char *TAG = "cable";
 // eventually does — JSON parsing, LVGL updates, and during a firmware install esp_ota_write() plus a
 // SHA-256 over the image read back out of flash.
 //
-// 6 KiB. NOT a measured number yet: ram_telemetry_periodic() reports this task's high-water mark by name
-// ("cable_link"), and that is the figure to tune from. The failure this margin is against is real — the
-// OTA path on this board's own earlier firmware overflowed an 8 KiB stack and shipped devices that could
-// not update themselves.
-#define READER_STACK 6144
+// 12 KiB. The host proxy (test_pro_cable.c) measured the parser at 6.9 KB on Linux clang-18 with sanitizers, past
+// the old 6 KiB; ram_telemetry_periodic() reports this task's real high-water mark by name ("cable_link"), and
+// that is the figure to tune from. The failure this margin is against is real — the OTA path on this board's own
+// earlier firmware overflowed an 8 KiB stack and shipped devices that could not update themselves.
+#define READER_STACK 12288
 
 // One log line's worth of formatted text. Anything longer is truncated rather than split: a log line is
 // diagnostic, and half of one that arrives is worth more than a mechanism that could deadlock producing

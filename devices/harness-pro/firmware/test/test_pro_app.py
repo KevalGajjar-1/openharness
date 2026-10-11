@@ -2458,10 +2458,10 @@ with tempfile.TemporaryDirectory(prefix="harness-pro-app-") as directory:
         # The callbacks run on the cable_link task's 6 KB stack, the touch task's contact path on 10 KB: no frame of
         # pro_app.c, pro_touch.c or the glue may pass 1 KB.
         for guarded in (APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c"):
-            subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wframe-larger-than=1024", "-O1", "-DHT_FACE_PX=720",
+            subprocess.run([cc, "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra", "-Werror", "-Wframe-larger-than=1024", "-O1", "-DHT_FACE_PX=720",
                             *extra, *include, "-c", str(guarded), "-o", os.devnull], check=True)
         executable = directory / ("pro_app_" + label.split()[0])
-        command = [cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-O1", "-g", sanitize,
+        command = [cc, "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-O1", "-g", sanitize,
                    "-DHT_FACE_PX=720", *extra, *include, str(source), *map(str, modules), "-lpthread", "-o", str(executable)]
         subprocess.run(command, check=True)
         result = subprocess.run([str(executable)], text=True, capture_output=True)
