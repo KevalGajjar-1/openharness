@@ -747,6 +747,11 @@ describe('the device history and dismiss endpoints', () => {
     expect((await post(JSON.stringify({ pubs: 'a' }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: ['a', 5] }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: Array.from({ length: 257 }, (_, i) => `k${i}`) }))).status).toBe(400)
+    // "It's mine": only a literal true asks for the other devices to be told.
+    expect((await post(JSON.stringify({ pubs: ['a'], confirm: true }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pubs: ['a'], confirm: true })
+    expect((await post(JSON.stringify({ pub: 'k', confirm: 'yes' }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pub: 'k' })
   })
 
   it('rebaseline passes the previewed head on, and refuses a malformed one', async () => {

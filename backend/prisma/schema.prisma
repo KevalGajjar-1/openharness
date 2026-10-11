@@ -879,6 +879,30 @@ model DeviceKeyLogState {
   @@map("device_key_log_state")
 }
 
+/// A device's signed "It's mine" for another key on the account's device key log (lib/deviceAckCore.ts):
+/// once one trusted device confirms a new one, the account's other devices stop showing it as New.
+/// Kept beside `device_key_log` and never in its chain — an op the chain does not know would make every
+/// older client freeze the whole log — so a client that predates it never sees one.
+///
+/// `ack` is the JSON the device sent, kept verbatim; its signature covers a binary encoding of its
+/// fields, and every device checks it against its own verified log, never this table's word. The unique
+/// `(userId, pub, signer)` makes appending idempotent: one acknowledgement per key per signer.
+model DeviceKeyAck {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  /// The acknowledged key, and the seq of the log entry that added it.
+  pub       String
+  addSeq    Int
+  /// The key that acknowledged it (and signed `ack`).
+  signer    String
+  ack       String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, pub, signer])
+  @@index([userId, addSeq])
+  @@map("device_key_acks")
+}
+
 /// Public/private link metadata only. The owner daemon keeps the final policy and encrypted discussion.
 model HarnessLink {
   id             String    @id @map("_id")

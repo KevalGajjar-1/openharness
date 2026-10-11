@@ -7734,6 +7734,9 @@ class AppNotifier extends ChangeNotifier {
         ),
       ),
       append: (entry) => api.appendDeviceKey(entry),
+      // "It's mine", once for the account: read what other devices confirmed, share what this one does.
+      fetchAcks: (since) => api.deviceAcks(since),
+      postAck: (ack) => api.postDeviceAck(ack),
       label: _deviceLabel,
       onAnnounce: (m) => _whenSignedIn(() {
         // A key the person has already dismissed (while this waited) is not news any more.
@@ -7984,11 +7987,13 @@ class AppNotifier extends ChangeNotifier {
 
   /// Persists "seen" for [pub] (one), every device (neither) or the baseline panel, in whichever copy
   /// of the log this end keeps. Only when that cannot be — a daemon that predates it — does it stay
-  /// in memory ([_dismissedDevices]).
+  /// in memory ([_dismissedDevices]). [confirm]: the person pressed "It's mine" for that one device, so
+  /// the account's other devices are told too and stop showing it as new.
   Future<void> _persistSeen({
     String? pub,
     List<String>? pubs,
     bool baseline = false,
+    bool confirm = false,
   }) async {
     // Which dismissals this write settles; the baseline panel's "Got it" settles none of them.
     void settled() {
@@ -8003,7 +8008,7 @@ class AppNotifier extends ChangeNotifier {
         if (baseline) {
           await log.seeBaseline();
         } else {
-          await log.dismiss(pub: pub, pubs: pubs);
+          await log.dismiss(pub: pub, pubs: pubs, confirm: confirm);
         }
         settled();
         return;
@@ -8012,6 +8017,7 @@ class AppNotifier extends ChangeNotifier {
         pub: pub,
         pubs: pubs,
         baseline: baseline,
+        confirm: confirm,
       )) {
         settled();
       }
@@ -8061,7 +8067,8 @@ class AppNotifier extends ChangeNotifier {
   ///
   /// [pub] alone (the device's own page, where a suspension is shown) also lifts a suspension on it;
   /// the banner's "It's mine" does not — it dismisses through [pubs], which leaves a fork's
-  /// suspension in place.
+  /// suspension in place. Either way it is "It's mine" for this one device: the account's other
+  /// devices are told, and stop showing it as new (opening the list, [seenNewDevices], tells nobody).
   void dismissNewDevice(String pub, {bool liftSuspension = false}) {
     newDevices.removeWhere((d) => d.pub == pub);
     // A key that joined and left before anyone looked: a "New device" for it is a stale replay, and its
@@ -8075,7 +8082,9 @@ class AppNotifier extends ChangeNotifier {
     _pendingSyncGeneration++;
     notifyListeners();
     unawaited(
-      liftSuspension ? _persistSeen(pub: pub) : _persistSeen(pubs: [pub]),
+      liftSuspension
+          ? _persistSeen(pub: pub, confirm: true)
+          : _persistSeen(pubs: [pub], confirm: true),
     );
   }
 

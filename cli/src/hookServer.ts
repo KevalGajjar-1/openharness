@@ -947,7 +947,7 @@ export function startHookServer(
       if (req.method === 'POST' && url === '/api/devices/dismiss') {
         if (!localOk) { json(403, { error: 'FORBIDDEN' }); return }
         if (!handlers.onDevicesDismiss) { json(503, { error: 'UNAVAILABLE' }); return }
-        let body: { pub?: unknown; pubs?: unknown; baseline?: unknown }
+        let body: { pub?: unknown; pubs?: unknown; baseline?: unknown; confirm?: unknown }
         try { body = JSON.parse(await readBody(req)) as typeof body } catch { json(400, { error: 'bad json' }); return }
         if (!body || typeof body !== 'object') { json(400, { error: 'bad json' }); return }
         if (body.pub !== undefined && (typeof body.pub !== 'string' || !body.pub)) { json(400, { error: 'MISSING_PUB' }); return }
@@ -958,6 +958,8 @@ export function startHookServer(
           ...(typeof body.pub === 'string' ? { pub: body.pub } : {}),
           ...(Array.isArray(body.pubs) ? { pubs: body.pubs as string[] } : {}),
           ...(body.baseline === true ? { baseline: true } : {}),
+          // "It's mine" for one device: the account's other devices are told too (deviceLogSyncer `dismiss`).
+          ...(body.confirm === true ? { confirm: true } : {}),
         }); json(out.status, out.body); return
       }
 

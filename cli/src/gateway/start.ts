@@ -69,6 +69,13 @@ export interface StartedGateway {
  *  hello every few seconds, or a relay replaying one, reads the log once, not each time. */
 const UNKNOWN_HELLO_EVERY_MS = 10_000
 
+/** How long a read of the log waits for the acknowledgements ("It's mine" said on another device): it is
+ *  part of every read while a key is new here, and a hello from a key not paired here waits on a read
+ *  (`trustFromLog`), so a backend slow to answer them must not hold that up for long. */
+const ACK_READ_TIMEOUT_MS = 5_000
+/** How long "It's mine" waits for the backend to keep it; the person's own dismissal is already saved. */
+const ACK_POST_TIMEOUT_MS = 10_000
+
 /** What `trustFromLog` found, as the log line says it. */
 const TRUST_OUTCOME: Record<DeviceLogTrustOutcome, string> = {
   trusted: 'trusted: it is on the account\'s device list',
@@ -253,6 +260,20 @@ export function startGateway(host: GatewayHost): StartedGateway {
         || !Number.isSafeInteger(head.seq) || head.seq < 0 || typeof head.hash !== 'string') return null
       return { acct: data.acct, head: { seq: head.seq, hash: head.hash }, entries: data.entries }
     },
+    // "It's mine", once for the account (deviceAck.ts): beside the log, over REST like its reads. Not over
+    // this machine's socket like an append: an acknowledgement's authority is its signature by a key
+    // active on the log, which every device checks itself, so the channel ties nothing to it.
+    fetchAcks: async (since) => {
+      // A short deadline: the read of the log that asked waits on it (ACK_READ_TIMEOUT_MS).
+      const r = await accountHttp.backend('GET', `/api/device-keys/acks?since=${since}`, undefined, ACK_READ_TIMEOUT_MS)
+      const acks = r.status === 200 ? (r.body.data as { acks?: unknown } | undefined)?.acks : undefined
+      return Array.isArray(acks) ? acks : null
+    },
+    postAck: async (ack) => {
+      const r = await accountHttp.backend('POST', '/api/device-keys/acks', { ack }, ACK_POST_TIMEOUT_MS)
+      if (r.status !== 200 && r.status !== 404) console.log(`[devlog] the backend did not keep "It's mine" (${r.status}: ${String((r.body.error as { code?: unknown } | undefined)?.code ?? '')})`)
+      return r.status === 200
+    },
     append: async (entry) => {
       const p = await gateway.appendDeviceLog(entry as unknown as Record<string, unknown>)
       if (!p) return null
@@ -422,7 +443,11 @@ export function startGateway(host: GatewayHost): StartedGateway {
       return { status, body: { error: r.error, ...(r.detail ? { detail: r.detail } : {}) } }
     },
     devicesHistory: async () => ({ status: 200, body: { ...(await devlog.history()) } }),
-    devicesDismiss: async (body) => { devlog.dismiss(body); return { status: 200, body: { ok: true } } },
+    // `shared`: an "It's mine" (`confirm`) reached the backend for the account's other devices.
+    devicesDismiss: async (body) => {
+      const shared = await devlog.dismiss(body)
+      return { status: 200, body: { ok: true, ...(body.confirm ? { shared } : {}) } }
+    },
     devicesRebaseline: async (confirm, head) => {
       const r = await devlog.rebaseline(confirm, head)
       if (r && 'error' in r) return { status: 409, body: { error: r.error } }

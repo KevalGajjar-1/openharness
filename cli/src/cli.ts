@@ -200,7 +200,8 @@ every future connect, until you change or clear it:
                                first 4+ characters); a # or a shorter start asks first, --yes skips it
   harness devices history      every device added to or removed from the account, newest first, as this
                                machine verified it (--json for the rows)
-  harness devices dismiss [<#|fp>]  mark every new device as seen, or just that one
+  harness devices dismiss [<#|fp>]  mark every new device as seen here, or say one is yours — your
+                               other devices then stop showing it as new too
   harness devices rebaseline   the device list froze (the backend served one that does not match what
                                this machine verified): show what changed, --yes to trust it again
   (both \`remote-password set\` and \`link connect\` prompt for the password interactively, or read one
@@ -2182,10 +2183,15 @@ async function devicesCommand(sub: string | undefined, arg: string | undefined, 
       const listed = out.members.some((m) => norm(m.fingerprint).startsWith(key))
       target = gone.length === 1 && !listed ? gone[0] : resolve(arg, out.members).row
     }
-    const { status } = await call('POST', '/api/devices/dismiss', target ? { pub: target.pub } : {})
+    // One device named is "It's mine" for it: the account's other devices are told too, and stop showing
+    // it as new. Every device at once is only "seen here" — nobody vouched for each one.
+    const { status, json: out } = await call('POST', '/api/devices/dismiss', target ? { pub: target.pub, confirm: true } : {})
     needsNewerDaemon(status)
     if (status !== 200) { console.error(`\n  ✗ Could not mark ${target ? 'it' : 'them'} as seen (is this machine signed in?).\n`); process.exit(1) }
-    console.log(target ? `\n  ✓ Marked ${target.label || '(no name)'} as seen.\n` : '\n  ✓ Marked every device as seen.\n')
+    const name = target?.label || '(no name)'
+    console.log(!target ? '\n  ✓ Marked every device as seen.\n'
+      : out.shared === true ? `\n  ✓ Marked ${name} as yours, here and on your other devices.\n`
+        : `\n  ✓ Marked ${name} as seen.\n`)
     process.exit(0)
   }
   if (sub === 'rebaseline') {
