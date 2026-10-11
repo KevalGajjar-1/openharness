@@ -14,17 +14,29 @@ started from New Harness. They are not a second product beside the panes.
   as today) or **Devin's cloud**. "Where it runs" is already a choice in the form (the computer); the
   agent's cloud is one more place.
 - The harness opens a **chat pane** instead of a terminal: the conversation, a line saying what the agent
-  is doing, and a prompt.
+  is doing, and a prompt. Its header is every pane's header: the harness name and its activity mark on
+  the left (`?` needs input, `⠹` working); the agent selector, the model selector only if the agent
+  offers models (Fo does not), and × on the right. The place goes where a remote computer's name goes,
+  in the footer's context for the focused pane, never in the header.
 
   ```
-  ┌ Fo · haircut Saturday ──────────────────── in the cloud ┐
-  │ you   book a haircut saturday morning near me            │
-  │ Fo    Calling Hair Lab (0.4 mi)…                         │
-  │ Fo    They have 9:30 or 11:00. Which one?                │
-  │       1) 9:30   2) 11:00   3) neither                    │
-  │ ❯ _                                                      │
-  └──────────────────────────────────────────────────────────┘
+   auth-fix ⠹                             Claude Code  Opus 5.5  ×
+  ────────────────────────────────────────────────────────────────
+   (terminal)
+
+   haircut Saturday ?                                        Fo  ×
+  ────────────────────────────────────────────────────────────────
+   you  book a haircut saturday morning near me
+   Fo   Calling Hair Lab (0.4 mi)…
+   Fo   They have 9:30 or 11:00. Which one?
+        1) 9:30   2) 11:00   3) neither
+   ❯ _
+  ────────────────────────────────────────────────────────────────
+                                                        Fo's cloud
   ```
+
+  A Devin pane's footer reads `Devin's cloud  api  (fix-flaky)  #42`: the repository, branch and pull
+  request from the session, as for any pane.
 
 - When the agent waits for the person, the harness is in **Harnesses needing input** with its choices,
   on the desktop, the phone and the device's question screen, like any other harness.
