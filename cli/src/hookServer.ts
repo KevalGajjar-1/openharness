@@ -171,6 +171,10 @@ export interface HookServerHandlers {
   /** PATCH /api/agent-messages/tabs/:tabId — turn Agent Messages on or off for one tab; a local write, so
    *  CSRF-guarded like the desk's ops. */
   onAgentMessagesWrite?: (tabId: string, body: unknown) => Promise<PairOutcome>
+  /** GET/PATCH /api/agent-settings — what the person lets agents do on this computer (lib/agentSettings.ts), kept by
+   *  this daemon rather than the account: Settings ▸ Agents. The write is CSRF-guarded like the others. */
+  onAgentSettingsRead?: () => Promise<PairOutcome>
+  onAgentSettingsWrite?: (body: unknown) => Promise<PairOutcome>
   /** The account's Experimental switches, proxied with the daemon's own identity. */
   onExperimentalRead?: () => Promise<PairOutcome>
   onExperimentalWrite?: (body: unknown) => Promise<PairOutcome>
@@ -999,6 +1003,17 @@ export function startHookServer(
         let body: unknown
         try { body = JSON.parse(await readBody(req)) } catch { json(400, { error: { code: 'BAD_REQUEST', message: 'Invalid JSON body' } }); return }
         await proxied(() => handlers.onAgentMessagesWrite!(agentMessagesTab[1], body)); return
+      }
+      if (req.method === 'GET' && url === '/api/agent-settings') {
+        if (!handlers.onAgentSettingsRead) { json(503, { error: 'UNAVAILABLE' }); return }
+        await proxied(handlers.onAgentSettingsRead); return
+      }
+      if (req.method === 'PATCH' && url === '/api/agent-settings') {
+        if (!localOk) { json(403, { error: 'FORBIDDEN' }); return }
+        if (!handlers.onAgentSettingsWrite) { json(503, { error: 'UNAVAILABLE' }); return }
+        let body: unknown
+        try { body = JSON.parse(await readBody(req)) } catch { json(400, { error: { code: 'BAD_REQUEST', message: 'Invalid JSON body' } }); return }
+        await proxied(() => handlers.onAgentSettingsWrite!(body)); return
       }
       if (req.method === 'GET' && url === '/api/experimental-settings') {
         if (!handlers.onExperimentalRead) { json(503, { error: 'UNAVAILABLE' }); return }

@@ -73,6 +73,7 @@ import { processSessionOf } from '../engines/sessionStores.js'
 import { createHandoffDependencies } from './handoffDependencies.js'
 import { TmuxBackend } from '../lib/tmuxBackend.js'
 import { DEFAULT_HOST_THEME, loadHostTheme, saveHostTheme, type HostTheme } from '../lib/hostTheme.js'
+import { agentSettingsRoutes } from '../lib/agentSettings.js'
 import { restoreAgents, tmuxSurvey, type RestoreAgentsDeps, type RestoreSummary } from '../lib/restoreAgents.js'
 import { createRetainExitedSession } from '../lib/retainExitedSession.js'
 import { createKeepAbandonedConversation } from '../lib/keepAbandonedConversation.js'
@@ -1718,6 +1719,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   // Which agent a hook belongs to, and what a SessionEnd means (core/engines/hooks.ts).
   const engineHooks = createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending: restorePanes.pending, syncSession })
+  // Settings ▸ Agents, kept in this daemon's data folder (lib/agentSettings.ts).
+  const agentSettings = agentSettingsRoutes(env.ADAPTER_DATA_DIR)
   const { server: hookServer, port: hookPort, localSocket } = await startHookServer(daemonPort(), {
     onAutonomousDeviceRequest: async (method, target, body) => {
       // Until the pieces below are built; after, a piece that could not be is refused by the requests
@@ -1797,6 +1800,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onAgentMessagesWrite: (tabId, body) => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body),
     onExperimentalRead: () => proxyBackend('GET', '/api/experimental-settings'),
     onExperimentalWrite: (body) => proxyBackend('PATCH', '/api/experimental-settings', body),
+    onAgentSettingsRead: agentSettings.read,
+    onAgentSettingsWrite: agentSettings.write,
     onStore: (method, path, body) => proxyBackend(method, path, body),
   }, { socketPath: localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })
   try { saveDaemonPort(env.ADAPTER_DATA_DIR, env.PORT, hookPort) } catch (error) {

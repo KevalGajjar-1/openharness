@@ -157,6 +157,9 @@ with a clear error; nothing is dropped silently.
 - Depth: an agent-started harness may start harnesses; one started two levels down may not.
 - `new` per harness: 20 in 10 minutes.
 - An agent never answers a permission dialog, and never closes a harness it did not start.
+- The person can turn agents starting agents off on a computer (Settings ▸ Agents, `harness settings
+  agents-start-agents off`; `<data>/agent-settings.json`): then every agent's `harness new` and `harness_start` is
+  refused there, and reading, waiting and closing what it started still work. On by default.
 
 ## How it works
 

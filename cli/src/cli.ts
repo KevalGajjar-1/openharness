@@ -144,6 +144,7 @@ Machine:
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
   harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
   harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
+  harness settings [<name> on|off]  what agents may do here (agents-start-agents), as Settings ▸ Agents
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})
@@ -2451,6 +2452,7 @@ import { orchestratorCommand } from './orchestrator/command.js'
 import { paneOwner, sendCommand } from './messages/command.js'
 import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
 import { harnessRunner, mcpCommand } from './agentClient/mcp.js'
+import { settingsCommand } from './agentClient/settings.js'
 
 // ── arg parse ──────────────────────────────────────────────────────────────────────────────────
 // `hn` is the terminal client's short name (like tmux, fzf): the same CLI, entered at `tui`. A call
@@ -2484,6 +2486,9 @@ switch (cmd) {
     break
   case 'ps':
     psCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  case 'settings':
+    process.exitCode = settingsCommand(rest, env.ADAPTER_DATA_DIR)
     break
   case 'mcp': {
     const pane = process.env.TMUX_PANE

@@ -2,9 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { addressOf, agentOrigin, closeCommand, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
+import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
+import { writeAgentSettings } from '../lib/agentSettings.js'
 import type { Frame } from './model.js'
 
 const NOW = Date.parse('2026-10-11T12:00:00Z')
@@ -554,6 +555,19 @@ describe('harness new, run by an agent', () => {
     expect(await agentOrigin(harness(d, { open: down }).deps)).toBeNull()
     const unknown = (await agentOrigin(harness(d, { open: down, where: () => ({ ...where, harnessPane: true }) }).deps))!
     await expect(unknown.check()).rejects.toThrow(/could not tell who is starting this/)
+  })
+
+  it('refuses every agent when the person has turned agents starting agents off, and never the person', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    writeAgentSettings(dir, { agentsStartAgents: false })
+    const inPane = (await agentOrigin(harness(d).deps))!
+    await expect(inPane.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    const outside = (await agentOrigin(harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 't' } }).deps))!
+    await expect(outside.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    expect(await agentOrigin(harness(d, { pane: undefined }).deps)).toBeNull()
+    writeAgentSettings(dir, { agentsStartAgents: true })
+    await expect((await agentOrigin(harness(d).deps))!.check()).resolves.toBeUndefined()
   })
 
   it('refuses from what is left of an agent whose harness is gone', async () => {
