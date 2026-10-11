@@ -109,20 +109,34 @@ void main() {
       await mouse.moveTo(tester.getCenter(label));
       await tester.pumpAndSettle();
       expect(close.hitTestable(), findsOneWidget);
-      expect(tester.getRect(label), nameBounds);
+      // Hover reveals the tab: its shortcut follows the name, which keeps its
+      // place (only a name that would run into ⇄ gives up its tail).
+      expect(find.text('⌘1'), findsNothing);
+      expect(find.text('⌘2'), findsOneWidget);
+      final revealedName = tester.getRect(label);
+      expect(revealedName.left, nameBounds.left);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();
+      // Command reveals every tab, × included.
       expect(find.text('⌘1'), findsOneWidget);
       expect(find.text('⌘2'), findsOneWidget);
       expect(close.hitTestable(), findsOneWidget);
+      expect(
+        find.byKey(ValueKey('tab-close:${first.id}')).hitTestable(),
+        findsOneWidget,
+      );
       final commandName = tester.getRect(label);
       final commandHint = tester.getRect(find.text('⌘2'));
       expect(commandHint.left - commandName.right, closeTo(6, .1));
       expect(
-        (commandName.left + commandHint.right) / 2,
-        closeTo(tester.getCenter(tab).dx, .1),
+        commandHint.right,
+        lessThanOrEqualTo(
+          tester
+              .getRect(find.byKey(ValueKey('tab-agent-messages:${second.id}')))
+              .left,
+        ),
       );
-      expect(commandName.size, nameBounds.size);
+      expect(commandName, revealedName);
       expect(app.activeSwarm, same(second));
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();

@@ -60,6 +60,20 @@ class HarnessCommand {
 /// they are in no list, no help and no native keymap. The workspace sets it.
 final daemonCommandsActive = ValueNotifier<bool>(false);
 
+/// What a person looking for Agent Messages may type, older names included.
+const _agentMessagesKeywords = [
+  'agent messages',
+  'harness send',
+  'message',
+  'log',
+  'tab',
+  'collaborate',
+  'communicate',
+  'swarm',
+  'team',
+  'channel',
+];
+
 /// Whether [id] is a command this window has now.
 bool harnessCommandActive(String id) =>
     harnessCommandById[id]?.daemon != true || daemonCommandsActive.value;
@@ -479,6 +493,22 @@ final harnessCommands = <HarnessCommand>[
     'Create with the orchestrator',
     ShortcutGroup.actions,
     action: ShortcutAction.orchestrate,
+  ),
+  // Agent Messages (docs/design/2026-10-10-agent-messages.md): the active
+  // tab's log, and its flag. Their native menu rows are File's.
+  const HarnessCommand(
+    'agent_messages.show',
+    'Show Agent Messages',
+    ShortcutGroup.actions,
+    nativeAction: 'showAgentMessages',
+    keywords: _agentMessagesKeywords,
+  ),
+  const HarnessCommand(
+    'agent_messages.toggle',
+    'Agent Messages: turn on or off for this tab',
+    ShortcutGroup.actions,
+    nativeAction: 'toggleAgentMessages',
+    keywords: _agentMessagesKeywords,
   ),
   const HarnessCommand(
     'app.customize',

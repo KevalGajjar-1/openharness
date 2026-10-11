@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -215,4 +217,58 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('tabs carry Agent Messages, and its actions reach the tab', (
+    tester,
+  ) async {
+    final app = _App();
+    addTearDown(app.dispose);
+    await mount(tester, app, nativeTabs: true);
+    await tester.pumpAndSettle();
+    calls.clear();
+    final tab = app.activeSwarmId;
+    Map row() => (updates().last['tabs'] as List).single as Map;
+
+    // Traffic alone rebuilds no workspace; it does reach the ⇄.
+    app.agentMessages.handleEvent({'tabId': tab, 'messageId': 'm0000001'});
+    await tester.idle();
+    expect(row()['agentMessages'], isFalse);
+    expect(row()['agentMessagesFlowing'], isTrue);
+    expect(updates().last['activeAgentMessages'], isFalse);
+
+    Future<void> native(String method) =>
+        tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          'harness/swarm_tabs',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall(method, {'id': tab}),
+          ),
+          (_) {},
+        );
+    // ⇄ or the tab's menu: on at once, and back when the backend cannot be
+    // reached (this fixture has none).
+    unawaited(native('toggleAgentMessages'));
+    await tester.idle();
+    expect(
+      app.agentMessages.isPending(tab) ||
+          app.agentMessages.failureFor(tab) != null,
+      isTrue,
+    );
+    await tester.pumpAndSettle();
+    expect(app.agentMessages.isOn(tab), isFalse);
+    expect(app.agentMessages.failureFor(tab), isNotNull);
+    expect(row()['agentMessages'], isFalse);
+
+    // Show Agent Messages opens the tab's log.
+    unawaited(native('showAgentMessages'));
+    await tester.pumpAndSettle();
+    expect(find.text('Before · Agent Messages'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Before · Agent Messages'), findsNothing);
+
+    await tester.pump(const Duration(seconds: 61));
+    await tester.idle();
+    expect(row()['agentMessagesFlowing'], isFalse);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

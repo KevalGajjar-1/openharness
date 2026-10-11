@@ -225,7 +225,10 @@ void main() {
         );
         expect(icon.icon, AppIcons.close);
         expect(icon.size, 12);
-        expect(tester.getSize(_close('Desktop')), const Size(32, 32));
+        expect(
+          tester.getSize(_close('Desktop')),
+          const Size(DesktopWorkspaceTab.closeWidth, 32),
+        );
         await _capture(
           tester,
           boundary,
