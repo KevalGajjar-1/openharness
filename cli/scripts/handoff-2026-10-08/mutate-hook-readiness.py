@@ -22,6 +22,9 @@ mutations = [
     ('collide with startup maintenance', 'src/engines/nativeHooks.ts', 'if (previous && (previous.settling || previous.major !== undefined', 'if (previous && false && (previous.settling || previous.major !== undefined', 'src/engines/nativeHookPreparation.spec.ts', 'waits for startup maintenance'),
     ('separate aliased destinations', 'src/engines/nativeHooks.ts', 'const reservation = JSON.stringify(routes.keys)', 'const reservation = root', 'src/engines/nativeHookPreparation.spec.ts', 'through alias paths'),
     ('unbounded preparation callers', 'src/engines/nativeHooks.ts', 'if (group.users >= 16) return false', 'if (false) return false', 'src/engines/nativeHookPreparation.spec.ts', 'bounds launch callers'),
+    ('discard help after a core stall', 'src/engines/nativeLaunch.ts', "env: nativeProcessEnvironment(environment), encoding: 'utf8', killSignal: 'SIGKILL', maxBuffer:", "env: nativeProcessEnvironment(environment), encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer:", 'src/engines/nativeLaunch.probe.spec.ts', 'complete permission answer'),
+    ('retain inherited probe pipes', 'src/engines/nativeLaunch.ts', 'child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy()', 'void child', 'src/engines/nativeLaunch.probe.spec.ts', 'inherited output pipes'),
+    ('release unsettled probe capacity', 'src/engines/nativeLaunch.ts', '// An uninterruptible child retains its slot until the actual callback.\n        answer(null)', '// Incorrectly free a slot while its child can still run.\n        probes--; answer(null)', 'src/engines/nativeLaunch.spec.ts', 'retaining its slot'),
     ('await hooks before readiness', 'src/core/main.ts', before_ready, blocked_ready, 'e2e/eagerHooks.e2e.ts', 'becomes ready and serves control'),
 ]
 environment = dict(os.environ, TZ='UTC', TMPDIR='/tmp', HARNESS_CONNECTIONS_PORT='0')

@@ -7,15 +7,23 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { EngineInstallRecipe } from '../../lib/engineInstall.js'
 import { createNativeInstallations, NATIVE_INSTALL_WORKER } from './nativeInstall.js'
 
-const fixture = vi.hoisted(() => ({ failSync: false, argv: [] as string[], onSync: undefined as undefined | (() => number | void) }))
+const fixture = vi.hoisted(() => ({ failSync: false, argv: [] as string[], onSync: undefined as undefined | (() => number | void), onDirectoryOpen: undefined as undefined | (() => void) }))
 vi.mock('../../lib/engineLaunch.js', () => ({ buildEngineInstallationArgv: () => fixture.argv }))
-vi.mock('node:fs', async original => ({ ...await original<typeof import('node:fs')>(),
-  fsync: (_fd: number, done: (error: Error | null) => void) => {
-    const delay = fixture.onSync?.()
-    const finish = () => done(fixture.failSync ? Error('fixture unavailable disk') : null)
-    if (delay) setTimeout(finish, delay); else queueMicrotask(finish)
-  },
-}))
+vi.mock('node:fs', async original => {
+  const actual = await original<typeof import('node:fs')>()
+  return { ...actual,
+    opendirSync: (...args: Parameters<typeof actual.opendirSync>) => {
+      const directory = actual.opendirSync(...args)
+      fixture.onDirectoryOpen?.()
+      return directory
+    },
+    fsync: (_fd: number, done: (error: Error | null) => void) => {
+      const delay = fixture.onSync?.()
+      const finish = () => done(fixture.failSync ? Error('fixture unavailable disk') : null)
+      if (delay) setTimeout(finish, delay); else queueMicrotask(finish)
+    },
+  }
+})
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const recipe: EngineInstallRecipe = { command: 'fixture-only', source: 'fixture', executable: { names: ['fixture'] } }
 let root: string, directory: string, environment: Record<string, string>
@@ -24,7 +32,7 @@ beforeEach(() => {
   directory = join(root, 'claims')
   const home = join(root, 'home'); mkdirSync(home, { mode: 0o700 })
   environment = { HOME: home, PATH: '/usr/bin:/bin' }
-  fixture.failSync = false; fixture.onSync = undefined
+  fixture.failSync = false; fixture.onSync = undefined; fixture.onDirectoryOpen = undefined
   fixture.argv = [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(join(root, 'installed'))}, 'one\\n')`]
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks() })
@@ -132,21 +140,46 @@ it('settles a durable non-dispatch cancellation through the ready-executable sta
   const file = join(directory, '00000000.json')
   fixture.onSync = () => { if (existsSync(file)) fixture.failSync = true }
   const original = controller()
-  await original.ensure('opencode', recipe, environment, 'original', () => true)
-  expect(original.dispatch).not.toHaveBeenCalled()
+  await vi.waitFor(async () => {
+    expect(await original.ensure('opencode', recipe, environment, 'original', () => true)).toMatchObject({ complete: false })
+    expect(original.dispatch).not.toHaveBeenCalled()
+    expect(existsSync(file)).toBe(true)
+    expect(fixture.failSync).toBe(true)
+  })
+  const claimBytes = readFileSync(file, 'utf8'), claim = JSON.parse(claimBytes)
   fixture.failSync = false
   const witness = `${directory}.00000000.dispatch`
   fixture.onSync = () => { if (existsSync(witness)) fixture.failSync = true }
   const other = controller()
-  await other.ensure('codex', recipe, environment, 'other', () => true)
+  // Linux CI's parallel fixtures can change an ancestor during enumeration.
+  // That is a real hold; keep each disk fault armed until its stage is reached.
+  fixture.onDirectoryOpen = () => {
+    fixture.onDirectoryOpen = undefined
+    writeFileSync(join(root, 'sibling'), 'changed during inspection')
+  }
+  expect(await other.ensure('codex', recipe, environment, 'other', () => true)).toMatchObject({ complete: false })
+  expect(fixture.onDirectoryOpen).toBeUndefined()
+  expect(existsSync(witness)).toBe(false)
+  expect(fixture.failSync).toBe(false)
   expect(other.dispatch).not.toHaveBeenCalled()
-  expect(JSON.parse(readFileSync(witness, 'utf8')).kind).toBe('cancelled')
+  await vi.waitFor(async () => {
+    expect(await other.ensure('codex', recipe, environment, 'other', () => true)).toMatchObject({ complete: false })
+    expect(other.dispatch).not.toHaveBeenCalled()
+    expect(JSON.parse(readFileSync(witness, 'utf8'))).toEqual({ token: claim.token, claim: hash(claimBytes), kind: 'cancelled' })
+    expect(fixture.failSync).toBe(true)
+  })
+  expect(readFileSync(file, 'utf8')).toBe(claimBytes)
+  const witnessBytes = readFileSync(witness, 'utf8')
   expect(existsSync(`${file}.result`)).toBe(false)
   fixture.onSync = undefined; fixture.failSync = false
   const recovered = controller()
-  expect(await recovered.status('opencode', 'original', () => true)).toMatchObject({ complete: false })
-  expect(JSON.parse(readFileSync(`${file}.result`, 'utf8')).notDispatched).toBe(true)
-  expect(await recovered.status('opencode', 'original', () => true)).toBeNull()
+  await vi.waitFor(async () => {
+    expect(await recovered.status('opencode', 'original', () => true)).toMatchObject({ complete: false })
+    expect(JSON.parse(readFileSync(`${file}.result`, 'utf8')).notDispatched).toBe(true)
+  })
+  await vi.waitFor(async () => { expect(await recovered.status('opencode', 'original', () => true)).toBeNull() })
+  expect(readFileSync(file, 'utf8')).toBe(claimBytes)
+  expect(readFileSync(witness, 'utf8')).toBe(witnessBytes)
   expect(recovered.dispatch).not.toHaveBeenCalled()
 })
 

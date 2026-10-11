@@ -68,6 +68,37 @@ golden checks, and all eight private daemon cases. Core's 2,503 tests and master
 The earlier `20261011T061414.664196Z-81910` orchestration failed during merge conflict
 cleanup and a temporary npm executable issue; it is not a passing suite.
 
+## Failure-driven acceptance corrections
+
+The first full Linux/macOS acceptance run, `38118774703`, found one production
+failure in the unchanged stall lane. After a 7.9-second core pause, Node's native
+subprocess timeout discarded a completed permission probe's unread output and
+returned exit zero with empty stdout. Launch preparation cached that as an
+unsupported flag and refused Claude creation. A private real-child regression
+reproduced the false refusal before correction (`20261011T065951.966421Z-85384`).
+
+Native launch probes now use discovery's bounded patient deadline. A completed
+answer survives a core pause; empty help remains unknown and is never cached as
+unsupported. A genuinely expired probe returns unknown. After a 250 ms drain it
+closes its own pipe ends, so an exited wrapper's descendant cannot hold its reply
+or all eight probe slots indefinitely. It signals only its still-live child;
+an uninterruptible child retains capacity until actual settlement. The existing
+four-window deadline bound remains, rather than treating it as a wall-clock limit.
+Private real-process tests cover both the pause and inherited pipes, and a held
+child test covers reply/slot separation. Types and 56 affected checks passed in
+`20261011T070638.819101Z-12098`; final PR evidence includes the preserved SIGKILL
+setting for output-limit kills. The original stall e2e assertions are unchanged.
+
+Linux unit CI also exposed an installer fixture assumption: ancestor churn can
+legitimately hold enumeration before the intended fsync fault is reached. A
+one-shot private sibling mutation reproduced the exact missing-witness failure
+(`20261011T065353.731186Z-60572`). The fixture now keeps each fault armed and retries
+to that milestone, retaining exact claim/witness, absent-result and no-dispatch
+assertions (`20261011T065501.793176Z-65267`). Production ownership fences are unchanged.
+The legacy installer-output golden now awaits `settled` and closes its controller
+in `finally`; its artifact and all 340 assertions are unchanged
+(`20261011T064546.689940Z-26598`).
+
 ## Matched startup workload
 
 [Raw samples](2026-10-11-hook-readiness-cost.json) retain four alternating runs of
