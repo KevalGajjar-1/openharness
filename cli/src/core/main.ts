@@ -56,6 +56,7 @@ import { clearSafeModeMarker, safeModeDisposition, safeModeStatusBody, SafeModeR
 import { awakeTimeout } from '../lib/sleepAware.js'
 import { removePidFileIf, onError } from '../lib/daemonLaunch.js'
 import { ensureTmuxOnPath } from '../lib/tmuxOnPath.js'
+import { harnessdEnv, holdHarnessdEnv, isHarnessdVariable } from '../lib/harnessdEnv.js'
 import { AUTH_DIR, AuthSessionManager, clearAuthSession, ensureSignInEpoch, readAuthSession, signInOf, type AuthSession } from '../lib/authSession.js'
 import { ENGINES, enginePathOverride } from '../lib/engineBin.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
@@ -286,7 +287,8 @@ let SCRIPT_PATH = ''
  * whose core would lose to this one's and roll the update back. Not `harness start`'s `spawnDaemon`, which
  * finds THIS daemon in the pid file and exits. The managed Node is re-read, so a runtime provisioned while
  * this ran is the master's. `ADAPTER_UPDATED_TO` (an older build's handoff) and `HARNESSD_SAFE_MODE` (a
- * master's word to its own core) are not for the master to pass to every core it starts.
+ * master's word to its own core) are not for the master to pass to every core it starts. The rest of what
+ * this core was started with is, its `HARNESSD_*` included (lib/harnessdEnv.ts): the master is harnessd's.
  */
 function startMasterHere(): void {
   // A log that cannot be opened (a full disk) costs the master's lines, never the handoff.
@@ -295,7 +297,7 @@ function startMasterHere(): void {
     prepareLogFile(LOG_FILE, LEGACY_LOG_FILE)
     log = openSync(LOG_FILE, 'a')
   } catch (e) { console.error('[update] the master starts without the log:', e instanceof Error ? e.message : e) }
-  const { ADAPTER_UPDATED_TO: _handedOver, HARNESSD_SAFE_MODE: _safeMode, ...inherited } = process.env
+  const { ADAPTER_UPDATED_TO: _handedOver, HARNESSD_SAFE_MODE: _safeMode, ...inherited } = harnessdEnv()
   const master = spawn(managedNodePath(), [SCRIPT_PATH, '__harnessd'], { detached: true, env: inherited, stdio: ['ignore', log, log] })
   // A spawn failure (e.g. EMFILE) emits 'error' on the child; with no listener that is an
   // uncaughtException. This core is leaving either way, and the next `harness start` starts the daemon.
@@ -324,7 +326,7 @@ function startMasterHere(): void {
 const coreLink = connectToMaster()
 /** When the devices' process starts: once there is a device, a dial's port, a Wi-Fi device or a request for one
  *  (core/devicesWake.ts). Asked of the master through the channel above. */
-const devicesWake = createDevicesWake({ want: (service) => coreLink.want(service), dataDir: env.ADAPTER_DATA_DIR, cableDisabled: env.CABLE_DISABLE, testDialPort: process.env.HARNESSD_TEST_DIAL_PORT })
+const devicesWake = createDevicesWake({ want: (service) => coreLink.want(service), dataDir: env.ADAPTER_DATA_DIR, cableDisabled: env.CABLE_DISABLE, testDialPort: harnessdEnv().HARNESSD_TEST_DIAL_PORT })
 
 const daemonBoot: {
   /** Stops the updater this core runs beside itself under a master too old to run it (core/updaterBeside.ts). */
@@ -426,6 +428,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // move (it tears down two dozen subsystems declared further down). Until it is ready, a staged update is
   // applied by `bootHandoff`, which hands the machine over without finishing start-up.
   coreLink.onUpdate((version) => { void daemonBoot.applyStagedUpdate(version) })
+  // What the master told this core, read from here: runCore took it out of process.env before anything
+  // could hand it to a child (lib/harnessdEnv.ts).
+  const harnessd = harnessdEnv()
   // Agents held until the service their launch asks is ready, and the passes that launch them
   // (core/agents/heldLaunches.ts): the boot's restore of only those agents, set where tmux is there to restore into.
   const restorePanes = createPaneOperations()
@@ -442,14 +447,15 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     restore: (only, current) => restoreOnly?.(only, current) ?? Promise.resolve({ restored: [], skipped: [], failed: [], held: [], unsurveyed: [] }),
     log: (line) => console.log(line),
   })
-  wakeGateway({ outOfProcess: servicesTheMasterRuns(process.env, KNOWN_SERVICES), signedIn: !!session, dataDir: env.ADAPTER_DATA_DIR, want: (service) => coreLink.want(service) })
+  wakeGateway({ outOfProcess: servicesTheMasterRuns(harnessd, KNOWN_SERVICES), signedIn: !!session, dataDir: env.ADAPTER_DATA_DIR, want: (service) => coreLink.want(service) })
   // …or, under a master too old to run the updater, from the updater this core runs beside itself
   // (core/updaterBeside.ts), in a process of its own: the core downloads no build either way.
-  if (needsUpdaterBeside(process.env, coreLink.supervised, isInstalledCopy(SCRIPT_PATH, env.ADAPTER_CLI_DIR), env.ADAPTER_UPDATE_DISABLE)) {
+  if (needsUpdaterBeside(harnessd, coreLink.supervised, isInstalledCopy(SCRIPT_PATH, env.ADAPTER_CLI_DIR), env.ADAPTER_UPDATE_DISABLE)) {
     daemonBoot.updaterBeside = startUpdaterBeside({
       spawn: () => {
+        // Harnessd's own process: handed what this core's master said (HARNESSD_JUDGES_SUPERSEDED) explicitly.
         const updater = spawn(managedNodePath(), [SCRIPT_PATH, '__service', 'updater'], {
-          env: { ...process.env, HARNESSD_SERVICE: 'updater', HARNESSD_UPDATER_BESIDE_CORE: '1' }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+          env: { ...harnessdEnv(), HARNESSD_SERVICE: 'updater', HARNESSD_UPDATER_BESIDE_CORE: '1' }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
         })
         updater.on('error', (e) => console.error('[update] the updater could not start:', e instanceof Error ? e.message : e))
         return { onMessage: (listener) => { updater.on('message', listener) }, onExit: (listener) => { updater.on('exit', listener) }, kill: () => { updater.kill() } }
@@ -464,7 +470,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     version: VERSION, supervised: coreLink.supervised, exitForUpdate: () => process.exit(CORE_EXIT_UPDATE),
     // A core on its own that an older release started: its master must answer its probe, as a master asks
     // before it re-executes on a bundle; then the master takes the machine, and runs the updater.
-    probeMaster: () => probeStagedMaster((done) => execFile(managedNodePath(), [SCRIPT_PATH, PROBE_COMMAND], { encoding: 'utf8' }, (error, stdout) => done(error, stdout))),
+    probeMaster: () => probeStagedMaster((done) => execFile(managedNodePath(), [SCRIPT_PATH, PROBE_COMMAND], { encoding: 'utf8', env: harnessdEnv() }, (error, stdout) => done(error, stdout))),
     handOff: () => { startMasterHere(); process.exit(0) },
     log: (line) => console.log(line), error: (line) => console.error(line),
   })
@@ -476,7 +482,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // harnessd's master saw this core crash again and again: start nothing that could do it again. The
   // master's updater runs on, and a published fix still lands (`enterSafeMode`).
-  if (process.env.HARNESSD_SAFE_MODE) throw new SafeModeRequest(process.env.HARNESSD_SAFE_MODE)
+  if (harnessd.HARNESSD_SAFE_MODE) throw new SafeModeRequest(harnessd.HARNESSD_SAFE_MODE)
 
   const savedApis = new ApiConnectionMetadata(env.ADAPTER_DATA_DIR)
   // Instructions read metadata locally; a models outage must not change a workspace's tool instructions.
@@ -550,6 +556,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     for (const adopted of await adoptLegacyHarnessSessions(ownedPanes)) {
       console.log(`[terminal] renamed tmux session ${adopted.from} → ${adopted.to} (pane ${adopted.paneId}) · named by a build before the harness- prefix`)
     }
+    // Before the first pane this boot makes or restarts: a server an earlier core started still has that
+    // core's HARNESSD_* (the service token among them) in the environment it gives every new pane.
+    const forgotten = await tmuxBackend.unsetServerEnvironment(isHarnessdVariable)
+    if (forgotten.length) console.log(`[terminal] tmux: removed ${forgotten.join(', ')} from the environment new panes start with`)
     const tmuxStartup = await tmuxBackend.inventory()
     console.log(tmuxStartup.state === 'available'
       ? '[terminal] tmux: available'
@@ -593,20 +603,20 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const syncRecapPool = (): void => {
     ports.devices?.engines(registry.active().map((session) => session.engine))
   }
-  const outOfProcess = servicesTheMasterRuns(process.env, KNOWN_SERVICES)
-  const liveHosted = masterRunsLiveEngines(process.env, process.ppid)
-  const runtimeHosted = liveHosted && masterRunsEngineRuntime(process.env, process.ppid)
+  const outOfProcess = servicesTheMasterRuns(harnessd, KNOWN_SERVICES)
+  const liveHosted = masterRunsLiveEngines(harnessd, process.ppid)
+  const runtimeHosted = liveHosted && masterRunsEngineRuntime(harnessd, process.ppid)
   // An older master's explicit capability report selects compatibility. A failed worker never does.
   const isolatedLive = (engine: string): boolean => liveHosted
     && readerEngine(engine) && outOfProcess.has(READER_SERVICES[engine])
-  const questionControlHosted = masterRunsEngineQuestionControl(process.env, process.ppid)
+  const questionControlHosted = masterRunsEngineQuestionControl(harnessd, process.ppid)
   const isolatedQuestionControl = (engine: string): boolean => questionControlHosted && isolatedLive(engine)
-  const modelControlHosted = masterRunsEngineModelControl(process.env, process.ppid)
+  const modelControlHosted = masterRunsEngineModelControl(harnessd, process.ppid)
   const isolatedModelControl = (engine: string): boolean => modelControlHosted && isolatedLive(engine)
-  const screenHosted = masterRunsEngineScreen(process.env, process.ppid)
+  const screenHosted = masterRunsEngineScreen(harnessd, process.ppid)
   const isolatedScreen = (engine: string): boolean => screenHosted && isolatedLive(engine)
-  const submissionHosted = masterRunsEngineSubmission(process.env, process.ppid)
-  const nativeControlHosted = masterRunsEngineNativeControl(process.env, process.ppid)
+  const submissionHosted = masterRunsEngineSubmission(harnessd, process.ppid)
+  const nativeControlHosted = masterRunsEngineNativeControl(harnessd, process.ppid)
   const isolatedNativeControl = (engine: string): boolean => nativeControlHosted && isolatedLive(engine)
   const isolatedSubmission = (engine: string): boolean => submissionHosted && isolatedLive(engine)
   const isolatedRuntime = (engine: string): boolean => runtimeHosted && isolatedLive(engine)
@@ -840,7 +850,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   // Each service starts and is called through the host, so one that fails is logged and left off and
   // the core carries on without it (core/serviceHost.ts).
-  const serviceHost = createServiceHost(ports, { faults: testFaults(process.env.HARNESSD_TEST_FAULTS) })
+  const serviceHost = createServiceHost(ports, { faults: testFaults(harnessd.HARNESSD_TEST_FAULTS) })
   // The DSH companions: each harness agent's viewer and verdict watch (services/viewers.ts), started below.
   dshFrameContextRef = (s) => ports.viewers?.frameContext(s) ?? null
   // Models (services/models.ts), started below: what an agent's frame says of its grid, from memory.
@@ -899,7 +909,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // The services harnessd's master runs in their own processes (harnessd/services.ts, `HARNESSD_SERVICES`):
   // only under a master, which is what gives this core the token they connect with. Their requests are
   // routed to them, and answered SERVICE_UNAVAILABLE while they are down (core/serviceLinks.ts).
-  const serviceToken = process.env.HARNESSD_SUPERVISED === '1' ? process.env.HARNESSD_SERVICE_TOKEN : undefined
+  const serviceToken = harnessd.HARNESSD_SUPERVISED === '1' ? harnessd.HARNESSD_SERVICE_TOKEN : undefined
   const liveFor: LiveFor = (engine) => isolatedLive(engine) ? undefined : inline?.liveFor(engine)
   // The relay and its E2EE (gateway/): the backend link, the sessions and the keys, which every remote
   // client's frames go through, held at the same gate. In its own process by default (core/gatewayLink.ts),
@@ -1577,7 +1587,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // HARNESSD_TEST_SLOW_PROBE_MS holds each discovery probe for up to that long, at random, before it is
   // applied: some scans land at once and some straddle an agent's start, as on a loaded machine. The
   // end-to-end suite uses it to put a scan across an engine's start on purpose (e2e/core.e2e.ts).
-  const slowProbeMs = Number(process.env.HARNESSD_TEST_SLOW_PROBE_MS) || 0
+  const slowProbeMs = Number(harnessd.HARNESSD_TEST_SLOW_PROBE_MS) || 0
   const gridAssignments = createGridAssignments({ models: () => ports.models ?? MODELS_OFF, registry,
     revision: (id) => restartJobs.revision(id), announce: announceSession })
   const agentReconciler = new TerminalAgentReconciler({
@@ -1745,7 +1755,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onToolStart: turnHooks.onToolStart,
     onTurnStop: turnHooks.onTurnStop,
     onPromptHook: turnHooks.onPromptHook,
-    stopHookDelayMs: Number(process.env.HARNESSD_TEST_STOP_HOOK_DELAY_MS) || 0,
+    stopHookDelayMs: Number(harnessd.HARNESSD_TEST_STOP_HOOK_DELAY_MS) || 0,
     // `harness pair`, `unpair`, `remote-password`, `link connect`, `group` and `devices`: the keys are the
     // gateway's, and so are these answers (gateway/start.ts).
     onPair: (code) => gatewayOps.pair(code),
@@ -2615,9 +2625,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (outOfProcess.has('devices')) ports.devices = devicesLink.port
   else {
     serviceHost.start('devices', (core, started) => inline!.startDevices(core, started, {
-      logsDir: env.HARNESS_LOGS_DIR, testDialPort: process.env.HARNESSD_TEST_DIAL_PORT,
+      logsDir: env.HARNESS_LOGS_DIR, testDialPort: harnessd.HARNESSD_TEST_DIAL_PORT,
       dialSerials: process.env.HARNESS_DIAL_SERIALS?.split(',').map((serial) => serial.trim()).filter(Boolean),
-      cableDisabled: env.CABLE_DISABLE, faults: testFaults(process.env.HARNESSD_TEST_FAULTS),
+      cableDisabled: env.CABLE_DISABLE, faults: testFaults(harnessd.HARNESSD_TEST_FAULTS),
     }), coreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS)
     // Everything the windows said while the devices were being built, and what the machine runs.
     if (ports.devices) devicesLink.started(ports.devices)
@@ -2634,7 +2644,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Worktrees Harness made that no live or stopped harness uses and nothing would miss
   // (services/workspaces.ts): a few minutes after start, once restored agents are back in the
   // registry, then twice a day. Only the end-to-end harness shortens the first wait.
-  setTimeout(() => ports.workspaces?.sweepUnused(), Number(process.env.HARNESSD_TEST_SWEEP_AFTER_MS) || 5 * 60_000).unref()
+  setTimeout(() => ports.workspaces?.sweepUnused(), Number(harnessd.HARNESSD_TEST_SWEEP_AFTER_MS) || 5 * 60_000).unref()
   setInterval(() => ports.workspaces?.sweepUnused(), 12 * 3600_000).unref()
 
 
@@ -2658,7 +2668,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // starting — a client reconnecting the moment the port answered, the backend's first frames — are
   // answered now, in order, by the handlers meant to answer them (see BackendSocket.openRequests).
   // Only the end-to-end harness sets this: a start-up that hangs after binding, for the master's deadline.
-  if (process.env.HARNESSD_TEST_HOLD_READY === '1') await new Promise<never>(() => {})
+  if (harnessd.HARNESSD_TEST_HOLD_READY === '1') await new Promise<never>(() => {})
   backend.openRequests()
   daemonBoot.openRequests = null
   coreLink.ready()
@@ -2758,15 +2768,19 @@ const enterSafeMode = (err: unknown): void => {
 
 /** `harness __run`: the core, as harnessd's master (or `harness start` without one) spawns it. */
 export function runCore(scriptPath: string): void {
+  // First, before anything this core starts can inherit them: a tmux server, an engine, a shell
+  // (lib/harnessdEnv.ts).
+  holdHarnessdEnv()
   SCRIPT_PATH = scriptPath
   // Inert unless the end-to-end suite asks for its event loop to be held (core/stall.ts).
-  startStalls(testFaults(process.env.HARNESSD_TEST_FAULTS))
+  startStalls(testFaults(harnessdEnv().HARNESSD_TEST_FAULTS))
   // NOT `onError`: a daemon that dies here can never be updated. See `enterSafeMode`.
   runForeground(readAuthSession()).catch(enterSafeMode)
 }
 
 /** `harness start -f` with `HARNESS_NO_MASTER=1`, and a start under tsx: the core alone, in the process of the command that asked for it. */
 export function runCoreInForeground(session: AuthSession | null, scriptPath: string): Promise<void> {
+  holdHarnessdEnv()
   SCRIPT_PATH = scriptPath
   return runForeground(session)
 }

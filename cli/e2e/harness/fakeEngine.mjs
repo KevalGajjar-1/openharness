@@ -25,8 +25,9 @@
 // (Claude Code) works on after its first stop because the /goal hook refused it (`!goalpause <condition>`:
 // refused, and the goal paused with no further output), `!compactmid` compacts in the
 // middle of a turn as an automatic compaction does, `!version` answers with the version this
-// process is, `!goal` and `!goal done` (Codex) start and achieve a goal the way Codex 0.160 shows one
-// under its composer, `!browse` (Codex) leaves Codex browsing its transcript in its default fullscreen
+// process is, `!env <prefix>` with the names of the variables in its environment that start with the
+// prefix (never their values), as an agent that reads its own environment can, `!goal` and `!goal done`
+// (Codex) start and achieve a goal the way Codex 0.160 shows one under its composer, `!browse` (Codex) leaves Codex browsing its transcript in its default fullscreen
 // mode, and `!browse scrollback` in its scrollback mode, `!transcript` (Claude Code) leaves it in its
 // transcript view, as ctrl+o does, `!overlay` (Codex) in its transcript overlay, as ctrl+t does in its
 // scrollback mode, `!search` searching its prompt history, as ctrl+r does, `!config` (Claude Code) in its
@@ -1450,6 +1451,11 @@ export async function run(engine, config = {}, { native = false } = {}) {
       return
     }
     if (directive?.[1] === 'version') { await finish(versionLine); return }
+    if (directive?.[1] === 'env') {
+      const names = Object.keys(process.env).filter((name) => name.startsWith(directive[2])).sort()
+      await finish(`env ${directive[2]}: ${names.join(',') || '(none)'}`)
+      return
+    }
     if (engine === 'codex' && directive?.[1] === 'goal') {
       bottom = goalBottom(directive[2] === 'done' ? 'Goal achieved (1m)' : 'Pursuing goal (1m)')
       await finish(`answer ${turn}: ${prompt}`)
