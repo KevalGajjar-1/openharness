@@ -250,7 +250,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. Try again in a moment.')
     const me = { machineId: self(), agentId: session.agentId }
     const peers = directory.peers(me)
-    if (!directory.tabsOf(me).length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with ⇄ on the tab.')
+    if (!directory.tabsOf(me).length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
     await learnNames(peers, true)
     const mates = peers.map(teammate)
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])

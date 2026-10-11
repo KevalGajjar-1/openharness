@@ -30,7 +30,7 @@ Windows is not supported.
 
 ## Agent Messages
 
-Harnesses in the same tab can message each other once **Agent Messages** is on for that tab (⇄ on the tab;
+Harnesses in the same tab can message each other once **Agent Messages** is on for that tab (the chat icon on the tab;
 off by default). An agent runs, in its own pane:
 
 ```bash

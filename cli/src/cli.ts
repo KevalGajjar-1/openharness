@@ -137,7 +137,7 @@ Machine:
   harness search <words>       find the conversation on this computer that said them: every turn of
                                every harness, live or stopped (--limit=N, --json)
   harness send <name> "text"   from an agent's pane: message a teammate in this tab, when Agent Messages
-                               are on there (⇄ on the tab); \`harness send\` alone lists who is here
+                               are on there (the tab's chat icon); \`harness send\` alone lists who is here
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})
