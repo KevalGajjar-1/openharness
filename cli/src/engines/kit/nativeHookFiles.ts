@@ -67,7 +67,7 @@ function ensureDirectory(path: string, attempt: HookPreparationAttempt): void {
 function directoryPath(path: string): string {
   const suffix: string[] = []
   for (let depth = 0; depth < 256; depth++) {
-    const route = new NativePaths(new NativeEvidenceBudget(250)).resolveSync(path, true)
+    const route = new NativePaths(new NativeEvidenceBudget()).resolveSync(path, true)
     if (route) {
       if (!route.info.isDirectory()) throw new HookPreparationHeld('the configuration parent is not a directory')
       return join(route.path, ...suffix)
@@ -80,7 +80,7 @@ function directoryPath(path: string): string {
 /** The result is local to one preparation attempt, not a settings cache.
  * A changed alias, owner, file or contents invalidates the whole observation. */
 export function inspectHookFile(file: string, defaultMode = 0o666) {
-  const paths = new NativePaths(new NativeEvidenceBudget(250))
+  const paths = new NativePaths(new NativeEvidenceBudget())
   const located = paths.resolveSync(file, true)
   const facts = paths.snapshot()
   const directory = directoryPath(dirname(file))
@@ -112,7 +112,7 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
     // Another destination in the same preparation may have created a shared
     // absent directory. New ordinary directories are fine; a newly inserted
     // alias is not authority to write at a different location.
-    const fresh = new NativePaths(new NativeEvidenceBudget(250))
+    const fresh = new NativePaths(new NativeEvidenceBudget())
     fresh.resolveSync(file, true)
     const knownAliases = new Set(facts.filter(fact => fact.alias).map(fact => fact.path))
     if (fresh.snapshot().some(fact => fact.alias && !knownAliases.has(fact.path))) {
@@ -130,7 +130,7 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
     if (content !== null && next !== null && (mode & 0o200) === 0) throw new HookPreparationHeld('the settings file is read-only')
     let parent = dirname(target)
     for (let depth = 0; depth < 256; depth++) {
-      const route = new NativePaths(new NativeEvidenceBudget(250)).resolveSync(parent, true)
+      const route = new NativePaths(new NativeEvidenceBudget()).resolveSync(parent, true)
       if (route) { accessSync(route.path, constants.W_OK | constants.X_OK); return }
       parent = dirname(parent)
     }
@@ -225,7 +225,7 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
       attempt.observe(file, inspectHookFile(file).verify)
       let parent = dirname(target)
       for (let depth = 0; depth < 256; depth++) {
-        const route = new NativePaths(new NativeEvidenceBudget(250)).resolveSync(parent, true)
+        const route = new NativePaths(new NativeEvidenceBudget()).resolveSync(parent, true)
         if (route) { await syncDirectoryChain(route.path, attempt); break }
         parent = dirname(parent)
       }
@@ -263,7 +263,7 @@ interface PendingPreparation { identity?: string; keys: string[]; revoke(): void
 function preparationProof(files: readonly string[], verifyRoutes: () => void): HookPreparationProof {
   verifyRoutes()
   const confirmed = files.map(file => {
-    const paths = new NativePaths(new NativeEvidenceBudget(250)), located = paths.resolveSync(file, true)
+    const paths = new NativePaths(new NativeEvidenceBudget()), located = paths.resolveSync(file, true)
     const observed = inspectHookFile(file)
     return { file, target: located?.path ?? join(directoryPath(dirname(file)), basename(file)), stamp: observed.stamp, facts: paths.snapshot(), verify: observed.verify }
   })
@@ -345,7 +345,7 @@ export async function flushHookFile(fd: number, check: () => void, cancellations
 export function hookPreparationRoutes(files: readonly string[]): { verify(): void; keys: string[]; facts: ReturnType<NativePaths['snapshot']> } {
   if (!files.length || files.length > 32) throw new HookPreparationHeld('the destination set exceeds its limit')
   const reservations = files.map(file => {
-    const paths = new NativePaths(new NativeEvidenceBudget(250))
+    const paths = new NativePaths(new NativeEvidenceBudget())
     const located = paths.resolveSync(file, true), facts = paths.snapshot()
     const key = located?.path ?? join(directoryPath(dirname(file)), basename(file))
     return { file, key, facts: facts.filter(fact => fact.identity !== null && fact.path !== located?.path),
@@ -354,7 +354,7 @@ export function hookPreparationRoutes(files: readonly string[]): { verify(): voi
   const verifyRoutes = () => {
     for (const { file, key, facts, aliases } of reservations) {
       if (facts.length) verifyNativePathFacts(facts)
-      const fresh = new NativePaths(new NativeEvidenceBudget(250)), located = fresh.resolveSync(file, true)
+      const fresh = new NativePaths(new NativeEvidenceBudget()), located = fresh.resolveSync(file, true)
       const target = located?.path ?? join(directoryPath(dirname(file)), basename(file))
       if (target !== key || fresh.snapshot().some(fact => fact.alias && !aliases.has(fact.path))) {
         throw new HookPreparationHeld('the reserved destination route changed')

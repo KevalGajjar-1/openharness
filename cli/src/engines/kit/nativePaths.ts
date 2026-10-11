@@ -12,7 +12,7 @@ type Location = { path: string; info: BigIntStats } | null
 /** Immutable route facts can cross a service boundary; timestamps matter for aliases, not sibling churn. */
 export type NativePathFact = { path: string; identity: string | null; alias?: { target: string; version: string } }
 export function verifyNativePathFacts(facts: readonly NativePathFact[]): void {
-  verifyPathFacts(facts, new NativeEvidenceBudget(250), 256)
+  verifyPathFacts(facts, new NativeEvidenceBudget(), 256)
 }
 function verifyPathFacts(facts: readonly NativePathFact[], budget: NativeEvidenceBudget, limit: number): void {
   if (!facts.length || facts.length > limit) return nativeUnavailable('the retained route exceeds its limit')
@@ -84,7 +84,7 @@ export class NativePaths {
    * shared operation budget instead of applying one route's 256-component cap. */
   retain(): (budget?: NativeEvidenceBudget) => void {
     const facts = this.snapshot()
-    return (budget = new NativeEvidenceBudget(250)) => {
+    return (budget = new NativeEvidenceBudget()) => {
       if (facts.length) verifyPathFacts(facts, budget, 32_768)
     }
   }
@@ -99,7 +99,7 @@ export class NativePaths {
     this.budget.step()
     const retained = [...this.parts].filter(([path]) => path !== removedPath && !path.startsWith(removedPath + '/'))
     return () => {
-      const fresh = new NativePaths(new NativeEvidenceBudget(250))
+      const fresh = new NativePaths(new NativeEvidenceBudget())
       for (const [path, part] of retained) fresh.parts.set(path, part)
       fresh.verify()
     }

@@ -87,7 +87,7 @@ interface Snapshot {
 
 /** Reading a journal is observation, never permission to chmod a foreign file. */
 function read(file: string): { text: string; file: string; version: string; verify(): void } | undefined {
-  const paths = new NativePaths(new NativeEvidenceBudget(250))
+  const paths = new NativePaths(new NativeEvidenceBudget())
   const location = paths.resolveSync(file, true), facts = paths.snapshot()
   if (!location) return undefined
   if (lstatSync(file).isSymbolicLink()) held('aliased journal record')
@@ -133,7 +133,7 @@ function validIntake(value: unknown, maxBytes = 300_000): value is NativeHookInt
 
 /** A directory walk yields regularly and proves its complete, unchanged boundary. */
 async function entries(path: string, limit: number, strict = false): Promise<{ names: string[]; inspected: number; verify(): void }> {
-  const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(path)!, facts = paths.snapshot()
+  const paths = new NativePaths(new NativeEvidenceBudget()), location = paths.resolveSync(path)!, facts = paths.snapshot()
   const route = new Map<string, string>()
   for (let part = location.path;; part = dirname(part)) {
     route.set(part, stamp(lstatSync(part, { bigint: true })))
@@ -314,7 +314,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       // The independent bootstrap must precede every namespace side effect.
       // Existing state with a lost bootstrap is never a fresh namespace.
       const absentPaths = [directory, witnesses, authorityFile, sealFile].map(path => {
-        const routes = new NativePaths(new NativeEvidenceBudget(250))
+        const routes = new NativePaths(new NativeEvidenceBudget())
         if (routes.resolveSync(path, true)) held('the journal bootstrap is missing')
         return routes.snapshot()
       })
@@ -464,7 +464,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       verifyAuthority()
       // Deduplicate ancestor checks through namespace authority; each immutable
       // leaf version consumed by the chain must still be the version inspected.
-      const budget = new NativeEvidenceBudget(250)
+      const budget = new NativeEvidenceBudget()
       for (const record of versions) {
         budget.step()
         if (stamp(lstatSync(record.file, { bigint: true })) !== record.version) held('journal record changed after recovery')

@@ -165,7 +165,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
   writer = structuredClone(writer)
   if (!validWriter(writer) || !Number.isSafeInteger(maxGenerations) || maxGenerations < 1 || maxGenerations > MAX_GENERATIONS
     || !Number.isSafeInteger(terminalGenerations) || terminalGenerations < 0 || terminalGenerations >= maxGenerations) held('invalid pool configuration')
-  const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(root)!, facts = paths.snapshot()
+  const paths = new NativePaths(new NativeEvidenceBudget()), location = paths.resolveSync(root)!, facts = paths.snapshot()
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n || !owned(location.info)) held('the pool root is not private')
   const poolKey = hash(JSON.stringify([location.path, maxGenerations, terminalGenerations])), rootIdentity = identity(location.info)
   const normalGenerations = maxGenerations - terminalGenerations

@@ -36,7 +36,7 @@ off by default). An agent runs, in its own pane:
 ```bash
 harness send                          # who is in this tab, and how to work together
 harness send api "Is the cleanup fix in?"
-harness send api,web --text-file note.md
+harness send api,web --text-file /tmp/note.md   # a longer message, from the temporary folder
 ```
 
 The pane says who is sending; a message goes only to harnesses that share a tab with Agent Messages on, on this

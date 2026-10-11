@@ -1236,7 +1236,8 @@ export interface GatewayOps {
   devicesList(): Promise<HttpAnswer>
   devicesRemove(pub: string): Promise<HttpAnswer>
   devicesHistory(): Promise<HttpAnswer>
-  devicesDismiss(body: { pub?: string; pubs?: string[]; baseline?: boolean }): Promise<HttpAnswer>
+  /** `confirm`: "It's mine" for the one key named, shared with the account's other devices. */
+  devicesDismiss(body: { pub?: string; pubs?: string[]; baseline?: boolean; confirm?: boolean }): Promise<HttpAnswer>
   devicesRebaseline(confirm: boolean, head?: { seq: number; hash: string }): Promise<HttpAnswer>
   /** The Wi-Fi device's direct links: discovered devices, pairing one, and its pairings. A refusal is an
    *  answer (`{ refused }`), as the device's local API words it. */

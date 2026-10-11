@@ -5,8 +5,9 @@
  * It runs eagerly before launch. Unknown files are held, foreign commands are
  * preserved, and hook and approval destinations are inspected before publication.
  */
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { env } from '../../config/env.js'
 import type { HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
@@ -55,7 +56,8 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
   const file = join(home, settings.file)
   const root = env.HARNESS_AGENT_MESSAGES_DIR
   const inboxCommand = messagesCommand(root)
-  const event = settings.inbox!.event
+  const { event, allow } = settings.inbox!
+  let blockChanged = true
   try {
     verifyRequired()
     const observed = inspectHookFile(file)
@@ -66,8 +68,9 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     }
     const blocks = current.hooks[event] ?? []
     const ours = blocks.filter(isMessagesBlock)
-    const changed = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
+    blockChanged = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
       || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
+    const changed = (allow && 'list' in allow && withRule(current, allow.list, allow.rule)) || blockChanged
     current.hooks[event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
     const next = changed ? JSON.stringify(current, null, 2) + '\n' : observed.content!
     const reviewed = settings.reviewed ? prepareReviewed(settings.reviewed, home, file, JSON.parse(next) as Settings) : null
@@ -77,9 +80,44 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     published.verify(); approval?.verify()
     writeMessagesHook(root)
   } catch (err) {
-    console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, err instanceof Error ? err.message : err)
+    const reason = err instanceof Error ? err.message : err
+    if (blockChanged) console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, reason)
+    else {
+      // The hook was already in place and only the allowance was refused (a read-only file): its script is
+      // still kept current, and the log names what failed rather than calling the hook missing.
+      console.warn(`[hooks] could not allow harness send in ${file} (the engine asks before each one):`, reason)
+      try { writeMessagesHook(root) } catch { /* the hook runs nothing it cannot find; messages wait for idle */ }
+    }
     verifyRequired()
   }
+  if (allow && 'file' in allow) {
+    try { writeRulesFile(join(home, allow.file), allow.rule) } catch (err) {
+      console.warn(`[hooks] could not allow harness send in ${join(home, allow.file)} (the engine asks before each one):`, err instanceof Error ? err.message : err)
+    }
+  }
+}
+
+/**
+ * Add `rule` to the list at `[table, list]` (`permissions.allow`), creating what is missing and keeping every
+ * other rule. A shape Harness does not know is left as it is: the person's rules are never rewritten to fit.
+ */
+function withRule(settings: Settings, [table, list]: readonly [string, string], rule: string): boolean {
+  const at = settings[table] ?? {}
+  if (!at || typeof at !== 'object' || Array.isArray(at)) return false
+  const rules = (at as Record<string, unknown>)[list] ?? []
+  if (!Array.isArray(rules) || rules.includes(rule)) return false
+  settings[table] = { ...at, [list]: [...rules, rule] }
+  return true
+}
+
+/** A rules file Harness owns whole: written atomically, and only when it does not already say exactly this. */
+function writeRulesFile(file: string, rule: string): void {
+  const text = `# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n${rule}\n`
+  try { if (readFileSync(file, 'utf8') === text) return } catch { /* not written yet */ }
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  const temporary = `${file}.${process.pid}.tmp`
+  writeFileSync(temporary, text, { mode: 0o600 })
+  renameSync(temporary, file)
 }
 
 async function installNotifyHooks(engine: HookEngine, settings: HookSettings, port: number, home: string, options: NativeHookOptions, attempt: HookPreparationAttempt): Promise<boolean> {

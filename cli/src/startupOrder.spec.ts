@@ -208,7 +208,7 @@ describe('the core\'s start-up order (core/main.ts)', () => {
 const BINDING = /\bbackend\.(?:ownerCommands\.)?(?:[A-Za-z_$][\w$]*\s*=(?!=)|set[A-Z][\w$]*\()/g
 
 /** The test-only hold the end-to-end harness uses for a start-up that hangs after binding. */
-const TEST_HOLD = "if (process.env.HARNESSD_TEST_HOLD_READY === '1') await new Promise<never>(() => {})"
+const TEST_HOLD = "if (harnessd.HARNESSD_TEST_HOLD_READY === '1') await new Promise<never>(() => {})"
 
 describe('the core\'s request gate (core/main.ts)', () => {
   const source = code(SOURCE)

@@ -182,6 +182,10 @@ export interface HookServerHandlers {
   /** PATCH /api/agent-messages/tabs/:tabId — turn Agent Messages on or off for one tab; a local write, so
    *  CSRF-guarded like the desk's ops. */
   onAgentMessagesWrite?: (tabId: string, body: unknown) => Promise<PairOutcome>
+  /** GET/PATCH /api/agent-settings — what the person lets agents do on this computer (lib/agentSettings.ts), kept by
+   *  this daemon rather than the account: Settings ▸ Agents. The write is CSRF-guarded like the others. */
+  onAgentSettingsRead?: () => Promise<PairOutcome>
+  onAgentSettingsWrite?: (body: unknown) => Promise<PairOutcome>
   /** The account's Experimental switches, proxied with the daemon's own identity. */
   onExperimentalRead?: () => Promise<PairOutcome>
   onExperimentalWrite?: (body: unknown) => Promise<PairOutcome>
@@ -1311,7 +1315,7 @@ export function startHookServer(
       if (req.method === 'POST' && url === '/api/devices/dismiss') {
         if (!localOk) { json(403, { error: 'FORBIDDEN' }); return }
         if (!handlers.onDevicesDismiss) { json(503, { error: 'UNAVAILABLE' }); return }
-        let body: { pub?: unknown; pubs?: unknown; baseline?: unknown }
+        let body: { pub?: unknown; pubs?: unknown; baseline?: unknown; confirm?: unknown }
         try { body = JSON.parse(await readBody(req)) as typeof body } catch { json(400, { error: 'bad json' }); return }
         if (!body || typeof body !== 'object') { json(400, { error: 'bad json' }); return }
         if (body.pub !== undefined && (typeof body.pub !== 'string' || !body.pub)) { json(400, { error: 'MISSING_PUB' }); return }
@@ -1322,6 +1326,8 @@ export function startHookServer(
           ...(typeof body.pub === 'string' ? { pub: body.pub } : {}),
           ...(Array.isArray(body.pubs) ? { pubs: body.pubs as string[] } : {}),
           ...(body.baseline === true ? { baseline: true } : {}),
+          // "It's mine" for one device: the account's other devices are told too (deviceLogSyncer `dismiss`).
+          ...(body.confirm === true ? { confirm: true } : {}),
         }); json(out.status, out.body); return
       }
 
@@ -1367,6 +1373,17 @@ export function startHookServer(
         let body: unknown
         try { body = JSON.parse(await readBody(req)) } catch { json(400, { error: { code: 'BAD_REQUEST', message: 'Invalid JSON body' } }); return }
         await proxied(() => handlers.onAgentMessagesWrite!(agentMessagesTab[1], body)); return
+      }
+      if (req.method === 'GET' && url === '/api/agent-settings') {
+        if (!handlers.onAgentSettingsRead) { json(503, { error: 'UNAVAILABLE' }); return }
+        await proxied(handlers.onAgentSettingsRead); return
+      }
+      if (req.method === 'PATCH' && url === '/api/agent-settings') {
+        if (!localOk) { json(403, { error: 'FORBIDDEN' }); return }
+        if (!handlers.onAgentSettingsWrite) { json(503, { error: 'UNAVAILABLE' }); return }
+        let body: unknown
+        try { body = JSON.parse(await readBody(req)) } catch { json(400, { error: { code: 'BAD_REQUEST', message: 'Invalid JSON body' } }); return }
+        await proxied(() => handlers.onAgentSettingsWrite!(body)); return
       }
       if (req.method === 'GET' && url === '/api/experimental-settings') {
         if (!handlers.onExperimentalRead) { json(503, { error: 'UNAVAILABLE' }); return }

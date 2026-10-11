@@ -29,7 +29,7 @@ export function readHandoffFile(path: string, limit: number, privateMode = false
       || typeof process.getuid === 'function' && before.uid !== BigInt(process.getuid())
       || before.size > BigInt(limit) || before.nlink < 1n
       || (before.mode & (privateMode ? 0o077n : 0o022n)) !== 0n) return hold()
-    const bytes = Buffer.alloc(Number(before.size)), budget = new NativeEvidenceBudget(250)
+    const bytes = Buffer.alloc(Number(before.size)), budget = new NativeEvidenceBudget()
     for (let at = 0, calls = 0; at < bytes.length; calls++) {
       budget.step()
       if (calls >= 128) return hold()

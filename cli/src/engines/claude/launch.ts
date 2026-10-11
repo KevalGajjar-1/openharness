@@ -25,4 +25,19 @@ export const launch: EngineLaunch = {
     home: { variable: 'CLAUDE_CONFIG_DIR', otherwise: 'home' }, file: '.claude.json',
     format: 'json', projects: 'projects', accepted: 'hasTrustDialogAccepted', entry: { allowedTools: [] },
   },
+  /**
+   * Claude Code's `attribution.pr`: the text it adds to a pull request it opens. Set, it replaces Claude Code's own
+   * line, so the value keeps that line first (2.1.296 `rro`: `pr: h.pr ?? <own line>`). `--settings` overrides the
+   * person's user, project and local settings key by key (lodash `mergeWith`), so their `attribution.commit` stays.
+   * `attribution: false`, a `pr` of "" and the older `includeCoAuthoredBy: false` each hide the line: nothing is added
+   * then, and the last would otherwise bring the commit trailer back (setting `pr` ends it).
+   */
+  attribution: {
+    kind: 'setting',
+    home: { variable: 'CLAUDE_CONFIG_DIR', otherwise: { folder: '.claude' } }, file: 'settings.json',
+    folder: ['.claude/settings.json', '.claude/settings.local.json'],
+    key: 'attribution', field: 'pr', legacy: { key: 'includeCoAuthoredBy', until: ['commit', 'pr'] },
+    own: '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+    args: ['--settings', '{settings}'],
+  },
 }

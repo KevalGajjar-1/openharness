@@ -35,7 +35,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   root: string; verifyRoot(root: string): void; pool: Pool; operationTimeoutMs?: number
 }) {
   if (!Number.isFinite(operationTimeoutMs) || operationTimeoutMs <= 0 || operationTimeoutMs > 4500) held('invalid operation deadline')
-  const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(root)!, facts = paths.snapshot()
+  const paths = new NativePaths(new NativeEvidenceBudget()), location = paths.resolveSync(root)!, facts = paths.snapshot()
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n
     || typeof process.getuid === 'function' && location.info.uid !== BigInt(process.getuid())) held('the storage root is not private')
   const expectedRoot = identity(location.info), canonical = location.path
@@ -176,7 +176,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
         ancestors()
         const frontier = stamp(lstatSync(canonical, { bigint: true }))
         if (frontier === emptyFrontier) return
-        const route = metadata.routeStamps(canonical), budget = new NativeEvidenceBudget(250)
+        const route = metadata.routeStamps(canonical), budget = new NativeEvidenceBudget()
         // A previous draft's hash-named journal is retained evidence too. It
         // cannot disappear from authority merely because today's fixed-name
         // allocation scan does not recognize its format.

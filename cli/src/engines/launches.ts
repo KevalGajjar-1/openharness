@@ -2,8 +2,9 @@ import type { EngineLaunch } from './facets/launch.js'
 import type { AgentEngine } from './types.js'
 import { launch as claude } from './claude/launch.js'
 import { launch as codex } from './codex/launch.js'
-import { contextArgsOf, envArgsOf, ownProviderArgs } from './kit/launchArgs.js'
-import { launchHome } from '../lib/engineHomes.js'
+import { attributionArgsIn } from './kit/attribution.js'
+import { contextArgsOf, envArgsOf, ownProviderArgs, readConfig } from './kit/launchArgs.js'
+import { launchHome, launchHomeOf, launchPersonalHome } from '../lib/engineHomes.js'
 
 /**
  * Launch metadata has no transcript imports: preparing argv must not load transcript readers. The contracts
@@ -51,4 +52,29 @@ export function ownLoginProviderArgs(
 ): string[] {
   const own = launchContract(engine)?.ownProvider
   return own ? ownProviderArgs(own, launchHome(own.home, profile, deps.env), deps.read) : []
+}
+
+/** Where a launch reads the person's settings from, for `attributionArgs`. */
+export interface AttributionPlace {
+  /** The harness's folder, or null where it has none. */
+  cwd: string | null
+  /** The agent's own engine home (a Codex agent's profile), where the engine's home takes one. */
+  profile?: string | null
+  /** The launch's environment as its shell set it (a native launch's); the daemon's launch environment when absent. */
+  environment?: NodeJS.ProcessEnv
+  /** A seam, like `readCodexConfig`: a spec's launch reads no settings of the machine it runs on. The real file when absent. */
+  read?: (path: string) => string | null
+}
+
+/**
+ * The argv that has `engine` add `line` to the pull requests it opens (`EngineLaunch.attribution`), from the person's
+ * settings as this launch would read them: nothing for an engine that declares no way to, or where they hid the
+ * engine's own attribution (kit/attribution.ts). Read at each launch, as the person may change them in between.
+ */
+export function attributionArgs(engine: AgentEngine | string, line: string, place: AttributionPlace): string[] {
+  const contract = launchContract(engine)?.attribution
+  return contract ? attributionArgsIn(contract, line, {
+    home: launchHomeOf(contract.home, place.profile, place.environment), personal: launchPersonalHome(place.environment),
+    cwd: place.cwd, read: place.read ?? readConfig,
+  }) : []
 }

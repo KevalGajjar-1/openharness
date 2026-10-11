@@ -71,7 +71,7 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
       mkdirSync(directory, { mode: 0o700 })
     }
     privateDirectory(directory, false)
-    const directoryPaths = new NativePaths(new NativeEvidenceBudget(250)), selectedDirectory = directoryPaths.resolveSync(directory)!
+    const directoryPaths = new NativePaths(new NativeEvidenceBudget()), selectedDirectory = directoryPaths.resolveSync(directory)!
     const directoryFacts = directoryPaths.snapshot()
     attempt.observe(directory, () => verifyNativePathFacts(directoryFacts))
     const ownerBytes = JSON.stringify({ digest, directory: identity(selectedDirectory.info) })
@@ -104,7 +104,7 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
       mkdirSync(link.target, { recursive: true, mode: 0o700 })
       route.verify()
       // The borrowed native directory may be an existing, verified alias.
-      const targetPaths = new NativePaths(new NativeEvidenceBudget(250)), target = targetPaths.resolveSync(link.target)
+      const targetPaths = new NativePaths(new NativeEvidenceBudget()), target = targetPaths.resolveSync(link.target)
       if (!target?.info.isDirectory()) throw new HookPreparationHeld('the borrowed native location is not a directory')
       const retained = targetPaths.snapshot()
       const authorityBytes = JSON.stringify({ version: 1, target: link.target, facts: retained })
@@ -125,7 +125,7 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
         if (settled.content !== null || completedBefore.content !== null) throw new HookPreparationHeld('a published native link was removed')
         symlinkSync(link.target, path, 'dir')
       }
-      const selected = new NativePaths(new NativeEvidenceBudget(250))
+      const selected = new NativePaths(new NativeEvidenceBudget())
       selected.resolveSync(path)
       const facts = selected.snapshot()
       linkFacts.push(...facts)
@@ -148,7 +148,7 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
   }
   // Joined publishers still retain their own link routes, not a peer's closure.
   for (const link of links) {
-    const paths = new NativePaths(new NativeEvidenceBudget(250)); paths.resolveSync(join(directory, link.name)); linkFacts.push(...paths.snapshot())
+    const paths = new NativePaths(new NativeEvidenceBudget()); paths.resolveSync(join(directory, link.name)); linkFacts.push(...paths.snapshot())
   }
   const retained = new Map<string, NativePathFact>()
   for (const fact of [...linkFacts, ...targetRoutes?.facts ?? []]) {

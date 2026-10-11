@@ -8,6 +8,7 @@ import { registry, type RegisteredSession } from './lib/registry.js'
 import { env } from './config/env.js'
 import { readHookCredential } from './lib/hookAuth.js'
 import { ENGINES } from './engines/types.js'
+import { agentSettingsRoutes } from './lib/agentSettings.js'
 import { engineHooks } from './engines/hooks.js'
 
 let server: Server | null = null
@@ -354,6 +355,30 @@ describe('account Experimental settings proxy', () => {
     expect(saved.status).toBe(200)
     expect(write).toHaveBeenCalledExactlyOnceWith(body)
     expect((await fetch(`${base}/api/experimental-settings`, { method: 'PATCH', headers: { 'x-adapter-local': '1' }, body: '{bad' })).status).toBe(400)
+  })
+})
+
+describe('what the person lets agents do', () => {
+  it('reads and writes this computer\'s agent settings, the write guarded by the local header', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'agent-settings-route-'))
+    try {
+      const routes = agentSettingsRoutes(dataDir)
+      const { base } = await start({ onAgentSettingsRead: routes.read, onAgentSettingsWrite: routes.write })
+      const patch = (body: string, local = true) => fetch(`${base}/api/agent-settings`, { method: 'PATCH', headers: { 'content-type': 'application/json', ...(local ? { 'x-adapter-local': '1' } : {}) }, body })
+      expect(await (await fetch(`${base}/api/agent-settings`)).json()).toEqual({ agentsStartAgents: true, pullRequestLine: true })
+      expect((await patch('{"agentsStartAgents":false}', false)).status).toBe(403)
+      expect(await (await patch('{"agentsStartAgents":false}')).json()).toEqual({ agentsStartAgents: false, pullRequestLine: true })
+      expect(await (await patch('{"pullRequestLine":false}')).json()).toEqual({ agentsStartAgents: false, pullRequestLine: false })
+      expect(await (await fetch(`${base}/api/agent-settings`)).json()).toEqual({ agentsStartAgents: false, pullRequestLine: false })
+      expect((await patch('{"other":1}')).status).toBe(400)
+      expect((await patch('{bad')).status).toBe(400)
+    } finally { rmSync(dataDir, { recursive: true, force: true }) }
+  })
+
+  it('answers UNAVAILABLE without a handler', async () => {
+    const { base } = await start({})
+    expect((await fetch(`${base}/api/agent-settings`)).status).toBe(503)
+    expect((await fetch(`${base}/api/agent-settings`, { method: 'PATCH', headers: { 'x-adapter-local': '1' }, body: '{}' })).status).toBe(503)
   })
 })
 
@@ -722,6 +747,11 @@ describe('the device history and dismiss endpoints', () => {
     expect((await post(JSON.stringify({ pubs: 'a' }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: ['a', 5] }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: Array.from({ length: 257 }, (_, i) => `k${i}`) }))).status).toBe(400)
+    // "It's mine": only a literal true asks for the other devices to be told.
+    expect((await post(JSON.stringify({ pubs: ['a'], confirm: true }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pubs: ['a'], confirm: true })
+    expect((await post(JSON.stringify({ pub: 'k', confirm: 'yes' }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pub: 'k' })
   })
 
   it('rebaseline passes the previewed head on, and refuses a malformed one', async () => {

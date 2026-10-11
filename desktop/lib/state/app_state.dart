@@ -1113,7 +1113,8 @@ class AppNotifier extends ChangeNotifier {
   void _firstArrivalBehindTour() {
     if (!firstArrivalBehindTour ||
         viewer != null ||
-        !_setupTour ||
+        // Behind the sign-in step as well: it stands where the tour stood.
+        !(_setupTour || _signInStep) ||
         status != AppStatus.authenticated ||
         !firstArrival.pending) {
       return;
@@ -1126,6 +1127,71 @@ class AppNotifier extends ChangeNotifier {
     if (!_setupTour) return;
     _setupTour = false;
     notifyListeners();
+  }
+
+  // --- Sign-in step (2026-10-11) ------------------------------------------
+  // A computer new to Harness is asked once, after setup and before its first
+  // workspace, whether to sign in (`widgets/sign_in_step.dart`): what an
+  // account adds, Google or Apple, and Skip. Everything on this computer works
+  // without one, so the page never blocks; afterwards the same sign-in is the
+  // button at the right end of the tab row. Design:
+  // `docs/research/2026-10-08-onboarding-redesign/index.html`, section 1b.
+  bool _signInStep = false;
+
+  /// Whether the sign-in step comes after setup: this computer is new to
+  /// Harness and holds no account. Only meaningful once [status] has left
+  /// setup — [signedIn] is presumed true until the CLI has been asked.
+  bool get signInStepNext => _signInStep && viewer == null && !signedIn;
+
+  /// Whether RootShell shows the sign-in step in place of the workspace: from
+  /// the moment setup (and its tour) hands over, until an account arrives or
+  /// the person skips.
+  bool get signInStepShowing {
+    if (!_signInStep || viewer != null || setupTourShowing) return false;
+    final signingInHere = status == AppStatus.bootstrapping && signingIn;
+    if (status != AppStatus.authenticated && !signingInHere) return false;
+    // An account, from this page or from a terminal meanwhile: nothing to ask.
+    // Held while the sign-in is still seating the desk, so the page does not
+    // give way to a bare spinner for that moment.
+    if (signedIn && !signingIn) {
+      _signInStep = false;
+      return false;
+    }
+    return true;
+  }
+
+  /// Skip on the sign-in step: on to the workspace without an account.
+  void skipSignInStep() {
+    if (!_signInStep) return;
+    _signInStep = false;
+    appLog.info('onboarding', 'sign-in step: skipped');
+    // A sign-in left waiting on the browser ends with the page that began it.
+    if (canCancelLogin) {
+      cancelLogin();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  /// The sign-in step's buttons. Unlike the sign-in sheet, the page does not
+  /// change while the browser is open, so every way in stays live: pressing
+  /// one again opens the browser again, and another one switches to it.
+  /// No [provider] is the sign-in page's own chooser — Continue with email.
+  Future<void> signInFromStep([SignInProvider? provider]) async {
+    if (signingIn) {
+      // The same way in, pressed again: its page again, not a second sign-in
+      // (the first one's browser tab would land on a listener that is gone).
+      if (signInProvider == provider) {
+        if (pendingAuthorizeUrl != null && !_loginAuthorized) {
+          await openLoginBrowser();
+        }
+        return;
+      }
+      // Already approved in the browser: let it finish.
+      if (!canCancelLogin) return;
+      cancelLogin();
+    }
+    await login(provider);
   }
 
   /// What is still downloading beside setup (see [SetupDownloads]). The tour
@@ -4426,6 +4492,8 @@ class AppNotifier extends ChangeNotifier {
       if (firstHarness) {
         agentPrefetch?.setupRunning = true;
         agentPrefetch?.start();
+        // Asked once, after setup: see [signInStepShowing].
+        _signInStep = true;
       }
       if (!result.isReady && _canInstallUnattended(result, mode: null)) {
         if (firstHarness) {
@@ -7666,6 +7734,9 @@ class AppNotifier extends ChangeNotifier {
         ),
       ),
       append: (entry) => api.appendDeviceKey(entry),
+      // "It's mine", once for the account: read what other devices confirmed, share what this one does.
+      fetchAcks: (since) => api.deviceAcks(since),
+      postAck: (ack) => api.postDeviceAck(ack),
       label: _deviceLabel,
       onAnnounce: (m) => _whenSignedIn(() {
         // A key the person has already dismissed (while this waited) is not news any more.
@@ -7916,11 +7987,13 @@ class AppNotifier extends ChangeNotifier {
 
   /// Persists "seen" for [pub] (one), every device (neither) or the baseline panel, in whichever copy
   /// of the log this end keeps. Only when that cannot be — a daemon that predates it — does it stay
-  /// in memory ([_dismissedDevices]).
+  /// in memory ([_dismissedDevices]). [confirm]: the person pressed "It's mine" for that one device, so
+  /// the account's other devices are told too and stop showing it as new.
   Future<void> _persistSeen({
     String? pub,
     List<String>? pubs,
     bool baseline = false,
+    bool confirm = false,
   }) async {
     // Which dismissals this write settles; the baseline panel's "Got it" settles none of them.
     void settled() {
@@ -7935,7 +8008,7 @@ class AppNotifier extends ChangeNotifier {
         if (baseline) {
           await log.seeBaseline();
         } else {
-          await log.dismiss(pub: pub, pubs: pubs);
+          await log.dismiss(pub: pub, pubs: pubs, confirm: confirm);
         }
         settled();
         return;
@@ -7944,6 +8017,7 @@ class AppNotifier extends ChangeNotifier {
         pub: pub,
         pubs: pubs,
         baseline: baseline,
+        confirm: confirm,
       )) {
         settled();
       }
@@ -7993,7 +8067,8 @@ class AppNotifier extends ChangeNotifier {
   ///
   /// [pub] alone (the device's own page, where a suspension is shown) also lifts a suspension on it;
   /// the banner's "It's mine" does not — it dismisses through [pubs], which leaves a fork's
-  /// suspension in place.
+  /// suspension in place. Either way it is "It's mine" for this one device: the account's other
+  /// devices are told, and stop showing it as new (opening the list, [seenNewDevices], tells nobody).
   void dismissNewDevice(String pub, {bool liftSuspension = false}) {
     newDevices.removeWhere((d) => d.pub == pub);
     // A key that joined and left before anyone looked: a "New device" for it is a stale replay, and its
@@ -8007,7 +8082,9 @@ class AppNotifier extends ChangeNotifier {
     _pendingSyncGeneration++;
     notifyListeners();
     unawaited(
-      liftSuspension ? _persistSeen(pub: pub) : _persistSeen(pubs: [pub]),
+      liftSuspension
+          ? _persistSeen(pub: pub, confirm: true)
+          : _persistSeen(pubs: [pub], confirm: true),
     );
   }
 

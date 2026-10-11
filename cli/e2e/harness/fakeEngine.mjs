@@ -25,8 +25,9 @@
 // (Claude Code) works on after its first stop because the /goal hook refused it (`!goalpause <condition>`:
 // refused, and the goal paused with no further output), `!compactmid` compacts in the
 // middle of a turn as an automatic compaction does, `!version` answers with the version this
-// process is, `!goal` and `!goal done` (Codex) start and achieve a goal the way Codex 0.160 shows one
-// under its composer, `!browse` (Codex) leaves Codex browsing its transcript in its default fullscreen
+// process is, `!env <prefix>[,<prefix>…]` with the names of the variables in its environment that start with a
+// prefix (never their values), as an agent that reads its own environment can, `!goal` and `!goal done`
+// (Codex) start and achieve a goal the way Codex 0.160 shows one under its composer, `!browse` (Codex) leaves Codex browsing its transcript in its default fullscreen
 // mode, and `!browse scrollback` in its scrollback mode, `!transcript` (Claude Code) leaves it in its
 // transcript view, as ctrl+o does, `!overlay` (Codex) in its transcript overlay, as ctrl+t does in its
 // scrollback mode, `!search` searching its prompt history, as ctrl+r does, `!config` (Claude Code) in its
@@ -1450,6 +1451,12 @@ export async function run(engine, config = {}, { native = false } = {}) {
       return
     }
     if (directive?.[1] === 'version') { await finish(versionLine); return }
+    if (directive?.[1] === 'env') {
+      const prefixes = directive[2].split(',').filter(Boolean)
+      const names = Object.keys(process.env).filter((name) => prefixes.some((prefix) => name.startsWith(prefix))).sort()
+      await finish(`env ${directive[2]}: ${names.join(',') || '(none)'}`)
+      return
+    }
     if (engine === 'codex' && directive?.[1] === 'goal') {
       bottom = goalBottom(directive[2] === 'done' ? 'Goal achieved (1m)' : 'Pursuing goal (1m)')
       await finish(`answer ${turn}: ${prompt}`)
@@ -1718,8 +1725,26 @@ export async function run(engine, config = {}, { native = false } = {}) {
       }
     }
   })
+  // A first message on the command line (`claude "…"`, `codex "…"`, the daemon's `firstPromptArgs`) is sent as the
+  // session starts, as both CLIs send theirs. The fake used to drop it, so a harness started with a task never
+  // started its turn here (found by the agent verbs' end to end, e2e/agentClient.e2e.ts).
+  const launchPrompt = firstPromptOf(args)
+  if (launchPrompt) queue = queue.then(() => handle(launchPrompt))
   process.on('SIGTERM', () => process.exit(0))
   setInterval(() => {}, 60_000)
+}
+
+/** The options both CLIs read a value after, and Codex's `resume <id>` and `fork <id>`: the word after one is not a
+ *  prompt. `--settings <file-or-json>` carries the pull request line of a harness another agent started
+ *  (lib/agentAttribution.ts), last on a relaunch, where no first message follows it. */
+const TAKES_VALUE = new Set(['--model', '-m', '--permission-mode', '--resume', '-r', '--session-id', '--append-system-prompt',
+  '--mcp-config', '--effort', '--settings', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval', 'resume', 'fork'])
+
+/** The prompt at the end of the command line, when there is one. */
+function firstPromptOf(args) {
+  const last = args.at(-1)
+  if (!last || last.startsWith('-') || TAKES_VALUE.has(last) || args.length > 1 && TAKES_VALUE.has(args.at(-2))) return null
+  return last
 }
 
 // The native Codex: this module run as a script by `codexWrapper`. Last, so everything `run` reads at

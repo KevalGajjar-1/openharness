@@ -29,6 +29,7 @@ import { gridCliPresence } from './lib/gridBinary.js'
 import { GRID_FLEET_PROTOCOL, GRID_FLEET_MAX_TIMEOUT_MS } from './lib/gridFleetProtocol.js'
 import { isApiLaunch, parseGridLaunchOverride, type GridLaunchOverride } from './lib/gridLaunchWire.js'
 import type { ScmLaunchRecord } from './scm/types.js'
+import type { StartedBy } from './lib/agentAttribution.js'
 import { probeEngines } from './lib/engineProbe.js'
 import { engineInstallRecipe } from './lib/engineInstall.js'
 import { agentFrame, type AgentDshContext, type AgentFrame } from './lib/agentFrame.js'
@@ -164,6 +165,9 @@ export class BackendSocket {
     /** What the SCM that prepared `cwd` needs on every relaunch (registry `scmLaunch`). Present only
      *  when this create prepared a folder, and null when no SCM made it (a new folder, a clone). */
     scmLaunchRecord?: ScmLaunchRecord | null
+    /** `agent` when another agent started it (`harness new` from its pane); absent for the person. Kept on the
+     *  row: every launch of it adds a line to the pull requests it opens (lib/agentAttribution.ts). */
+    startedBy?: StartedBy | null
   }) =>
     Promise<{ ok: true; session: RegisteredSession } | { ok: false; error: string; detail?: string }>) | null = null
   /** Called on `remote_terminal_handoff` — cli.ts names the agent whose tile is that tmux pane, or null. */

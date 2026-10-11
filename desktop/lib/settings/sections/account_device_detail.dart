@@ -235,6 +235,14 @@ class _AccountDeviceDetailState extends State<_AccountDeviceDetail> {
                     machineId.length < 8 ? machineId.length : 8,
                   ),
                 ),
+              // Another of the person's devices said "It's mine" for it while it was new here: where
+              // the banner would have been, the list says where it was settled.
+              if (device?.confirmedOn case final on?)
+                _Fact(
+                  'Confirmed',
+                  'on ${on.trim().isEmpty ? 'another device' : on.trim()}',
+                  key: const Key('device-detail-confirmed'),
+                ),
               const SizedBox(height: 14),
               if (fp.isNotEmpty) ...[
                 FingerprintText(
@@ -302,7 +310,7 @@ class _AccountDeviceDetailState extends State<_AccountDeviceDetail> {
 }
 
 class _Fact extends StatelessWidget {
-  const _Fact(this.label, this.value);
+  const _Fact(this.label, this.value, {super.key});
 
   final String label, value;
 
