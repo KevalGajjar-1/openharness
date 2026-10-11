@@ -4,6 +4,7 @@ import { readProcessEvidence } from '../../lib/processEvidence.js'
 import { controlIdentity, nativeProcessControl, type NativeControlRow } from '../../lib/nativeProcessControl.js'
 import { NativeEvidenceBudget, nativeUnavailable } from './nativeEvidence.js'
 import { kernelBootId } from './nativeHookBoot.js'
+import { nativeHookIdentityV1, type NativeHookOriginOwner } from './nativeHookOrigin.js'
 
 export interface NativeHookOwner {
   /** Kernel boot, engine, PID and precise kernel birth; never an agent ID. */
@@ -12,8 +13,9 @@ export interface NativeHookOwner {
   evidence: string
 }
 export type NativeHookOwnerProof = NativeHookOwner & { verify(): void }
-export type NativeHookOwnerReader = (row: RegisteredSession, expected?: NativeHookOwner) => Promise<NativeHookOwnerProof>
-export type NativeHookCaller = { owner(row: RegisteredSession): NativeHookOwner & { source?: 'caller' | 'runtime' } }
+export type NativeHookExpectedOwner = NativeHookOwner | NativeHookOriginOwner
+export type NativeHookOwnerReader = (row: RegisteredSession, expected?: NativeHookExpectedOwner) => Promise<NativeHookOwnerProof>
+export type NativeHookCaller = { owner(row: RegisteredSession): NativeHookExpectedOwner & { source?: 'caller' | 'runtime' } }
 export type NativeHookCallerReader = (callerPid: number, runtimeOwners: readonly RegisteredSession[]) => Promise<NativeHookCaller>
 
 export function createNativeHookOwnerReader(): NativeHookOwnerReader & { captureCaller: NativeHookCallerReader } {
@@ -43,7 +45,8 @@ export function createNativeHookOwnerReader(): NativeHookOwnerReader & { capture
       const birth = process?.nativeBirth, evidence = process?.controlIdentity
       if (!birth || !evidence) return nativeUnavailable('the precise native hook process incarnation is unavailable')
       const owner = identity(row, birth, evidence, boot)
-      if (original && (original.key !== owner.key || original.evidence !== evidence)) {
+      if (original && (original.key !== owner.key || ('evidence' in original
+        ? original.evidence !== evidence : original.identityV1 !== nativeHookIdentityV1(evidence)))) {
         return nativeUnavailable('the original native hook process incarnation changed')
       }
       // The final probe is the last await before registry publication. Its

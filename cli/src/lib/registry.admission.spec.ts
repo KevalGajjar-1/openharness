@@ -1,6 +1,6 @@
 import type { Server } from 'node:http'
 import type { HookServerHandlers } from '../hookServer.js'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -707,7 +707,7 @@ it('revokes a bound hook before waiting for the HTTP server to close', async () 
 it('reproves the engine after claim confirmation even while its saved registry row is unchanged', async () => {
   const { IdentityReadUnavailable } = await import('../engines/kit/identityScan.js')
   let generation = 'original', claimWritten = false
-  const prove = vi.fn(async (_row: unknown, expected?: { key: string; evidence: string }) => {
+  const prove = vi.fn(async (_row: unknown, expected?: { key: string }) => {
     const proof = { key: `fixture-boot:codex:5102:${generation}`, evidence: generation, verify: () => {} }
     if (expected && expected.key !== proof.key) throw new IdentityReadUnavailable('the native generation changed during disk confirmation')
     return proof
@@ -745,6 +745,97 @@ it('never replaces the original caller proof with a same-second successor select
   expect(f.prompts).toEqual([])
   expect(f.registered).not.toHaveBeenCalled()
   unchanged(before)
+})
+
+it('admits a retained client origin after its hook exits and conflicts if the same delivery changes origin', async () => {
+  const boot = 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', birth = '123456', digest = 'a'.repeat(64)
+  const original = { version: 1, boot, callerPid: 6102, ancestry: [
+    { pid: 6102, parentPid: 5102, birth: '123457', identityV1: 'b'.repeat(64) },
+    { pid: 5102, parentPid: 1, birth, identityV1: digest },
+  ] }
+  const proof = { key: `${boot}\u0000codex\u00005102\u0000${birth}`, evidence: 'fixture-complete-native-evidence', verify() {} }
+  const liveCapture = vi.fn(async () => { throw Error('An exited hook cannot provide fresh ancestry') })
+  const expectedOrigins: unknown[] = []
+  const f = await httpFixture(undefined, undefined, {
+    captureNativeHookCaller: liveCapture,
+    resolveHookAgent: async query => {
+      const candidate = structuredClone(registry.byAgent(source)!)
+      expectedOrigins.push(query.nativeCaller!.owner(candidate))
+      return candidate
+    },
+    readNativeHookOwner: async (_row, expected) => {
+      expect(expected?.key).toBe(proof.key)
+      if (expected && 'identityV1' in expected) expect(expected.identityV1).toBe(digest)
+      return proof
+    },
+  }, undefined, true)
+  const delivery = { id: 'fixture-persisted-client-origin', firedAt: Date.now() }
+  expect(await f.post({ callerPid: 6102, nativeOrigin: original }, delivery)).toEqual({ status: 200, body: { ok: true } })
+  expect(await f.post({ callerPid: 6102, nativeOrigin: original }, delivery)).toEqual({ status: 200, body: { ok: true } })
+  const changed = structuredClone(original); changed.ancestry[0].birth = '999999'
+  expect(await f.post({ callerPid: 6102, nativeOrigin: changed }, delivery)).toEqual({ status: 409, body: { pending: false, error: 'HOOK_DELIVERY_CONFLICT' } })
+  expect(liveCapture).not.toHaveBeenCalled()
+  expect(expectedOrigins).toHaveLength(3)
+  expect(expectedOrigins[0]).toEqual({ key: proof.key, identityV1: digest, source: 'caller' })
+  expect(f.prompts).toEqual(['fixture prompt'])
+  expect(f.registered).toHaveBeenCalledOnce()
+})
+
+it.each(['unknown-version', 'missing-member', 'changed-caller'])('holds a %s retained origin without fresh ancestry fallback', async failure => {
+  const liveCapture = vi.fn(async () => { throw Error('No fallback allowed') }), nativeProof = vi.fn()
+  const f = await httpFixture(undefined, undefined, { captureNativeHookCaller: liveCapture, readNativeHookOwner: nativeProof }, undefined, true)
+  const origin = { version: 1, boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', callerPid: 6102,
+    ancestry: [{ pid: 6102, parentPid: 1, birth: '12345', identityV1: 'a'.repeat(64) }] }
+  if (failure === 'unknown-version') origin.version = 2
+  if (failure === 'missing-member') origin.ancestry = []
+  const before = snapshot()
+  expect(await f.post({ nativeOrigin: origin, callerPid: failure === 'changed-caller' ? 6103 : 6102 }))
+    .toMatchObject({ status: 202, body: { pending: false, retry: true } })
+  expect(liveCapture).not.toHaveBeenCalled()
+  expect(nativeProof).not.toHaveBeenCalled()
+  expect(f.registered).not.toHaveBeenCalled()
+  unchanged(before)
+})
+
+it.each(['wrong-digest', 'changed-cursor-route'])('reproves a client origin through HTTP and the real owner reader: %s', async failure => {
+  const boot = 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+  const engine = failure === 'wrong-digest' ? 'codex' : 'cursor'
+  const selected = engine === 'codex' ? registry.byAgent(source)! : registry.openProcessAgent({ engine: 'cursor',
+    tmuxPane: '%3', cwd: root, processIdentity: { pid: 5103, executable: '<cursor>', startMarker: 'fixture-start' } })!.entry
+  const original = structuredClone(selected), process = { pid: original.processIdentity!.pid, parentPid: 1, birth: '12345',
+    command: engine, imagePath: '/fixture/engine', argv: [engine], fds: [] }
+  vi.doMock('../engines/kit/nativeHookBoot.js', () => ({ kernelBootId: async () => boot }))
+  const { controlIdentity } = await import('./nativeProcessControlProbe.js')
+  const evidence = controlIdentity(process), readProcessEvidence = vi.fn(async (_pid: number, _budget: unknown, _children?: unknown, _expected?: unknown) =>
+    ({ parent: { nativeBirth: process.birth, controlIdentity: evidence } }))
+  vi.doMock('./processEvidence.js', () => ({ readProcessEvidence }))
+  try {
+    const { createNativeHookOwnerReader } = await import('../engines/kit/nativeHookOwner.js')
+    const { nativeHookRouteV1, nativeHookIdentityV1 } = await import('../engines/kit/nativeHookOrigin.js')
+    const reader = createNativeHookOwnerReader(), captureNativeHookCaller = vi.fn(reader.captureCaller)
+    const member = { pid: process.pid, parentPid: 1, birth: process.birth, identityV1: nativeHookIdentityV1(evidence) }
+    const origin = { version: 1, boot, callerPid: 6102, ancestry: failure === 'wrong-digest'
+      ? [{ pid: 6102, parentPid: process.pid, birth: '12346', identityV1: 'a'.repeat(64) }, { ...member, identityV1: 'f'.repeat(64) }]
+      : [{ pid: 6102, parentPid: 1, birth: '12346', identityV1: 'a'.repeat(64) }],
+    ...(failure === 'changed-cursor-route' ? { runtime: { agentId: original.agentId, routeV1: nativeHookRouteV1(original), process: member } } : {}) }
+    if (failure === 'changed-cursor-route') registry.updateRuntimes(original.agentId, [{ backend: 'tmux', paneId: '%4' }], 'tmux\u0000%4')
+    const f = await httpFixture(undefined, undefined, { readNativeHookOwner: reader, captureNativeHookCaller,
+      resolveHookAgent: async query => {
+        const current = structuredClone(registry.byAgent(original.agentId)!)
+        query.nativeCaller!.owner(current)
+        return current
+      },
+    }, undefined, true)
+    const before = snapshot()
+    expect(await f.post({ engine, nativeOrigin: origin, callerPid: 6102, tmuxPane: engine === 'cursor' ? '%3' : '%2' }))
+      .toMatchObject({ status: 202, body: { pending: false, retry: true } })
+    expect(captureNativeHookCaller).not.toHaveBeenCalled()
+    expect(f.prompts).toEqual([])
+    expect(f.registered).not.toHaveBeenCalled()
+    expect(existsSync(join(root, 'data', 'native-hook-deliveries'))).toBe(false)
+    if (failure === 'wrong-digest') expect(readProcessEvidence.mock.calls.at(-1)?.[3]).toEqual(original.processIdentity)
+    unchanged(before)
+  } finally { vi.doUnmock('./processEvidence.js'); vi.doUnmock('../engines/kit/nativeHookBoot.js') }
 })
 
 it.each(['commandcode', 'grok', 'agy', 'copilot'] as const)('admits the %s SessionStart before its deterministic transcript directories exist', async engine => {

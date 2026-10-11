@@ -30,6 +30,7 @@ import { isTrustedLocal, listenLocalSocket, type LocalSocketServer } from './lib
 import { currentBootId } from './lib/bootId.js'
 import { secureStateDirectory } from './lib/secureState.js'
 import { createNativeHookJournal, type NativeHookClaim, type NativeHookDelivery } from './engines/kit/nativeHookJournal.js'
+import { inspectNativeHookOrigin, nativeHookOriginCaller } from './engines/kit/nativeHookOrigin.js'
 import type { NativeHookCaller, NativeHookCallerReader, NativeHookOwner, NativeHookOwnerProof, NativeHookOwnerReader } from './engines/kit/nativeHookOwner.js'
 
 /**
@@ -195,7 +196,7 @@ const MAX_HOOK_BODY_BYTES = 256 * 1024
 const HOOK_BODY_FIELDS = new Set([
   'engine', 'launcherId', 'sessionId', 'transcriptPath', 'cwd', 'source', 'tmuxPane', 'title', 'model',
   'cliVersion', 'runtimeHints', 'callerPid', 'hookEvent', 'pluginVersion', 'reason', 'status', 'toolUseId',
-  'toolName', 'input', 'prompt',
+  'toolName', 'input', 'prompt', 'nativeOrigin',
 ])
 
 function optionalBoundedString(value: unknown, max: number): boolean {
@@ -223,6 +224,7 @@ function validHookBody(value: unknown): value is BoundHookBody {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const body = value as Record<string, unknown>
   if (body.prompt !== undefined && (typeof body.prompt !== 'string' || Buffer.byteLength(body.prompt) > 128 * 1024)) return false
+  if (!optionalBoundedJson(body.nativeOrigin, 8_192)) return false
   if (Object.keys(body).some((field) => !HOOK_BODY_FIELDS.has(field))) return false
   if (body.engine !== undefined && (typeof body.engine !== 'string' || !ENGINES.includes(body.engine as AgentEngine))) return false
   if (!optionalBoundedString(body.launcherId, 200)
@@ -296,6 +298,7 @@ function normalizedRuntimeHints(body: RegisterInput): HookTerminalHint[] {
 }
 
 type BoundHookBody = RegisterInput & {
+  nativeOrigin?: unknown
   prompt?: string
   sessionId?: string
   reason?: string
@@ -552,11 +555,19 @@ export function startHookServer(
   let lastRefusalLogAt = 0
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined, recoveryStarted = false, recoveryCursor = 0
   const recovering = new Set<string>(), recovered = new Set<string>()
-  const captureCaller = (body: BoundHookBody) => handlers.captureNativeHookCaller?.(body.callerPid ?? 0,
-    body.engine === 'cursor' ? [...new Map(normalizedRuntimeHints(body).flatMap(hint => {
-      const row = registry.byRuntimeEngine({ backend: 'tmux', paneId: hint.paneId }, 'cursor')
-      return row ? [[row.agentId, structuredClone(row)] as const] : []
-    })).values()] : [])
+  const captureCaller = (body: BoundHookBody) => {
+    if (body.nativeOrigin !== undefined) {
+      if (!handlers.readNativeHookOwner) throw new IdentityReadUnavailable('the native hook origin verifier is unavailable')
+      const origin = inspectNativeHookOrigin(body.nativeOrigin)
+      if (origin.callerPid !== body.callerPid) throw new IdentityReadUnavailable('the original native hook caller changed')
+      return nativeHookOriginCaller(origin)
+    }
+    return handlers.captureNativeHookCaller?.(body.callerPid ?? 0,
+      body.engine === 'cursor' ? [...new Map(normalizedRuntimeHints(body).flatMap(hint => {
+        const row = registry.byRuntimeEngine({ backend: 'tmux', paneId: hint.paneId }, 'cursor')
+        return row ? [[row.agentId, structuredClone(row)] as const] : []
+      })).values()] : [])
+  }
   const admitStart = async (body: BoundHookBody, native: { firedAt?: number; deliveryId?: string | string[];
     recovery?: { agentId: string; key: string; owner?: NativeHookOwner } },
     respond: (status: number, reply: unknown) => void,
@@ -599,7 +610,7 @@ export function startHookServer(
     const carriesStop = !!nativeDeliveryId && (engine === 'cursor' && body.hookEvent === 'stop'
       || engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure'))
     const stopProvenance = (value: BoundHookBody, firedAt: number | undefined) => JSON.stringify([
-      value.engine, value.sessionId, value.callerPid, normalizedRuntimeHints(value), firedAt, value.status,
+      value.engine, value.sessionId, value.callerPid, normalizedRuntimeHints(value), firedAt, value.status, value.nativeOrigin,
     ])
     const originalStop = stopProvenance(body, admissionOrder.firedAt)
     const conflict = { status: 409, reply: { pending: false, error: 'HOOK_DELIVERY_CONFLICT' } }

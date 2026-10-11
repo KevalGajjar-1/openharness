@@ -153,6 +153,27 @@ acceptance. The remaining client has no durable retry after a pre-intake refusal
 or an uncertain response; migration and a new private acceptance run are required.
 No release or merge occurred during this checkpoint.
 
+The server now accepts a bounded versioned original-caller envelope. Its ordered
+ancestry retains boot, precise birth and a SHA-256 digest of the complete v1 native
+identity, including argv boundaries; a retry never expands that prefix from a new
+caller. Cursor alone may retain its unique original agent/process/routes/primary
+snapshot. Malformed or unsupported origins hold without live ancestry fallback.
+Selection is only a restriction on subsequent native proof: the core still checks
+the Registry executable and rechecks full process evidence after claim sync. Origin
+bytes participate in the immutable delivery fingerprint and linked Stop provenance.
+The client does not yet emit or persist this envelope.
+
+The initial origin run `20261011T144212.626440Z-54874` passed types and 144 tests,
+including unchanged caller/delivery goldens, and failed one new HTTP assertion
+whose expected fixture prompt was misspelled. Receipt
+`20261011T144621.205226Z-73389` passed types, all origin baselines, the corrected
+HTTP case and two composed HTTP/real-owner-reader cases requested by independent
+review. Wrong engine digest and changed Cursor route receive retry without intake,
+registration, prompt credit or live capture. All eight deliberate origin mutations
+failed assertions. This is combined evidence, not an uninterrupted full suite.
+Independent review approved this origin slice over `96578014d`; client persistence,
+linked Stop completion, global budgets and final PR acceptance remain open.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

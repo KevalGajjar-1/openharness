@@ -5,6 +5,7 @@ import { readProcessEvidence } from '../../lib/processEvidence.js'
 import { controlIdentity, nativeProcessControl, type NativeControlRow } from '../../lib/nativeProcessControl.js'
 import { nativeBytes } from './nativeEvidence.js'
 import { createNativeHookOwnerReader } from './nativeHookOwner.js'
+import { nativeHookIdentityV1 } from './nativeHookOrigin.js'
 
 vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
 vi.mock('../../lib/processEvidence.js', () => ({ readProcessEvidence: vi.fn() }))
@@ -56,6 +57,18 @@ it('holds an exited or changed image instead of trusting the saved registry row'
   await expect(read({ ...row(), processIdentity: null })).rejects.toThrow('owner is unavailable')
   vi.mocked(readProcessEvidence).mockResolvedValue({ parent: null } as never)
   await expect(read(row())).rejects.toThrow('precise')
+})
+
+it('reproves a saved v1 digest against complete native identity and the Registry executable', async () => {
+  const read = createNativeHookOwnerReader(), first = await read(row())
+  const expected = { key: first.key, identityV1: nativeHookIdentityV1(first.evidence) }
+  expect(await read(row(), expected)).toMatchObject({ key: first.key, evidence: first.evidence })
+  expect(vi.mocked(readProcessEvidence).mock.calls.at(-1)?.[3]).toEqual(row().processIdentity)
+  native.argv = ['codex', '--replacement']
+  await expect(read(row(), expected)).rejects.toThrow('incarnation changed')
+  native.argv = ['codex']
+  native.birth = '12346'
+  await expect(read(row(), expected)).rejects.toThrow('incarnation changed')
 })
 
 it('holds an incomplete boot UUID and retries it without inventing a time identity', async () => {
