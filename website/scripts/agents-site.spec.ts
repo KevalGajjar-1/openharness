@@ -18,9 +18,6 @@ const marketplace = JSON.parse(readFileSync(join(repo, ".claude-plugin", "market
   plugins: { name: string; source: string }[];
 };
 
-/** `harness mcp` is the MCP server the plugin registers; it is being added to the CLI in its own change. */
-const PENDING = new Set(["mcp"]);
-
 const decode = (text: string) => text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
 
 /** The code in a page: what an agent copies. Prose like "a harness you start" is not a command. */
@@ -51,7 +48,7 @@ describe("the pages and skill agents read", () => {
   ] as const)("%s names only harness commands the CLI has", (_, text, html) => {
     const verbs = verbsIn(text, html);
     expect(verbs.size).toBeGreaterThan(3);
-    for (const verb of verbs) expect(cliVerbs.has(verb) || PENDING.has(verb), `harness ${verb}`).toBe(true);
+    for (const verb of verbs) expect(cliVerbs.has(verb), `harness ${verb}`).toBe(true);
   });
 
   it("gives the exit codes the agent commands return", () => {
