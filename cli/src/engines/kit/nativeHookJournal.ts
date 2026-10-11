@@ -10,6 +10,7 @@ import { inspectHookFile, runHookPreparation } from './nativeHookFiles.js'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import type { NativeHookOwner } from './nativeHookOwner.js'
+import type { NativeHookStageLease } from './nativeHookStaging.js'
 
 export class NativeHookJournalHeld extends Error {
   constructor(detail: string) { super(`Native hook delivery is held: ${detail}`); this.name = 'NativeHookJournalHeld' }
@@ -125,7 +126,7 @@ function validIntake(value: unknown, maxBytes = 300_000): value is NativeHookInt
 }
 
 /** A directory walk yields regularly and proves its complete, unchanged boundary. */
-async function entries(path: string, limit: number): Promise<{ names: string[]; inspected: number; verify(): void }> {
+async function entries(path: string, limit: number, strict = false): Promise<{ names: string[]; inspected: number; verify(): void }> {
   const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(path)!, facts = paths.snapshot()
   const route = new Map<string, string>()
   for (let part = location.path;; part = dirname(part)) {
@@ -150,6 +151,7 @@ async function entries(path: string, limit: number): Promise<{ names: string[]; 
       // An interrupted exclusive publication can leave its private staging file.
       // It carries no authority and is never removed by recovery.
       if (entry.isFile() && /^\.harness-hook-[a-f0-9-]{36}\.tmp$/.test(entry.name)) {
+        if (strict) held('unbudgeted legacy staging file in allocated journal')
         read(join(path, entry.name))
         continue
       }
@@ -169,12 +171,37 @@ async function entries(path: string, limit: number): Promise<{ names: string[]; 
   return { names: names.sort(), inspected, verify }
 }
 
+export interface NativeHookJournalAuthority {
+  fingerprint: string
+  verify(): void
+}
+
+/** An outside catalog seal can inspect a journal without initializing it. */
+export function inspectNativeHookJournalAuthority(directory: string): NativeHookJournalAuthority {
+  const records = ['bootstrap', 'authority', 'seal'].map(suffix => read(`${directory}.${suffix}`))
+  if (records.some(record => !record)) held('allocated journal authority is missing')
+  const directories = [directory, `${directory}.witnesses`].map(path => ({ path, expected: identity(lstatSync(path, { bigint: true })) }))
+  const verify = () => {
+    records.forEach(record => record!.verify())
+    for (const { path, expected } of directories) if (identity(lstatSync(path, { bigint: true })) !== expected) held('allocated journal directory changed')
+  }
+  verify()
+  return { fingerprint: digest(JSON.stringify([records.map(record => record!.text), directories.map(item => item.expected)])), verify }
+}
+
+export interface NativeHookJournalBoundary {
+  verify(): void
+  /** Called before any intake, including recovery of an unfinished bootstrap. */
+  authorize(proof: NativeHookJournalAuthority, empty: () => Promise<void>): Promise<void>
+  acquireStage(): Promise<NativeHookStageLease>
+}
 interface JournalOptions {
   directory: string; processKey: string; current?: () => boolean; maxRecords?: number; maxBytes?: number; pendingCapacity?: number
+  boundary?: NativeHookJournalBoundary
 }
 
 function createNativeHookLog({ directory, processKey, current = () => true,
-  maxRecords = MAX_PROCESS_RECORDS, maxBytes = 256 * 1024 * 1024, pendingCapacity = 64,
+  maxRecords = MAX_PROCESS_RECORDS, maxBytes = 256 * 1024 * 1024, pendingCapacity = 64, boundary,
 }: JournalOptions, kind: 'effects' | 'outbox') {
   if (!processKey || processKey.length > 512) held('invalid journal namespace')
   const log = kind === 'outbox' ? { log: 'native-hook-outbox' as const } : {}
@@ -190,11 +217,16 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   const bootstrapFile = `${directory}.bootstrap`, sealFile = `${directory}.seal`
   maxRecords = Math.min(MAX_PROCESS_RECORDS, maxRecords)
   let closed = false
-  const check = () => { if (closed || !current()) held('the original process owner changed') }
+  const check = () => { if (closed || !current()) held('the original process owner changed'); boundary?.verify() }
   const publish = async (file: string, text: string, verify: () => void, exclusive: boolean) => {
     await runHookPreparation([file], async attempt => {
       verify(); check()
-      await inspectHookFile(file, 0o600).replace(text, attempt, exclusive)
+      const inspected = inspectHookFile(file, 0o600)
+      // Confirming an existing receipt must remain possible with every staging
+      // lane occupied. Only a new publication needs scratch capacity.
+      const lease = boundary && inspected.content !== text ? await boundary.acquireStage() : undefined
+      try { await inspected.replace(text, attempt, exclusive, lease?.stage) }
+      finally { await lease?.close() }
     }, {
       // Recovery and admission can confirm the same immutable bytes at once.
       // Share only that in-flight sync; each waiter still checks its own facts
@@ -255,7 +287,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
             || typeof process.getuid === 'function' && info.uid !== BigInt(process.getuid())) held('unsafe journal directory')
           exists = true
         } catch (error) { if (!absent(error)) throw error }
-        if (exists && (await entries(path, maxRecords)).inspected !== 0) held('unfinished initialization has journal history')
+        if (exists && (await entries(path, maxRecords, !!boundary)).inspected !== 0) held('unfinished initialization has journal history')
         verifyBootstrap(); secureStateDirectory(path)
       }
       const expected = directories()
@@ -276,7 +308,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     const seal = JSON.stringify({ version: 1, ...log, processKey, bootstrap: bootstrapHash, authority: digest(saved.text),
       history: value.history, witnesses: value.witnesses })
     if (!sealed) {
-      const history = await entries(directory, maxRecords), outside = await entries(witnesses, maxRecords)
+      const history = await entries(directory, maxRecords, !!boundary), outside = await entries(witnesses, maxRecords, !!boundary)
       if (history.inspected || outside.inspected) held('the journal initialization seal is missing')
       await confirm([bootstrap, saved], verifyAuthority)
       await publish(sealFile, seal, () => { verifyAuthority(); history.verify(); outside.verify() }, true)
@@ -285,6 +317,15 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     if (!sealed || sealed.text !== seal) held('journal initialization seal changed')
     const verify = () => { verifyAuthority(); sealed!.verify() }
     verify()
+    if (boundary) {
+      const proof = inspectNativeHookJournalAuthority(directory)
+      await boundary.authorize(proof, async () => {
+        const history = await entries(directory, maxRecords, true), outside = await entries(witnesses, maxRecords, true)
+        if (history.inspected || outside.inspected) held('unsealed catalog allocation has journal history')
+        verify(); history.verify(); outside.verify()
+      })
+      verify(); proof.verify()
+    }
     return { verify, records: [bootstrap, saved, sealed] }
   }
   let authorityFlight: ReturnType<typeof readAuthority> | undefined
@@ -302,14 +343,14 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   }
   const snapshot = async (repairAllowed = true): Promise<Snapshot> => {
     const owned = await authority(), verifyAuthority = owned.verify
-    const history = await entries(directory, maxRecords), outside = await entries(witnesses, maxRecords)
+    const history = await entries(directory, maxRecords, !!boundary), outside = await entries(witnesses, maxRecords, !!boundary)
     const repair = repairAllowed && outside.names.length === history.names.length + 1
       && history.names.every((name, index) => outside.names[index] === name)
     if (!repair && JSON.stringify(history.names) !== JSON.stringify(outside.names)) held('a journal record or witness is missing')
     const deliveries = new Map<string, NativeHookDelivery>()
     let active: { id: string; token: string; agentId: string; verify(): void } | undefined
     let previous: string | null = null, lastResult: string | null = null,
-      bytes = kind === 'outbox' ? owned.records.reduce((total, record) => total + Buffer.byteLength(record.text), 0) : 0,
+      bytes = kind === 'outbox' || boundary ? owned.records.reduce((total, record) => total + Buffer.byteLength(record.text), 0) : 0,
       began = performance.now()
     if (bytes > maxBytes) held('journal metadata exceeds its byte capacity')
     const versions: Array<{ file: string; version: string }> = []

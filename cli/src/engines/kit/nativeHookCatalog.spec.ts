@@ -1,0 +1,294 @@
+import { createHash } from 'node:crypto'
+import { fstatSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { createNativeHookCatalog, NATIVE_HOOK_STORAGE_LIMITS } from './nativeHookCatalog.js'
+import { createNativeHookStagePool } from './nativeHookStaging.js'
+import { nativeHookOutboxShard, type NativeHookClientInput } from './nativeHookOutbox.js'
+import type { NativeHookIntake } from './nativeHookJournal.js'
+
+const fault = vi.hoisted(() => ({ fail: false,
+  beforePublish: undefined as ((text: string, path: string, publish: (text: string, path: string) => void) => void) | undefined,
+  afterPublish: undefined as ((text: string, path: string) => void) | undefined,
+  sync: undefined as ((fd: number, done: (error: Error | null) => void) => boolean) | undefined,
+}))
+vi.mock('node:fs', async original => { const fs = await original<typeof import('node:fs')>(); return { ...fs,
+  fsync: (fd: number, done: (error: Error | null) => void) => {
+    if (fault.sync?.(fd, done)) return
+    queueMicrotask(() => done(fault.fail ? Error('fixture disk unavailable') : null))
+  },
+  symlinkSync: (text: string, path: string) => {
+    fault.beforePublish?.(text, path, fs.symlinkSync); fs.symlinkSync(text, path); fault.afterPublish?.(text, path)
+  },
+} })
+const hash = (text: string) => createHash('sha256').update(text).digest('hex')
+const existsSync = (file: string) => { try { lstatSync(file); return true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return false } }
+let root: string, local: boolean, rootChecks: number, pool: ReturnType<typeof createNativeHookStagePool>
+let catalogs: ReturnType<typeof createNativeHookCatalog>[]
+const verifyRoot = () => { rootChecks++; if (!local) throw Error('fixture storage is unavailable') }
+const catalog = () => {
+  const value = createNativeHookCatalog({ root, verifyRoot, pool }); catalogs.push(value); return value
+}
+const processKey = 'linux:fixture-boot\u0000codex\u00005100\u0000t:1234'
+const intake = (id = 'fixture-delivery-0001', size = 20): NativeHookIntake => ({
+  id, agentId: 'fixture-agent', conversationId: 'fixture-conversation', fingerprint: hash(id), payload: { prompt: 'x'.repeat(size) },
+})
+const allocationFiles = () => readdirSync(root).filter(name => name.endsWith('.allocation.witness')).sort()
+const allocated = (key = processKey) => {
+  const name = allocationFiles().find(name => JSON.parse(readlinkSync(join(root, name)))[3] === hash(key))!
+  return join(root, name.replace(/\.allocation\.witness$/, ''))
+}
+const put = (file: string, value: unknown) => {
+  const text = JSON.stringify(value); symlinkSync(text, file + '.witness'); symlinkSync(text, file)
+}
+const reset = () => { fault.fail = false; fault.beforePublish = undefined; fault.afterPublish = undefined; fault.sync = undefined }
+beforeEach(() => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'native-hook-catalog-'))); local = true; rootChecks = 0; catalogs = []; reset()
+  pool = createNativeHookStagePool({ root, writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: 8100, birth: '12345' },
+    verifyWriter: verifyRoot, closeWriter: () => {}, dead: async () => false })
+})
+afterEach(async () => {
+  reset(); local = true; catalogs.forEach(value => value.close())
+  await pool.close().catch(() => {})
+  rmSync(root, { recursive: true, force: true })
+})
+
+it('durably allocates before initialization and retains one process namespace across reconstructed catalogs', async () => {
+  const store = catalog()
+  expect(readdirSync(root)).toEqual([])
+  const original = await store.effects(processKey)
+  expect(allocationFiles()).toHaveLength(1)
+  expect(existsSync(allocated() + '.history')).toBe(false)
+  await original.retain(intake())
+  const claim = await original.claim(intake().id, intake().agentId)
+  await claim.finish({ status: 200, reply: { ok: true } })
+  const fresh = await catalog().effects(processKey)
+  expect((await fresh.retain(intake())).result).toMatchObject({ status: 200 })
+  expect(allocationFiles()).toHaveLength(1)
+  expect(readdirSync(root, { recursive: true }).map(String).filter(name => name.endsWith('.tmp'))).toEqual([])
+  const names = readdirSync(root, { recursive: true }).map(String)
+  expect(names.some(name => name.includes('.harness-hook-'))).toBe(false)
+  expect(names.some(name => name.includes('.claim'))).toBe(true)
+})
+
+it('holds intake until the catalog seal has actually been confirmed', async () => {
+  const journal = await catalog().effects(processKey)
+  let sealed = false, paused = false, resume!: () => void
+  fault.afterPublish = (_text, path) => { if (path === allocated() + '.seal.witness') sealed = true }
+  fault.sync = (fd, done) => {
+    if (!sealed || paused || !fstatSync(fd).isDirectory()) return false
+    paused = true; resume = () => done(null); return true
+  }
+  const pending = journal.retain(intake())
+  await vi.waitFor(() => expect(paused).toBe(true))
+  expect(readdirSync(allocated() + '.history')).toEqual([])
+  expect(readdirSync(allocated() + '.history.witnesses')).toEqual([])
+  resume()
+  await expect(pending).resolves.toMatchObject({ intake: { id: intake().id } })
+})
+
+it('recovers the exact reservation after its outside publication was interrupted', async () => {
+  fault.afterPublish = (_text, path) => { if (path.endsWith('.allocation.witness')) throw Error('fixture crash after exclusive allocation') }
+  await expect(catalog().effects(processKey)).rejects.toThrow('fixture crash')
+  expect(allocationFiles()).toHaveLength(1)
+  const reserved = allocated()
+  expect(existsSync(reserved + '.history')).toBe(false)
+  reset()
+  await (await catalog().effects(processKey)).retain(intake())
+  expect(allocationFiles()).toHaveLength(1)
+  expect(allocated()).toBe(reserved)
+  expect(readlinkSync(reserved + '.allocation')).toBe(readlinkSync(reserved + '.allocation.witness'))
+})
+
+it('rereads an EEXIST winner and retries a collision without borrowing its quota', async () => {
+  const otherKey = 'fixture-colliding-process'
+  let injected = false
+  fault.beforePublish = (text, path, publish) => {
+    if (injected || !path.endsWith('.allocation.witness')) return
+    injected = true
+    const value = JSON.parse(text); value[3] = hash(otherKey)
+    publish(JSON.stringify(value), path)
+  }
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  expect(allocationFiles()).toHaveLength(2)
+  expect(allocated(processKey)).not.toBe(allocated(otherKey))
+  expect(existsSync(allocated(otherKey) + '.history')).toBe(false)
+})
+
+it('finds an existing key beyond an empty probe slot instead of allocating it again', async () => {
+  await catalog().effects('fixture-seed')
+  const start = Number.parseInt(hash(processKey).slice(0, 8), 16) % 256
+  let index = (start + 3) % 256
+  while (existsSync(join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation.witness`))) index = (index + 1) % 256
+  const selected = join(root, `.native-hook-effects-${String(index).padStart(3, '0')}`)
+  put(selected + '.allocation', [1, 'effects', index, hash(processKey)])
+  await (await catalog().effects(processKey)).retain(intake())
+  expect(allocationFiles()).toHaveLength(2)
+  expect(allocated()).toBe(selected)
+})
+
+it('holds a changing allocation frontier without invalidating a separately retained journal', async () => {
+  const store = catalog(), journal = await store.effects(processKey)
+  await journal.retain(intake())
+  const retained = await journal.snapshot()
+  let queued = false
+  fault.beforePublish = (_text, path) => {
+    if (queued || path !== join(root, '.native-hook-catalog')) return
+    queued = true
+    setImmediate(() => writeFileSync(join(root, 'fixture-sibling'), 'concurrent catalog-root publication'))
+  }
+  await expect(catalog().effects('fixture-next-process')).rejects.toThrow('catalog changed during its scan')
+  expect(allocationFiles()).toHaveLength(1)
+  retained.verify()
+  reset()
+  await catalog().effects('fixture-next-process')
+  retained.verify()
+})
+
+it('keeps repeated authority reads flat instead of retaining recursive confirmations', async () => {
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  const costs: number[] = []
+  for (let iteration = 0; iteration < 5; iteration++) {
+    const before = rootChecks
+    const snapshot = await journal.snapshot(); snapshot.verify()
+    costs.push(rootChecks - before)
+  }
+  // Every iteration reads the same bytes. Old confirmation closures must not
+  // multiply work even though each new observation still rechecks authority.
+  expect(Math.max(...costs)).toBeLessThanOrEqual(2 * Math.min(...costs))
+})
+
+it('holds a full catalog across restart while retaining recovery in an allocated namespace', async () => {
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  for (let index = 0; index < 256; index++) {
+    const file = join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation`)
+    if (!existsSync(file + '.witness')) put(file, [1, 'effects', index, hash(`fixture-reservation-${index}`)])
+  }
+  await expect(catalog().effects('one-process-too-many')).rejects.toThrow('namespace capacity is exhausted')
+  const recovered = await catalog().effects(processKey)
+  expect((await recovered.retain(intake())).intake.id).toBe(intake().id)
+  const claim = await recovered.claim(intake().id, intake().agentId)
+  await claim.finish({ status: 200 })
+  expect(allocationFiles()).toHaveLength(256)
+})
+
+it.each(['allocation-witness', 'orphan-seal', 'duplicate-key', 'version-witness', 'whole-version'] as const)('holds corrupt shared allocation authority: %s', async damage => {
+  await (await catalog().effects(processKey)).retain(intake())
+  const selected = allocated()
+  if (damage === 'allocation-witness') unlinkSync(selected + '.allocation.witness')
+  if (damage === 'orphan-seal') { unlinkSync(selected + '.allocation.witness'); unlinkSync(selected + '.allocation') }
+  if (damage === 'duplicate-key') {
+    const index = (JSON.parse(readlinkSync(selected + '.allocation'))[2] + 1) % 256
+    put(join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation`), [1, 'effects', index, hash(processKey)])
+  }
+  if (damage === 'version-witness' || damage === 'whole-version') unlinkSync(join(root, '.native-hook-catalog.witness'))
+  if (damage === 'whole-version') unlinkSync(join(root, '.native-hook-catalog'))
+  const before = allocationFiles()
+  await expect(catalog().effects('fixture-new-process')).rejects.toThrow()
+  expect(allocationFiles()).toEqual(before)
+})
+
+it.each(['all-history', 'bootstrap', 'authority', 'seal', 'directory'] as const)('never recreates lost sealed journal authority: %s', async damage => {
+  await (await catalog().effects(processKey)).retain(intake())
+  const directory = allocated() + '.history'
+  if (damage === 'all-history') for (const suffix of ['', '.witnesses', '.bootstrap', '.authority', '.seal']) rmSync(directory + suffix, { recursive: true })
+  else if (damage === 'directory') rmSync(directory, { recursive: true })
+  else unlinkSync(`${directory}.${damage}`)
+  const before = readdirSync(root).sort()
+  await expect((await catalog().effects(processKey)).snapshot()).rejects.toThrow()
+  expect(readdirSync(root).sort()).toEqual(before)
+})
+
+it('does not adopt a populated journal whose catalog seal disappeared', async () => {
+  await (await catalog().effects(processKey)).retain(intake())
+  const selected = allocated()
+  unlinkSync(selected + '.seal'); unlinkSync(selected + '.seal.witness')
+  await expect((await catalog().effects(processKey)).snapshot()).rejects.toThrow('unsealed catalog allocation has journal history')
+  expect(existsSync(selected + '.seal.witness')).toBe(false)
+  expect(readdirSync(selected + '.history')).toHaveLength(1)
+})
+
+it('isolates a damaged journal from a separately allocated process', async () => {
+  await (await catalog().effects(processKey)).retain(intake())
+  unlinkSync(allocated() + '.history.authority')
+  const unrelated = await catalog().effects('fixture-unrelated-process')
+  await expect(unrelated.retain(intake('fixture-delivery-0002'))).resolves.toMatchObject({ intake: { id: 'fixture-delivery-0002' } })
+})
+
+it('counts effect metadata and both copies, reserving completion before a byte-cap hold', async () => {
+  const journal = await catalog().effects(processKey)
+  const body = intake('fixture-delivery-large', 280_000)
+  await journal.retain(body)
+  const directory = allocated() + '.history', snapshot = await journal.snapshot()
+  const names = ['.bootstrap', '.authority', '.seal']
+  const bytes = names.reduce((sum, suffix) => sum + Buffer.byteLength(readFileSync(directory + suffix)), 0)
+    + 2 * Buffer.byteLength(readFileSync(join(directory, '00000000.json')))
+  expect(snapshot.bytes).toBe(bytes)
+  await expect(journal.retain(intake('fixture-next-too-large', 280_000))).rejects.toThrow('byte capacity')
+  const claim = await journal.claim(body.id, body.agentId)
+  await claim.finish({ status: 200, detail: 'x'.repeat(16_000) })
+  expect((await (await catalog().effects(processKey)).retain(body)).result?.status).toBe(200)
+  expect((await journal.snapshot()).bytes).toBeLessThanOrEqual(NATIVE_HOOK_STORAGE_LIMITS.effectBytes)
+})
+
+it('holds unbudgeted legacy staging instead of ignoring retained physical bytes', async () => {
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  const directory = allocated() + '.history', file = join(directory, '.harness-hook-00000000-0000-4000-8000-000000000001.tmp')
+  writeFileSync(file, 'legacy abandoned fixture', { mode: 0o600 })
+  await expect(journal.snapshot()).rejects.toThrow('unbudgeted legacy staging')
+  expect(readFileSync(file, 'utf8')).toBe('legacy abandoned fixture')
+})
+
+it('confirms known receipts with all staging lanes occupied', async () => {
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  const leases = []
+  for (let lane = 0; lane < 8; lane++) leases.push(await pool.acquire())
+  try {
+    await expect(journal.retain(intake())).resolves.toMatchObject({ intake: { id: intake().id } })
+    await expect(journal.retain(intake('fixture-delivery-0002'))).rejects.toThrow('another writer owns this lane')
+    expect((await journal.snapshot()).length).toBe(1)
+  } finally { await Promise.all(leases.map(lease => lease.close())) }
+})
+
+it.each(['close', 'storage', 'owner'] as const)('revokes retained journal authority on %s changes', async reason => {
+  let current = true
+  const store = catalog(), journal = await store.effects(processKey, () => current)
+  await journal.retain(intake())
+  const saved = await journal.snapshot()
+  if (reason === 'close') store.close()
+  else if (reason === 'storage') local = false
+  else current = false
+  expect(() => saved.verify()).toThrow()
+  await expect(journal.retain(intake())).rejects.toThrow()
+})
+
+it('reserves fixed outbox shards, including every remaining phase ACK under pressure', async () => {
+  const origin = { version: 1, boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', callerPid: 43,
+    ancestry: [{ pid: 43, parentPid: 42, birth: '12346', identityV1: hash('caller') }] }
+  const make = (id: string): NativeHookClientInput => ({ id, firedAt: 1791590400123, port: 19400,
+    phases: [
+      { name: 'registration', path: '/api/hook/session-start', body: { callerPid: 43, nativeOrigin: origin, prompt: 'x'.repeat(255_000) } },
+      { name: 'stop', path: '/api/hook/turn-stop', body: { callerPid: 43, nativeOrigin: origin, detail: 'x'.repeat(255_000) } },
+    ] })
+  const shard = nativeHookOutboxShard('fixture-delivery-0001'), ids: string[] = []
+  for (let value = 0; ids.length < 7; value++) {
+    const id = `fixture-delivery-${String(value).padStart(5, '0')}`
+    if (nativeHookOutboxShard(id) === shard) ids.push(id)
+  }
+  const outbox = await catalog().outbox(shard), deliveries = []
+  for (const id of ids.slice(0, 6)) deliveries.push(await outbox.retain(make(id)))
+  await expect(outbox.retain(make(ids[6]))).rejects.toThrow('byte capacity')
+  for (const delivery of deliveries) {
+    await outbox.acknowledge(delivery, 'registration'); await outbox.acknowledge(delivery, 'stop')
+  }
+  const recovered = await (await catalog().outbox(shard)).snapshot()
+  expect(recovered.deliveries.size).toBe(6)
+  expect([...recovered.deliveries.values()].every(value => value.phases.every(phase => phase.acknowledged))).toBe(true)
+  expect(allocationFiles()).toHaveLength(1)
+}, 30_000)

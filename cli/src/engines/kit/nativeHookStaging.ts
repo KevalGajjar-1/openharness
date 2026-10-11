@@ -99,6 +99,10 @@ async function syncParents(path: string, verify: () => void) {
   held('directory confirmation exceeds its depth limit')
 }
 
+// Catalog reservations have the same bounded atomic representation as lane
+// claims. They must not recursively allocate an unbounded temporary file.
+export const nativeHookMetadata = { read: metadata, publish, syncDirectory, syncParents }
+
 function routeStamps(directory: string): () => void {
   const route = new Map<string, string>()
   for (let part = directory;; part = dirname(part)) {

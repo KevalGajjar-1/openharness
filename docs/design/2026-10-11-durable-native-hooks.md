@@ -377,9 +377,32 @@ Shutdown revokes future effects before waiting for any outstanding operation.
 Each process history is capped at 4,096 records, reserving claim and terminal
 records before intake. This fits the complete final verification's operation
 budget; the 196,608-record global allowance is not a safe per-process limit.
-The starting resource budget is 64 pending deliveries per process, 65,536 retained
-deliveries and 256 process namespaces, with 16 MiB of retained active payload and
-256 MiB of immutable disk history. Count metadata and linked obligations too.
+The active-memory budget remains 64 pending deliveries per process and 16 MiB
+of retained active payload. The fixed on-disk catalog revises the initial 65,536
+retained-delivery / 256 MiB proposal: 256 effect namespaces reserve 1 MiB each,
+and 16 fixed client outbox shards reserve 8 MiB each. These quotas include both
+record copies, framing, initialization metadata and reserved terminal outcomes.
+Every namespace retains at most 4,096 records, including completion reservations.
+The resulting conservative intake bound is 382,208 retained copies: 349,440 effect
+intakes (256 × 1,365) plus 32,768 one-phase outbox intakes (16 × 2,048). A two-phase
+outbox reserves two ACKs and therefore fits fewer intakes. The byte caps normally
+bind sooner; these counts are upper bounds, not promised useful capacity.
+
+The complete retained-content ceiling is 512 MiB. Its fixed partitions reserve
+256 MiB for effects, 128 MiB for outboxes, 56.75 MiB for mirrored staging claims
+and releases (8 × 8,192 × 2 × (384 + 70) bytes), 8 MiB for staging payloads and
+1 MiB for catalog and staging initialization metadata. Their total is 449.75 MiB;
+the unused remainder does not authorize additional files. Filesystem block and
+inode overhead is separate from this content budget. Journal and metadata names
+are bounded too. A complete catalog scan precedes exclusive allocation; a slot
+is never recycled, and an interrupted initializer retains its original quota.
+Outside allocation seals pin the journal authority before intake. Missing or
+populated unsealed history holds. Individual record/directory loss is detectable;
+erasure of the entire root and all independent outside evidence is outside this
+local storage guarantee. Permanent exhaustion holds new intake visibly while
+reserved completion and same-ID recovery remain available. No receipt pruning
+or user-data deletion is part of this design. Production wiring and measured
+representative capacity remain acceptance requirements.
 Count concurrent reservations before publication, then reserve capacity before
 acknowledgement and hold visibly when full; never prune
 completion records to reclaim authority. Recovery inspects at most 64 directory
