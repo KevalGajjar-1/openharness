@@ -97,6 +97,21 @@ it('holds new intake at normal exhaustion while every previously accepted effect
   expect(readdirSync(root, { recursive: true }).map(String).filter(name => name.endsWith('.tmp'))).toEqual([])
 }, 30_000)
 
+it('keeps the original first-version publication identity until its flat proof is retained', async () => {
+  const publish = nativeHookMetadata.publish, version = join(root, '.native-hook-catalog')
+  let replaced = false
+  vi.spyOn(nativeHookMetadata, 'publish').mockImplementation((file, text, verify, exclusive, created) => {
+    const proof = publish(file, text, verify, exclusive, created)
+    if (!replaced && file === version + '.witness') {
+      replaced = true; unlinkSync(file); symlinkSync(text, file)
+    }
+    return proof
+  })
+  await expect(catalog().effects(processKey)).rejects.toThrow('metadata changed')
+  expect(existsSync(version)).toBe(false)
+  expect(allocationFiles()).toEqual([])
+})
+
 it('reserves a separate successful mirror repair while a terminal publisher is alive at cutover', async () => {
   await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
   const journal = await catalog().effects(processKey), body = intake()

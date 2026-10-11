@@ -19,8 +19,10 @@ const LANES = 8, MAX_GENERATIONS = 8_192, MAX_INIT = 8, MAX_METADATA_BYTES = 512
 // Completion cannot depend on scratch capacity consumed by later intake.
 // Another reader may complete each terminal mirror while its live publisher
 // waits for fsync. Reserve both successful operations, plus one existing outside
-// tail for each namespace: (2 * (256 * 25 * 2 + 16 * 64 * 2) + 272) / 8.
-export const NATIVE_HOOK_TERMINAL_GENERATIONS = 3_746
+// tail for each namespace. Eight normal retain operations may still hold their
+// leases at cutover: each can add one late intake needing one mirror repair and
+// two publisher/repair pairs. (2 * (256 * 25 * 2 + 16 * 64 * 2) + 272 + 40) / 8.
+export const NATIVE_HOOK_TERMINAL_GENERATIONS = 3_751
 let activeAcquisitions = 0
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const identity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.mode}:${info.uid}:${info.birthtimeNs}`

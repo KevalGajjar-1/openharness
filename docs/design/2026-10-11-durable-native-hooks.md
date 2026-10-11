@@ -305,15 +305,18 @@ treated as a new catalog. Confirmation proofs stay flat, and catalog replies are
 bounded while their actual disk operations retain their slots and descriptors.
 
 Each public journal operation now reuses one staging lease for bootstrap, repairs
-and both record copies. Each lane has 4,446 normal generations and 3,746 terminal
+and both record copies. Each lane has 4,441 normal generations and 3,751 terminal
 generations. Terminal work tries normal capacity first. The reserved suffix opens
 only after all eight normal prefix-end witnesses are positively validated and
 durably confirmed; busy or unreadable lanes cannot establish exhaustion. Pool
 authority pins both limits. Bootstrap and intake cannot use terminal capacity.
 The reserve covers at most 25 pending effects in each 1 MiB namespace, 64 pending
 two-phase client deliveries in each outbox, and independent successful repairs:
-`2 × (256 × 25 × 2 + 16 × 64 × 2) + 272 = 29,968` generations. The last 272 cover
-one already incomplete outside tail per namespace. Repeated additional failures
+`2 × (256 × 25 × 2 + 16 × 64 × 2) + 272 + 40 = 30,008` generations. The 272 cover
+one already incomplete outside tail per namespace. The final 40 cover one late
+intake from each of at most eight still-live normal leases: its mirror and two
+terminal publisher/repair pairs. Every public retain has its own normal scope;
+it cannot inherit an ambient terminal lease. Repeated additional failures
 can exhaust finite reserved capacity and then hold; no unlimited-crash guarantee
 or receipt pruning is claimed.
 
@@ -335,6 +338,25 @@ including completion of every retained phase ACK after normal staging exhaustion
 Implementation, review and validation overlapped from approximately 17:57 to
 18:15 UTC. Exact-head independent review, process/mutation/capacity gates and
 production wiring remain required. No merge or publication occurred.
+
+The subsequent review adds 40 terminal generations for normal operations still
+holding leases at cutover (the final bound above), and retains each original
+publication identity until its flat confirmation proof is captured and checked.
+First-version replacement now holds before any mirror or allocation is written.
+Main `61ba12536` is integrated, preserving both agent-settings routes and hook
+recovery in the composition root and using its common native-evidence budget.
+Receipt `20261011T181847.402265Z-48512` passed four real-process/capacity cases but
+failed types because the new child-exit fixture had not exposed its PID. That
+fixture is corrected; `20261011T182246.008112Z-65737` passes types and those four
+cases plus the first-publication regression. Its additional synthetic reentrancy
+fixture failed because destination exclusion acts before staging admission; that
+fixture cannot establish its intended capacity assertion and was removed. These
+mixed receipts are not overall passing suites. The measured complete-lane reads
+remain approximately 1.8 seconds, with 1.5–1.9 ms final fences and 21–24 ms maximum
+callback gaps; flush latency is mocked in capacity cases, real in process cases.
+Storage teardown must await catalog close and then pool close: an acquisition's
+reply can expire before its actual work, and only the pool owns that final barrier
+and the writer proof's close. Production composition remains outstanding.
 
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must

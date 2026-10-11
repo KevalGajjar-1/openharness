@@ -226,9 +226,11 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   let closed = false
   const check = () => { if (closed || !current()) held('the original process owner changed'); boundary?.verify() }
   const operations = new AsyncLocalStorage<Operation>()
-  const operation = async <T>(purpose: OperationPurpose, work: () => Promise<T>): Promise<T> => {
+  const operation = async <T>(purpose: OperationPurpose, work: () => Promise<T>, reuse = false): Promise<T> => {
     const parent = operations.getStore()
-    if (parent) { parent.check(); return work() }
+    // Only a private confirmation nested in its caller shares a lease. Every
+    // public retain has a separate normal scope, even inside a terminal caller.
+    if (reuse && parent) { parent.check(); return work() }
     if (!boundary) return work()
     check()
     if (activeOperations >= 16) held('actual journal operation slots are occupied')
@@ -481,7 +483,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       return snapshot(false)
     }
     return { deliveries, active, previous, lastResult, bytes, length: history.names.length, verify, verifyRecords, verifyAuthority,
-      confirm: () => operation('terminal', () => confirm(tail, verify, verifyAuthority)) }
+      confirm: () => operation('terminal', () => confirm(tail, verify, verifyAuthority), true) }
   }
   const append = async (before: Snapshot, event: Event) => {
     before.verify()

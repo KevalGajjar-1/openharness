@@ -90,13 +90,17 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   }
   const confirm = async (file: string, text: string, verify: () => void, retainedVerify = checkRoot): Promise<Pair> => {
     verify()
-    metadata.publish(`${file}.witness`, text, verify)
+    const publishedOutside = metadata.publish(`${file}.witness`, text, verify)
     const outside = metadata.read(`${file}.witness`, () => {})!
+    publishedOutside.verify(); outside?.verify()
+    if (outside?.text !== text) held('outside publication changed during confirmation')
     const fence = () => { verify(); outside.verify() }
     // The outside intent is durable before creating its mirror or a journal.
     await metadata.syncDirectory(canonical, fence)
-    metadata.publish(file, text, fence)
+    const publishedInside = metadata.publish(file, text, fence)
     const inside = metadata.read(file, () => {})!
+    publishedInside.verify(); inside?.verify()
+    if (inside?.text !== text) held('inside publication changed during confirmation')
     const complete = () => { fence(); inside.verify() }
     await metadata.syncParents(canonical, complete)
     complete()

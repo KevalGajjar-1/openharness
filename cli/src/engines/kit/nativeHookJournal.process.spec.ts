@@ -1,7 +1,7 @@
 /** Actual OS processes share no JS reservations or claim objects. */
 import { fork, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildSync } from 'esbuild'
@@ -25,14 +25,27 @@ beforeAll(() => {
     import fs from 'node:fs'
     import { syncBuiltinESMExports } from 'node:module'
     import { createNativeHookJournal, createNativeHookOutboxLog } from ${JSON.stringify(resolve('src/engines/kit/nativeHookJournal.ts'))}
+    import { createNativeHookCatalog } from ${JSON.stringify(resolve('src/engines/kit/nativeHookCatalog.ts'))}
+    import { createNativeHookStagePool } from ${JSON.stringify(resolve('src/engines/kit/nativeHookStaging.ts'))}
     const [directory, encodedKey, options] = process.argv.slice(2), processKey = JSON.parse(encodedKey)
-    const { outbox, ...limits } = JSON.parse(options)
-    const journal = (outbox ? createNativeHookOutboxLog : createNativeHookJournal)({ directory, processKey, ...limits }), claims = new Map()
+    const { outbox, catalog: allocated, maxGenerations, terminalGenerations, ...limits } = JSON.parse(options)
+    const dead = new Set(), claims = new Map()
+    const pool = allocated && createNativeHookStagePool({ root: directory,
+      writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: process.pid, birth: '12345' },
+      verifyWriter: () => {}, closeWriter: () => {}, maxGenerations, terminalGenerations,
+      // Only the parent fixture's observed child exit supplies this proof.
+      dead: async writer => dead.has(writer.pid) && writer.birth === '12345',
+    })
+    const catalog = allocated && createNativeHookCatalog({ root: directory, verifyRoot: () => {}, pool })
+    let cachedJournal
+    const journalForRequest = async () => cachedJournal ??= allocated ? await catalog.effects(processKey)
+      : (outbox ? createNativeHookOutboxLog : createNativeHookJournal)({ directory, processKey, ...limits })
     let pauseKind, pauseNextSync = false, release
     const link = fs.linkSync, flush = fs.fsync
     fs.linkSync = (source, target) => {
       link(source, target)
-      if (pauseKind && String(target).startsWith(directory + '.witnesses/')
+      if (pauseKind && (allocated ? String(target).startsWith(directory + '/') && String(target).includes('.history.witnesses/')
+        : String(target).startsWith(directory + '.witnesses/'))
         && JSON.parse(fs.readFileSync(target, 'utf8')).event?.kind === pauseKind) {
         pauseKind = undefined; pauseNextSync = true
       }
@@ -48,6 +61,7 @@ beforeAll(() => {
     process.on('message', async ({ request, operation, value }) => {
       try {
         let result
+        const journal = await journalForRequest()
         if (operation === 'retain') {
           const delivery = await journal.retain(value)
           result = { intake: delivery.intake, result: delivery.result, acknowledgements: delivery.acknowledgements && [...delivery.acknowledgements] }
@@ -66,6 +80,9 @@ beforeAll(() => {
         } else if (operation === 'verify') { claims.get(value.id).verify(); result = true
         } else if (operation === 'pause') { pauseKind = 'claim'
         } else if (operation === 'pause-ack') { pauseKind = 'ack'
+        } else if (operation === 'consume-normal') {
+          for (let index = 0; index < value; index++) { const lease = await pool.acquire(); await lease.close() }
+        } else if (operation === 'dead') { for (const pid of value) dead.add(pid)
         } else if (operation === 'release') { if (!release) throw Error('No paused flush'); release(); release = undefined
         } else throw Error('Unknown fixture operation')
         process.send({ request, ok: true, value: result })
@@ -77,6 +94,7 @@ beforeAll(() => {
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'hook-journal-process-')))
   directory = join(root, 'history')
+  mkdirSync(directory, { mode: 0o700 })
   mkdirSync(join(root, 'home'), { mode: 0o700 })
 })
 afterEach(async () => {
@@ -85,7 +103,7 @@ afterEach(async () => {
 })
 afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }))
 
-function worker(options: { outbox?: boolean; maxRecords?: number } = {}) {
+function worker(options: { outbox?: boolean; maxRecords?: number; catalog?: boolean; maxGenerations?: number; terminalGenerations?: number } = {}) {
   const child: ChildProcess = fork(script, [directory, JSON.stringify(processKey), JSON.stringify(options)], {
     execPath: process.execPath, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: { HOME: join(root, 'home'), ADAPTER_DATA_DIR: join(root, 'data'), ADAPTER_RUNTIME_DIR: join(root, 'runtime'),
@@ -106,6 +124,7 @@ function worker(options: { outbox?: boolean; maxRecords?: number } = {}) {
     pending.clear(); done()
   }))
   const value = {
+    pid: child.pid!,
     async call(operation: string, value?: unknown): Promise<Reply> {
       await ready
       if (closed) return { ok: false, error: 'Private writer already exited' }
@@ -184,6 +203,42 @@ it('holds an unconfirmed claim after SIGKILL instead of granting a replacement p
   expect(await recovered.call('claim', first)).toMatchObject({ ok: false, error: expect.stringContaining('earlier native hook effect') })
   expect(await recovered.call('claim', second)).toMatchObject({ ok: false, error: expect.stringContaining('earlier native hook effect') })
   expect(snapshot.deliveries.map((row: any) => row.result)).toEqual([undefined, undefined])
+}, 30_000)
+
+it('finishes catalog-backed work across separate OS writers after normal staging reaches its limit', async () => {
+  const options = { catalog: true, maxGenerations: 4, terminalGenerations: 3 }
+  const a = worker(options), b = worker(options), first = intake(), second = intake('fixture-delivery-0002', 'agent-two')
+  await accepted(a, 'retain', first); await accepted(b, 'retain', second)
+  await accepted(a, 'consume-normal', 6)
+  expect(await b.call('retain', intake('fixture-delivery-0003'))).toMatchObject({ ok: false, error: expect.stringContaining('generation capacity') })
+  await accepted(a, 'pause')
+  const paused = a.event('paused'), claiming = a.call('claim', first)
+  await paused
+  const snapshot = await accepted(b, 'snapshot')
+  expect(snapshot.active).toMatchObject({ id: first.id })
+  await accepted(a, 'release')
+  expect(await claiming).toMatchObject({ ok: true, value: { token: snapshot.active.token } })
+  await accepted(a, 'finish', { id: first.id, result: { accepted: true } })
+  await accepted(b, 'claim', second)
+  await accepted(b, 'finish', { id: second.id, result: { accepted: true } })
+  expect((await accepted(worker(options), 'snapshot')).deliveries.map((row: any) => row.result)).toEqual([{ accepted: true }, { accepted: true }])
+  expect(readdirSync(directory).filter(name => name.endsWith('.allocation.witness'))).toHaveLength(1)
+  expect(readdirSync(directory, { recursive: true }).map(String).some(name => name.endsWith('.tmp'))).toBe(false)
+}, 30_000)
+
+it('keeps a catalog-backed uncertain claim held after a real writer dies at terminal cutover', async () => {
+  const options = { catalog: true, maxGenerations: 4, terminalGenerations: 3 }
+  const a = worker(options), first = intake()
+  await accepted(a, 'retain', first); await accepted(a, 'consume-normal', 7); await accepted(a, 'pause')
+  const paused = a.event('paused'), claiming = a.call('claim', first)
+  await paused; await a.kill()
+  expect(await claiming).toMatchObject({ ok: false })
+  const recovered = worker(options)
+  await accepted(recovered, 'dead', [a.pid])
+  expect((await accepted(recovered, 'snapshot')).active).toMatchObject({ id: first.id })
+  expect(await recovered.call('claim', first)).toMatchObject({ ok: false, error: expect.stringContaining('earlier native hook effect') })
+  expect(readdirSync(directory).filter(name => name.endsWith('.allocation.witness'))).toHaveLength(1)
+  expect(readdirSync(directory, { recursive: true }).map(String).some(name => name.endsWith('.tmp'))).toBe(false)
 }, 30_000)
 
 it('refuses a frontier inspected before another process adds an equal-time delivery', async () => {
