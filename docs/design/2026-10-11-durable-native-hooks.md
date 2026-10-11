@@ -113,6 +113,28 @@ mutations. Independent read-only review approved this slice over `d919061fc`;
 it did not approve the unfinished delivery protocol. Validation and review ran
 alongside implementation; the draft PR has no merge or publication.
 
+Separate-process ownership evidence now covers seven real OS-process cases:
+same-ID and distinct-ID claim contention, mismatched agent views of one retained
+ID, a paused witness confirmation repaired by a peer, SIGKILL before that
+confirmation returns, stale inspection before an equal-time intake, and completed
+retry/conflict after process exit. Only a recognized journal/publication hold can
+satisfy the losing contender assertion; fixture timeout or exit cannot pass it.
+Receipt `20261011T141330.641854Z-19434` passed TypeScript, the pre-extraction native
+probe golden and all seven process cases, then caught four deliberately missing
+claim/order/completion/immutability fences with assertion failures. Independent
+review approved the corrected process tests. This proves journal mechanics across
+processes; final HTTP/native-client crash acceptance remains open.
+
+Client packaging will retain one self-contained `notify.mjs` artifact under the
+existing updater, checksum and rollback protocol. The shared native probe must
+receive its helper artifact and routed runtime directory through a pure interface;
+it cannot import daemon configuration, legacy migrations, Registry or services.
+Development output must expose a checked protocol version. Missing output or a
+missing verified Darwin helper holds delivery rather than activating offline
+fallback. Preserve the original UUID, time, body and caller across loading, and
+bound all work by the hook deadline. These requirements received independent
+design review; they are not yet a completed client implementation.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,
