@@ -213,8 +213,9 @@ class _ActivityMarkState extends State<ActivityMark> {
 const agentsMessagingLabel = 'Agents messaging';
 
 /// A tab's status cell while its agents message one another (Agent Messages):
-/// ⇄, mirrored every half second on the same clock as the spinner so its
-/// arrows trade places; still under Reduce Motion or when scrolled away.
+/// two chat bubbles, mirrored every half second on the same clock as the
+/// spinner so the speakers trade sides; still under Reduce Motion or when
+/// scrolled away.
 class MessagingMark extends StatefulWidget {
   const MessagingMark({
     super.key,
@@ -298,7 +299,7 @@ class _MessagingMarkState extends State<MessagingMark> {
                 ),
                 flipX: mirrored,
                 child: Icon(
-                  AppIcons.arrowRightLeft,
+                  AppIcons.messagesSquare,
                   size: 13,
                   color: widget.color,
                 ),

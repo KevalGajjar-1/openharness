@@ -306,7 +306,7 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
         "cloneAgent": "plus.square.on.square", "restartAgent": "arrow.clockwise",
         "shareAgent": "square.and.arrow.up",
         "renameActive": "pencil", "closeActive": "xmark",
-        "toggleAgentMessages": "arrow.left.arrow.right", "showAgentMessages": "bubble.left.and.bubble.right",
+        "toggleAgentMessages": "bubble.left.and.bubble.right", "showAgentMessages": "text.bubble",
         "splitRight": "rectangle.split.2x1", "splitDown": "rectangle.split.1x2",
         "zoomPane": "viewfinder", "movePaneToTab": "arrow.right.square", "closePane": "xmark",
         "commands": "command", "notifications": "bell",
@@ -338,7 +338,7 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
     add(file, "New Tab", "t", "new")
     add(file, "Rename Tab", "r", "renameActive", [.command, .shift])
     add(file, "Close Tab", "w", "closeActive")
-    // The active tab's Agent Messages: its ⇄ (a checkmark here) and its log.
+    // The active tab's Agent Messages: its 💬 (a checkmark here) and its log.
     add(file, "Agent Messages", "", "toggleAgentMessages")
     add(file, "Show Agent Messages", "", "showAgentMessages")
     file.addItem(.separator())
@@ -2228,7 +2228,7 @@ private final class SwarmTabStrip: NSView {
     let tabsFocused = state["tabsFocused"] as? Bool == true
     revealActiveAfterLayout = revealActiveAfterLayout || nextActiveId != activeId
     activeId = nextActiveId
-    // Agent Messages' color: its ⇄ when on, and the status slot while agents
+    // Agent Messages' color: its 💬 when on, and the status slot while agents
     // message. The pane's terminal magenta, as the other marks take theirs.
     let messagesColor = statusColor(state["agentMessagesInk"], fallback: .systemPurple)
     let ids = rows.compactMap { $0["id"] as? String }
@@ -2610,8 +2610,8 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private static let shoulder: CGFloat = 8
   private static let topInset: CGFloat = 6
   // Mirror AppDesktop.tabCloseInset and DesktopWorkspaceTab: × and, left of
-  // it, Agent Messages' ⇄, as 32pt-tall targets inside the curved tab body,
-  // with a dead gap between them so a click just off × never toggles ⇄. They
+  // it, Agent Messages' 💬, as 32pt-tall targets inside the curved tab body,
+  // with a dead gap between them so a click just off × never toggles 💬. They
   // show only on hover; at rest the name and status have the whole tab.
   private static let trailingInset: CGFloat = 8
   private static let accessoryHeight: CGFloat = 32
@@ -2629,7 +2629,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   let swarmId: String
   var name = "New Tab" { didSet { if name != oldValue { invalidateLabel(); updateAccessibility() } } }
   var displayLabel = "New Tab" { didSet { if displayLabel != oldValue { invalidateLabel() } } }
-  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): the hover ⇄,
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): the hover 💬,
   /// and the status slot while agents message; nil where the row carries none
   /// (the Store tab).
   var agentMessages: SwarmTabMessages? {
@@ -2640,12 +2640,12 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       updateAccessibility()
     }
   }
-  /// Agent Messages' color: the ⇄ when on, and the slot while messaging.
+  /// Agent Messages' color: the 💬 when on, and the slot while messaging.
   var messagesColor = NSColor.systemPurple {
     didSet { if messagesColor != oldValue { updateMessagesControls() } }
   }
   /// Agents in this tab messaged one another a moment ago: the status slot
-  /// shows ⇄ in place of the status until it goes quiet.
+  /// shows 💬 in place of the status until it goes quiet.
   var messaging: Bool { agentMessages?.on == true && agentMessages?.flowing == true }
   var foreground = NSColor(white: 0.85, alpha: 1) {
     didSet {
@@ -2654,7 +2654,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       updateMessagesControls()
     }
   }
-  /// The status slot: the activity mark, or ⇄ while agents message.
+  /// The status slot: the activity mark, or 💬 while agents message.
   private var statusSpace: CGFloat {
     messaging || !(activityMark?.isEmpty ?? true) ? Self.activityWidth + Self.gap : 0
   }
@@ -2678,7 +2678,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     return attention ? "?" : nil
   }
   /// The name, centered with its status. Revealed, it moves left only as far
-  /// as ⇄ and × need, then gives up its tail; a name with room never moves.
+  /// as 💬 and × need, then gives up its tail; a name with room never moves.
   private func titleRect(revealed: Bool) -> NSRect {
     let right = revealed ? Self.revealedInset : Self.restingInset
     let width = min(naturalTitleWidth, max(0, bounds.width - Self.restingInset - right - statusSpace))
@@ -2766,7 +2766,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     addSubview(closeButton)
     messagesButton.title = ""
     messagesButton.isBordered = false
-    messagesButton.image = HarnessControlSymbols.image("arrow.left.arrow.right")
+    messagesButton.image = HarnessControlSymbols.image("bubble.left.and.bubble.right")
     messagesButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
     messagesButton.imagePosition = .imageOnly
     messagesButton.foreground = foreground
@@ -2830,13 +2830,13 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     needsDisplay = true
     hoverChanged?()
   }
-  /// Hovering reveals the tab's ⇄ and ×; at rest it shows its name and status.
+  /// Hovering reveals the tab's 💬 and ×; at rest it shows its name and status.
   var isRevealed: Bool { actionsEnabled && hovered }
   private func updateAccessoryVisibility() {
     closeButton.isHidden = !isRevealed
     messagesButton.isHidden = agentMessages == nil || !isRevealed
   }
-  /// The ⇄'s look, tooltip and accessibility, and the menu rows, for its state:
+  /// The 💬's look, tooltip and accessibility, and the menu rows, for its state:
   /// grey while off, Agent Messages' color while on.
   private func updateMessagesControls() {
     for item in messagesItems { item.isHidden = agentMessages == nil }
@@ -3031,12 +3031,12 @@ struct SwarmTabMessages: Equatable {
   var on: Bool
   var flowing: Bool
   static let messagingLabel = "Agents messaging"
-  /// The status slot while agents message: ⇄, mirrored every half second on
-  /// the activity clock so its arrows trade places; still at frame 0 (Reduce
-  /// Motion). SF Symbols draws arrow.right.arrow.left as the same glyph.
+  /// The status slot while agents message: two chat bubbles, mirrored every
+  /// half second on the activity clock so the speakers trade sides; still at
+  /// frame 0 (Reduce Motion).
   static func drawMessaging(in rect: NSRect, frame: Int, color: NSColor) {
-    guard let symbol = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: nil)?
-      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)) else { return }
+    guard let symbol = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: nil)?
+      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)) else { return }
     let glyph = NSRect(x: rect.midX - symbol.size.width / 2, y: rect.midY - symbol.size.height / 2,
       width: symbol.size.width, height: symbol.size.height)
     NSGraphicsContext.current?.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
@@ -3051,7 +3051,7 @@ struct SwarmTabMessages: Equatable {
     glyph.fill(using: .sourceIn)
     NSGraphicsContext.current?.cgContext.endTransparencyLayer()
   }
-  /// What the ⇄ says a click does; the Flutter tab says the same.
+  /// What the 💬 says a click does; the Flutter tab says the same.
   var tooltip: String {
     !on ? "Agent messages off · click to turn on"
       : flowing ? "Agents messaging · click to turn off" : "Agent messages on · click to turn off"

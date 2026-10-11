@@ -176,7 +176,7 @@ for (theme, palette) in previewPalettes {
   var messaging = lampTabs
   messaging[0].flowing = true
   scene("01-rest-quiet")
-  // The status slot's two frames: ⇄, then ⇆ half a second later.
+  // The status slot's two frames: 💬, then ⇆ half a second later.
   scene("02-rest-messaging", tabs: messaging)
   scene("02b-rest-messaging-next-frame", tabs: messaging, after: { $0.previewTabs[0].activityFrame = 5 })
   scene("03-hover-off") { $0.previewTabs[2].mouseEntered(with: previewHover) }

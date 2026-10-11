@@ -222,7 +222,7 @@ class PaneMessageMark {
   final bool warning;
 }
 
-/// How a tab's ⇄ reads.
+/// How a tab's 💬 reads.
 enum TabMessagesState { off, on, flowing }
 
 typedef AgentMessageTabsRead = Future<Map<String, dynamic>?> Function();
@@ -238,7 +238,7 @@ typedef AgentNameOf = String? Function(String machineId, String agentId);
 
 /// Each tab's flag, the traffic the daemons report, and the pane marks it
 /// leaves. Its own notifier, as `AgentAlerts` is: a message arriving must not
-/// rebuild the workspace, only the ⇄ and the marks that listen here.
+/// rebuild the workspace, only the 💬 and the marks that listen here.
 class AgentMessagesController extends ChangeNotifier {
   AgentMessagesController({
     required this.read,
@@ -260,7 +260,7 @@ class AgentMessagesController extends ChangeNotifier {
   /// moved ([pollRemote]); lifetimes here run on timers.
   final DateTime Function() now;
 
-  /// How long a tab's status shows ⇄ after the last message moved in it,
+  /// How long a tab's status shows 💬 after the last message moved in it,
   /// before it goes back to the tab's working, done or question mark.
   final Duration flowingFor;
 
@@ -279,7 +279,7 @@ class AgentMessagesController extends ChangeNotifier {
   final _writes = <String, int>{};
   final _traffic = <String, int>{};
   final _seenMessages = <String>{};
-  // What has a lifetime holds the timer that ends it — a tab's ⇄ stops, a
+  // What has a lifetime holds the timer that ends it — a tab's 💬 stops, a
   // mark goes — so nothing has to compare clocks to know it is over.
   final _flowing = <String, Timer>{};
   final _marks = <String, (PaneMessageMark, Timer)>{};
@@ -289,7 +289,7 @@ class AgentMessagesController extends ChangeNotifier {
 
   /// Whether the daemon and backend answered for this account's tabs. Until
   /// they have — and for good, with an older CLI or backend that does not know
-  /// Agent Messages (404) — there is no ⇄ and no menu row: "off" would be a
+  /// Agent Messages (404) — there is no 💬 and no menu row: "off" would be a
   /// guess, and a click could not take.
   bool get loaded => _loaded;
   bool _loaded = false;
@@ -325,7 +325,7 @@ class AgentMessagesController extends ChangeNotifier {
   }
 
   /// Read every tab's flag again. A failure keeps what was known: one dropped
-  /// request must not turn a tab's ⇄ off under the person. An answer of null
+  /// request must not turn a tab's 💬 off under the person. An answer of null
   /// is a daemon or backend without Agent Messages.
   Future<void> refresh() async {
     if (_disposed) return;
@@ -432,7 +432,7 @@ class AgentMessagesController extends ChangeNotifier {
     _notify();
   }
 
-  /// [tabId]'s status shows ⇄ for [flowingFor] from now — longer when the
+  /// [tabId]'s status shows 💬 for [flowingFor] from now — longer when the
   /// traffic was only read from another machine's log — and an open log reads
   /// again.
   void _flow(String tabId, [Duration extra = Duration.zero]) {
@@ -458,7 +458,7 @@ class AgentMessagesController extends ChangeNotifier {
   /// traffic between harnesses on other machines would never reach this one.
   /// A message new to this window that moved within [remoteRecency] counts as
   /// traffic, exactly as if its frame had arrived, and flows for one [round]
-  /// longer: the next round can only renew it a round later, so ⇄ would
+  /// longer: the next round can only renew it a round later, so 💬 would
   /// otherwise lapse between rounds while agents keep talking. One request at
   /// a time per machine; a machine still answering the last round is skipped.
   Future<void> pollRemote(

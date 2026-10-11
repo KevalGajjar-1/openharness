@@ -505,7 +505,7 @@ private extension SwarmTabButton {
     try checkTitlebar(hasActivityInk && selectButton.accessibilityHelp() == "Working",
       "Hover keeps the activity mark: no shortcut takes its place")
     try checkTitlebar(titleRect == title && activityRect.maxX <= messagesButton.frame.minX && preferredWidth == width,
-      "A name with room keeps its place on hover, its status clear of ⇄ and ×")
+      "A name with room keeps its place on hover, its status clear of 💬 and ×")
     mouseExited(with: hover)
     try checkTitlebar(closeButton.isHidden && accessibilityChildren()?.count == 1,
       "Leaving returns the tab to its quiet state")
@@ -634,14 +634,14 @@ private extension SwarmTabButton {
     let revealed = titleRect(revealed: true)
     try checkTitlebar(revealed.minX <= resting.minX && revealed.minX >= 14 &&
       revealed.maxX + statusSpace <= messagesButton.frame.minX + 0.01,
-      "Revealed, the title moves only left, and only as far as ⇄ and × need")
+      "Revealed, the title moves only left, and only as far as 💬 and × need")
     try checkTitlebar(selectButton.frame == bounds, "Selection and drag retain the whole tab target beneath its accessory")
     try checkTitlebar(subviews.count == 3 && closeButton.frame.maxX == bounds.maxX - 8 &&
       closeButton.frame.minX - messagesButton.frame.maxX == 3,
-      "The close action, and ⇄ left of it past a dead gap, stay inset inside the tab's curved body")
+      "The close action, and 💬 left of it past a dead gap, stay inset inside the tab's curved body")
   }
 
-  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): the hover ⇄,
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): the hover 💬,
   /// grey while off and in its color while on; the status slot while agents
   /// message; a click and the tab's menu.
   func checkAgentMessages() throws {
@@ -672,7 +672,7 @@ private extension SwarmTabButton {
       "The tab menu: Rename Tab…, Agent Messages, Show Agent Messages, Close Tab")
     try checkTitlebar(rows[1...3].allSatisfy(\.isHidden), "A tab without Agent Messages (the Store) lists neither row")
     mouseEntered(with: hover)
-    try checkTitlebar(messagesButton.isHidden && !closeButton.isHidden, "A tab without Agent Messages shows no ⇄")
+    try checkTitlebar(messagesButton.isHidden && !closeButton.isHidden, "A tab without Agent Messages shows no 💬")
     mouseExited(with: hover)
 
     agentMessages = SwarmTabMessages(on: false, flowing: false)
@@ -685,19 +685,19 @@ private extension SwarmTabButton {
       closeButton.frame.minX - messagesButton.frame.maxX == 3 &&
       messagesButton.foreground == foreground && messagesButton.restingOpacity == 0.45 &&
       !hasMessagesInk(messagesButton),
-      "Hovered and off: a grey ⇄ just left of ×")
+      "Hovered and off: a grey 💬 just left of ×")
     let gap = NSPoint(x: closeButton.frame.minX - 1.5, y: closeButton.frame.midY)
     try checkTitlebar(!messagesButton.frame.contains(gap) && !closeButton.frame.contains(gap),
-      "A click between ⇄ and × lands on neither")
+      "A click between 💬 and × lands on neither")
     try checkTitlebar(titleRect == title, "A name with room keeps its place when revealed")
     try checkTitlebar(messagesButton.toolTip == "Agent messages off · click to turn on" &&
       messagesButton.accessibilityLabel() == "Agent Messages" &&
       messagesButton.accessibilityValue() as? String == "Off" &&
       accessibilityChildren()?.count == 3,
-      "The ⇄ says what it is, its state and what a click does")
+      "The 💬 says what it is, its state and what a click does")
     messagesButton.performClick(nil)
     try checkTitlebar(events.count == 1 && events[0] == ("toggleAgentMessages", swarmId),
-      "Clicking ⇄ asks to toggle this tab's Agent Messages, without selecting it")
+      "Clicking 💬 asks to toggle this tab's Agent Messages, without selecting it")
     mouseExited(with: hover)
     try checkTitlebar(messagesButton.isHidden && closeButton.isHidden, "Leaving hides them again")
 
@@ -708,17 +708,17 @@ private extension SwarmTabButton {
       messagesButton.restingOpacity == 0.85 && hasMessagesInk(messagesButton) && !hasMessagesInk() &&
       messagesButton.toolTip == "Agent messages on · click to turn off" &&
       messagesButton.accessibilityValue() as? String == "On",
-      "Hovered and on: ⇄ in Agent Messages' color, which turns it off")
+      "Hovered and on: 💬 in Agent Messages' color, which turns it off")
     mouseExited(with: hover)
 
     agentMessages = SwarmTabMessages(on: true, flowing: true)
     layoutSubtreeIfNeeded()
     try checkTitlebar(messaging && messagesButton.isHidden && closeButton.isHidden && statusSpace > 0 &&
       hasMessagesInk() && activityRect.minX == titleRect.maxX + 6,
-      "While agents message, the status slot shows ⇄ in its color; no button at rest")
+      "While agents message, the status slot shows 💬 in its color; no button at rest")
     let still = renderedPixels()
     activityFrame = 5
-    try checkTitlebar(renderedPixels() != still, "The slot's ⇄ trades its arrows on the activity clock")
+    try checkTitlebar(renderedPixels() != still, "The slot's 💬 trades sides on the activity clock")
     activityFrame = 9
     let mirrored = renderedPixels()
     activityFrame = 10
@@ -754,7 +754,7 @@ private extension SwarmTabButton {
     mouseEntered(with: hover)
     let before = events.count
     messagesButton.performClick(nil)
-    try checkTitlebar(messagesButton.isHidden && events.count == before, "A modal hides and disables the ⇄")
+    try checkTitlebar(messagesButton.isHidden && events.count == before, "A modal hides and disables the 💬")
     mouseExited(with: hover)
     actionsEnabled = true
     agentMessages = nil
@@ -776,7 +776,7 @@ private extension SwarmTabButton {
     mouseEntered(with: hover)
     layoutSubtreeIfNeeded()
     try checkTitlebar(titleRect.width >= 16 && titleRect.maxX + statusSpace <= messagesButton.frame.minX + 0.01,
-      "Hovered, a 128pt tab keeps 16pt of its name, clear of ⇄ and ×")
+      "Hovered, a 128pt tab keeps 16pt of its name, clear of 💬 and ×")
     mouseExited(with: hover)
     try checkCenteredLabel()
   }
@@ -1507,7 +1507,7 @@ private extension SwarmTabStrip {
     update(["enabled": true, "activeId": "work", "tabs": messageRows, "agentMessagesInk": Int64(0xffbc3fbc)])
     try checkTitlebar(tabs.map(\.agentMessages) == [SwarmTabMessages(on: true, flowing: true),
       SwarmTabMessages(on: false, flowing: false), nil, nil],
-      "Each row's Agent Messages reaches its tab; a row without one has no ⇄")
+      "Each row's Agent Messages reaches its tab; a row without one has no 💬")
     try checkTitlebar(tabs.allSatisfy { $0.messagesColor == statusColor(Int64(0xffbc3fbc), fallback: .clear) },
       "Every tab takes Agent Messages' color from the update")
     try checkTitlebar(tabs[0].messaging && visibleAnimatedTabs.contains { $0 === tabs[0] },

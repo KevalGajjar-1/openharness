@@ -2035,7 +2035,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
                 activity,
                 color: activityInk(activity),
               ),
-            // Agent Messages' ⇄; absent where a tab has none
+            // Agent Messages' 💬; absent where a tab has none
             // (AppNotifier.agentMessagesOffered). Flowing only while on.
             if (app.agentMessagesOffered(swarm.id)) ...{
               'agentMessages': app.agentMessages.isOn(swarm.id),
@@ -2045,7 +2045,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
             },
           },
       ],
-      // Agent Messages' color, as the status marks take theirs: the ⇄ while
+      // Agent Messages' color, as the status marks take theirs: the 💬 while
       // on, and a tab's status slot while its agents message.
       'agentMessagesInk':
           (prefs.color ? terminalTheme.magenta : terminalTheme.foreground)
@@ -2375,7 +2375,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       case 'renameActive':
         unawaited(_rename(app.activeSwarmId));
       case 'toggleAgentMessages':
-        // From a tab's ⇄ or its menu (with its id), or the File menu (the
+        // From a tab's 💬 or its menu (with its id), or the File menu (the
         // active tab).
         unawaited(
           _toggleAgentMessages(
@@ -2734,9 +2734,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
     if (name != null) app.renameSwarm(id, name);
   });
 
-  /// Turn Agent Messages on or off for [id]. The ⇄ follows at once and goes
+  /// Turn Agent Messages on or off for [id]. The 💬 follows at once and goes
   /// back if the backend does not take it — and then says so where the click
-  /// was, since a ⇄ that quietly flips back reads as a click that missed.
+  /// was, since a 💬 that quietly flips back reads as a click that missed.
   Future<void> _toggleAgentMessages(String id) async {
     if (!app.agentMessagesOffered(id)) return;
     if (await app.agentMessages.toggle(id) || !mounted) return;
@@ -7850,7 +7850,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
                             listenable: app.agentMessages,
                             builder: (context, _) {
                               // While its agents message, the status slot
-                              // shows ⇄ in place of the tab's status, and
+                              // shows 💬 in place of the tab's status, and
                               // the tooltip and screen readers say so.
                               final messaging =
                                   app.agentMessagesOffered(swarm.id) &&

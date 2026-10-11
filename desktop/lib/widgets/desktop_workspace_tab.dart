@@ -10,9 +10,9 @@ import 'box_chrome.dart';
 import 'desktop_chrome.dart';
 
 /// The Flutter counterpart of the AppKit tab: a centered name/status group
-/// and, at its trailing edge, Agent Messages' ⇄ and the close action.
+/// and, at its trailing edge, Agent Messages' 💬 and the close action.
 ///
-/// At rest the name and status have the whole tab. Hovering reveals ⇄ — grey
+/// At rest the name and status have the whole tab. Hovering reveals 💬 — grey
 /// while Agent Messages is off, [messagesColor] while on — and ×. While agents
 /// message, the caller passes a [MessagingMark] as [activity].
 class DesktopWorkspaceTab extends StatefulWidget {
@@ -41,7 +41,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
   /// This tab's Agent Messages, or null where a tab has none (the Store).
   final TabMessagesState? agentMessages;
 
-  /// Agent Messages' color, for the ⇄ while on: the terminal's magenta, as
+  /// Agent Messages' color, for the 💬 while on: the terminal's magenta, as
   /// the status marks take their colors from it.
   final Color? messagesColor;
   final VoidCallback? onToggleAgentMessages;
@@ -63,8 +63,8 @@ class DesktopWorkspaceTab extends StatefulWidget {
     return width;
   }
 
-  // × and, left of it, ⇄, inside the tab's curved body, with a dead gap
-  // between them so a click just off × never toggles ⇄. They show only on
+  // × and, left of it, 💬, inside the tab's curved body, with a dead gap
+  // between them so a click just off × never toggles 💬. They show only on
   // hover; at rest the name and status have the whole tab.
   static const closeWidth = 16.0, messagesWidth = 16.0, accessoryGap = 3.0;
   static const _restingInset = grid.AppDesktop.tabShoulder + 6;
@@ -72,7 +72,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
       closeWidth + accessoryGap + messagesWidth + grid.AppDesktop.tabCloseInset;
   static const _statusWidth = 16.0, _indicatorGap = 6.0;
 
-  /// What the ⇄ says it does, in each state.
+  /// What the 💬 says it does, in each state.
   static String agentMessagesTooltip(TabMessagesState state) => switch (state) {
     TabMessagesState.off => 'Agent messages off · click to turn on',
     TabMessagesState.on => 'Agent messages on · click to turn off',
@@ -82,7 +82,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
   static double labelWidth(BuildContext context, String label) =>
       _measure(context, label, DesktopChrome.control());
 
-  /// The width that shows [label] whole while hovered, when ⇄ and × take
+  /// The width that shows [label] whole while hovered, when 💬 and × take
   /// their room — where a tooltip appears.
   static double naturalWidth(
     BuildContext context,
@@ -95,7 +95,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
       (hasActivity ? _statusWidth + _indicatorGap : 0);
 
   /// The name's left edge and width: centered with its status, and when
-  /// revealed moved left only as far as ⇄ and × need, then shortened. A name
+  /// revealed moved left only as far as 💬 and × need, then shortened. A name
   /// with room never moves.
   static (double, double) titleLayout({
     required double tabWidth,
@@ -381,7 +381,7 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
   }
 }
 
-/// Agent Messages' ⇄: grey while off, in its color while on. Its tooltip says
+/// Agent Messages' 💬: grey while off, in its color while on. Its tooltip says
 /// what a click does.
 class _AgentMessagesButton extends StatelessWidget {
   const _AgentMessagesButton({
@@ -419,7 +419,7 @@ class _AgentMessagesButton extends StatelessWidget {
             height: 32,
           ),
           style: style,
-          icon: const Icon(AppIcons.arrowRightLeft, size: 13),
+          icon: const Icon(AppIcons.messagesSquare, size: 13),
         ),
       ),
     );

@@ -16,8 +16,8 @@ import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp;
 
 /// The tab's Agent Messages (docs/design/2026-10-10-agent-messages.md, "The
-/// tab"): hovering a tab reveals ⇄ — grey while off, its color while on — and
-/// ×; while agents message, the status slot shows ⇄ in place of the status.
+/// tab"): hovering a tab reveals 💬 — grey while off, its color while on — and
+/// ×; while agents message, the status slot shows 💬 in place of the status.
 typedef _Spec = ({String id, TabMessagesState? messages, bool working});
 
 const _messagesColor = Color(0xffbc3fbc);
@@ -71,12 +71,12 @@ Finder _messages(String id) => find.byKey(ValueKey('tab-agent-messages:$id'));
 Finder _close(String id) => find.byKey(ValueKey('tab-close:$id'));
 Finder _label(String id) => find.byKey(ValueKey('tab-label:$id'));
 
-/// The ink the ⇄ glyph is drawn in, while the pointer is not on it.
+/// The ink the 💬 glyph is drawn in, while the pointer is not on it.
 Color _glyph(WidgetTester tester, String id) => IconTheme.of(
   tester.element(
     find.descendant(
       of: _messages(id),
-      matching: find.byIcon(AppIcons.arrowRightLeft),
+      matching: find.byIcon(AppIcons.messagesSquare),
     ),
   ),
 ).color!;
@@ -97,7 +97,7 @@ Future<TestGesture> _hover(WidgetTester tester, String id) async {
 
 void main() {
   for (final brightness in Brightness.values) {
-    testWidgets('off: nothing at rest; hovered, a grey ⇄ beside × '
+    testWidgets('off: nothing at rest; hovered, a grey 💬 beside × '
         '(${brightness.name})', (tester) async {
       final toggled = <String>[];
       await tester.pumpWidget(
@@ -127,7 +127,7 @@ void main() {
       expect(
         close.left - messages.right,
         DesktopWorkspaceTab.accessoryGap,
-        reason: '⇄ sits left of ×, past a gap that neither takes',
+        reason: '💬 sits left of ×, past a gap that neither takes',
       );
       await tester.tapAt(Offset(close.left - 1.5, close.center.dy));
       await tester.pump();
@@ -141,7 +141,7 @@ void main() {
     });
   }
 
-  testWidgets('on: hovered, ⇄ in Agent Messages\' color', (tester) async {
+  testWidgets('on: hovered, 💬 in Agent Messages\' color', (tester) async {
     await tester.pumpWidget(
       _host([(id: 'app', messages: TabMessagesState.on, working: true)]),
     );
@@ -160,7 +160,7 @@ void main() {
     );
   });
 
-  testWidgets('flowing: no ⇄ or × at rest — the status slot says it', (
+  testWidgets('flowing: no 💬 or × at rest — the status slot says it', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -195,7 +195,7 @@ void main() {
     );
   });
 
-  testWidgets('clicking ⇄ toggles that tab without selecting it', (
+  testWidgets('clicking 💬 toggles that tab without selecting it', (
     tester,
   ) async {
     final toggled = <String>[], selected = <String>[];
@@ -216,7 +216,7 @@ void main() {
     expect(selected, isEmpty);
   });
 
-  testWidgets('the ⇄ has a label and a state', (tester) async {
+  testWidgets('the 💬 has a label and a state', (tester) async {
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       _host([
@@ -245,7 +245,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('the messaging mark trades its arrows every half second', (
+  testWidgets('the messaging mark trades sides every half second', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -270,7 +270,7 @@ void main() {
       expect(
         mirrored.evaluate().length + plain.evaluate().length,
         1,
-        reason: 'one ⇄ at a time',
+        reason: 'one 💬 at a time',
       );
       seen.add(mirrored.evaluate().isNotEmpty);
       expect(
@@ -294,31 +294,32 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('the workspace strip offers ⇄ only on desk tabs, once answered', (
-    tester,
-  ) async {
-    final app = createApp();
-    addTearDown(app.dispose);
-    await mount(tester, app);
-    final before = app.activeSwarmId;
-    expect(_messages(before), findsNothing, reason: 'before the desk');
-    await tester.pumpWidget(const SizedBox());
-    final api = await joinAgentMessagesDesk(app);
-    await mount(tester, app);
-    final tab = app.activeSwarmId;
-    expect(_messages(tab), findsOneWidget);
-    app.openStore();
-    await tester.pump();
-    expect(app.activeSwarm.isStore, isTrue);
-    expect(_messages(app.activeSwarmId), findsNothing, reason: 'the Store');
-    api.unsupported = true;
-    await app.agentMessages.refresh();
-    await tester.pump();
-    expect(_messages(tab), findsNothing, reason: 'an older CLI or backend');
-    await tester.pumpWidget(const SizedBox());
-  });
+  testWidgets(
+    'the workspace strip offers 💬 only on desk tabs, once answered',
+    (tester) async {
+      final app = createApp();
+      addTearDown(app.dispose);
+      await mount(tester, app);
+      final before = app.activeSwarmId;
+      expect(_messages(before), findsNothing, reason: 'before the desk');
+      await tester.pumpWidget(const SizedBox());
+      final api = await joinAgentMessagesDesk(app);
+      await mount(tester, app);
+      final tab = app.activeSwarmId;
+      expect(_messages(tab), findsOneWidget);
+      app.openStore();
+      await tester.pump();
+      expect(app.activeSwarm.isStore, isTrue);
+      expect(_messages(app.activeSwarmId), findsNothing, reason: 'the Store');
+      api.unsupported = true;
+      await app.agentMessages.refresh();
+      await tester.pump();
+      expect(_messages(tab), findsNothing, reason: 'an older CLI or backend');
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
-  testWidgets('a messaging tab shows ⇄ in its status slot, then its status', (
+  testWidgets('a messaging tab shows 💬 in its status slot, then its status', (
     tester,
   ) async {
     final app = createApp();
@@ -341,7 +342,7 @@ void main() {
     });
     await tester.pump();
     expect(messaging, findsOneWidget);
-    expect(_messages(tab).hitTestable(), findsNothing, reason: 'no ⇄ button');
+    expect(_messages(tab).hitTestable(), findsNothing, reason: 'no 💬 button');
     final tooltip = tester.widget<Tooltip>(
       find.ancestor(of: _label(tab), matching: find.byType(Tooltip)).first,
     );

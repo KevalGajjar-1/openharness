@@ -104,23 +104,23 @@ shared 10-point upper corners, 8-point outward lower shoulders and 6-point top
 inset. Keep space after `+` available for dragging the window. Scroll overflow
 and reveal the selected tab on keyboard navigation. Narrow viewports can show
 smaller tabs while preserving their controls.
-Hovering a tab reveals Agent Messages' ⇄ and × at its right, ⇄ just left of ×
+Hovering a tab reveals Agent Messages' 💬 and × at its right, 💬 just left of ×
 ([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)); its status
 stays. Tabs show no shortcut hint, and holding Command changes nothing on them.
 At rest a tab shows only its name and status. While its agents message each
-other, the status slot shows ⇄ in Agent Messages' color (the terminal theme's
+other, the status slot shows 💬 in Agent Messages' color (the terminal theme's
 magenta), mirrored every half second, for 15 seconds after the last message,
-then the tab's status again. The hover ⇄ is grey while off and in that color
+then the tab's status again. The hover 💬 is grey while off and in that color
 while on; its tooltip says what a click
 does ("Agent messages off · click to turn on", "Agent messages on · click to
 turn off", "Agents messaging · click to turn off"), and a click toggles that
 tab's flag at once, going back — with a notice — if the backend refuses. Only a
-tab the desk holds has a ⇄ (not the Store, Devices, Companions, an orchestrator
+tab the desk holds has a 💬 (not the Store, Devices, Companions, an orchestrator
 or a draft tab), and only once the daemon and backend have answered for Agent
 Messages; an older CLI or backend shows none. Hovering never changes the tab
 width. At rest the name and status have the whole tab, so a 128-point tab shows
-an ordinary name whole beside its status; hovered, a name that would run into ⇄
-and × moves left only as far as they need, then gives up its tail. × and ⇄ are
+an ordinary name whole beside its status; hovered, a name that would run into 💬
+and × moves left only as far as they need, then gives up its tail. × and 💬 are
 16-point-wide, 32-point-tall targets with a 3-point dead gap between them. The tab's menu and File carry Agent Messages (a checkmark)
 and Show Agent Messages beside Rename Tab and Close Tab. Cmd-W, remapped
 shortcuts, native menu access, and middle-click closing remain available.

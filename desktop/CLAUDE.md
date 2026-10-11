@@ -298,7 +298,7 @@ Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collabo
 flag is per tab, not an Experimental switch — `GET /api/agent-messages` and
 `PATCH /api/agent-messages/tabs/:tabId` through the CLI like the desk, read after sign-in, after a
 toggle, on `desk_changed`, the desk safety-net poll and the backend coming back; a 404 (an older CLI
-or backend) offers no ⇄ at all, and the ⇄ waits for the first answer (`agentMessagesOffered`, which
+or backend) offers no 💬 at all, and the 💬 waits for the first answer (`agentMessagesOffered`, which
 also needs a desk tab). Traffic arrives as `messages_changed` — but a daemon sends that only to its
 own computer's windows, so `AgentMessagesRemoteWatch` reads the last messages of each tab that is on
 from its other machines every 15 s while the window is in front. A tab's log is the
@@ -423,11 +423,11 @@ add a kind there, not at the call site.
 - The [workspace status bar](design/workspace-status-bar.md) places system-font tabs and global actions at the top,
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
   Tabs center their name/status group and show no shortcut hint (Command changes nothing on
-  them). Hovering a tab shows Agent Messages' ⇄ — grey off, the terminal's magenta on — just
-  left of ×; while its agents message, the status slot shows an animated ⇄ for 15 s instead
+  them). Hovering a tab shows Agent Messages' 💬 — grey off, the terminal's magenta on — just
+  left of ×; while its agents message, the status slot shows an animated 💬 for 15 s instead
   (`lib/agent_messages/`, `AgentMessagesController` on `AppNotifier.agentMessages`, its own
   notifier so traffic never rebuilds the workspace; `MessagingMark`; `SwarmTabButton` mirrors
-  it natively). At rest the name has the whole tab; hovered, it moves left only as far as ⇄
+  it natively). At rest the name has the whole tab; hovered, it moves left only as far as 💬
   and × need. Tab and pane close
   marks are small and quiet, with larger click targets. Terminal panes end with matching
   plain-text agent/model selectors and close at every width. Hovering the right
