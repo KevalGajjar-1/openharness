@@ -93,6 +93,17 @@ cd cli/packages/harness-mcp && npm publish --access public
 
 Its tests are `cli/src/agentClient/mcpPackage.spec.ts`, in `make cli-test`.
 
+`harness-mcp.mcpb`, the same server as an MCP Bundle (Claude Desktop, the Official MCP Registry, Smithery), goes on
+a CLI release as an asset, by hand, after the release workflow has cut it:
+
+```bash
+make mcpb ARGS="X.Y.Z"                      # writes cli/packages/harness-mcp/mcpb/dist/ and prints the sha256
+gh release upload vX.Y.Z_cli cli/packages/harness-mcp/mcpb/dist/harness-mcp.mcpb --repo autonomous-ai/openharness
+```
+
+Publishing it, and every other listing, is in
+[docs/research/2026-10-11-listing-submissions.md](../docs/research/2026-10-11-listing-submissions.md).
+
 ## Local install (no upload)
 
 `bash cli/scripts/install-cli.sh` bundles **this working tree** into `~/.harness/cli` — the same

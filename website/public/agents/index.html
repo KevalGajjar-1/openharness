@@ -232,6 +232,23 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
     </tbody>
   </table>
   </div>
+  <h3 id="mcp-clients">Add it to a client</h3>
+  <pre><code>{"mcpServers": {"harness": {"command": "harness", "args": ["mcp"]}}}</code></pre>
+  <p>Or in one step, once Harness is installed:
+    <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=harness&amp;config=eyJjb21tYW5kIjoiaGFybmVzcyIsImFyZ3MiOlsibWNwIl19">Add to Cursor</a>,
+    <a href="vscode:mcp/install?%7B%22name%22%3A%22harness%22%2C%22type%22%3A%22stdio%22%2C%22command%22%3A%22harness%22%2C%22args%22%3A%5B%22mcp%22%5D%7D">Add to VS Code</a>
+    (<a href="vscode-insiders:mcp/install?%7B%22name%22%3A%22harness%22%2C%22type%22%3A%22stdio%22%2C%22command%22%3A%22harness%22%2C%22args%22%3A%5B%22mcp%22%5D%7D">Insiders</a>),
+    <a href="lmstudio://add_mcp?name=harness&amp;config=eyJjb21tYW5kIjoiaGFybmVzcyIsImFyZ3MiOlsibWNwIl19">Add to LM Studio</a>,
+    or in Claude Code <code>claude mcp add harness -- harness mcp</code>. An app opened from the Finder may not have
+    <code>~/.local/bin</code> on its PATH; if it cannot find <code>harness</code>, give it the full path that
+    <code>command -v harness</code> prints.</p>
+  <p>Through npm, for clients that start servers with <code>npx</code>: <code>@autonomous-ai/harness-mcp</code> runs
+    <code>harness mcp</code> from the installed CLI, and where Harness is not installed it offers one tool,
+    <code>harness_setup</code>, that says how to install it.
+    <a href="goose://extension?cmd=npx&amp;arg=-y&amp;arg=%40autonomous-ai%2Fharness-mcp&amp;timeout=660&amp;id=harness&amp;name=Harness&amp;description=Start%20Claude%20Code%20and%20Codex%20agents%20the%20person%20can%20watch%2C%20wait%20for%20them%20and%20read%20their%20answers.">Add to goose</a>
+    uses this form.</p>
+  <pre><code>{"mcpServers": {"harness": {"command": "npx", "args": ["-y", "@autonomous-ai/harness-mcp"]}}}
+claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
 
   <h2 id="rules">Rules</h2>
   <ul>

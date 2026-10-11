@@ -111,6 +111,44 @@ describe("the pages and skill agents read", () => {
     }
   });
 
+  it("installs the MCP server from each editor's link as the plugin registers it", () => {
+    // The formats, as each editor documents them on 2026-10-11: Cursor (cursor.com/docs/mcp/install-links) and
+    // LM Studio (lmstudio.ai/docs/app/mcp/deeplink) take a name and the base64 of the server's config; VS Code
+    // (code.visualstudio.com/docs/copilot/guides/mcp-developer-guide) the URL-encoded config with its name in it,
+    // and its mcp.json reference marks `type` required; goose (its docs, getting-started/using-extensions) only
+    // commands such as npx, an `arg` per argument.
+    const server = (JSON.parse(readFileSync(join(repo, "plugins", "harness", ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> }).mcpServers.harness;
+    const links = [...page.matchAll(/href="((?:cursor|vscode|vscode-insiders|lmstudio|goose):[^"]+)"/g)].map((m) => decode(m[1]));
+    const base64 = (value: string | null) => JSON.parse(Buffer.from(value ?? "", "base64").toString("utf8"));
+    const query = (link: string) => new URL(link).searchParams;
+
+    const cursor = links.filter((link) => link.startsWith("cursor://anysphere.cursor-deeplink/mcp/install?"));
+    const vscode = links.filter((link) => /^vscode(-insiders)?:mcp\/install\?/.test(link));
+    const lmstudio = links.filter((link) => link.startsWith("lmstudio://add_mcp?"));
+    const goose = links.filter((link) => link.startsWith("goose://extension?"));
+    expect([cursor.length, vscode.length, lmstudio.length, goose.length]).toEqual([1, 2, 1, 1]);
+    expect(links).toHaveLength(5);
+
+    expect(query(cursor[0]).get("name")).toBe("harness");
+    expect(base64(query(cursor[0]).get("config"))).toEqual(server);
+    for (const link of vscode) expect(JSON.parse(decodeURIComponent(link.slice(link.indexOf("?") + 1)))).toEqual({ name: "harness", type: "stdio", ...(server as object) });
+    expect(query(lmstudio[0]).get("name")).toBe("harness");
+    expect(base64(query(lmstudio[0]).get("config"))).toEqual(server);
+
+    // goose runs the npm package, as the npx form beside it does, which server.json lists for the MCP Registry.
+    const npm = (JSON.parse(readFileSync(join(repo, "server.json"), "utf8")) as { packages: { registryType: string; identifier: string }[] })
+      .packages.find((pkg) => pkg.registryType === "npm")!.identifier;
+    const g = query(goose[0]);
+    expect([g.get("cmd"), ...g.getAll("arg")]).toEqual(["npx", "-y", npm]);
+    expect(g.get("id")).toBe("harness");
+    expect(page).toContain(`{"command": "npx", "args": ["-y", "${npm}"]}`);
+    expect(page).toContain(`claude mcp add harness -- npx -y ${npm}`);
+    expect(llms).toContain(`npx -y ${npm}`);
+    // goose ends a call after `timeout` seconds; harness_wait may wait up to its maximum.
+    const waitMax = Number(readFileSync(join(repo, "cli", "src", "agentClient", "mcp.ts"), "utf8").match(/const WAIT_MAX_S = (\d+)/)![1]);
+    expect(Number(g.get("timeout"))).toBeGreaterThan(waitMax);
+  });
+
   it("links the skill where it is in this repository", () => {
     for (const text of [page, llms]) {
       for (const m of text.matchAll(/https:\/\/(?:raw\.githubusercontent\.com\/autonomous-ai\/openharness\/main|github\.com\/autonomous-ai\/openharness\/(?:blob|tree)\/main)\/([^\s")]+)/g)) {

@@ -11,11 +11,26 @@ Codex both install; [harness.autonomous.ai/agents](https://harness.autonomous.ai
 server is local only: it needs the CLI from `curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash`, with no
 npm or PyPI package and no remote HTTPS endpoint.
 
+**The files these listings need are now in the repository**, and the text and commands for each submission are in
+[2026-10-11-listing-submissions.md](2026-10-11-listing-submissions.md):
+
+| For | File |
+|---|---|
+| Official MCP Registry | `server.json` (placeholders; `make mcpb` writes the one to publish) |
+| `.mcpb` bundle (Claude Desktop, the registry, Smithery) | `cli/packages/harness-mcp/mcpb/manifest.json`, built by `make mcpb ARGS="<version>"` |
+| npm (`npx -y @autonomous-ai/harness-mcp`) | `cli/packages/harness-mcp/` (#1189; published by hand, `cli/RELEASE.md`) |
+| Cursor | `.cursor-plugin/marketplace.json`, `plugins/harness/.cursor-plugin/plugin.json`, `plugins/harness/mcp.json` |
+| Glama | `glama.json`, `cli/docker/harness-mcp/Dockerfile` |
+| Editors' install links | `/agents`, "Add it to a client" |
+
+`website/scripts/listings.spec.ts` checks them against the registry's and MCPB's schemas.
+
 ## The one missing piece
 
 Most MCP directories install a server from a package. An **`.mcpb` bundle** on a GitHub release (a small server
 manifest whose command is `harness mcp`, and which says the CLI must be installed) unlocks the Official MCP
-Registry, Smithery, and PulseMCP after it. An npm package with `mcpName` would also do, as a wrapper only.
+Registry, Smithery, and PulseMCP after it. An npm package with `mcpName` would also do, as a wrapper only. Both are
+now built (above); what is left is the release that carries `harness mcp`, the upload and the publishing.
 
 ## Checklist
 
@@ -57,7 +72,8 @@ may be held as close to an existing listing (**unverified**).
 
 Needs first: the package. For `mcpb`: an https release asset on github.com whose URL contains "mcp" (for example
 `/autonomous-ai/openharness/releases/download/<tag>/harness-mcp.mcpb`) and its `fileSha256`. A metadata-only entry
-may be accepted (**unverified**) but no client could install it. Does not qualify today.
+may be accepted (**unverified**) but no client could install it. Does not qualify today. Now: `server.json` lists the
+npm package and the `.mcpb`; both exist once the CLI with `harness mcp` is released and the npm package published.
 
 ### 4. Smithery (smithery.ai)
 
@@ -67,6 +83,7 @@ may be accepted (**unverified**) but no client could install it. Does not qualif
 3. Settings → Verification for the vendor checklist.
 
 Needs first: the same `.mcpb`, and a Smithery namespace (how one is made: **unverified**). Does not qualify today.
+Now: `make mcpb` builds the bundle; it is the only form Smithery takes for a local server (no npm).
 
 ### 5. PulseMCP (pulsemcp.com)
 
@@ -80,10 +97,11 @@ MCP Registry, so item 3 covers it.
   `plugins/harness/.cursor-plugin/plugin.json` (only `name` is required), a root `.cursor-plugin/marketplace.json`
   pointing at `plugins/harness`, and `plugins/harness/mcp.json` with
   `{"mcpServers":{"harness":{"command":"harness","args":["mcp"]}}}`. Test from `~/.cursor/plugins/local/harness` and
-  **Developer: Reload Window**. Cursor's docs do not say whether it reads `.claude-plugin`.
+  **Developer: Reload Window**. Cursor's docs do not say whether it reads `.claude-plugin`. Now: all three files are
+  in the repository.
 - **Add to Cursor link**, no submission: `cursor://anysphere.cursor-deeplink/mcp/install?name=harness&config=eyJjb21tYW5kIjoiaGFybmVzcyIsImFyZ3MiOlsibWNwIl19`
-  (the config is base64 of `{"command":"harness","args":["mcp"]}`). It could go on `/agents` once `harness mcp` is
-  released.
+  (the config is base64 of `{"command":"harness","args":["mcp"]}`). Now on `/agents`, beside VS Code's, LM Studio's
+  and goose's.
 - **cursor.directory**: answered 429 to every request; **unverified**.
 
 ### 7. Glama (glama.ai/mcp/servers)
@@ -95,6 +113,8 @@ MCP Registry, so item 3 covers it.
 
 Needs first: the Dockerfile (install the CLI, then `harness mcp`), `glama.json`, and `harness mcp` answering
 initialize and tools/list with no daemon or tmux running (not checked). How the score is computed: **unverified**.
+Now: `glama.json` and `cli/docker/harness-mcp/Dockerfile` are in the repository, and `harness mcp` was checked to
+answer initialize and tools/list with no daemon and no tmux, from the sources and in that image.
 A passing Glama listing is what the largest awesome list (item 9) asks for.
 
 ### 8. Skills and OpenAI's plugin directory
@@ -132,6 +152,8 @@ A passing Glama listing is what the largest awesome list (item 9) asks for.
 - **RoggeOhta/awesome-codex-cli**: an issue or pull request; Codex-specific entries with a star badge.
 
 ## In order
+
+The submissions page repeats this order with the exact text and commands for each step.
 
 1. Merge this branch and the `harness mcp` change; release the CLI; deploy `/agents` and `/llms.txt`.
 2. Anthropic's directory and OpenAI's (skills only): no new files.
