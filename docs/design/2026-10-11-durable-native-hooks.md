@@ -305,6 +305,29 @@ attempts and eight actual disk publications globally. An expired reply retains
 its I/O reservation until the underlying operation settles. These are resource
 bounds, not measured performance targets.
 
+The existing random staging names do not yet provide the cross-process bound:
+crashed clients can leave files before winning the exclusive publication. The
+reviewed replacement design uses eight writer lanes with immutable generation
+claims and releases. Only an exclusive claimant may write; observers may confirm
+release but never inherit a writer lease. Each stage has a generation/nonce/step
+name that cannot be reused, and a lease serializes its stages. Cleanup touches
+only that generation's exact files. A dead-writer reaper must prove the original
+boot/PID/precise birth is gone; unavailable evidence holds the lane. Mirrored
+claim/release metadata, initialization authority and reserved release headroom
+count toward retained bytes. Those metadata records need bounded atomic
+publication themselves, without using the random staging helper recursively.
+
+Revocation stops new publication immediately but keeps the lane until actual I/O,
+FD closure, stage removal and directory sync finish. Cleanup has narrow generation
+authority separate from the expired request: releasing in the caller's outer
+`finally`, or attempting cleanup with its revoked `attempt.flush`, is unsafe.
+Directory identity and destination filesystem remain pinned; cross-device
+publication holds. The proposed 8,192-generation lane cap requires recovery and
+final-fence measurements before adoption. Retained content and bounded staging
+bytes are distinct from filesystem block/inode allocation. This is independently
+reviewed design, not implemented staging capacity or final acceptance; no broader
+cleanup, record pruning or user-data deletion is authorized by it.
+
 Linked Cursor/Command Code Stop reserves a durable completion obligation with
 its first registration intake. Registration completion and Stop completion are
 separate states; recovery installs unresolved Stop obligations before attach can
