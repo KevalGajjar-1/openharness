@@ -13,7 +13,7 @@ import '../terminal/terminal_theme_store.dart';
 import '../theme/app_theme.dart';
 import 'agent_drag.dart';
 import 'harness_activity_mark.dart';
-import 'harness_agent_control.dart';
+import 'engine_identity.dart';
 import 'pane_header_actions.dart';
 
 /// One message of a cloud harness's conversation, as `cloud_transcript` gives it.
@@ -57,6 +57,10 @@ class CloudChatPane extends StatefulWidget {
 }
 
 class _CloudChatPaneState extends State<CloudChatPane> {
+  /// The agent's own name ("Devin Cloud"), and the one its lines are said by ("Devin").
+  String get _agentLabel => engineIdentity(widget.agent.engine).label;
+  String get _speaker => _agentLabel.split(' ').first;
+
   final _prompt = TextEditingController();
   final _promptFocus = FocusNode(debugLabel: 'Cloud harness prompt');
   final _scroll = ScrollController();
@@ -201,13 +205,23 @@ class _CloudChatPaneState extends State<CloudChatPane> {
             ),
           ),
           const SizedBox(width: 8),
-          // Its agent, plainly: a cloud harness is not moved to another agent.
+          // Its agent, in the ink a pane's agent rests in, and no picker: a
+          // cloud harness is not moved to another agent.
           PaneHeaderActions(
-            agentPicker: HarnessAgentControl(
-              app: widget.notifier,
-              machineId: widget.machineId,
-              agent: widget.agent,
-              enabled: false,
+            agentPicker: Semantics(
+              label: 'Agent: $_agentLabel',
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  _agentLabel,
+                  key: const ValueKey('pane-agent-control'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: workspaceBarTextStyle(
+                    color: ink.withValues(alpha: .75),
+                  ),
+                ),
+              ),
             ),
           ),
           if (widget.onClose != null)
@@ -229,9 +243,7 @@ class _CloudChatPaneState extends State<CloudChatPane> {
     final rows = <Widget>[
       for (final message in _messages)
         _row(
-          message.from == 'person'
-              ? 'you'
-              : widget.agent.displayName.split(' ').first,
+          message.from == 'person' ? 'you' : _speaker,
           message.text,
           message.from == 'person' ? muted : style,
           muted,
@@ -240,7 +252,7 @@ class _CloudChatPaneState extends State<CloudChatPane> {
         ),
       if (cloud != null && cloud.working && question == null)
         _row(
-          widget.agent.displayName.split(' ').first,
+          _speaker,
           '${cloud.activity ?? 'Working'}…',
           muted,
           muted,
@@ -285,10 +297,7 @@ class _CloudChatPaneState extends State<CloudChatPane> {
 
   double _senderWidth(TextStyle style) {
     final painter = TextPainter(
-      text: TextSpan(
-        text: '${widget.agent.displayName.split(' ').first}  ',
-        style: style,
-      ),
+      text: TextSpan(text: '$_speaker  ', style: style),
       textDirection: TextDirection.ltr,
       maxLines: 1,
     )..layout();
@@ -379,7 +388,7 @@ class _CloudChatPaneState extends State<CloudChatPane> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(top: 1),
+            padding: EdgeInsets.zero,
             child: Text(
               '❯ ',
               style: workspaceBarTextStyle(color: AppColors.mutedStrong),
@@ -401,10 +410,17 @@ class _CloudChatPaneState extends State<CloudChatPane> {
                 maxLines: 6,
                 style: workspaceBarTextStyle(color: ink),
                 cursorColor: ink,
-                decoration: InputDecoration.collapsed(
-                  hintText: stopped
-                      ? 'Write to wake it'
-                      : 'Write to ${widget.agent.displayName.split(' ').first}',
+                // No box: the prompt is a line, as a terminal's is.
+                decoration: InputDecoration(
+                  isCollapsed: true,
+                  isDense: true,
+                  contentPadding: EdgeInsets.zero,
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
+                  hintText: stopped ? 'Write to wake it' : 'Write to $_speaker',
                   hintStyle: workspaceBarTextStyle(
                     color: AppColors.mutedStrong,
                   ),
