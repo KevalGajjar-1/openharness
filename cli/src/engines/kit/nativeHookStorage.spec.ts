@@ -15,7 +15,7 @@ const helpers = { prepare: vi.fn(), invalidate: vi.fn() }
 const identity = { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: 8100, birth: '12345' }
 const proof = { writer: identity, verifyWriter: vi.fn(), closeWriter: vi.fn() }
 const pool = { acquire: vi.fn(), close: vi.fn(async () => { proof.closeWriter() }) }
-const catalog = { effects: vi.fn(), readEffects: vi.fn(), outbox: vi.fn(), close: vi.fn(async () => {}) }
+const catalog = { effects: vi.fn(), readEffects: vi.fn(), readOutbox: vi.fn(), outbox: vi.fn(), close: vi.fn(async () => {}) }
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(captureNativeHookWriter).mockResolvedValue(proof)
@@ -41,9 +41,11 @@ it('wires current writer, exact death proof and the sealed catalog to one root',
   const current = () => true
   await storage.effects('process-key', current); await storage.outbox(3, current)
   await storage.readEffects(['process-key'], current)
+  await storage.readOutbox(3, current)
   expect(catalog.effects).toHaveBeenCalledWith('process-key', current)
   expect(catalog.outbox).toHaveBeenCalledWith(3, current)
   expect(catalog.readEffects).toHaveBeenCalledWith(['process-key'], current)
+  expect(catalog.readOutbox).toHaveBeenCalledWith(3, current)
   await storage.close()
 })
 

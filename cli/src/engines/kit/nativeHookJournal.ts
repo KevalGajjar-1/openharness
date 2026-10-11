@@ -16,7 +16,7 @@ import type { NativeHookStageLease } from './nativeHookStaging.js'
 
 let activeOperations = 0
 type OperationPurpose = 'normal' | 'terminal'
-type Operation = { purpose: OperationPurpose; check(): void; checkOwner(): void; preparations: Set<Promise<unknown>>;
+type Operation = { purpose: OperationPurpose; check(): void; checkOwner(): void; preparations: Set<Promise<unknown>>; yieldedAt: number;
   stage?: Promise<NativeHookStageLease>; stagePurpose?: OperationPurpose }
 
 export class NativeHookJournalHeld extends Error {
@@ -224,6 +224,7 @@ export interface NativeHookJournalBoundary {
   read(check: () => void, after: () => void): void
   /** Called before any intake, including recovery of an unfinished bootstrap. */
   authorize(proof: NativeHookJournalAuthority, empty: () => Promise<() => void>, check: () => void): Promise<void>
+  /** Retains the full boundary proof; current is the caller's cheap owner/deadline check. */
   acquireStage(purpose: OperationPurpose, current: () => boolean): Promise<NativeHookStageLease>
   track(actual: Promise<unknown>): void
 }
@@ -265,7 +266,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     activeOperations++
     const deadline = performance.now() + 4500
     let expired = false, timer: ReturnType<typeof setTimeout> | undefined
-    const state: Operation = { purpose, preparations: new Set(), check: () => { check(); state.checkOwner() }, checkOwner: () => {
+    const state: Operation = { purpose, preparations: new Set(), yieldedAt: performance.now(), check: () => { check(); state.checkOwner() }, checkOwner: () => {
       checkOwner()
       if (expired || performance.now() >= deadline) held('the journal operation expired')
     } }
@@ -289,7 +290,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   }
   const publish = async (file: string, text: string, verify: () => void, exclusive: boolean, normalOnly = false) => {
     const owner = operations.getStore()
-    await runHookPreparation([file], async attempt => {
+    const published = await runHookPreparation([file], async attempt => {
       verify(); check()
       const inspected = inspectHookFile(file, 0o600)
       // Confirming an existing receipt must remain possible with every staging
@@ -303,12 +304,12 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         if (purpose === 'normal' && state.stagePurpose === 'terminal') held('terminal capacity cannot initialize a journal')
         if (!state.stage) {
           state.stagePurpose = purpose
-          state.stage = boundary.acquireStage(purpose, () => { state.check(); return true })
+          state.stage = boundary.acquireStage(purpose, () => { state.checkOwner(); return true })
         }
         lease = await state.stage
         state.check(); lease.verify()
       }
-      await inspected.replace(text, attempt, exclusive, lease?.stage)
+      return inspected.replace(text, attempt, exclusive, lease?.stage)
     }, {
       // Recovery and admission can confirm the same immutable bytes at once.
       // Share only that in-flight sync; each waiter still checks its own facts
@@ -317,6 +318,14 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       retainConflicts: true, current: () => { readFence(() => { verify(); (owner?.check ?? check)() }); return true },
       track: actual => { owner?.preparations.add(actual) },
     })
+    if (owner && performance.now() - owner.yieldedAt >= 20) {
+      // Fast confirmations can form a long microtask train. Give eager control
+      // callbacks a turn without extending this operation or borrowing a new
+      // publication identity after the yield.
+      await new Promise<void>(done => setImmediate(done))
+      readFence(() => { verify(); published.verify(); owner.check() })
+      owner.yieldedAt = performance.now()
+    }
   }
   const confirm = async (records: readonly Exclude<Read, undefined>[], verify: () => void, owner = verify) => {
     verify()

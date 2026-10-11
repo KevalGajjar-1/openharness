@@ -36,6 +36,7 @@ export async function fixtureNativeHookAdmissionStorage(root: string): Promise<N
       journals.add(journal)
       return journal
     },
+    async readOutbox() { return undefined },
     async outbox() { throw Error('client outboxes require the storage integration fixture') },
     async close() { closed = true; for (const journal of journals) journal.close() },
   }

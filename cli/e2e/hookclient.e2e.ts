@@ -17,7 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient, type Frame } from './harness/client.js'
 import { IsolatedDaemon, until } from './harness/daemon.js'
@@ -223,6 +223,123 @@ setInterval(() => {}, 1000)
       expect((await later).payload?.userMessage).toBe('later Cursor turn')
       expect(await hook('stop', delivery, firedAt, 'turn-stop')).toEqual({ status: 200, body: { ok: true, duplicate: true } })
       expect((await row(client, agentId))?.identityHold).toBeFalsy()
+      expect(d.coresStarted()).toBe(1)
+    } finally { client.close() }
+  })
+
+
+  it.each(['running', 'paused'] as const)('completes a Cursor Stop from the shipped client with the core %s', async state => {
+    const d = daemon = await IsolatedDaemon.create()
+    onTestFailed(() => console.log(d.log()))
+    const home = join(d.root, 'cursor'), binary = join(d.root, 'bin', 'cursor-agent')
+    const cwd = join(d.projectsDir, 'cursor-stop'); mkdirSync(cwd)
+    const sessionId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+    const transcriptDir = join(home, 'projects', 'fixture', 'agent-transcripts', sessionId)
+    mkdirSync(transcriptDir, { recursive: true })
+    const transcriptPath = join(transcriptDir, sessionId + '.jsonl')
+    writeFileSync(transcriptPath, JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: 'healthy Cursor turn' }] } }) + '\n')
+    const pidFile = join(d.root, 'cursor.pid'), trigger = join(d.root, 'run-stop'), completed = join(d.root, 'stop-completed')
+    const sent = join(d.root, 'stop-requests.jsonl'), observer = join(d.root, 'observe-hook.mjs')
+    // Observe the real client's requests; no replacement transport, reply, or
+    // alternate deadline. Every request still reaches this fixture's core.
+    writeFileSync(observer, `import http from 'node:http'; import { appendFileSync } from 'node:fs';
+const request = http.request;
+http.request = function(options, ...args) {
+  const req = request.call(this, options, ...args);
+  const record = event => appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ event, path: options.path, at: Date.now(),
+    id: req.getHeader('x-harness-hook-delivery-id'), firedAt: req.getHeader('x-harness-hook-fired-at') }) + '\\n');
+  req.once('finish', () => record('finish'));
+  req.once('socket', socket => { if (socket.connecting) socket.once('connect', () => record('connect')); else record('connect'); });
+  return req;
+};\n`)
+    const notify = resolve('hook/notify.mjs')
+    const args = ['--import', observer, notify, '--port', String(d.port), '--data-dir', d.dataDir, '--cursor-home', home, '--engine', 'cursor']
+    const input = { hook_event_name: 'stop', session_id: sessionId, transcript_path: transcriptPath, status: 'completed', workspace_roots: [cwd] }
+    Object.assign(d.env, { CURSOR_HOME: home, CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: home, CURSOR_PATH: binary })
+    writeFileSync(binary, `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2026.10.10'); process.exit(0) }
+if (process.argv.includes('--help')) { console.log('--force --resume'); process.exit(0) }
+process.title = 'cursor-agent'.padEnd(120)
+const fs = require('node:fs'); const { spawn } = require('node:child_process');
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.on('SIGINT', () => {});
+console.log('fixture-cursor-ready');
+let ran = false;
+setInterval(() => {
+  if (ran || !fs.existsSync(${JSON.stringify(trigger)})) return;
+  ran = true;
+  fs.appendFileSync(${JSON.stringify(transcriptPath)}, JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: 'completed response' }] } }) + '\\n');
+  const child = spawn(process.execPath, ${JSON.stringify(args)}, { env: process.env, stdio: ['pipe', 'ignore', 'pipe'] });
+  let error = ''; child.stderr.on('data', chunk => { error += chunk });
+  child.stdin.end(${JSON.stringify(JSON.stringify(input))});
+  child.once('close', code => fs.writeFileSync(${JSON.stringify(completed)}, JSON.stringify({ code, error })));
+}, 25);
+`, { mode: 0o755 })
+    await d.start()
+    const client = await LocalClient.connect(d)
+    try {
+      const created = await client.request('agent_create', { engine: 'cursor', cwd, bypassPermission: true }, 60_000)
+      expect(created.error, JSON.stringify(created)).toBeUndefined()
+      const agentId = created.agent.id, pane = created.agent.terminal?.runtimes?.[0]?.paneId ?? created.agent.tmuxPane
+      await until('the private Cursor process', async () => (await d.capture(pane)).includes('fixture-cursor-ready'), 20_000)
+      const callerPid = Number(readFileSync(pidFile, 'utf8'))
+      const firstTurn = client.next(isTurn('turn_started', agentId), 30_000, 'the observed Cursor turn')
+      const response = await fetch(`http://127.0.0.1:${d.port}/api/hook/session-start`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-harness-hook-token': d.hookCredential() },
+        body: JSON.stringify({ engine: 'cursor', hookEvent: 'sessionStart', sessionId, tmuxPane: pane, cwd, callerPid, transcriptPath }) })
+      const initial = { status: response.status, body: await response.json() }
+      expect(initial.status, JSON.stringify(initial)).toBeLessThan(300)
+      expect(initial.body.ignored, JSON.stringify(initial)).toBeUndefined()
+      expect(initial.body.retry, JSON.stringify(initial)).toBeUndefined()
+      await bound(client, agentId, sessionId)
+      expect((await firstTurn).payload?.userMessage).toBe('healthy Cursor turn')
+      await until('the existing Cursor parser', () => new RegExp(`\\[agent\\] ${agentId.slice(0, 8)} attached · engine=cursor`).test(d.log()), 20_000)
+      await until('initial admission to settle', async () => {
+        const current = await row(client, agentId)
+        return current?.sessionId === sessionId && current.engine === 'cursor' && !current.identityHold && !current.interpretationHold
+      }, 20_000)
+      const beforeStop = client.frames.length
+      const readRequests = (): { event: string; path: string; at: number; id: string; firedAt: string }[] => {
+        try { return readFileSync(sent, 'utf8').trim().split('\n').map(line => JSON.parse(line)) } catch { return [] }
+      }
+      const ended = client.next(isTurn('turn_ended', agentId), 30_000, 'healthy Cursor Stop completion')
+        .then(value => ({ value }), error => ({ error }))
+      const core = d.corePid()!
+      if (state === 'paused') { process.kill(core, 'SIGSTOP'); stopped.push(core) }
+      try {
+        if (state === 'paused') await until('the private core to pause', () => processState(core).includes('T'), 5_000)
+        writeFileSync(trigger, '')
+        const requests = await until('both shipped requests to reach the private socket', () => {
+          const records = readRequests()
+          return records.filter(record => record.event === 'finish').length === 2
+            && records.filter(record => record.event === 'connect').length === 2 ? records : null
+        }, 10_000)
+        const finished = requests.filter(record => record.event === 'finish')
+        expect(finished.map(item => item.path)).toEqual(['/api/hook/session-start', '/api/hook/turn-stop'])
+        expect(finished[0].id).toMatch(/^[a-f0-9-]{36}$/)
+        expect(finished[1].id).toBe(finished[0].id)
+        expect(Number(finished[0].firedAt)).toBeGreaterThan(0)
+        expect(finished[1].firedAt).toBe(finished[0].firedAt)
+        if (state === 'paused') expect(finished[1].at - finished[0].at).toBeGreaterThanOrEqual(450)
+      } finally {
+        if (state === 'paused') { process.kill(core, 'SIGCONT'); stopped.splice(stopped.indexOf(core), 1) }
+      }
+      const result = await until('the real hook client to exit', () => {
+        try { return JSON.parse(readFileSync(completed, 'utf8')) } catch { return null }
+      }, 15_000)
+      expect(result.code, result.error).toBe(0)
+      const completion = await ended
+      expect(completion, JSON.stringify({ completion, requests: readRequests(), row: await row(client, agentId) })).toHaveProperty('value')
+      if ('value' in completion) {
+        expect(completion.value.replay).not.toBe(true)
+        expect(completion.value.payload?.replay).not.toBe(true)
+        expect(completion.value.payload?.aborted).not.toBe(true)
+      }
+      const live = client.frames.slice(beforeStop).filter(frame => frame.agentId === agentId && frame.replay !== true)
+      expect(live.filter(frame => frame.type === 'text_delta').map(frame => frame.payload?.content).join('')).toContain('completed response')
+      expect(live.filter(frame => frame.type === 'turn_ended')).toHaveLength(1)
+      expect((await row(client, agentId))?.identityHold).toBeFalsy()
+      expect((await row(client, agentId))?.interpretationHold).toBeFalsy()
       expect(d.coresStarted()).toBe(1)
     } finally { client.close() }
   })

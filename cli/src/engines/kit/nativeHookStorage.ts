@@ -25,6 +25,7 @@ export async function openNativeHookStorage(root: string, helpers: NativeControl
       effects: catalog.effects,
       readEffects: catalog.readEffects,
       outbox: catalog.outbox,
+      readOutbox: catalog.readOutbox,
       close(): Promise<void> {
         // Catalog.close revokes synchronously. Wait for actual journal I/O,
         // then acquisitions and stage cleanup; only the pool closes the writer.

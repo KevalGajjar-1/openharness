@@ -31,6 +31,8 @@ import { currentBootId } from './lib/bootId.js'
 import { secureStateDirectory } from './lib/secureState.js'
 import type { NativeHookClaim, NativeHookDelivery } from './engines/kit/nativeHookJournal.js'
 import { openNativeHookStorage, type NativeHookStorage } from './engines/kit/nativeHookStorage.js'
+import { createNativeHookReplay } from './engines/kit/nativeHookReplay.js'
+import { sendNativeHookRequest } from './engines/kit/nativeHookTransport.js'
 import { bundledProcessImageHelper, invalidateProcessImageHelper } from './lib/nativeProcessImages.js'
 import { inspectNativeHookOrigin, nativeHookOriginCaller } from './engines/kit/nativeHookOrigin.js'
 import { nativeHookAcknowledgement, nativeHookWireIdentity, type NativeHookAcknowledgement,
@@ -1150,10 +1152,23 @@ export function startHookServer(
     }
     recoveryTimer = setTimeout(recoveryPass, 500); recoveryTimer.unref()
   }
+  const replayHolds = new Map<number, string>()
+  const clientReplay = createNativeHookReplay({
+    readOutbox: async (shard, current) => (await storage()).readOutbox(shard, current),
+    send: (request, current, remainingMs) => sendNativeHookRequest(request, hookCredential, () => !closed && current(), remainingMs),
+    onHeld: (shard, id, reason) => {
+      if (!reason) { replayHolds.delete(shard); return }
+      const detail = `${id ?? `shard ${shard}`}: ${reason}`
+      if (replayHolds.get(shard) === detail) return
+      replayHolds.set(shard, detail)
+      console.warn(`[hooks] retained client delivery held · ${detail}`)
+    },
+  })
   const startRecovery = () => {
     if (closed || recoveryStarted) return
     recoveryStarted = true
     recoveryTimer = setTimeout(recoveryPass, 0); recoveryTimer.unref()
+    clientReplay.start()
   }
   const handle: http.RequestListener = (req, res) => {
     void (async () => {
@@ -1642,6 +1657,7 @@ export function startHookServer(
   const server = http.createServer(handle)
   const stopRecovery = () => {
     closed = true; clearTimeout(recoveryTimer); admissions.close(); waitingAttaches.clear()
+    void clientReplay.close().catch(error => console.warn('[hooks] client replay cleanup remains held', error))
     for (const context of durableProcesses.values()) context.journal.close()
     void closeStorage().catch(error => console.warn('[hooks] storage cleanup remains held', error))
   }
@@ -1649,7 +1665,7 @@ export function startHookServer(
   server.close = callback => {
     stopRecovery()
     return close(error => {
-      void closeStorage().then(() => callback?.(error), failure => callback?.(error ?? (failure instanceof Error ? failure : new Error(String(failure)))))
+      void Promise.all([clientReplay.close(), closeStorage()]).then(() => callback?.(error), failure => callback?.(error ?? (failure instanceof Error ? failure : new Error(String(failure)))))
     })
   }
   server.once('close', stopRecovery)

@@ -32,8 +32,8 @@ mutations = [
     ('BOM discarded before wire identity', server,
      'fatal: true, ignoreBOM: true', 'fatal: true', http, 'UTF-8 BOM'),
     ('read-only namespace lookup allocates', catalog,
-     'const control = pair(versionFile)\n        if (control',
-     "await allocate('effects', keys[0]!, check)\n        const control = pair(versionFile)\n        if (control",
+     'const control = pair(versionFile)\n      if (control',
+     "await allocate('effects', keys[0]!, check)\n      const control = pair(versionFile)\n      if (control",
      storage, 'looks up only existing'),
     ('selected catalog and seal proofs discarded', catalog,
      'checkRoot(); control.verify(); allocation.pair.verify(); allocation.seal!.verify(); proof.verify()',
@@ -53,14 +53,14 @@ for key in list(environment):
 assert Path(environment.get('TMUX_TMPDIR', '/missing')).is_dir(), 'Private TMUX_TMPDIR is required'
 
 
-def run(target, pattern=''):
+def run(target, pattern='', timeout=65):
     return subprocess.run(['node', 'node_modules/vitest/vitest.mjs', 'run', target, '--maxWorkers=1',
                            *(['-t', pattern] if pattern else [])], cwd=cli, env=environment,
-                          text=True, capture_output=True, timeout=65)
+                          text=True, capture_output=True, timeout=timeout)
 
 
 for target, pattern in [(http, ''), (storage, 'looks up only existing|retains selected receipt authority')]:
-    baseline = run(target, pattern)
+    baseline = run(target, pattern, timeout=120)
     if baseline.returncode:
         raise SystemExit('Baseline failed; no mutants ran.\n' + baseline.stdout + baseline.stderr)
 print('Native protocol baselines passed', flush=True)

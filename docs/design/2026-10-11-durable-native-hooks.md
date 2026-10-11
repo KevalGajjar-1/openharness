@@ -8,6 +8,56 @@ same delivery ID is accepted after restart. Receipt
 `20261011T072723.699358Z-96575` records those assertion failures and the unchanged
 passing Linux/macOS golden.
 
+Replay checkpoint (October 11, 22:10 UTC): core starts bounded retained-outbox
+replay after readiness. Existing-only catalog handles preserve exact saved bytes,
+original origin, phase order and durable ACKs without allocating new namespaces.
+One productive attempt runs at a time; expired work retains its actual I/O slot
+until cleanup, with four actual operations as the cap. HTTP transport consumes
+the original remaining budget and checks complete bounded replies. Read-only
+catalog scans use complete pinned directory listings, while publication yields
+retain the exact published file identity and original owner/deadline.
+
+Receipt `20261011T214443.458514Z-39792` passed all 28 replay mutation oracles by
+assertion. The bounded broad run `20261011T214620.021521Z-46197` was not green:
+its types passed, several complete test files passed, six catalog cases failed,
+and the aggregate reached its 420-second bound. Five catalog failures came from
+a later dynamic test spy targeting a different module after an earlier module
+reset. A static import corrects that isolation; independent review agreed.
+Receipt `20261011T220316.603983Z-24640` passes all 83 catalog cases (117.6 seconds).
+The earlier capacity failure's precise reason was not retained before the broad
+run timed out; its later passing case does not establish that cause. Another
+setup run held on unrelated temporary-directory ancestor churn before its fault
+was installed. Neither failed receipt is represented as passing.
+
+The remaining affected lane `20261011T231619.123932Z-5589` passes types
+(5.3 seconds), all 249 cases in fourteen previously incomplete files (20.6
+seconds), and all thirteen protocol mutation assertions (137.2 seconds).
+This completes that selected unit scope using combined unchanged-file evidence;
+it does not make the failing private Stop acceptance green.
+
+The four-shard real-HTTP workload completed in 25.4–27.1 seconds with mocked
+flush callbacks, approximately 19–20 seconds of process CPU and 0.50–0.52 seconds
+maximum event-loop delay. These measure traversal and transport, not physical
+flush latency; they are not final runtime acceptance.
+
+The actual shipped Cursor client exposed a landing blocker. In receipt
+`20261011T220611.845027Z-36324`, both continuously running and paused private cores
+leave an otherwise completed turn held. The original registration exceeds the
+client's 500 ms transport budget; linked Stop overtakes durable admission and
+becomes permanently unmatched. The identical independently reviewed test against
+unchanged main `4f92ee5e9` passes the running case in 3.7 seconds and fails only
+the paused case (`20261011T220851.747681Z-50781`). Thus healthy Stop completion is
+a regression introduced by active catalog adoption; delayed-core completion is
+an existing failure. The server slice cannot land independently of the required
+client/Stop fix. The regression remains enabled. Scoped storage/replay reviews
+are not final PR approval, and no merge or release occurred.
+
+The [Cursor hook schema](https://cursor.com/docs/hooks) supplies `generation_id`
+per user message. The current client drops it, and the transcript normalizer has
+no matching generation authority. It cannot safely close a reconstructed turn
+until both sides preserve a verifiable correlation; arrival time or the current
+parser alone cannot substitute for that evidence.
+
 Client coordination checkpoint (October 11, 20:16 UTC): all linked phases are
 retained before the first send. Retries preserve their original bytes, ID and
 native time, and use versioned mutation routes that an older core rejects before

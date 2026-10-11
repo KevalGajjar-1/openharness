@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { nativeHookAcknowledgement } from './engines/kit/nativeHookClientProtocol.js'
+import { nativeHookOutboxShard } from './engines/kit/nativeHookOutbox.js'
 import type { HookServerHandlers } from './hookServer.js'
 
 const fault = vi.hoisted(() => ({ unavailable: false, afterRetain: undefined as (() => void) | undefined,
@@ -78,11 +79,11 @@ afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.doUnmock('./engines/kit/nativeHookStorage.js'); vi.resetModules()
   rmSync(root, { recursive: true, force: true })
 })
-async function fixture(overrides: Partial<HookServerHandlers> = {}, capacity = 65_536) {
+async function fixture(overrides: Partial<HookServerHandlers> = {}, capacity = 65_536, requestedPort = 0) {
   const { startHookServer } = await import('./hookServer.js'), { readHookCredential } = await import('./lib/hookAuth.js')
   const registered = vi.fn(), stopped = vi.fn(), capture = vi.fn(async () => { throw Error('live ancestry cannot replace original origin') })
   const resolved = vi.fn(async () => live ? registry.byAgent(agentId) ?? null : null)
-  const started = await startHookServer(0, { onRegistered: registered, onSessionEnd() {}, onTurnStop: stopped,
+  const started = await startHookServer(requestedPort, { onRegistered: registered, onSessionEnd() {}, onTurnStop: stopped,
     captureNativeHookCaller: capture, resolveHookAgent: resolved,
     readNativeHookOwner: async (_row, expected) => {
       if (!live || expected && expected.key !== key) throw Error('fixture original engine unavailable')
@@ -122,6 +123,138 @@ it('confirms exact retained wire identity and recovers a lost completed reply af
   expect(await restarted.post(raw + ' ')).toMatchObject({ status: 409, body: { error: 'HOOK_DELIVERY_CONFLICT' } })
   expect(records().filter(record => record.event.kind === 'intake')).toHaveLength(1)
 }, 20_000)
+
+it('starts retained client replay only after readiness and recovers a held registration across core restart', async () => {
+  const first = await fixture({ hookAdmissionBlocked: () => true }), raw = JSON.stringify(body())
+  const { openNativeHookStorage } = await import('./engines/kit/nativeHookStorage.js')
+  const helpers = { prepare: () => { throw Error('fixture cannot prepare a host binary') }, invalidate() {} }
+  mkdirSync(directory(), { mode: 0o700, recursive: true })
+  const client = await openNativeHookStorage(directory(), helpers), shard = nativeHookOutboxShard(delivery.id)
+  try {
+    await (await client.outbox(shard)).retain({ ...delivery, port: first.started.port,
+      phases: [{ name: 'registration', path: '/api/hook/session-start', body: body() }] })
+    expect(await first.post(raw)).toEqual({ status: 200, body: receipt(raw, 'owned') })
+  } finally { await client.close() }
+  const port = first.started.port
+  await close()
+  const transport = await import('./engines/kit/nativeHookTransport.js'), send = transport.sendNativeHookRequest
+  const replies: { elapsed: number; result: unknown; budget: number | undefined }[] = [], requestedBudgets: number[] = []
+  vi.spyOn(transport, 'sendNativeHookRequest').mockImplementation(async (...args) => {
+    const began = performance.now(), result = await send(...args)
+    replies.push({ elapsed: performance.now() - began, result, budget: args[3] }); return result
+  })
+  const replay = await import('./engines/kit/nativeHookReplay.js'), createReplay = replay.createNativeHookReplay
+  let completed = false
+  vi.spyOn(replay, 'createNativeHookReplay').mockImplementation(deps => createReplay({ ...deps, send(...args) {
+    requestedBudgets.push(args[2]); return deps.send(...args)
+  }, onHeld(...args) {
+    deps.onHeld(...args)
+    if (args[0] === shard && args[1] === delivery.id && args[2] === undefined) completed = true
+  } }))
+  const restarted = await fixture({}, 65_536, port), observer = await openNativeHookStorage(directory(), helpers)
+  const responses: unknown[] = []
+  restarted.started.server.on('request', (request, response) => {
+    const began = performance.now()
+    response.once('finish', () => responses.push({ event: 'finish', elapsed: performance.now() - began, status: response.statusCode }))
+    response.once('close', () => responses.push({ event: 'close', elapsed: performance.now() - began, status: response.statusCode }))
+  })
+  try {
+    const snapshot = async () => {
+      const read = (await observer.readOutbox(shard))!
+      try { return await read.snapshot() } finally { await read.close() }
+    }
+    expect((await snapshot()).deliveries.get(delivery.id)!.phases[0].acknowledged).toBe(false)
+    expect(restarted.registered).not.toHaveBeenCalled()
+    restarted.started.startRecovery()
+    await vi.waitFor(async () => {
+      // Observe real replay completion without becoming a competing disk writer.
+      // Presence alone would let the final observer confirm an ACK whose writer
+      // expired; completion proves the retry itself confirmed it within budget.
+      expect(completed, JSON.stringify({
+        registrations: restarted.registered.mock.calls.length,
+        holds: vi.mocked(console.warn).mock.calls.slice(-8),
+        replies, responses,
+      })).toBe(true)
+      expect(restarted.registered).toHaveBeenCalledOnce()
+    }, { timeout: 12_000, interval: 200 })
+    expect(replies.map(reply => reply.budget)).toEqual(requestedBudgets)
+    expect((await snapshot()).deliveries.get(delivery.id)!.phases[0].acknowledged).toBe(true)
+    expect(records().filter(record => record.event.kind === 'intake')).toHaveLength(1)
+    expect(restarted.capture).not.toHaveBeenCalled()
+  } finally { await observer.close() }
+}, 25_000)
+
+it('completes four productive replay shards under the original bounded attempt deadlines', async () => {
+  const first = await fixture({ hookAdmissionBlocked: () => true }), raw = JSON.stringify(body())
+  const { openNativeHookStorage } = await import('./engines/kit/nativeHookStorage.js')
+  const helpers = { prepare: () => { throw Error('fixture cannot prepare a host binary') }, invalidate() {} }
+  const deliveries = new Map<number, { id: string; firedAt: number }>()
+  for (let index = 0; deliveries.size < 4; index++) {
+    const id = `fixture-four-shards-${index}`, shard = nativeHookOutboxShard(id)
+    if (shard < 4 && !deliveries.has(shard)) deliveries.set(shard, { id, firedAt: 1000 + index })
+  }
+  mkdirSync(directory(), { mode: 0o700, recursive: true })
+  const client = await openNativeHookStorage(directory(), helpers)
+  try {
+    for (const [shard, retained] of deliveries) {
+      await (await client.outbox(shard)).retain({ ...retained, port: first.started.port,
+        phases: [{ name: 'registration', path: '/api/hook/session-start', body: body() }] })
+      expect(await first.post(raw, { 'x-harness-hook-delivery-id': retained.id, 'x-harness-hook-fired-at': String(retained.firedAt) }))
+        .toEqual({ status: 200, body: nativeHookAcknowledgement(retained, { name: 'registration', path: '/api/hook/session-start', body: raw }, 'owned') })
+    }
+  } finally { await client.close() }
+  const port = first.started.port
+  await close()
+  const replay = await import('./engines/kit/nativeHookReplay.js'), createReplay = replay.createNativeHookReplay
+  const completed = new Set<number>(), holds: string[] = [], stages: { shard: number; step: string; elapsedMs: number }[] = []
+  vi.spyOn(replay, 'createNativeHookReplay').mockImplementation(deps => createReplay({ ...deps, onHeld(...args) {
+    deps.onHeld(...args)
+    // A retry may confirm an ACK whose original writer expired just after
+    // publication. A freshly confirmed outbox with no pending delivery is also
+    // completion; the independent snapshot below verifies every expected ID.
+    if (deliveries.has(args[0]) && args[2] === undefined) completed.add(args[0])
+    if (args[2]) holds.push(args[2])
+  }, async readOutbox(shard, current) {
+    const began = performance.now(), outbox = await deps.readOutbox(shard, current)
+    if (!outbox) return outbox
+    stages.push({ shard, step: 'open', elapsedMs: Math.round(performance.now() - began) })
+    return { ...outbox, async snapshot() {
+      const began = performance.now()
+      try { return await outbox.snapshot() }
+      finally { stages.push({ shard, step: 'snapshot', elapsedMs: Math.round(performance.now() - began) }) }
+    }, async acknowledge(...args) {
+      const began = performance.now()
+      try { return await outbox.acknowledge(...args) }
+      finally { stages.push({ shard, step: 'acknowledge', elapsedMs: Math.round(performance.now() - began) }) }
+    } }
+  } }))
+  const restarted = await fixture({}, 65_536, port)
+  const began = performance.now(), cpu = process.cpuUsage(), rss = process.memoryUsage().rss
+  let last = began, maxLoopDelayMs = 0
+  const monitor = setInterval(() => { const now = performance.now(); maxLoopDelayMs = Math.max(maxLoopDelayMs, now - last - 50); last = now }, 50)
+  try {
+    restarted.started.startRecovery()
+    await vi.waitFor(() => expect(completed.size, JSON.stringify({ completed: completed.size, holds: holds.slice(-12), stages })).toBe(4),
+      { timeout: 35_000, interval: 100 })
+    expect(restarted.registered).toHaveBeenCalledTimes(4)
+  } finally {
+    clearInterval(monitor)
+    const usage = process.cpuUsage(cpu)
+    console.info('[native replay workload]', JSON.stringify({ shards: 4, completed: completed.size,
+      elapsedMs: Math.round(performance.now() - began), maxLoopDelayMs: Math.round(maxLoopDelayMs),
+      userCpuMs: Math.round(usage.user / 1000), systemCpuMs: Math.round(usage.system / 1000),
+      rssDeltaBytes: process.memoryUsage().rss - rss, holds: holds.length, stages }))
+  }
+  const observer = await openNativeHookStorage(directory(), helpers)
+  try {
+    for (const [shard, retained] of deliveries) {
+      const read = (await observer.readOutbox(shard))!
+      try { expect((await read.snapshot()).deliveries.get(retained.id)!.phases[0].acknowledged).toBe(true) }
+      finally { await read.close() }
+    }
+  } finally { await observer.close() }
+  expect(records().filter(record => record.event.kind === 'intake')).toHaveLength(4)
+}, 65_000)
 
 it('acknowledges owned pending intake at full memory capacity but rejects changed bytes before that shortcut', async () => {
   const f = await fixture({ hookAdmissionBlocked: () => true }), raw = JSON.stringify(body())

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, type Dir, type Dirent } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -7,12 +7,18 @@ import { createNativeHookCatalog, NATIVE_HOOK_STORAGE_LIMITS } from './nativeHoo
 import { createNativeHookStagePool, nativeHookMetadata } from './nativeHookStaging.js'
 import { nativeHookOutboxShard, type NativeHookClientInput } from './nativeHookOutbox.js'
 import type { NativeHookIntake } from './nativeHookJournal.js'
+import { createNativeHookReplay } from './nativeHookReplay.js'
+import { nativeHookAcknowledgement } from './nativeHookClientProtocol.js'
+import * as files from './nativeHookFiles.js'
+import type { NativeHookClientRequest } from './nativeHookClient.js'
 
 const fault = vi.hoisted(() => ({ fail: false,
   beforePublish: undefined as ((text: string, path: string, publish: (text: string, path: string) => void) => void) | undefined,
   afterPublish: undefined as ((text: string, path: string) => void) | undefined,
   sync: undefined as ((fd: number, done: (error: Error | null) => void) => boolean) | undefined,
   stat: undefined as ((path: string, read: () => unknown) => unknown) | undefined,
+  directoryRead: undefined as ((path: string, read: () => Dirent | null) => Dirent | null) | undefined,
+  directoryOpen: undefined as ((path: string, open: () => Dir) => Dir) | undefined,
 }))
 vi.mock('node:fs', async original => { const fs = await original<typeof import('node:fs')>(); return { ...fs,
   fsync: (fd: number, done: (error: Error | null) => void) => {
@@ -23,6 +29,12 @@ vi.mock('node:fs', async original => { const fs = await original<typeof import('
     fault.beforePublish?.(text, path, fs.symlinkSync); fs.symlinkSync(text, path); fault.afterPublish?.(text, path)
   },
   lstatSync: (path: string, options: Parameters<typeof fs.lstatSync>[1]) => fault.stat?.(path, () => fs.lstatSync(path, options)) ?? fs.lstatSync(path, options),
+  opendirSync: (path: string, options: Parameters<typeof fs.opendirSync>[1]) => {
+    const open = () => fs.opendirSync(path, options)
+    const directory = fault.directoryOpen ? fault.directoryOpen(path, open) : open(), read = directory.readSync.bind(directory)
+    directory.readSync = () => fault.directoryRead ? fault.directoryRead(path, read) : read()
+    return directory
+  },
 } })
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const existsSync = (file: string) => { try { lstatSync(file); return true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return false } }
@@ -36,6 +48,10 @@ const processKey = 'linux:fixture-boot\u0000codex\u00005100\u0000t:1234'
 const intake = (id = 'fixture-delivery-0001', size = 20): NativeHookIntake => ({
   id, agentId: 'fixture-agent', conversationId: 'fixture-conversation', fingerprint: hash(id), payload: { prompt: 'x'.repeat(size) },
 })
+const clientInput = (): NativeHookClientInput => ({ id: 'fixture-client-replay-0001', firedAt: 1234, port: 19400,
+  phases: [{ name: 'registration', path: '/api/hook/session-start', body: { callerPid: 43,
+    nativeOrigin: { version: 1, boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', callerPid: 43,
+      ancestry: [{ pid: 43, parentPid: 1, birth: '12345', identityV1: hash('fixture-caller') }] } } }] })
 const allocationFiles = () => readdirSync(root).filter(name => name.endsWith('.allocation.witness')).sort()
 const allocated = (key = processKey) => {
   const name = allocationFiles().find(name => JSON.parse(readlinkSync(join(root, name)))[3] === hash(key))!
@@ -44,7 +60,7 @@ const allocated = (key = processKey) => {
 const put = (file: string, value: unknown) => {
   const text = JSON.stringify(value); symlinkSync(text, file + '.witness'); symlinkSync(text, file)
 }
-const reset = () => { fault.fail = false; fault.beforePublish = undefined; fault.afterPublish = undefined; fault.sync = undefined; fault.stat = undefined }
+const reset = () => { fault.fail = false; fault.beforePublish = undefined; fault.afterPublish = undefined; fault.sync = undefined; fault.stat = undefined; fault.directoryRead = undefined; fault.directoryOpen = undefined }
 const stagingPool = (options: { maxGenerations?: number; terminalGenerations?: number } = {}) => createNativeHookStagePool({
   root, writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: 8100, birth: '12345' },
   verifyWriter: verifyRoot, closeWriter: () => {}, dead: async () => false, ...options,
@@ -147,6 +163,77 @@ it('bounds receipt keys and checks the lookup owner before returning a read capa
   expect(readdirSync(root)).toEqual([])
 })
 
+it('proves empty recovery slots with one complete listing instead of probing every absent leaf', async () => {
+  const leaves: string[] = []
+  fault.stat = (path, read) => {
+    if (/\.native-hook-(?:effects|outbox)-\d{3}/.test(path)) leaves.push(path)
+    return read()
+  }
+  expect(await catalog().readOutbox(3)).toBeUndefined()
+  expect(leaves).toEqual([])
+  expect(readdirSync(root)).toEqual([])
+})
+
+it.each(['.allocation', '.allocation.witness', '.seal', '.seal.witness', '.history',
+  '.history.witnesses', '.history.bootstrap', '.history.authority', '.history.seal'])('does not hide an orphan %s behind the catalog listing', async suffix => {
+  await catalog().effects('fixture-seed')
+  const file = join(root, '.native-hook-outbox-003' + suffix)
+  if (suffix === '.allocation.witness') symlinkSync(JSON.stringify([1, 'outbox', 3, hash('native-hook-client:v1:shard:3')]), file)
+  else writeFileSync(file, 'fixture retained evidence')
+  const before = readdirSync(root).sort()
+  await expect(catalog().readOutbox(3)).rejects.toThrow()
+  expect(readdirSync(root).sort()).toEqual(before)
+})
+
+it('holds case variants which can resolve to canonical slots on a case-insensitive filesystem', async () => {
+  await catalog().effects('fixture-seed')
+  writeFileSync(join(root, '.NATIVE-HOOK-OUTBOX-003.HISTORY.AUTHORITY'), 'fixture retained authority')
+  await expect(catalog().readOutbox(3)).rejects.toThrow('noncanonical name')
+})
+
+it.each([false, true])('discards a directory opened through a transient ancestor redirection (repeated=%s)', async repeated => {
+  await catalog().effects('fixture-seed')
+  let redirected = false
+  const discarded: Dir[] = []
+  fault.directoryOpen = (path, open) => {
+    if (path !== root || redirected && !repeated) return open()
+    redirected = true
+    const parent = dirname(root), saved = parent + '.moved'
+    renameSync(parent, saved); mkdirSync(parent, { mode: 0o700 }); mkdirSync(root, { mode: 0o700 })
+    try { const wrong = open(); discarded.push(wrong); return wrong }
+    finally { rmSync(parent, { recursive: true }); renameSync(saved, parent) }
+  }
+  if (repeated) await expect(catalog().readOutbox(3)).rejects.toThrow('directory route changed')
+  else expect(await catalog().readOutbox(3)).toBeUndefined()
+  expect(redirected).toBe(true)
+  expect(discarded).toHaveLength(repeated ? 3 : 1)
+  for (const directory of discarded) expect(() => directory.readSync()).toThrow('closed')
+})
+
+it('keeps a pinned catalog listing usable across unrelated ancestor sibling writes', async () => {
+  await catalog().effects('fixture-seed')
+  for (let index = 0; index < 70; index++) writeFileSync(join(root, `fixture-entry-${index}`), '')
+  let scheduled = false, changed = false
+  fault.directoryRead = (path, read) => {
+    if (!scheduled && path === root) {
+      scheduled = true
+      setImmediate(() => { writeFileSync(join(dirname(root), 'fixture-sibling'), 'unrelated'); changed = true })
+    }
+    return read()
+  }
+  expect(await catalog().readOutbox(3)).toBeUndefined()
+  expect(changed).toBe(true)
+})
+
+it('charges unrelated directory entries to the same bounded catalog scan', async () => {
+  vi.spyOn(performance, 'now').mockReturnValue(0)
+  let reads = 0
+  fault.directoryRead = () => { reads++; return { name: 'fixture-unrelated' } as Dirent }
+  await expect(catalog().readOutbox(3)).rejects.toThrow('work limit')
+  expect(reads).toBeLessThanOrEqual(16_384)
+  expect(readdirSync(root)).toEqual([])
+})
+
 it.each([
   ['empty', 'remove', 'snapshot'], ['empty', 'replace', 'snapshot'],
   ['populated', 'remove', 'snapshot'], ['populated', 'replace', 'snapshot'],
@@ -165,6 +252,122 @@ it.each([
   expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
   expect(existsSync(file)).toBe(change === 'replace')
 })
+
+it('recovers only existing client outboxes and exposes no fresh-intake capability', async () => {
+  const store = catalog(), input = clientInput(), shard = nativeHookOutboxShard(input.id)
+  expect(await store.readOutbox(shard)).toBeUndefined()
+  expect(readdirSync(root)).toEqual([])
+  const original = await store.outbox(shard)
+  await original.retain(input)
+  const before = allocationFiles(), read = (await catalog().readOutbox(shard))!
+  expect(Object.keys(read).sort()).toEqual(['acknowledge', 'close', 'snapshot'])
+  const snapshot = await read.snapshot(), delivery = snapshot.deliveries.get(input.id)!
+  expect(delivery.phases[0].acknowledged).toBe(false)
+  await read.acknowledge(delivery, 'registration')
+  expect((await original.snapshot()).deliveries.get(input.id)?.phases[0].acknowledged).toBe(true)
+  expect(allocationFiles()).toEqual(before)
+  expect(await catalog().readOutbox((shard + 1) % 16)).toBeUndefined()
+  expect(allocationFiles()).toEqual(before)
+  await read.close()
+  await expect(read.snapshot()).rejects.toThrow('owner changed')
+})
+
+it.each(['allocation', 'seal', 'history.authority'])('does not repair missing client outbox %s during recovery lookup', async suffix => {
+  const input = clientInput(), shard = nativeHookOutboxShard(input.id), store = catalog()
+  await (await store.outbox(shard)).retain(input)
+  const file = allocated(`native-hook-client:v1:shard:${shard}`) + '.' + suffix
+  unlinkSync(file)
+  const before = readdirSync(root, { recursive: true }).map(String).sort()
+  await expect(catalog().readOutbox(shard)).rejects.toThrow()
+  expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
+})
+
+it.each(['remove', 'replace'])('retains original outbox seal authority through ACK after seal %s', async change => {
+  const input = clientInput(), shard = nativeHookOutboxShard(input.id), store = catalog()
+  await (await store.outbox(shard)).retain(input)
+  const read = (await catalog().readOutbox(shard))!, snapshot = await read.snapshot()
+  const file = allocated(`native-hook-client:v1:shard:${shard}`) + '.seal', text = readlinkSync(file)
+  unlinkSync(file)
+  if (change === 'replace') symlinkSync(text, file)
+  const before = readdirSync(root, { recursive: true }).map(String).sort()
+  await expect(read.acknowledge(snapshot.deliveries.get(input.id)!, 'registration')).rejects.toThrow()
+  expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
+  await read.close()
+})
+
+it('retains the outbox recovery handle until actual confirmation finishes after revocation', async () => {
+  const input = clientInput(), shard = nativeHookOutboxShard(input.id), store = catalog()
+  await (await store.outbox(shard)).retain(input)
+  const read = (await catalog().readOutbox(shard))!, callbacks: ((error: Error | null) => void)[] = []
+  fault.sync = (_fd, done) => { callbacks.push(done); return true }
+  const pending = read.snapshot().then(() => undefined, error => error)
+  await vi.waitFor(() => expect(callbacks.length).toBeGreaterThan(0))
+  let closed = false
+  const closing = read.close().then(() => { closed = true })
+  await new Promise<void>(done => setImmediate(done))
+  expect(closed).toBe(false)
+  fault.sync = undefined; callbacks.forEach(done => done(null))
+  expect(await pending).toBeInstanceOf(Error)
+  await closing; expect(closed).toBe(true)
+})
+
+it('rejects invalid shards and expired client outbox recovery before allocating', async () => {
+  const store = catalog()
+  for (const shard of [-1, 16, 0.5, NaN]) await expect(store.readOutbox(shard)).rejects.toThrow('invalid outbox shard')
+  await expect(store.readOutbox(0, () => false)).rejects.toThrow('lookup expired')
+  expect(readdirSync(root)).toEqual([])
+})
+
+it('replays a real client outbox across registration ACK, reconstruction and interrupted Stop confirmation', async () => {
+  const first = clientInput(), input: NativeHookClientInput = { ...first, phases: [...first.phases,
+    { name: 'stop', path: '/api/hook/turn-stop', body: { ...first.phases[0].body, status: 'completed' } }] }
+  const shard = nativeHookOutboxShard(input.id), original = await catalog().outbox(shard)
+  await original.retain(input)
+  const received: NativeHookClientRequest[] = [], held = vi.fn()
+  const replays: ReturnType<typeof createNativeHookReplay>[] = [], callbacks: ((error: Error | null) => void)[] = []
+  const ack = (request: NativeHookClientRequest) => nativeHookAcknowledgement(request,
+    { name: request.path.endsWith('session-start') ? 'registration' : 'stop',
+      path: request.path.endsWith('session-start') ? '/api/hook/session-start' : '/api/hook/turn-stop', body: request.body }, 'owned')
+  const make = (send: (request: NativeHookClientRequest) => Promise<unknown>) => {
+    const replay = createNativeHookReplay({
+    readOutbox: catalog().readOutbox, onHeld: held, timeoutMs: 8000, intervalMs: 10,
+    send: async request => { received.push(request); return send(request) },
+    })
+    replays.push(replay); return replay
+  }
+  try {
+  const before = allocationFiles(), firstReplay = make(async request => request.path.endsWith('session-start') ? ack(request) : undefined)
+  firstReplay.start()
+  await vi.waitFor(() => expect(received.some(request => request.path.endsWith('turn-stop'))).toBe(true), { timeout: 8000 })
+  await firstReplay.close()
+  expect((await original.snapshot()).deliveries.get(input.id)!.phases.map(phase => phase.acknowledged)).toEqual([true, false])
+  received.length = 0
+  const second = make(async request => {
+    fault.sync = (_fd, done) => { callbacks.push(done); return true }
+    return ack(request)
+  })
+  second.start()
+  await vi.waitFor(() => expect(callbacks.length).toBeGreaterThan(0), { timeout: 8000 })
+  let closed = false
+  const closing = second.close().then(() => { closed = true })
+  await new Promise<void>(done => setImmediate(done))
+  expect(closed).toBe(false)
+  fault.sync = undefined; callbacks.splice(0).forEach(done => done(null)); await closing
+  expect(received.every(request => request.path.endsWith('turn-stop'))).toBe(true)
+  expect((await original.snapshot()).deliveries.get(input.id)!.phases.map(phase => phase.acknowledged)).toEqual([true, false])
+  const third = make(async request => ack(request))
+  held.mockClear(); third.start()
+  await vi.waitFor(() => expect(held).toHaveBeenCalledWith(shard, input.id, undefined), { timeout: 8000 })
+  await third.close()
+  expect((await original.snapshot()).deliveries.get(input.id)!.phases.map(phase => phase.acknowledged)).toEqual([true, true])
+  expect(allocationFiles()).toEqual(before)
+  expect(received.every(request => request.id === input.id && request.firedAt === input.firedAt
+    && request.body === JSON.stringify(input.phases[1].body))).toBe(true)
+  } finally {
+    fault.sync = undefined; callbacks.splice(0).forEach(done => done(null))
+    await Promise.all(replays.map(replay => replay.close()))
+  }
+}, 30_000)
 
 it('holds new intake at normal exhaustion while every previously accepted effect can finish', async () => {
   await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
@@ -417,10 +620,13 @@ it('holds a changing allocation frontier without invalidating a separately retai
   await journal.retain(intake())
   const retained = await journal.snapshot()
   let queued = false
-  fault.beforePublish = (_text, path) => {
-    if (queued || path !== join(root, '.native-hook-catalog')) return
-    queued = true
-    setImmediate(() => writeFileSync(join(root, 'fixture-sibling'), 'concurrent catalog-root publication'))
+  fault.directoryRead = (path, read) => {
+    const entry = read()
+    if (!queued && path === root && !entry) {
+      queued = true
+      writeFileSync(join(root, 'fixture-sibling'), 'concurrent catalog-root publication')
+    }
+    return entry
   }
   await expect(catalog().effects('fixture-next-process')).rejects.toThrow('catalog changed during its scan')
   expect(allocationFiles()).toHaveLength(1)
@@ -442,6 +648,90 @@ it('keeps repeated authority reads flat instead of retaining recursive confirmat
   // Every iteration reads the same bytes. Old confirmation closures must not
   // multiply work even though each new observation still rechecks authority.
   expect(Math.max(...costs)).toBeLessThanOrEqual(2 * Math.min(...costs))
+})
+
+it('keeps recovered outbox owner checks free of repeated filesystem authority walks', async () => {
+  const store = catalog(), input = clientInput(), shard = nativeHookOutboxShard(input.id)
+  const original = await store.outbox(shard)
+  await original.retain(input)
+  const recovered = (await store.readOutbox(shard))!
+  try {
+    // Both boundaries have confirmed the same namespace before comparison.
+    await original.snapshot(); await recovered.snapshot()
+    const beforeOriginal = rootChecks
+    await original.snapshot()
+    const originalChecks = rootChecks - beforeOriginal, beforeRecovered = rootChecks
+    await recovered.snapshot()
+    const recoveredChecks = rootChecks - beforeRecovered
+    // The existing-only handle adds its before/after selected authority fences.
+    // Those constant wrappers must not double the full walk count. The broken
+    // owner callback made 1,409 checks against the normal path's 489.
+    expect(recoveredChecks).toBeLessThan(originalChecks * 2)
+  } finally { original.close(); await recovered.close() }
+})
+
+it.each(['live', 'revocation', 'replacement'])('yields confirmed publication work to control callbacks and rechecks %s authority', async change => {
+  const input = clientInput(), shard = nativeHookOutboxShard(input.id), store = catalog()
+  const original = await store.outbox(shard)
+  await original.retain(input)
+  let current = true, elapsed = 0, finished = false, interleaved = false, scheduled = false
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed)
+  const prepare = files.runHookPreparation
+  const base = allocated(`native-hook-client:v1:shard:${shard}`)
+  vi.spyOn(files, 'runHookPreparation').mockImplementation(async (...args) => {
+    const result = await prepare(...args)
+    if (!scheduled && args[0].includes(base + '.history.bootstrap')) {
+      scheduled = true; elapsed += 30
+      setImmediate(() => {
+        interleaved = !finished
+        if (change === 'revocation') current = false
+        if (change === 'replacement') {
+          const seal = base + '.seal', text = readlinkSync(seal)
+          unlinkSync(seal); symlinkSync(text, seal)
+        }
+      })
+    }
+    return result
+  })
+  const recovered = (await store.readOutbox(shard, () => current))!
+  try {
+    let reason: unknown
+    const result = await recovered.snapshot().then(() => 'confirmed', error => { reason = error; return 'held' })
+    finished = true
+    await new Promise<void>(done => setImmediate(done))
+    expect(scheduled, String(reason)).toBe(true); expect(interleaved, String(reason)).toBe(true)
+    expect(result).toBe(change === 'live' ? 'confirmed' : 'held')
+  } finally { original.close(); await recovered.close() }
+})
+
+it.each(['intake', 'claim'])('retains the exact published witness across a yield before granting %s ownership', async kind => {
+  const journal = await catalog().effects(processKey)
+  if (kind === 'claim') await journal.retain(intake())
+  else await journal.snapshot()
+  const index = kind === 'claim' ? '00000001.json' : '00000000.json'
+  const base = allocated(), witness = join(base + '.history.witnesses', index)
+  let elapsed = 0, replaced = false
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed)
+  const prepare = files.runHookPreparation
+  vi.spyOn(files, 'runHookPreparation').mockImplementation(async (...args) => {
+    const result = await prepare(...args)
+    if (args[0].includes(witness) && !replaced) {
+      elapsed += 30
+      setImmediate(() => {
+        // Identical bytes in another inode must not inherit the exclusive
+        // publisher's authority when control returns from the cooperative yield.
+        const replacement = join(root, 'fixture-replacement')
+        writeFileSync(replacement, readFileSync(witness), { mode: 0o600 })
+        renameSync(replacement, witness); replaced = true
+      })
+    }
+    return result
+  })
+  const outcome = await (kind === 'claim' ? journal.claim(intake().id, intake().agentId) : journal.retain(intake()))
+    .then(() => 'granted', () => 'held')
+  expect(replaced).toBe(true)
+  expect(outcome).toBe('held')
+  expect(existsSync(join(base + '.history', index))).toBe(false)
 })
 
 it('bounds stalled replies while retaining actual operation slots and descriptors until cleanup', async () => {

@@ -173,7 +173,44 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       if (stamp(lstatSync(canonical, { bigint: true })) !== frontier) held('the allocation catalog changed during its scan')
     }
     const allocations: Allocation[] = [], keys = new Set<string>()
-    const slots = (['effects', 'outbox'] as const).flatMap(kind => Array.from({ length: count(kind) }, (_, index) => ({ kind, index })))
+    // Recovery used to probe nine absent paths in each of 272 slots, for every
+    // replay shard and receipt. Those repeated ENOENT calls starved even a local
+    // acknowledgement. A complete, fenced directory listing proves absence;
+    // occupied slots still pass the same allocation and journal authority checks.
+    const budget = new NativeEvidenceBudget(), candidates = new Map<string, { kind: Kind; index: number }>()
+    const entries = stableRead(() => {
+      checkRoot()
+      const route = metadata.routeStamps(canonical), opened = opendirSync(canonical, { bufferSize: 32 })
+      try { route(); checkRoot(); return opened }
+      catch (error) { opened.closeSync(); throw error }
+    })
+    try {
+      let complete = false
+      while (!complete) {
+        const began = performance.now()
+        for (let reads = 0; reads < 64 && performance.now() - began < 20; reads++) {
+          budget.step()
+          const entry = entries.readSync()
+          if (!entry) { complete = true; break }
+          budget.step(Buffer.byteLength(entry.name))
+          const name = entry.name.toLowerCase()
+          const match = /^\.native-hook-(effects|outbox)-(\d{3})(?:\.(?:allocation|seal)(?:\.witness)?|\.history(?:\.(?:witnesses|bootstrap|authority|seal))?)$/.exec(name)
+          if (!match) continue
+          const kind = match[1] as Kind, index = Number(match[2])
+          if (index >= count(kind)) continue
+          // A case-insensitive filesystem can resolve this spelling through the
+          // canonical path. Never misread an established slot as empty.
+          if (entry.name !== name) held('a catalog slot has a noncanonical name')
+          candidates.set(`${kind}:${index}`, { kind, index })
+        }
+        // The acquired descriptor pins this directory. Ancestor content stamps
+        // must not span an await: unrelated sibling writes change them too.
+        unchanged()
+        if (!complete) { await new Promise<void>(done => setImmediate(done)); unchanged() }
+      }
+    } finally { entries.closeSync() }
+    unchanged()
+    const slots = [...candidates.values()].sort((a, b) => a.kind === b.kind ? a.index - b.index : a.kind === 'effects' ? -1 : 1)
     for (let cursor = 0; cursor < slots.length;) {
       const batch = rootReads.run(() => {
         const found: Allocation[] = [], began = performance.now()
@@ -293,14 +330,14 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
     }
     return held('allocation contention requires a retry')
   }
-  const boundary = (allocation: Allocation, current: () => boolean): NativeHookJournalBoundary => {
+  const boundary = (allocation: Allocation, current: () => boolean, retainedVerify: () => void = () => {}): NativeHookJournalBoundary => {
     const directory = history(allocation.kind, allocation.index), file = `${base(allocation.kind, allocation.index)}.seal`
     let authorized: { pair: Pair; authority: ReturnType<typeof inspectNativeHookJournalAuthority> } | undefined
     const checkOwner = () => { if (!current()) held('the original journal owner changed') }
-    const baseVerify = () => {
-      checkRoot(); allocation.pair.verify()
+    const baseVerify = () => rootReads.run(() => {
+      checkRoot(); allocation.pair.verify(); retainedVerify()
       checkOwner()
-    }
+    }, checkOwner)
     const inspectSeal = () => {
       const sealed = pair(file, () => { checkRoot(); allocation.pair.verify() })
       if (sealed) {
@@ -345,42 +382,45 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       },
     }
   }
+  const existing = async (kind: Kind, processKeys: readonly string[], current: () => boolean) => {
+    const keys = [...new Set(processKeys)]
+    if (keys.length > 33 || keys.some(key => !key || key.length > 512)) held('invalid receipt lookup keys')
+    return run(async check => {
+      const control = pair(versionFile)
+      if (control && (!control.mirror || control.record.text !== versionText)) held('the receipt catalog authority is incomplete')
+      const before = await scan(check)
+      if (!control) {
+        if (before.allocations.length) held('the receipt catalog authority is missing')
+        return []
+      }
+      const matches = keys.flatMap(processKey => {
+        const allocation = before.allocations.find(item => item.kind === kind && item.key === hash(processKey))
+        if (!allocation) return []
+        if (!allocation.pair.mirror || !allocation.seal?.mirror) held('the receipt namespace is not sealed')
+        const proof = inspectNativeHookJournalAuthority(history(kind, allocation.index))
+        if (allocation.seal.record.text !== JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])) {
+          held('the receipt namespace authority changed')
+        }
+        proof.verify()
+        const verify = () => rootReads.run(() => {
+          checkRoot(); control.verify(); allocation.pair.verify(); allocation.seal!.verify(); proof.verify()
+          if (!current()) held('the receipt lookup expired')
+        })
+        return [{ processKey, allocation, verify }]
+      })
+      before.verify(); control.verify(); check()
+      return matches
+    }, () => { if (!current()) held('the receipt lookup expired') })
+  }
   return {
     /** Receipt recovery has no live process owner and grants no effect claim.
      * Select only already sealed namespaces; absence must never allocate one. */
     async readEffects(processKeys: readonly string[], current: () => boolean = () => true) {
-      const keys = [...new Set(processKeys)]
-      if (keys.length > 33 || keys.some(key => !key || key.length > 512)) held('invalid receipt lookup keys')
-      const selected = await run(async check => {
-        const control = pair(versionFile)
-        if (control && (!control.mirror || control.record.text !== versionText)) held('the receipt catalog authority is incomplete')
-        const before = await scan(check)
-        if (!control) {
-          if (before.allocations.length) held('the receipt catalog authority is missing')
-          return []
-        }
-        const matches = keys.flatMap(processKey => {
-          const allocation = before.allocations.find(item => item.kind === 'effects' && item.key === hash(processKey))
-          if (!allocation) return []
-          if (!allocation.pair.mirror || !allocation.seal?.mirror) held('the receipt namespace is not sealed')
-          const proof = inspectNativeHookJournalAuthority(history('effects', allocation.index))
-          if (allocation.seal.record.text !== JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])) {
-            held('the receipt namespace authority changed')
-          }
-          proof.verify()
-          const verify = () => rootReads.run(() => {
-            checkRoot(); control.verify(); allocation.pair.verify(); allocation.seal!.verify(); proof.verify()
-            if (!current()) held('the receipt lookup expired')
-          })
-          return [{ processKey, allocation, verify }]
-        })
-        before.verify(); control.verify(); check()
-        return matches
-      }, () => { if (!current()) held('the receipt lookup expired') })
+      const selected = await existing('effects', processKeys, current)
       return new Map(selected.map(({ processKey, allocation, verify }) => {
         const journal = createNativeHookJournal({ directory: history('effects', allocation.index), processKey, current,
           maxBytes: NATIVE_HOOK_STORAGE_LIMITS.effectBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
-          boundary: boundary(allocation, () => { verify(); return current() }) })
+          boundary: boundary(allocation, current, verify) })
         return [processKey, { snapshot: async () => {
           verify()
           const snapshot = await journal.snapshot(false)
@@ -396,6 +436,41 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       return createNativeHookJournal({ directory: history('effects', allocation.index), processKey, current,
         maxBytes: NATIVE_HOOK_STORAGE_LIMITS.effectBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
         boundary: boundary(allocation, current) })
+    },
+    /** Recovery can finish only an existing client outbox. Missing shards stay
+     * absent, and lost seals cannot be rebuilt by a reader or an ACK writer. */
+    async readOutbox(shard: number, current: () => boolean = () => true) {
+      if (!Number.isSafeInteger(shard) || shard < 0 || shard >= NATIVE_HOOK_STORAGE_LIMITS.outboxes) held('invalid outbox shard')
+      const selected = await existing('outbox', [`native-hook-client:v1:shard:${shard}`], current)
+      if (!selected.length) return undefined
+      const { allocation, verify } = selected[0]!
+      if (allocation.index !== shard) held('an outbox changed its fixed allocation')
+      const actualOperations = new Set<Promise<unknown>>()
+      // Owner/deadline callbacks run after the shared read fence. Putting the
+      // selected disk proof in current() restarted its whole walk each time.
+      const scope = boundary(allocation, current, verify)
+      const outbox = createNativeHookOutbox({ directory: history('outbox', shard), shard, current,
+        maxBytes: NATIVE_HOOK_STORAGE_LIMITS.outboxBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
+        boundary: { ...scope, track(actual) {
+          scope.track(actual); actualOperations.add(actual)
+          void actual.then(() => actualOperations.delete(actual), () => actualOperations.delete(actual))
+        } } })
+      return {
+        async snapshot() {
+          verify()
+          const snapshot = await outbox.snapshot()
+          verify()
+          return { ...snapshot, verify: () => { verify(); snapshot.verify() },
+            confirm: async () => { verify(); await snapshot.confirm(); verify() } }
+        },
+        async acknowledge(...args: Parameters<typeof outbox.acknowledge>) {
+          verify(); await outbox.acknowledge(...args); verify()
+        },
+        async close() {
+          outbox.close()
+          await Promise.allSettled([...actualOperations])
+        },
+      }
     },
     async outbox(shard: number, current: () => boolean = () => true) {
       if (!Number.isSafeInteger(shard) || shard < 0 || shard >= NATIVE_HOOK_STORAGE_LIMITS.outboxes) held('invalid outbox shard')
