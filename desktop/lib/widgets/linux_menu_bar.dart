@@ -348,10 +348,10 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
         label: 'Close Tab',
         action: 'closeActive',
       ),
-      // The active tab's Agent Messages: the tab's ⇄, and its log.
+      // The active tab's Agent Messages: the tab's 💬, and its log.
       _swarmRow(
         key: 'menu-bar-agent-messages',
-        icon: AppIcons.arrowRightLeft,
+        icon: AppIcons.messagesSquare,
         label: 'Agent Messages',
         action: 'toggleAgentMessages',
         selected: state.agentMessages == true,
@@ -359,7 +359,7 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
       ),
       _swarmRow(
         key: 'menu-bar-show-agent-messages',
-        icon: AppIcons.messagesSquare,
+        icon: AppIcons.messageSquareText,
         label: 'Show Agent Messages',
         action: 'showAgentMessages',
         enabled: state.enabled && state.agentMessages != null,

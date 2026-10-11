@@ -222,7 +222,7 @@ class PaneMessageMark {
   final bool warning;
 }
 
-/// How a tab's ⇄ reads.
+/// How a tab's 💬 reads.
 enum TabMessagesState { off, on, flowing }
 
 typedef AgentMessageTabsRead = Future<Map<String, dynamic>?> Function();
@@ -238,7 +238,7 @@ typedef AgentNameOf = String? Function(String machineId, String agentId);
 
 /// Each tab's flag, the traffic the daemons report, and the pane marks it
 /// leaves. Its own notifier, as `AgentAlerts` is: a message arriving must not
-/// rebuild the workspace, only the ⇄ and the marks that listen here.
+/// rebuild the workspace, only the 💬 and the marks that listen here.
 class AgentMessagesController extends ChangeNotifier {
   AgentMessagesController({
     required this.read,
@@ -246,7 +246,8 @@ class AgentMessagesController extends ChangeNotifier {
     required this.request,
     required this.nameOf,
     DateTime Function()? now,
-    this.flowingFor = const Duration(seconds: 60),
+    this.flowingFor = const Duration(seconds: 10),
+    this.remoteRecency = const Duration(seconds: 60),
     this.markLife = const Duration(seconds: 5),
   }) : now = now ?? DateTime.now;
 
@@ -259,8 +260,15 @@ class AgentMessagesController extends ChangeNotifier {
   /// moved ([pollRemote]); lifetimes here run on timers.
   final DateTime Function() now;
 
-  /// How long a tab's ⇄ stays bright after the last message moved in it.
+  /// How long a tab's status shows 💬 after the last message moved in it,
+  /// before it goes back to the tab's working, done or question mark.
   final Duration flowingFor;
+
+  /// How recent another machine's message must be to count as traffic when a
+  /// poll first sees it ([pollRemote]): longer than the remote watch's 15 s
+  /// round, so no message falls between two rounds, yet old history does not
+  /// light a tab up.
+  final Duration remoteRecency;
 
   /// How long a pane's mark stays, unless the pane is focused first.
   final Duration markLife;
@@ -271,7 +279,7 @@ class AgentMessagesController extends ChangeNotifier {
   final _writes = <String, int>{};
   final _traffic = <String, int>{};
   final _seenMessages = <String>{};
-  // What has a lifetime holds the timer that ends it — a tab's ⇄ dims, a
+  // What has a lifetime holds the timer that ends it — a tab's 💬 stops, a
   // mark goes — so nothing has to compare clocks to know it is over.
   final _flowing = <String, Timer>{};
   final _marks = <String, (PaneMessageMark, Timer)>{};
@@ -281,7 +289,7 @@ class AgentMessagesController extends ChangeNotifier {
 
   /// Whether the daemon and backend answered for this account's tabs. Until
   /// they have — and for good, with an older CLI or backend that does not know
-  /// Agent Messages (404) — there is no ⇄ and no menu row: "off" would be a
+  /// Agent Messages (404) — there is no 💬 and no menu row: "off" would be a
   /// guess, and a click could not take.
   bool get loaded => _loaded;
   bool _loaded = false;
@@ -317,7 +325,7 @@ class AgentMessagesController extends ChangeNotifier {
   }
 
   /// Read every tab's flag again. A failure keeps what was known: one dropped
-  /// request must not turn a tab's ⇄ off under the person. An answer of null
+  /// request must not turn a tab's 💬 off under the person. An answer of null
   /// is a daemon or backend without Agent Messages.
   Future<void> refresh() async {
     if (_disposed) return;
@@ -424,11 +432,12 @@ class AgentMessagesController extends ChangeNotifier {
     _notify();
   }
 
-  /// [tabId]'s ⇄ is bright for [flowingFor] from now, and an open log reads
+  /// [tabId]'s status shows 💬 for [flowingFor] from now — longer when the
+  /// traffic was only read from another machine's log — and an open log reads
   /// again.
-  void _flow(String tabId) {
+  void _flow(String tabId, [Duration extra = Duration.zero]) {
     _flowing.remove(tabId)?.cancel();
-    _flowing[tabId] = Timer(flowingFor, () {
+    _flowing[tabId] = Timer(flowingFor + extra, () {
       _flowing.remove(tabId);
       _notify();
     });
@@ -447,10 +456,15 @@ class AgentMessagesController extends ChangeNotifier {
   /// Ask [tabs]' machines for what they hold: a daemon tells `messages_changed`
   /// only to the windows on its own computer (the core's `clients.windows`), so
   /// traffic between harnesses on other machines would never reach this one.
-  /// A message new to this window that moved within [flowingFor] counts as
-  /// traffic, exactly as if its frame had arrived. One request at a time per
-  /// machine; a machine still answering the last round is skipped.
-  Future<void> pollRemote(Iterable<AgentMessagesRemoteTab> tabs) async {
+  /// A message new to this window that moved within [remoteRecency] counts as
+  /// traffic, exactly as if its frame had arrived, and flows for one [round]
+  /// longer: the next round can only renew it a round later, so 💬 would
+  /// otherwise lapse between rounds while agents keep talking. One request at
+  /// a time per machine; a machine still answering the last round is skipped.
+  Future<void> pollRemote(
+    Iterable<AgentMessagesRemoteTab> tabs, {
+    Duration round = Duration.zero,
+  }) async {
     if (_disposed) return;
     final byMachine = <String, List<String>>{};
     for (final tab in tabs) {
@@ -460,11 +474,15 @@ class AgentMessagesController extends ChangeNotifier {
     }
     await Future.wait([
       for (final MapEntry(key: machineId, value: tabIds) in byMachine.entries)
-        if (!_polling.contains(machineId)) _poll(machineId, tabIds),
+        if (!_polling.contains(machineId)) _poll(machineId, tabIds, round),
     ]);
   }
 
-  Future<void> _poll(String machineId, List<String> tabIds) async {
+  Future<void> _poll(
+    String machineId,
+    List<String> tabIds,
+    Duration round,
+  ) async {
     final account = _account;
     _polling.add(machineId);
     try {
@@ -476,12 +494,12 @@ class AgentMessagesController extends ChangeNotifier {
         var moved = false;
         for (final message in messages) {
           if (!_remember(message.id)) continue;
-          if (now().difference(message.at) >= flowingFor) continue;
+          if (now().difference(message.at) >= remoteRecency) continue;
           moved = true;
           _markPanes(message.from, message.to);
         }
         if (moved) {
-          _flow(tabId);
+          _flow(tabId, round);
           _notify();
         }
       }
@@ -678,7 +696,7 @@ class AgentMessagesRemoteWatch {
     _timer = null;
     if (_disposed || !foreground.value) return;
     final targets = tabs();
-    if (targets.isNotEmpty) await controller.pollRemote(targets);
+    if (targets.isNotEmpty) await controller.pollRemote(targets, round: every);
     if (!_disposed && _started && foreground.value && _timer == null) {
       _timer = Timer(every, () => unawaited(poll()));
     }

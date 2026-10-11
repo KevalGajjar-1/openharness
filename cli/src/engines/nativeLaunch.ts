@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
 import { permissionFlagToVerify, type PermissionLaunchChoice } from '../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../lib/engineInstall.js'
+import { patientDeadline } from '../lib/patientExec.js'
 import { engineHooks } from './hooks.js'
 import * as hooks from './nativeHooks.js'
 import { captureLaunchExecutable, LAUNCH_LOCATION_VARIABLES } from './kit/launchExecutable.js'
@@ -47,12 +48,33 @@ async function read(executable: string, args: readonly string[], environment: Re
   if (probes >= 8) return null
   probes++
   return new Promise(done => {
+    let settled = false, expired = false, answered = false
+    let cancelDeadline = () => {}
+    let drain: ReturnType<typeof setTimeout> | undefined
+    const answer = (output: string | null) => { if (!answered) { answered = true; done(output) } }
+    let child: ReturnType<typeof execFile>
     try {
-      const child = execFile(executable, [...args], {
-        env: nativeProcessEnvironment(environment), encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
-      }, (error, output) => { probes--; done(error ? null : output) })
-      child.stdin?.end()
-    } catch { probes--; done(null) }
+      // Node's timeout can discard unread output after a core stall, then
+      // report exit 0. Keep its pipes and use discovery's patient deadline.
+      child = execFile(executable, [...args], {
+        env: nativeProcessEnvironment(environment), encoding: 'utf8', killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
+      }, (error, output) => {
+        settled = true; probes--; cancelDeadline(); clearTimeout(drain)
+        answer(error || expired ? null : output)
+      })
+    } catch { probes--; answer(null); return }
+    if (!settled) cancelDeadline = patientDeadline(5_000, () => {
+      expired = true
+      // An exited wrapper may leave a descendant holding its pipes. Signal
+      // only our still-live child, then close our pipe ends after a short drain.
+      try { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') } catch { /* The reply still holds. */ }
+      drain = setTimeout(() => {
+        child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy()
+        // An uninterruptible child retains its slot until the actual callback.
+        answer(null)
+      }, 250)
+    })
+    child.stdin?.end()
   })
 }
 
@@ -145,7 +167,7 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
       if (known) return known
       const observedRevision = revision
       const help = await read(executable.command, ['--help'], selectedEnvironment)
-      if (help === null || !current() || observedRevision !== revision) return 'unknown'
+      if (!help?.trim() || !current() || observedRevision !== revision) return 'unknown'
       const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const answer = new RegExp(`(?:^|[^A-Za-z0-9-])${escaped}(?![A-Za-z0-9-])`).test(help) ? 'supported' : 'unsupported'
       permissions.set(flag, answer)

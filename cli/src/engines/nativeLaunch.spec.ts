@@ -13,7 +13,7 @@ vi.mock('node:child_process', () => ({ execFile: (command: string, args: string[
   fixture.calls.push(command); fixture.environments.push(_options.env)
   const settle = () => done(fixture.failed ? Error('Private probe unavailable') : null, args[0] === '--version' ? fixture.version : fixture.help)
   if (fixture.stalled) fixture.pending.push(settle); else queueMicrotask(settle)
-  return { stdin: { end: vi.fn() } }
+  return { stdin: { end: vi.fn(), destroy: vi.fn() } }
 } }))
 vi.mock('./hooks.js', () => ({ engineHooks: { claude: { installIn: vi.fn(async () => fixture.hooks) }, codex: { installIn: vi.fn(async () => fixture.hooks) } } }))
 vi.mock('./nativeHooks.js', () => Object.fromEntries(['installOpencodePlugin', 'installHermesHooks', 'installCursorHooks',
@@ -154,6 +154,30 @@ it('bounds actual probe concurrency and recovers after the children settle', asy
   expect(answers.filter(answer => !answer.ok)).toHaveLength(2)
   expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: true })
 })
+
+it('answers an expired probe while retaining its slot until the actual child settles', async () => {
+  vi.useFakeTimers()
+  fixture.stalled = true
+  try {
+    const running = Array.from({ length: 8 }, () => inspectNativeLaunch('opencode'))
+    await vi.waitFor(() => expect(fixture.pending).toHaveLength(8))
+    await vi.advanceTimersByTimeAsync(5_251)
+    expect((await Promise.all(running)).every(answer => !answer.ok)).toBe(true)
+    const overflow = inspectNativeLaunch('opencode')
+    await vi.advanceTimersByTimeAsync(0)
+    // Inspect admission before awaiting: incorrectly released capacity must fail
+    // this assertion, rather than hanging on the unplanned ninth fake child.
+    expect(fixture.calls).toHaveLength(8)
+    expect(await overflow).toMatchObject({ ok: false, unavailable: 'native' })
+    for (const settle of fixture.pending.splice(0)) settle()
+    fixture.stalled = false
+    expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: true })
+    expect(fixture.calls).toHaveLength(9)
+  } finally {
+    for (const settle of fixture.pending.splice(0)) settle()
+    fixture.stalled = false; vi.useRealTimers()
+  }
+})
 it('retries unknown permission answers and matches only complete flag tokens', async () => {
   const prepared = await inspectNativeLaunch('opencode')
   if (!prepared.ok) throw Error(prepared.detail)
@@ -161,6 +185,15 @@ it('retries unknown permission answers and matches only complete flag tokens', a
   expect(await prepared.launch.permission({ bypassPermission: true })).toBe('unknown')
   fixture.failed = false; fixture.help = '--prefix--auto --auto-update'
   expect(await prepared.launch.permission({ bypassPermission: true })).toBe('unsupported')
+})
+
+it('holds an empty help reply without caching an unsupported permission flag', async () => {
+  const prepared = await inspectNativeLaunch('claude')
+  if (!prepared.ok) throw Error(prepared.detail)
+  fixture.help = ' \n'
+  expect(await prepared.launch.permission({ permissionMode: 'auto' })).toBe('unknown')
+  fixture.help = '--permission-mode'
+  expect(await prepared.launch.permission({ permissionMode: 'auto' })).toBe('supported')
 })
 
 it('does not restore a daemon location that the captured shell unset', async () => {

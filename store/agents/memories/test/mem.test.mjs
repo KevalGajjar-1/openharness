@@ -55,6 +55,14 @@ test('about: none yet, then written from stdin, then shown', async () => {
   assert.equal((await mem(['about', 'write'], 'no lines')).code, 1)
 })
 
+test('about write: a conversation cited by its agent becomes session:<id>; a copy from another machine is kept as built', async () => {
+  const profile = '## How you work\n- Wants short answers. [codex:s2, claude:short-answers.md, claude:not-a-session, asks:2]\n'
+  assert.equal((await mem(['about', 'write'], profile)).code, 0)
+  assert.match((await mem(['about'])).out, /\[session:s2, claude:short-answers\.md, claude:not-a-session, asks:2\]/)
+  assert.equal((await mem(['about', 'write', '--gen', String(Date.now() + 60_000)], profile)).code, 0)
+  assert.match((await mem(['about'])).out, /\[codex:s2, claude:short-answers\.md/)
+})
+
 test('unknown commands print the usage', async () => {
   const { code, err } = await mem(['frobnicate'])
   assert.equal(code, 2)

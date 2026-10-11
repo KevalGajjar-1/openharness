@@ -125,6 +125,13 @@ describe('the core\'s start-up order (core/main.ts)', () => {
     }
   })
 
+  it('starts native hook maintenance after readiness without awaiting its completion', () => {
+    const source = code(SOURCE)
+    expect(source).not.toMatch(/await\s+installEngineHooks\(/)
+    expect(source.indexOf('installEngineHooks(hookPort')).toBeGreaterThan(source.indexOf('coreLink.ready()'))
+    expect(source).toContain('installedHooks?.close()')
+  })
+
   it('keeps the prologue itself incapable of throwing', () => {
     // Stronger than listing today's hazards: this is what catches the NEXT line somebody adds on top.
     const source = code(SOURCE)
@@ -253,6 +260,8 @@ describe('the core\'s request gate (core/main.ts)', () => {
     // Readiness never waits on a service: held agents and saved manual requests
     // start their dependency recovery only after the master knows core is ready.
     expect(tail).toEqual(['backend.openRequests()', 'daemonBoot.openRequests = null', 'coreLink.ready()', "console.log('[cli] ready')",
+      'installedHooks = env.DISABLE_HOOK_INSTALL ? undefined',
+      ': installEngineHooks(hookPort, { only: env.HOOK_INSTALL_ENGINES, loginShell: loginShellEnvPromise })',
       'void heldLaunches.restoreHeld()', 'externalResumes.open()', 'launches.open()'])
     expect(logged).toBeGreaterThan(ready)
   })

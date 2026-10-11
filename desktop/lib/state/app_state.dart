@@ -23,6 +23,7 @@ import '../models/model_manager_controller.dart';
 import '../companions/coding_memory_connection.dart';
 import 'first_arrival.dart';
 import 'harness_monitor_controller.dart';
+import 'essential_harness_controller.dart';
 import 'agent_handoff_file.dart';
 import 'agent_switch_handoff.dart';
 import '../agent_messages/agent_messages.dart';
@@ -1412,7 +1413,7 @@ class AppNotifier extends ChangeNotifier {
   /// the backend keeps the flag per desk tab, once the daemon and backend have
   /// answered for it. The Store, Devices and Companions, an orchestrator or a
   /// draft tab, a window before it joins the desk, and an older CLI or backend
-  /// get no ⇄, menu row or command.
+  /// get no 💬, menu row or command.
   bool agentMessagesOffered(String tabId) {
     final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
     return swarm != null &&
@@ -8933,6 +8934,17 @@ class AppNotifier extends ChangeNotifier {
   /// Model Manager keeps the original package ID for installed workspaces.
   static const gridHarness = 'autonomous/autonomous-grid';
   late final harnessMonitor = HarnessMonitorController(this);
+  late final _essentials = <String, EssentialHarnessController>{
+    harnessMonitorId: harnessMonitor,
+  };
+
+  /// The one-click opener for a Store essential (`essentialFor`), or null for any other harness.
+  EssentialHarnessController? essential(String id) {
+    final known = essentialFor(id);
+    if (known == null) return null;
+    return _essentials[id] ??= EssentialHarnessController(this, known);
+  }
+
   ModelManagerController? _modelManager;
   ModelManagerController get modelManager =>
       _modelManager ??= ModelManagerController(this);
@@ -10344,8 +10356,9 @@ class AppNotifier extends ChangeNotifier {
     return changed;
   }
 
-  /// Opening a monitor reveals its ordinary DSH pair. Zoom is an explicit pane action.
-  void showHarnessMonitor(String machineId, String agentId) {
+  /// Opening an essential (Harness Monitor, Memories) reveals its ordinary DSH pair: its viewer is
+  /// focused in the active tab, unzoomed. Zoom is an explicit pane action.
+  void showHarnessViewer(String machineId, String agentId) {
     final pane = activeSwarm.panes
         .where(
           (p) =>
@@ -17492,7 +17505,9 @@ class AppNotifier extends ChangeNotifier {
     viewer?.auth.dispose();
     _deviceVisit?.dispose();
     _modelManager?.dispose();
-    harnessMonitor.dispose();
+    for (final controller in _essentials.values) {
+      controller.dispose();
+    }
     _modelsMenu?.dispose();
     agentMessagesRemote.dispose();
     agentMessages.dispose();

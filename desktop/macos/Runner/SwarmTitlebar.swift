@@ -306,7 +306,7 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
         "cloneAgent": "plus.square.on.square", "restartAgent": "arrow.clockwise",
         "shareAgent": "square.and.arrow.up",
         "renameActive": "pencil", "closeActive": "xmark",
-        "toggleAgentMessages": "arrow.left.arrow.right", "showAgentMessages": "bubble.left.and.bubble.right",
+        "toggleAgentMessages": "bubble.left.and.bubble.right", "showAgentMessages": "text.bubble",
         "splitRight": "rectangle.split.2x1", "splitDown": "rectangle.split.1x2",
         "zoomPane": "viewfinder", "movePaneToTab": "arrow.right.square", "closePane": "xmark",
         "commands": "command", "notifications": "bell",
@@ -338,7 +338,7 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
     add(file, "New Tab", "t", "new")
     add(file, "Rename Tab", "r", "renameActive", [.command, .shift])
     add(file, "Close Tab", "w", "closeActive")
-    // The active tab's Agent Messages: its ⇄ (a checkmark here) and its log.
+    // The active tab's Agent Messages: its 💬 (a checkmark here) and its log.
     add(file, "Agent Messages", "", "toggleAgentMessages")
     add(file, "Show Agent Messages", "", "showAgentMessages")
     file.addItem(.separator())
@@ -1886,8 +1886,6 @@ private final class SwarmTabStrip: NSView {
   private var activityTimer: Timer?
   private var activityObservers: [NSObjectProtocol] = []
   private var motionObserver: NSObjectProtocol?
-  private var modifierMonitor: Any?
-  private var shortcutHintsVisible = false
   private var lastBackgroundClick: (time: TimeInterval, point: NSPoint)?
   // Dragging is explicit below. AppKit must not also start a titlebar gesture.
   override var mouseDownCanMoveWindow: Bool { false }
@@ -2059,22 +2057,6 @@ private final class SwarmTabStrip: NSView {
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) {
         [weak self] _ in self?.syncActivityAnimation()
       }
-    // Observe only; Flutter/AppKit keep ownership of every shortcut and IME event.
-    modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-      guard let self, let window = self.window,
-            event.window === window || (event.window == nil && window.isKeyWindow) else { return event }
-      self.setShortcutHintsVisible(event.modifierFlags.contains(.command))
-      return event
-    }
-    for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
-      activityObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
-        [weak self] notification in
-        guard let self else { return }
-        if name == NSApplication.didResignActiveNotification || notification.object as? NSWindow === self.window {
-          self.setShortcutHintsVisible(false)
-        }
-      })
-    }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -2083,23 +2065,17 @@ private final class SwarmTabStrip: NSView {
     daemonRevealTimer?.invalidate()
     activityObservers.forEach(NotificationCenter.default.removeObserver)
     if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
-    if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
   }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil { setDaemonHover(false) }
     syncActivityAnimation()
-    setShortcutHintsVisible(window?.isKeyWindow == true && NSEvent.modifierFlags.contains(.command))
   }
 
-  private func setShortcutHintsVisible(_ visible: Bool) {
-    shortcutHintsVisible = visible
-    for tab in tabs { tab.showsShortcutHint = visible && actionsEnabled }
-  }
-
-  private var visibleWorkingTabs: [SwarmTabButton] {
-    tabs.filter { $0.activity?.working == true && scroll.documentVisibleRect.intersects($0.frame) }
+  /// Tabs whose status slot moves: a working spinner, or agents messaging.
+  private var visibleAnimatedTabs: [SwarmTabButton] {
+    tabs.filter { ($0.activity?.working == true || $0.messaging) && scroll.documentVisibleRect.intersects($0.frame) }
   }
 
   private func syncActivityAnimation() {
@@ -2110,19 +2086,19 @@ private final class SwarmTabStrip: NSView {
     let moving = actionsEnabled && !reduceMotion &&
       !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && NSApp.isActive &&
       window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor &&
-      !visibleWorkingTabs.isEmpty
+      !visibleAnimatedTabs.isEmpty
     guard moving else {
       activityTimer?.invalidate()
       activityTimer = nil
       for tab in tabs { tab.activityFrame = 0 }
       return
     }
-    for tab in visibleWorkingTabs { tab.activityFrame = harnessActivityFrame() }
+    for tab in visibleAnimatedTabs { tab.activityFrame = harnessActivityFrame() }
     guard activityTimer == nil else { return }
     let next = (floor(Date().timeIntervalSince1970 * 10) + 1) / 10
     let timer = Timer(fire: Date(timeIntervalSince1970: next), interval: 0.1, repeats: true) { [weak self] _ in
       guard let self else { return }
-      for tab in self.visibleWorkingTabs { tab.activityFrame = harnessActivityFrame() }
+      for tab in self.visibleAnimatedTabs { tab.activityFrame = harnessActivityFrame() }
     }
     activityTimer = timer
     RunLoop.main.add(timer, forMode: .common)
@@ -2252,12 +2228,15 @@ private final class SwarmTabStrip: NSView {
     let tabsFocused = state["tabsFocused"] as? Bool == true
     revealActiveAfterLayout = revealActiveAfterLayout || nextActiveId != activeId
     activeId = nextActiveId
+    // Agent Messages' color: its 💬 when on, and the status slot while agents
+    // message. Flutter sends the accent blue (AppPalette.accentOnSurface).
+    let messagesColor = statusColor(state["agentMessagesInk"], fallback: .controlAccentColor)
     let ids = rows.compactMap { $0["id"] as? String }
     let previousOrder = tabs.map(\.swarmId)
     tabOrderChanged = tabOrderChanged || ids != previousOrder
     for tab in tabs where !ids.contains(tab.swarmId) { tab.removeFromSuperview() }
     let previous = Dictionary(tabs.map { ($0.swarmId, $0) }, uniquingKeysWith: { first, _ in first })
-    tabs = rows.enumerated().compactMap { index, row in
+    tabs = rows.compactMap { row in
       guard let id = row["id"] as? String else { return nil }
       let tab = previous[id] ?? SwarmTabButton(id: id)
       tab.palette = palette
@@ -2268,9 +2247,6 @@ private final class SwarmTabStrip: NSView {
       tab.displayLabel = row["label"] != nil && !row.keys.contains("shortcutHint")
         ? displayLabel.replacingOccurrences(of: #"^\d+:"#, with: "", options: .regularExpression)
         : displayLabel
-      tab.shortcutHint = row.keys.contains("shortcutHint")
-        ? row["shortcutHint"] as? String : (index < 9 ? "⌘\(index + 1)" : nil)
-      tab.showsShortcutHint = shortcutHintsVisible && actionsEnabled
       tab.foreground = palette.navigationForeground
       tab.selected = id == activeId
       tab.keyboardFocus = tabsFocused && id == activeId
@@ -2280,6 +2256,7 @@ private final class SwarmTabStrip: NSView {
       tab.agentMessages = (row["agentMessages"] as? Bool).map {
         SwarmTabMessages(on: $0, flowing: row["agentMessagesFlowing"] as? Bool == true)
       }
+      tab.messagesColor = messagesColor
       tab.emit = { [weak self, weak tab] method, args in
         guard let self, let tab, self.actionsEnabled,
               self.tabs.contains(where: { $0 === tab }) else { return }
@@ -2633,16 +2610,16 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private static let shoulder: CGFloat = 8
   private static let topInset: CGFloat = 6
   // Mirror AppDesktop.tabCloseInset and DesktopWorkspaceTab: × and, left of
-  // it, Agent Messages' ⇄, as 32pt-tall targets inside the curved tab body,
-  // with a dead gap between them so a click just off × never toggles ⇄. Their
-  // width is reserved on both sides of the centered title, and kept narrow
-  // enough that a 128pt tab still draws its name beside a status.
+  // it, Agent Messages' 💬, as 32pt-tall targets inside the curved tab body,
+  // with a dead gap between them so a click just off × never toggles 💬. They
+  // show only on hover; at rest the name and status have the whole tab.
   private static let trailingInset: CGFloat = 8
   private static let accessoryHeight: CGFloat = 32
   private static let closeWidth: CGFloat = 16
   private static let accessoryGap: CGFloat = 3
   private static let messagesWidth: CGFloat = 16
-  private static let contentInset: CGFloat = trailingInset + closeWidth + accessoryGap + messagesWidth
+  private static let restingInset: CGFloat = shoulder + 6
+  private static let revealedInset: CGFloat = trailingInset + closeWidth + accessoryGap + messagesWidth
   private static let gap: CGFloat = 6
   private static let activityWidth: CGFloat = 16
 
@@ -2652,36 +2629,37 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   let swarmId: String
   var name = "New Tab" { didSet { if name != oldValue { invalidateLabel(); updateAccessibility() } } }
   var displayLabel = "New Tab" { didSet { if displayLabel != oldValue { invalidateLabel() } } }
-  var shortcutHint: String? { didSet { if shortcutHint != oldValue { invalidateLabel(); updateAccessibility() } } }
-  /// Command is held: every tab is revealed, as a hovered one is.
-  var showsShortcutHint = false {
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): the hover 💬,
+  /// and the status slot while agents message; nil where the row carries none
+  /// (the Store tab).
+  var agentMessages: SwarmTabMessages? {
     didSet {
-      if showsShortcutHint != oldValue { updateAccessoryVisibility(); needsLayout = true; needsDisplay = true }
+      guard agentMessages != oldValue else { return }
+      updateMessagesControls()
+      invalidateLabel()
+      updateAccessibility()
     }
   }
-  /// Agent Messages' ⇄ (docs/design/2026-10-10-agent-messages.md); nil where
-  /// the row carries none (the Store tab).
-  var agentMessages: SwarmTabMessages? {
-    didSet { if agentMessages != oldValue { updateMessagesControls() } }
+  /// Agent Messages' color: the 💬 when on, and the slot while messaging.
+  var messagesColor = NSColor.controlAccentColor {
+    didSet { if messagesColor != oldValue { updateMessagesControls() } }
   }
+  /// Agents in this tab messaged one another a moment ago: the status slot
+  /// shows 💬 in place of the status until it goes quiet.
+  var messaging: Bool { agentMessages?.on == true && agentMessages?.flowing == true }
   var foreground = NSColor(white: 0.85, alpha: 1) {
     didSet {
       if foreground != oldValue { invalidateLabel() }
       closeButton.foreground = foreground
-      messagesButton.foreground = foreground
+      updateMessagesControls()
     }
   }
-  private var indicatorWidth: CGFloat {
-    min(72, max(activityLabel == nil ? 0 : Self.activityWidth, shortcutLayout?.size.width ?? 0))
-  }
-  private var reservedIndicatorSpace: CGFloat { indicatorWidth == 0 ? 0 : indicatorWidth + Self.gap }
-  /// The status slot as the tab rests. The title is placed from it alone, so
-  /// revealing the shortcut never moves the title.
-  private var activitySpace: CGFloat {
-    (activityMark?.isEmpty ?? true) ? 0 : reservedIndicatorSpace
+  /// The status slot: the activity mark, or 💬 while agents message.
+  private var statusSpace: CGFloat {
+    messaging || !(activityMark?.isEmpty ?? true) ? Self.activityWidth + Self.gap : 0
   }
   private var naturalTitleWidth: CGFloat { max(labelLayout.size.width, emphasizedLabelLayout.size.width) }
-  var minimumWidth: CGFloat { Self.contentInset * 2 + reservedIndicatorSpace + 16 }
+  var minimumWidth: CGFloat { Self.restingInset * 2 + statusSpace + 16 }
   var preferredWidth: CGFloat { Self.maximumLayoutWidth }
   var selected = false { didSet { if selected != oldValue { invalidateLabel(); updateAccessibility() } } }
   var attention = false { didSet { if attention != oldValue { invalidateLabel(); updateAccessibility() } } }
@@ -2689,7 +2667,9 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     didSet { if activity != oldValue { invalidateLabel(); updateAccessibility() } }
   }
   var activityFrame = 0 {
-    didSet { if activityFrame != oldValue, activity?.working == true { setNeedsDisplay(activityRect) } }
+    didSet {
+      if activityFrame != oldValue, activity?.working == true || messaging { setNeedsDisplay(activityRect) }
+    }
   }
   // Keep the old question payload useful for an older Flutter fixture/runner.
   private var activityLabel: String? { activity?.label ?? (attention ? "Needs your input" : nil) }
@@ -2697,34 +2677,21 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     if let activity { return activity.symbol(frame: activityFrame) }
     return attention ? "?" : nil
   }
-  private var restingTitleRect: NSRect {
-    let width = min(naturalTitleWidth, max(0, bounds.width - Self.contentInset * 2 - activitySpace))
-    return NSRect(x: (bounds.width - width - activitySpace) / 2, y: 0,
-      width: width, height: bounds.height)
+  /// The name, centered with its status. Revealed, it moves left only as far
+  /// as 💬 and × need, then gives up its tail; a name with room never moves.
+  private func titleRect(revealed: Bool) -> NSRect {
+    let right = revealed ? Self.revealedInset : Self.restingInset
+    let width = min(naturalTitleWidth, max(0, bounds.width - Self.restingInset - right - statusSpace))
+    let group = width + statusSpace
+    let x = max(Self.restingInset, min((bounds.width - group) / 2, bounds.width - right - group))
+    return NSRect(x: x, y: 0, width: width, height: bounds.height)
   }
-  /// An idle tab shows its shortcut after the title when revealed; only a
-  /// title that would run into ⇄ gives up its tail for it.
-  private var titleRect: NSRect {
-    var rect = restingTitleRect
-    if displaysShortcut && activitySpace == 0 {
-      let overflow = rect.maxX + reservedIndicatorSpace - (bounds.width - Self.contentInset)
-      if overflow > 0 { rect.size.width = max(0, rect.width - overflow) }
-    }
-    return rect
-  }
-  private var indicatorRect: NSRect {
-    if bounds.width < minimumWidth {
-      let width = min(indicatorWidth, max(0, bounds.width - 16))
-      return NSRect(x: bounds.midX - width / 2, y: 0, width: width, height: bounds.height)
-    }
-    return NSRect(x: titleRect.maxX + Self.gap, y: 0, width: indicatorWidth, height: bounds.height)
-  }
+  private var titleRect: NSRect { titleRect(revealed: isRevealed) }
   private var activityRect: NSRect {
     if bounds.width < minimumWidth {
       return NSRect(x: bounds.midX - Self.activityWidth / 2, y: 0, width: Self.activityWidth, height: bounds.height)
     }
-    return NSRect(x: indicatorRect.midX - Self.activityWidth / 2,
-      y: 0, width: Self.activityWidth, height: bounds.height)
+    return NSRect(x: titleRect.maxX + Self.gap, y: 0, width: Self.activityWidth, height: bounds.height)
   }
   /// Flutter holds the keyboard after Close; accessibility explains Return.
   var keyboardFocus = false { didSet { if keyboardFocus != oldValue { needsDisplay = true; updateAccessibility() } } }
@@ -2735,7 +2702,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   var isHovered: Bool { hovered && actionsEnabled }
   private let selectButton = SwarmSelectButton()
   private let closeButton = SwarmPlainIconButton()
-  private let messagesButton = SwarmMessagesButton()
+  private let messagesButton = SwarmPlainIconButton()
   private var messagesItems: [NSMenuItem] = []
   /// Whether the middle button went down on THIS tab — see otherMouseUp.
   private var middleDown = false
@@ -2746,7 +2713,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   // Animation only changes the activity mark. Keep the three bounded text
   // measurements with their attributed strings until label inputs change;
   // AppKit's size() otherwise repeats text layout throughout each dirty-rect
-  // calculation and paint, even while Command hints are not being displayed.
+  // calculation and paint.
   private struct MeasuredLabel {
     let text: NSAttributedString
     let size: NSSize
@@ -2757,7 +2724,6 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   }
   private var cachedLabel: MeasuredLabel?
   private var cachedEmphasizedLabel: MeasuredLabel?
-  private var cachedShortcutLabel: MeasuredLabel?
   var actionsEnabled = true {
     didSet {
       selectButton.isEnabled = actionsEnabled
@@ -2800,7 +2766,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     addSubview(closeButton)
     messagesButton.title = ""
     messagesButton.isBordered = false
-    messagesButton.image = HarnessControlSymbols.image("arrow.left.arrow.right")
+    messagesButton.image = HarnessControlSymbols.image("bubble.left.and.bubble.right")
     messagesButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
     messagesButton.imagePosition = .imageOnly
     messagesButton.foreground = foreground
@@ -2839,8 +2805,10 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       width: min(Self.messagesWidth, bounds.width), height: Self.accessoryHeight)
     let fullName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     var hints: [String] = []
-    if naturalTitleWidth > restingTitleRect.width { hints.append(displayLabel) }
+    // A tooltip shows under the pointer, where the name has its revealed room.
+    if naturalTitleWidth > titleRect(revealed: true).width { hints.append(displayLabel) }
     if !fullName.isEmpty && fullName != displayLabel { hints.append(name) }
+    if messaging { hints.append(SwarmTabMessages.messagingLabel) }
     if let activityLabel { hints.append(activityLabel) }
     toolTip = hints.isEmpty ? nil : hints.joined(separator: "\n")
   }
@@ -2862,25 +2830,20 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     needsDisplay = true
     hoverChanged?()
   }
-  /// One revealed state: hovering this tab, or holding Command (every tab).
-  /// Revealed, the shortcut replaces the status and ⇄ and × both show.
-  var isRevealed: Bool { actionsEnabled && (hovered || showsShortcutHint) }
-  private var displaysShortcut: Bool { isRevealed && shortcutHint?.isEmpty == false }
+  /// Hovering reveals the tab's 💬 and ×; at rest it shows its name and status.
+  var isRevealed: Bool { actionsEnabled && hovered }
   private func updateAccessoryVisibility() {
     closeButton.isHidden = !isRevealed
-    // At rest only a tab whose agents are messaging keeps its ⇄ — on, since
-    // traffic seen as it was turned off says nothing about this tab now.
-    let flowing = agentMessages?.on == true && agentMessages?.flowing == true
-    messagesButton.isHidden = agentMessages == nil || !(isRevealed || (actionsEnabled && flowing))
+    messagesButton.isHidden = agentMessages == nil || !isRevealed
   }
-  /// The ⇄'s look, tooltip and accessibility, and the menu rows, for its state.
+  /// The 💬's look, tooltip and accessibility, and the menu rows, for its state:
+  /// grey while off, Agent Messages' color while on.
   private func updateMessagesControls() {
     for item in messagesItems { item.isHidden = agentMessages == nil }
     if let state = agentMessages {
-      messagesButton.struck = !state.on
-      let bright = state.on && state.flowing
-      messagesButton.restingOpacity = bright ? 1 : 0.45
-      messagesButton.highContrastRestingOpacity = bright ? 1 : 0.7
+      messagesButton.foreground = state.on ? messagesColor : foreground
+      messagesButton.restingOpacity = state.on ? 0.85 : 0.45
+      messagesButton.highContrastRestingOpacity = state.on ? 1 : 0.7
       messagesButton.toolTip = state.tooltip
       messagesButton.setAccessibilityLabel("Agent Messages")
       messagesButton.setAccessibilityValue(state.on ? "On" : "Off")
@@ -2892,14 +2855,12 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private func invalidateLabel() {
     cachedLabel = nil
     cachedEmphasizedLabel = nil
-    cachedShortcutLabel = nil
     updateAccessoryVisibility()
     needsDisplay = true
     needsLayout = true
   }
   private var label: NSAttributedString { labelLayout.text }
   private var emphasizedLabel: NSAttributedString { emphasizedLabelLayout.text }
-  private var shortcutLabel: NSAttributedString? { shortcutLayout?.text }
   private var labelLayout: MeasuredLabel {
     if let cachedLabel { return cachedLabel }
     let paragraph = NSMutableParagraphStyle()
@@ -2918,18 +2879,6 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       range: NSRange(location: 0, length: emphasized.length))
     let measured = MeasuredLabel(emphasized)
     cachedEmphasizedLabel = measured
-    return measured
-  }
-  private var shortcutLayout: MeasuredLabel? {
-    guard let shortcutHint, !shortcutHint.isEmpty else { return nil }
-    if let cachedShortcutLabel { return cachedShortcutLabel }
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.alignment = .center
-    paragraph.lineBreakMode = .byTruncatingTail
-    let measured = MeasuredLabel(NSAttributedString(string: shortcutHint, attributes: [
-      .font: NSFont.systemFont(ofSize: 12, weight: .regular),
-      .foregroundColor: foreground.withAlphaComponent(0.75), .paragraphStyle: paragraph]))
-    cachedShortcutLabel = measured
     return measured
   }
   private var tabShape: NSBezierPath {
@@ -2983,17 +2932,17 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       text.text.draw(in: NSRect(x: titleRect.minX, y: contentCenterY - text.size.height / 2,
         width: titleRect.width, height: text.size.height))
     }
-    if !displaysShortcut, let activityMark {
+    let status = NSRect(x: activityRect.minX, y: contentCenterY - 8, width: activityRect.width, height: 16)
+    if messaging {
       NSGraphicsContext.saveGraphicsState()
       bounds.clip()
-      HarnessNativeActivity.draw(activityMark,
-        in: NSRect(x: activityRect.minX, y: contentCenterY - 8, width: activityRect.width, height: 16),
-        color: activity?.color ?? .systemOrange)
+      SwarmTabMessages.drawMessaging(in: status, frame: activityFrame, color: messagesColor)
       NSGraphicsContext.restoreGraphicsState()
-    }
-    if displaysShortcut, let shortcut = shortcutLayout {
-      shortcut.text.draw(in: NSRect(x: indicatorRect.minX, y: contentCenterY - shortcut.size.height / 2,
-        width: indicatorRect.width, height: shortcut.size.height))
+    } else if let activityMark {
+      NSGraphicsContext.saveGraphicsState()
+      bounds.clip()
+      HarnessNativeActivity.draw(activityMark, in: status, color: activity?.color ?? .systemOrange)
+      NSGraphicsContext.restoreGraphicsState()
     }
   }
   // Overflowed tabs might not be drawn. Their names and selection still need
@@ -3004,7 +2953,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     closeButton.setAccessibilityLabel("Close \(name)")
     closeButton.toolTip = "Close Tab"
     selectButton.setAccessibilityValue(selected ? "Selected" : "")
-    let help = [activityLabel,
+    let help = [messaging ? SwarmTabMessages.messagingLabel : nil, activityLabel,
       keyboardFocus ? "Keyboard is on the tabs. Press Return to type in this tab." : nil].compactMap { $0 }
     selectButton.setAccessibilityHelp(help.isEmpty ? nil : help.joined(separator: ". "))
   }
@@ -3081,32 +3030,31 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
 struct SwarmTabMessages: Equatable {
   var on: Bool
   var flowing: Bool
-  /// What the ⇄ says a click does; the Flutter tab says the same.
+  static let messagingLabel = "Agents messaging"
+  /// The status slot while agents message: two chat bubbles, mirrored every
+  /// half second on the activity clock so the speakers trade sides; still at
+  /// frame 0 (Reduce Motion).
+  static func drawMessaging(in rect: NSRect, frame: Int, color: NSColor) {
+    guard let symbol = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: nil)?
+      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)) else { return }
+    let glyph = NSRect(x: rect.midX - symbol.size.width / 2, y: rect.midY - symbol.size.height / 2,
+      width: symbol.size.width, height: symbol.size.height)
+    NSGraphicsContext.current?.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+    if (frame / 5) % 2 == 1 {
+      let mirror = NSAffineTransform()
+      mirror.translateX(by: glyph.midX * 2, yBy: 0)
+      mirror.scaleX(by: -1, yBy: 1)
+      mirror.concat()
+    }
+    symbol.draw(in: glyph)
+    color.setFill()
+    glyph.fill(using: .sourceIn)
+    NSGraphicsContext.current?.cgContext.endTransparencyLayer()
+  }
+  /// What the 💬 says a click does; the Flutter tab says the same.
   var tooltip: String {
     !on ? "Agent messages off · click to turn on"
       : flowing ? "Agents messaging · click to turn off" : "Agent messages on · click to turn off"
-  }
-}
-
-/// ⇄, struck through while Agent Messages are off.
-private final class SwarmMessagesButton: SwarmPlainIconButton {
-  var struck = false { didSet { if struck != oldValue { needsDisplay = true } } }
-  override func draw(_ dirtyRect: NSRect) {
-    super.draw(dirtyRect)
-    guard struck, let symbol = image?.withSymbolConfiguration(symbolConfiguration ?? HarnessControlSymbols.configuration)
-    else { return }
-    let glyph = NSRect(x: (bounds.width - symbol.size.width) / 2, y: (bounds.height - symbol.size.height) / 2,
-      width: symbol.size.width, height: symbol.size.height)
-    let emphasized = isEnabled && (hovered || hasKeyboardFocus || isHighlighted)
-    let quiet = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-      ? highContrastRestingOpacity ?? restingOpacity : restingOpacity
-    foreground.withAlphaComponent(isEnabled ? (emphasized ? 1 : quiet) : 0.28).setStroke()
-    let slash = NSBezierPath()
-    slash.move(to: NSPoint(x: glyph.minX + glyph.width * 0.1, y: glyph.minY - 1))
-    slash.line(to: NSPoint(x: glyph.maxX - glyph.width * 0.1, y: glyph.maxY + 1))
-    slash.lineWidth = 1.2
-    slash.lineCapStyle = .round
-    slash.stroke()
   }
 }
 

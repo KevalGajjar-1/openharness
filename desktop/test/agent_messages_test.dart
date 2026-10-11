@@ -237,7 +237,7 @@ void main() {
   });
 
   group('traffic', () {
-    test('a tab flows for a minute after its last message', () {
+    test('a tab flows for 10 seconds after its last message', () {
       fakeAsync((async) {
         backend.tabs = {'tab': true};
         final messages = controller();
@@ -249,16 +249,20 @@ void main() {
         expect(messages.isFlowing('tab'), isTrue);
         expect(messages.stateOf('tab'), TabMessagesState.flowing);
         expect(messages.trafficFor('tab'), 1);
-        async.elapse(const Duration(seconds: 40));
+        async.elapse(const Duration(seconds: 3));
         messages.handleEvent(_sent(state: 'delivered'));
         expect(messages.trafficFor('tab'), 2);
-        async.elapse(const Duration(seconds: 59));
+        async.elapse(const Duration(seconds: 9));
         expect(messages.isFlowing('tab'), isTrue);
         final before = notified;
         async.elapse(const Duration(seconds: 1));
         expect(messages.isFlowing('tab'), isFalse);
         expect(messages.stateOf('tab'), TabMessagesState.on);
-        expect(notified, greaterThan(before), reason: 'the ⇄ dims by itself');
+        expect(
+          notified,
+          greaterThan(before),
+          reason: 'the status slot goes back by itself',
+        );
         expect(async.pendingTimers, isEmpty);
         messages.dispose();
       });
@@ -494,7 +498,9 @@ void main() {
           return {
             'messages': [
               recent('m0000001', ago: const Duration(minutes: 5)),
-              recent('m0000002', ago: const Duration(seconds: 10)),
+              // Past the 10 s a tab flows, within a round of the remote
+              // watch's: still news when a round first sees it.
+              recent('m0000002', ago: const Duration(seconds: 30)),
             ],
           };
         },
@@ -525,6 +531,33 @@ void main() {
       expect(messages.markFor('studio', 'lead'), isNull);
       messages.handleEvent(_sent(id: 'm0000002', state: 'delivered'));
       expect(messages.markFor('studio', 'lead'), isNull);
+    });
+
+    test('remote traffic flows one round longer, so rounds renew it', () {
+      fakeAsync((async) {
+        final messages = AgentMessagesController(
+          read: backend.read,
+          write: backend.write,
+          request: (_, _) async => {
+            'messages': [recent('m0000004', ago: const Duration(seconds: 5))],
+          },
+          nameOf: (_, _) => null,
+          now: () => now,
+        );
+        unawaited(
+          messages.pollRemote([
+            (tabId: 'tab', machineIds: ['laptop']),
+          ], round: const Duration(seconds: 15)),
+        );
+        async.flushMicrotasks();
+        expect(messages.isFlowing('tab'), isTrue);
+        async.elapse(const Duration(seconds: 24));
+        expect(messages.isFlowing('tab'), isTrue);
+        async.elapse(const Duration(seconds: 1));
+        expect(messages.isFlowing('tab'), isFalse);
+        messages.dispose();
+        expect(async.pendingTimers, isEmpty);
+      });
     });
 
     test('older messages are remembered, not announced', () async {

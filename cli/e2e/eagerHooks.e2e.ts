@@ -33,6 +33,40 @@ it('refuses a native hook destination outside the test, including the OpenCode s
   expect(() => assertHooksContained(d.root, d.env)).toThrow('supported hook engines')
 })
 
+it('becomes ready and serves control while startup hook preparation is still waiting', async () => {
+  const d = daemon = await IsolatedDaemon.create({ scriptPath: bundle, env: { HARNESS_CONNECTIONS_PORT: '0' } })
+  onTestFailed(() => console.log(d.log()))
+  const binary = join(d.root, 'bin', 'opencode'), entered = join(d.root, 'startup-probe'), release = join(d.root, 'release-probe')
+  d.env.OPENCODE_PATH = binary
+  d.env.OPENCODE_PLUGIN_DIR = join(d.root, 'opencode', 'plugin')
+  d.env.HOOK_INSTALL_ENGINES = 'opencode'
+  writeFileSync(binary, `#!${process.execPath}
+const fs = require('node:fs');
+if (!process.argv.includes('--version')) process.exit(2);
+fs.writeFileSync(${JSON.stringify(entered)}, String(process.pid));
+const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); console.log('opencode v2.0.18'); } }, 10);
+`, { mode: 0o755 })
+  try {
+    await d.start()
+    const pid = await until('the unreleased startup probe to enter', () => {
+      try {
+        const value = Number(readFileSync(entered, 'utf8'))
+        return Number.isSafeInteger(value) && value > 1 ? value : null
+      } catch { return null }
+    }, 3_000, 10)
+    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    // Waiting for the bounded probe's timeout is still waiting for a dependency.
+    // The former startup only became ready after killing this unreleased child.
+    expect(alive()).toBe(true)
+    const c = client = await LocalClient.connect(d)
+    expect((await c.request('agents_list', { includeStopped: true }, 1_500)).agents).toEqual([])
+    expect(alive()).toBe(true)
+    expect(d.coresStarted()).toBe(1)
+  } finally { writeFileSync(release, '') }
+  await until('the startup hook to finish after its probe is released', () =>
+    existsSync(join(d.root, 'opencode', 'plugins', 'launcher-register', 'tui.js')), 10_000)
+}, 30_000)
+
 it('keeps Stop and agent listing responsive while a native launch version probe waits', async () => {
   const d = daemon = await IsolatedDaemon.create({ scriptPath: bundle, env: { HARNESS_CONNECTIONS_PORT: '0' } })
   onTestFailed(() => console.log(d.log()))
@@ -156,7 +190,9 @@ it.each(['create', 'fork'] as const)('keeps a post-rc held %s with its original 
   // Only the new pane's rc file changes this private config, after preparation.
   // Native probes have no TMUX_PANE. This forces the real final guard to hold.
   const config = join(d.engineConfig.codexHome, 'config.toml'), trigger = join(d.root, 'change-once')
-  const original = readFileSync(config)
+  const original = await until('startup hook preparation to create the private Codex config', () => {
+    try { return readFileSync(config) } catch { return null }
+  }, 10_000)
   writeFileSync(trigger, '')
   writeFileSync(join(d.env.HOME!, '.bashrc'), `if [ -n "$TMUX_PANE" ] && [ -f ${shellSingleQuote(trigger)} ]; then printf '\\n# changed by private pane fixture\\n' >> ${shellSingleQuote(config)}; /bin/rm ${shellSingleQuote(trigger)}; fi\n`)
   const response = await c.request(operation === 'create' ? 'agent_create' : 'agent_fork', operation === 'create'
@@ -213,11 +249,6 @@ console.log('┃'); setInterval(() => {}, 1000);
 `, { mode: 0o755 })
     await d.start()
     expect(d.log()).not.toContain('[fixture] legacy hooks stalled')
-    for (const file of ['cursor/hooks.json', 'opencode/plugins/launcher-register/tui.js', 'kilo/plugin/launcher-register.js',
-      'pi/agent/extensions/launcher-register.ts', 'amp/plugins/launcher-register.ts', 'hermes/config.yaml',
-      'devin/config.json', 'commandcode/settings.json', 'grok/hooks/harness.json', 'agy/hooks.json', 'copilot/hooks/harness.json']) {
-      expect(readFileSync(join(root, file), 'utf8'), file).toContain(String(d.port))
-    }
     const c = client = await LocalClient.connect(d)
     const row = async (id: string) => ((await c.request('agents_list', { includeStopped: true })).agents as Array<Record<string, any>>).find(one => one.id === id)
     const active = (id: string) => until('a native process to bind without optional hooks', async () => {
@@ -229,7 +260,17 @@ console.log('┃'); setInterval(() => {}, 1000);
       expect(result.error, JSON.stringify(result)).toBeUndefined()
       return active(result.agent.id)
     }
+    // Readiness must permit a cold launch while startup maintenance is still finishing.
     const native = await create('opencode')
+    const hookFiles = ['cursor/hooks.json', 'opencode/plugins/launcher-register/tui.js', 'kilo/plugin/launcher-register.js',
+      'pi/agent/extensions/launcher-register.ts', 'amp/plugins/launcher-register.ts', 'hermes/config.yaml',
+      'devin/config.json', 'commandcode/settings.json', 'grok/hooks/harness.json', 'agy/hooks.json', 'copilot/hooks/harness.json']
+    await until('all selected native hooks to finish after readiness', () => hookFiles.every(file => {
+      try { return readFileSync(join(root, file), 'utf8').includes(String(d.port)) } catch { return false }
+    }), 10_000)
+    for (const file of hookFiles) {
+      expect(readFileSync(join(root, file), 'utf8'), file).toContain(String(d.port))
+    }
     const sibling = await create(engine)
     const started = c.next(frame => frame.type === 'turn_started' && frame.agentId === sibling.id, 30_000)
     c.send('message', { agentId: sibling.id, content: '!slow 8000' }); await started
