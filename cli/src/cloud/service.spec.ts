@@ -322,6 +322,49 @@ describe('what the review found', () => {
     service.stop()
   })
 
+  it('is working from the moment the words go, and back where it was when they are refused', async () => {
+    let release: () => void = () => {}
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    devin.looks.push({ messages: [{ id: 'm1', text: 'Done.', at: 'x' }], state: 'idle', activity: null })
+    await tick()
+    const agentId = published()[0].agentId
+    expect(published()[0].state).toBe('idle')
+    // Fo answers its `ask_fo` with its whole reply: the person sees it working all that time.
+    devin.send = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    const sent = service.port.deliver(agentId, 'and the docs')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(published()[0]).toMatchObject({ state: 'working', activity: null })
+    release()
+    expect(await sent).toEqual({ ok: true })
+    expect([...timers.values()].map((timer) => timer.ms)).toEqual([2_000])
+    devin.looks.push({ messages: [{ id: 'm2', text: 'Docs too.', at: 'x' }], state: 'idle', activity: 'Finished' })
+    await tick()
+    devin.send = vi.fn(async () => { throw new CloudError('BUSY', 'Devin Cloud is still working.') })
+    expect(await service.port.deliver(agentId, 'more')).toMatchObject({ ok: false, error: 'BUSY' })
+    expect(published()[0]).toMatchObject({ state: 'idle', activity: 'Finished' })
+    // Not saved while it was only told.
+    expect(JSON.parse(readFileSync(join(dataDir, 'cloud', 'harnesses.json'), 'utf8')).harnesses[0].harness.state).toBe('idle')
+    service.stop()
+  })
+
+  it('reads a reply that came with the words at once, not after the wait', async () => {
+    let ready = true
+    const fo = maker({ id: 'fo', answered: () => ready })
+    const service = start({ fo })
+    await service.port.create({ engine: 'fo', prompt: 'weather in New York?' })
+    expect([...timers.values()].map((timer) => timer.ms)).toEqual([0])
+    fo.looks.push({ messages: [{ id: 'f1', text: 'Rain, 15°C.', at: 'x' }], state: 'idle' })
+    await tick()
+    expect(await service.port.deliver(published()[0].agentId, 'and tomorrow?')).toEqual({ ok: true })
+    expect([...timers.values()].map((timer) => timer.ms)).toEqual([0])
+    ready = false
+    expect(await service.port.deliver(published()[0].agentId, 'and Sunday?')).toEqual({ ok: true })
+    expect([...timers.values()].map((timer) => timer.ms)).toEqual([2_000])
+    service.stop()
+  })
+
   it('never looks again at once at a maker that answered at once', async () => {
     const fo = maker({ id: 'fo' })
     const service = start({ fo })

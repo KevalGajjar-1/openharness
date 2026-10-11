@@ -274,7 +274,7 @@ export function startCloudService(options: CloudServiceOptions) {
     if (entry.harness.state === 'starting' && !started.update?.state) entry.harness.state = 'working'
     touched(entry)
     log(`[cloud] ${entry.harness.agentId} started on ${agent}`)
-    schedule(entry.harness.agentId, started.update?.waited ? 0 : 2_000)
+    schedule(entry.harness.agentId, started.update?.waited || adapters[agent].answered?.(entry.remote) ? 0 : 2_000)
     return { ok: true, agent: cloudAgentFrame(entry.harness) }
   }
 
@@ -283,19 +283,28 @@ export function startCloudService(options: CloudServiceOptions) {
     if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
     const words = text.trim()
     if (!words) return { ok: false, error: 'INVALID_REQUEST', detail: 'Write something to send.' }
+    // Working from the moment the words go, as a terminal agent's turn starts with its prompt: Fo answers
+    // `ask_fo` with its whole reply, 15 s later, and the dial sat on the last recap all that time (2026-10-11).
+    // Told, not saved: refused, it is back where it was.
+    const was = { state: entry.harness.state, activity: entry.harness.activity }
+    entry.harness.state = 'working'
+    entry.harness.activity = null
+    publish()
+    const adapter = adapters[entry.harness.agent]
     try {
-      const moved = await adapters[entry.harness.agent].send(entry.remote, words)
+      const moved = await adapter.send(entry.remote, words)
       if (moved) entry.remote = { ...entry.remote, ...moved }
     } catch (error) {
+      Object.assign(entry.harness, was)
+      publish()
       return refused(error, entry.harness.agent)
     }
     record(entry, { id: `person-${now()}`, from: 'person', text: words, at: new Date(now()).toISOString() })
     entry.heard = false
-    entry.harness.state = 'working'
-    entry.harness.activity = null
     ask(entry, null)
     touched(entry)
-    schedule(agentId, 2_000)
+    // Its reply already here: read now, not after the wait a maker that is only starting needs.
+    schedule(agentId, adapter.answered?.(entry.remote) ? 0 : 2_000)
     return { ok: true }
   }) }
 

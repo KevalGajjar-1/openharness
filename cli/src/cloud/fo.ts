@@ -127,5 +127,6 @@ export function foAdapter(client: () => Promise<McpClient>, now: () => Date = ()
       if (reply.working || !reply.text) return { messages: [], state: 'working', activity: reply.progress, waited: true }
       return answered(reply.text)
     },
+    answered: (remote) => ready.has(remote.id),
   }
 }

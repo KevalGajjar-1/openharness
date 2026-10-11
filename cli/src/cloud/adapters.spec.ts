@@ -265,7 +265,9 @@ describe('Fo', () => {
     // An answer Fo gives at once is read on the next look.
     expect(await adapter.send({ id: 'c1' }, '9:30')).toEqual({ id: 'c1', run: undefined })
     expect(fo.calls.at(-1)).toEqual({ tool: 'ask_fo', args: { request: '9:30', conversation_id: 'c1' } })
+    expect(adapter.answered!({ id: 'c1' })).toBe(true)
     expect(await adapter.poll({ id: 'c1' })).toMatchObject({ messages: [{ text: 'Booked for 9:30.' }], state: 'idle', question: null })
+    expect(adapter.answered!({ id: 'c1' })).toBe(false)
     expect(await adapter.poll({ id: 'c1' })).toEqual({ messages: [] })
     expect(adapter.stop).toBeUndefined()
   })

@@ -49,6 +49,8 @@ export interface CloudAdapter {
   send(remote: Remote, text: string): Promise<Partial<Remote> | void>
   /** One bounded look: never longer than about a minute. */
   poll(remote: Remote, signal?: AbortSignal): Promise<CloudUpdate>
+  /** Whether a reply already came with the words (Fo's `ask_fo` can answer with it), for a look at once. */
+  answered?(remote: Remote): boolean
   /** Absent where the maker offers no way to stop it: Fo keeps working on its own. */
   stop?(remote: Remote): Promise<void>
 }
