@@ -70,9 +70,10 @@
     <li><strong>The person's view.</strong> Everything you start appears in Harness, where the person can watch it,
       answer its questions or stop it. Your own sub-agents are invisible to them.</li>
   </ul>
-  <p>When not to use it: a quick parallel search or edit inside one task is cheaper and faster with your own
-    sub-agents (Claude Code's Agent tool, Codex sub-agents). Use Harness when you need another model, another
-    machine, a job that outlives you, or something the person should see.</p>
+  <p>Start a harness for work that can run beside yours, needs another agent's view (a review, a second opinion
+    from Codex), takes long, or belongs in its own folder. Do small, quick work yourself, and a quick parallel
+    search or edit inside one task with your own sub-agents (Claude Code's Agent tool, Codex sub-agents): they are
+    cheaper and faster.</p>
 
   <h2 id="install">Install</h2>
   <pre><code>curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
@@ -82,7 +83,8 @@ harness start</code></pre>
     machines and the phone app. The agents you start must be installed and signed in to their own providers:
     <code>claude</code> for Claude Code, <code>codex</code> for Codex.</p>
   <p>Ask the person before you install software on their computer. To check whether Harness is already there:
-    <code>harness version</code>.</p>
+    <code>harness version</code>. The agent commands below are new: if <code>harness ps</code> is an unknown command,
+    run <code>harness update</code>.</p>
 
   <h2 id="skill">Add the skill</h2>
   <p>The <code>harness</code> skill tells an agent when to use Harness and how. It comes as a plugin for Claude Code
@@ -195,16 +197,41 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
   <p>Needs the person signed in to Harness on both computers (<code>harness login</code>). <code>harness ps</code>
     lists this machine.</p>
 
-  <h2 id="where">Inside a harness, or in another terminal</h2>
+  <h2 id="where">Inside a harness, or outside Harness</h2>
   <ul>
-    <li><strong>You run in a harness</strong> (Harness made your terminal pane): Harness knows who you are.
-      <code>harness ps</code> marks what you started (STARTED BY says <code>you</code>), each harness you start is
-      told it comes from you and how to reach you, <code>harness send</code> works, and the limits below are
-      counted for you.</li>
-    <li><strong>You run in any other terminal</strong>: Harness cannot tell you from the person. Nothing records what
-      you start (STARTED BY says <code>person</code>), and <code>harness send</code> is not available: put
-      everything in the task. Keep the names you start, and treat only those as yours.</li>
+    <li><strong>In a harness</strong> (Harness made your terminal pane): <code>harness send</code> works, to what you
+      started and to teammates in a tab with Agent Messages on, and each harness you start is told how to message
+      you.</li>
+    <li><strong>Outside Harness</strong> (Claude Code or Codex in a terminal app, an editor or the person's own tmux):
+      Harness tells you by your session, from what your agent sets in its shell. <code>harness ps</code> says
+      "You are Claude Code, outside Harness." and marks what this session started as <code>you</code>; the limits
+      below apply; each harness you start reads
+      <code>[from Claude Code outside Harness · &lt;machine&gt;, the agent that started you. It reads your answer itself.]</code>
+      above its task; and you may close only what this session started. Nothing can message you, and
+      <code>harness send</code> is not available: put everything in the task, and for a follow-up start a new
+      harness with the fuller task.</li>
   </ul>
+
+  <h2 id="mcp">MCP tools</h2>
+  <p><code>harness mcp</code> serves the same commands as MCP tools over stdio, for agents that reach their tools
+    through MCP (the plugin above registers it). Configure it as command <code>harness</code> with arguments
+    <code>["mcp"]</code>.</p>
+  <div class="table">
+  <table>
+    <thead><tr><th>Tool</th><th>Arguments</th><th>Same as</th></tr></thead>
+    <tbody>
+      <tr><td><code>harness_list</code></td><td><code>all?</code></td><td><code>harness ps</code></td></tr>
+      <tr><td><code>harness_start</code></td><td><code>task</code>, <code>folder</code>, <code>name</code>,
+        <code>agent?</code> (<code>claude</code> or <code>codex</code>), <code>machine?</code></td><td><code>harness new</code></td></tr>
+      <tr><td><code>harness_wait</code></td><td><code>names</code>, <code>any?</code>, <code>timeout_seconds?</code>
+        (120 by default, 600 at most; if they are still working, call it again)</td><td><code>harness wait</code></td></tr>
+      <tr><td><code>harness_read</code></td><td><code>name</code>, <code>chars?</code></td><td><code>harness show</code></td></tr>
+      <tr><td><code>harness_close</code></td><td><code>name</code>, <code>now?</code></td><td><code>harness close</code></td></tr>
+      <tr><td><code>harness_send</code></td><td><code>to</code>, <code>text</code>; offered only when the server runs
+        inside a harness</td><td><code>harness send</code></td></tr>
+    </tbody>
+  </table>
+  </div>
 
   <h2 id="rules">Rules</h2>
   <ul>
@@ -214,9 +241,9 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
       person.</li>
     <li>Never ask another harness to publish, deploy, delete or push. Those are the person's to ask for.</li>
     <li>Close what you started once you have its answer.</li>
-    <li>A harness may start at most 8 live harnesses and 20 in 10 minutes; one it started may start more, but those
-      may not. Each machine allows 40 live harnesses started by agents. Every limit refuses with a message; do not
-      work around it.</li>
+    <li>An agent may have at most 8 live harnesses it started, and start 20 in 10 minutes; one it started may start
+      more, but those may not. Each machine allows 40 live harnesses started by agents. Every limit refuses with a
+      message; do not work around it.</li>
   </ul>
 
   <h2 id="errors">When something fails</h2>

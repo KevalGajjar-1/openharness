@@ -20,11 +20,13 @@ harness send NAME "text"                            # a follow-up to one you sta
 harness close NAME [--now]                          # save its screen and stop it; the conversation is kept
 ```
 
-Use Harness for another model (Claude Code handing a task to Codex, or the reverse), another machine, work that should outlive your turn, or work the person should see. For a quick parallel search or edit inside one task, your own sub-agents are cheaper. Give work only to harnesses you started; never answer a harness's question or permission prompt, and never ask one to publish, deploy, delete or push.
+`harness mcp` serves the same as MCP tools over stdio (command `harness`, arguments `["mcp"]`): `harness_list`, `harness_start`, `harness_wait`, `harness_read`, `harness_close`, and `harness_send` inside a harness.
+
+Start a harness for work that can run beside yours, needs another agent's view (a review, a second opinion from Codex), takes long, or belongs in its own folder; do small, quick work yourself. List first, name every harness, then wait, read and close it. Give work only to harnesses you started, and close only those; never answer a harness's question or permission prompt, and never ask one to publish, deploy, delete or push. An agent outside Harness (Claude Code or Codex in a terminal app or editor) is recognized by its session: it gets the same limits, may close only what its session started, and cannot be messaged.
 
 ## For agents
 
-- [Harness for agents](https://harness.autonomous.ai/agents): install, every command with examples and exit codes, running agents in parallel, waiting for a background agent, handing a task to Codex
+- [Harness for agents](https://harness.autonomous.ai/agents): install, every command with examples and exit codes, the MCP tools, running agents in parallel, waiting for a background agent, handing a task to Codex
 - [The harness skill](https://raw.githubusercontent.com/autonomous-ai/openharness/main/plugins/harness/skills/harness/SKILL.md): instructions for Claude Code, Codex and any agent that reads SKILL.md
 - [Claude Code and Codex plugin](https://github.com/autonomous-ai/openharness/tree/main/plugins/harness): for Claude Code, `claude plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin plugins`, then `claude plugin install harness@openharness` (in a session: `/plugin marketplace add autonomous-ai/openharness`, then `/plugin install harness@openharness`); for Codex, `codex plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin --sparse plugins`, then `codex plugin add harness@openharness`
 

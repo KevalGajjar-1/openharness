@@ -61,8 +61,8 @@ harness and keeps its conversation, and refuses while the harness is working unl
 The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):
 when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code
 and Codex plugin from this repository (`claude plugin install harness@openharness`, `codex plugin add
-harness@openharness`, after adding the marketplace; see [harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)). How it reaches the harnesses Harness
-starts (installed with the CLI, or a startup note) is not decided yet.
+harness@openharness`, after adding the marketplace; see [harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)).
+How it reaches the harnesses Harness starts (installed with the CLI, or a startup note) is not decided yet.
 
 ### ⌘N or ⌘P: new harness or an existing one
 
