@@ -90,6 +90,29 @@ remain required. These validation and review intervals overlap implementation;
 they are not summed as elapsed task time. PR #1172 is still draft, with no merge
 or publication.
 
+The client transport checkpoint (October 11 at 14:03 UTC) preserves the former
+wire contract recorded in golden-only commit `d919061fc`. A connected reset,
+truncated response or HTTP refusal cannot authorize an offline Registry write.
+Acknowledgements require complete bounded JSON and endpoint-specific, typed,
+consistent flags. In particular, a registration `ignored` reply or a malformed
+Stop reply cannot delete Cursor's pending tasks. A total request deadline bounds
+streams that never finish, destroys the request and suppresses late callbacks.
+This fixes transport ambiguity; durable client outboxes remain required.
+
+Receipt `20261011T135250.330481Z-21890` records eleven wrong-acknowledgement assertion
+failures before correction. It also records the first fake-clock fixture attempt
+timing out; that attempt is not passing evidence. The HTTP golden now uses native
+HTTP requests with a frozen application clock, avoiding fetch's shared timer
+scheduling and host-dependent selection of the 100 ms pending response. Neither
+golden artifact changed. Receipt `20261011T135750.961288Z-46072` passed TypeScript
+and 84 selected transport/client/golden cases (40 unrelated cases were excluded).
+`20261011T140007.933057Z-55961` caught all fifteen deliberate transport mutations
+with assertion failures. `20261011T140148.787638Z-64632` passed the complete
+85-case standalone client baseline and both pending/duplicate Stop task-loss
+mutations. Independent read-only review approved this slice over `d919061fc`;
+it did not approve the unfinished delivery protocol. Validation and review ran
+alongside implementation; the draft PR has no merge or publication.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,
