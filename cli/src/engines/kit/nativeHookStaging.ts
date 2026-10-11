@@ -5,6 +5,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendi
 import { dirname, join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
+import { createNativeHookReadFence } from './nativeHookReadFence.js'
 import { flushHookFile, HookPreparationHeld, type HookFileStage } from './nativeHookFiles.js'
 import { validNativeHookWriter as validWriter, type NativeHookWriter } from './nativeHookWriter.js'
 
@@ -57,7 +58,7 @@ function metadata(file: string, verifyRoute: () => void): Metadata | undefined {
 
 /** The exclusive winner alone may publish. Confirmation never acquires a lease. */
 function publish(file: string, text: string, verify: () => void, exclusive = false,
-  created?: (owned: Metadata) => void): Metadata {
+  created?: (owned: Metadata) => void, admit: () => void = () => {}): Metadata {
   if (Buffer.byteLength(text) > MAX_METADATA_BYTES) held('metadata exceeds its byte reservation')
   verify()
   const proof = () => {
@@ -65,6 +66,9 @@ function publish(file: string, text: string, verify: () => void, exclusive = fal
     if (!saved || saved.text !== text) held('immutable metadata disagrees')
     return saved
   }
+  // Admission can expire during the last leaf read. Retained metadata and
+  // cleanup keep only their route authority, never this request guard.
+  admit()
   try { symlinkSync(text, file) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || exclusive) throw error
     return proof()
@@ -172,18 +176,23 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n || !owned(location.info)) held('the pool root is not private')
   const poolKey = hash(JSON.stringify([location.path, maxGenerations, terminalGenerations])), rootIdentity = identity(location.info)
   const normalGenerations = maxGenerations - terminalGenerations
-  const rootVerify = () => {
-    verifyWriter(root)
-    verifyNativePathFacts(facts)
+  const rootIdentityCheck = () => {
     if (identity(lstatSync(location.path, { bigint: true })) !== rootIdentity) held('pool root changed')
   }
+  const rootReads = createNativeHookReadFence(() => {
+    rootIdentityCheck()
+    verifyWriter(root)
+    verifyNativePathFacts(facts)
+    rootIdentityCheck()
+  }, rootIdentityCheck, () => routeStamps(location.path), error => error instanceof ChangedReadRoute)
+  const rootVerify = rootReads.verify
   const initializers = new Map<number, Metadata>()
   const initializing = new Map<number, Promise<Namespace>>()
   const retiring = new Map<number, { busy: boolean; release(): void }>()
   const acquisitions = new Set<Promise<NativeHookStageLease>>(), leases = new Set<NativeHookStageLease>()
   let closed = false, closing: Promise<void> | undefined
   let cursor = 0
-  const initialize = async (lane: number, check: () => void): Promise<Namespace> => {
+  const initialize = async (lane: number, check: () => void, checkOwner: () => void): Promise<Namespace> => {
     check(); rootVerify()
     const directory = join(location.path, `.native-hook-stage-${lane}`), witnesses = directory + '.witnesses'
     const bootstrapFile = directory + '.bootstrap', authorityFile = directory + '.authority', sealFile = directory + '.seal'
@@ -210,11 +219,11 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
       if (!Array.isArray(value) || value.length !== 4 || value[0] !== 1 || value[1] !== poolKey || value[2] !== lane
         || typeof value[3] !== 'string' || !/^[a-f0-9-]{36}$/.test(value[3])) held('lane bootstrap changed')
       const expected = JSON.stringify([1, hash(bootstrap.text), ...inspectDirectories()])
-      const verify = () => {
+      const verify = () => rootReads.run(() => {
         rootVerify(); bootstrap!.verify(); authority!.verify(); seal!.verify()
         if (authority!.text !== expected || JSON.stringify([1, hash(bootstrap!.text), ...inspectDirectories()]) !== expected
           || seal!.text !== JSON.stringify([1, hash(bootstrap!.text), hash(authority!.text)])) held('lane authority changed')
-      }
+      })
       verify(); return { directory, witnesses, verify }
     }
     if (seal) return proof()
@@ -233,18 +242,21 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
     if (!initializer || initializer.text !== previous?.text) {
       if (previous && !await dead(claim(previous).writer)) held('another initializer owns this lane')
       if (index >= MAX_INIT) held('lane initialization capacity is exhausted')
-      check(); for (const observed of observedInitializers) observed.verify(); rootVerify()
-      initializer = publish(directory + `.init-${index}`, claimText(writer), rootVerify, true,
-        owned => initializers.set(lane, owned))
+      const verifyInitial = () => {
+        rootVerify(); for (const observed of observedInitializers) observed.verify()
+      }
+      verifyInitial()
+      initializer = publish(directory + `.init-${index}`, claimText(writer), verifyInitial, true,
+        owned => initializers.set(lane, owned), checkOwner)
       initializers.set(lane, initializer)
       ownedIndex = index
     }
-    const verifyInit = () => {
+    const verifyInit = () => rootReads.run(() => {
       rootVerify(); for (const observed of observedInitializers) observed.verify(); initializer!.verify(); check()
       for (let slot = ownedIndex + 1; slot < MAX_INIT; slot++) {
         if (metadata(directory + `.init-${slot}`, rootVerify)) held('a later initializer owns this lane')
       }
-    }
+    }, checkOwner)
     await syncParents(location.path, verifyInit)
     if (!bootstrap) {
       for (const path of [directory, witnesses, authorityFile, sealFile]) {
@@ -255,7 +267,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
     }
     if (!authority) {
       for (const path of [directory, witnesses]) {
-        check(); rootVerify(); bootstrap.verify()
+        check(); rootVerify(); bootstrap.verify(); checkOwner()
         try { mkdirSync(path, { mode: 0o700 }) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
         if ((await names(path, 1, verifyInit)).entries.length) held('unfinished lane initialization has history')
       }
@@ -271,10 +283,10 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
     seal = publish(sealFile, JSON.stringify([1, hash(bootstrap.text), hash(authority.text)]), verifyInit, true)
     return proof()
   }
-  const namespace = async (lane: number, check: () => void) => {
-    const flight = initializing.get(lane) ?? initialize(lane, check)
+  const namespace = async (lane: number, check: () => void, checkOwner: () => void) => {
+    const flight = initializing.get(lane) ?? initialize(lane, check, checkOwner)
     initializing.set(lane, flight)
-    try { const value = await flight; check(); value.verify(); return value }
+    try { const value = await flight; check(); value.verify(); checkOwner(); return value }
     finally { if (initializing.get(lane) === flight) initializing.delete(lane) }
   }
   const snapshot = async (space: Namespace) => {
@@ -350,31 +362,32 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
     if (latest && !metadata(latest.file.replace(/\.claim$/, '.release'), space.verify)
       && !await dead(claim(latest).writer)) held('another writer owns this lane')
   }
-  const terminalBoundary = async (check: () => void) => {
+  const terminalBoundary = async (check: () => void, checkOwner: () => void) => {
     const records: Metadata[] = []
     for (let lane = 0; lane < LANES; lane++) {
       check()
-      const space = await namespace(lane, check), route = routeStamps(space.directory)
+      const space = await namespace(lane, check, checkOwner), route = routeStamps(space.directory)
       const name = `${number(normalGenerations - 1)}.claim`
       const last = metadata(join(space.witnesses, name), space.verify), mirror = metadata(join(space.directory, name), space.verify)
       if (!last) held('normal capacity is not proven exhausted')
       claim(last)
       if (mirror && mirror.text !== last.text) held('normal capacity claims disagree')
       route(); check()
-      const verify = () => { check(); last.verify(); mirror?.verify() }
+      const verify = () => { check(); last.verify(); mirror?.verify(); checkOwner() }
       // The cutover must survive reboot too. An unflushed prefix claim cannot
       // authorize suffix use and then disappear to reopen normal capacity.
       await syncDirectory(space.witnesses, verify)
       await syncParents(space.directory, verify)
       verify(); records.push(last, ...(mirror ? [mirror] : []))
     }
-    const verify = () => { check(); records.forEach(record => record.verify()) }
+    const verify = () => { check(); records.forEach(record => record.verify()); checkOwner() }
     verify(); return verify
   }
   const acquire = async (current: () => boolean, purpose: 'normal' | 'terminal', terminal = false): Promise<NativeHookStageLease> => {
-      const check = () => { rootVerify(); if (!current()) held('the requesting writer was revoked') }
+      const checkOwner = () => { if (!current()) held('the requesting writer was revoked') }
+      const check = () => { rootVerify(); checkOwner() }
       const capacity = terminal ? maxGenerations : normalGenerations
-      const verifyCapacity = terminal ? await terminalBoundary(check) : check
+      const verifyCapacity = terminal ? await terminalBoundary(check, checkOwner) : check
       const start = cursor++ % LANES
       let lastError: unknown
       for (let offset = 0; offset < LANES; offset++) {
@@ -387,7 +400,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
             if (cleanup.busy) held('another acquisition still owns this lane')
             cleanup.release(); retiring.delete(lane)
           }
-          const space = await namespace(lane, check)
+          const space = await namespace(lane, check, checkOwner)
           await refuseOccupied(space, capacity); check()
           const before = await snapshot(space)
           if (before.length >= capacity) held('generation capacity is exhausted')
@@ -403,13 +416,16 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
               try { lstatSync(path); held('predecessor stage was recreated during cleanup') } catch (error) { if (!missing(error)) throw error }
             }
           }
-          const verifyGeneration = () => {
+          const verifyGeneration = () => rootReads.run(() => {
             space.verify(); record.verify()
             if (metadata(join(space.witnesses, `${number(generation + 1)}.claim`), space.verify)) held('a later writer owns this lane')
-          }
+          })
           const verify = () => {
             check(); verifyGeneration(); verifyRetiredStages()
             if (revoked || metadata(join(space.witnesses, `${number(generation)}.release`), space.verify)) held('writer lease was released')
+            // The final root/leaf proof can consume the remaining acquisition
+            // time or revoke the caller. Cleanup uses verifyGeneration alone.
+            checkOwner()
           }
           // Before a stage exists, an interrupted acquisition owns no payload
           // I/O. Its exclusive claim may be released after actual awaits settle.
@@ -424,7 +440,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
           record = publish(join(space.witnesses, name), claimText(writer), space.verify, true, owned => {
             record = owned; abandon = release
             retiring.set(lane, { busy: true, release })
-          })
+          }, checkOwner)
           const owner = claim(record)
           publish(join(space.directory, name), record.text, verifyGeneration)
           await syncDirectory(space.witnesses, verifyGeneration)
@@ -462,6 +478,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
               if (active) held('this writer already has a stage')
               const destinationInfo = lstatSync(dirname(destination), { bigint: true })
               if (!destinationInfo.isDirectory() || destinationInfo.dev !== lstatSync(space.directory, { bigint: true }).dev) held('destination is on another filesystem')
+              checkOwner()
               const path = join(space.directory, `${number(generation)}.${owner.nonce}.${++sequence}.tmp`)
               let finished!: () => void, failed!: (error: unknown) => void, cleanup: Promise<void> | undefined
               const done = new Promise<void>((resolve, reject) => { finished = resolve; failed = reject })
@@ -515,11 +532,20 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
       activeAcquisitions++
       const deadline = performance.now() + timeoutMs
       let expired = false, acquiring = true, timer: ReturnType<typeof setTimeout> | undefined
-      const actual = acquire(() => !closed && current() && !expired && (!acquiring || performance.now() < deadline), purpose)
-        .then(lease => {
-          acquiring = false
+      const ownerCurrent = () => {
+        const allowed = !closed && current()
+        if (expired || acquiring && performance.now() >= deadline) held('acquisition exceeded its deadline')
+        return allowed
+      }
+      const actual = acquire(ownerCurrent, purpose)
+        .then(async lease => {
           const tracked: NativeHookStageLease = { ...lease, async close() { await lease.close(); leases.delete(tracked) } }
-          leases.add(tracked); return tracked
+          // Even a throwing guard must leave failed cleanup owned by the pool.
+          leases.add(tracked)
+          try { if (!ownerCurrent()) held('the requesting writer was revoked before lease delivery') }
+          catch (error) { await tracked.close(); throw error }
+          acquiring = false
+          return tracked
         })
         .finally(() => { acquisitions.delete(actual); activeAcquisitions--; clearTimeout(timer) })
       acquisitions.add(actual)

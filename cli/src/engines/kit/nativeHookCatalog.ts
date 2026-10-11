@@ -1,10 +1,12 @@
 /** Fixed reservations shared by the daemon and short-lived hook clients.
  * Allocation is permanent: full or damaged storage holds, never evicts receipts. */
 import { createHash } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { lstatSync, opendirSync, type BigIntStats } from 'node:fs'
 import { join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
+import { createNativeHookReadFence } from './nativeHookReadFence.js'
 import { createNativeHookJournal, inspectNativeHookJournalAuthority, NativeHookJournalHeld,
   type NativeHookJournalBoundary } from './nativeHookJournal.js'
 import { createNativeHookOutbox, NATIVE_HOOK_OUTBOX_SHARDS } from './nativeHookOutbox.js'
@@ -52,23 +54,39 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   let closed = false
   const operations = new Set<Promise<unknown>>()
   const journalOperations = new Set<Promise<unknown>>()
-  const checkRoot = () => {
+  // Retained proofs ask for the calling operation's guard. Capturing the guard
+  // which first read them would make later recovery inherit an expired request.
+  const operationGuard = new AsyncLocalStorage<() => void>()
+  const checkOperation = () => operationGuard.getStore()?.()
+  const admitPublication = () => {
+    const guard = operationGuard.getStore()
+    if (!guard) held('publication has no active catalog operation')
+    guard()
+  }
+  const publish: typeof metadata.publish = (file, text, verify, exclusive, created) =>
+    metadata.publish(file, text, verify, exclusive, created, admitPublication)
+  const rootIdentity = () => {
     if (closed) held('the catalog is closed')
-    verifyRoot(root); verifyNativePathFacts(facts)
     if (identity(lstatSync(canonical, { bigint: true })) !== expectedRoot) held('the storage root changed')
   }
-  const run = async <T>(work: (check: () => void) => Promise<T>): Promise<T> => {
-    checkRoot()
+  const rootReads = createNativeHookReadFence(() => {
+    rootIdentity(); verifyRoot(root); verifyNativePathFacts(facts); rootIdentity(); checkOperation()
+  }, () => { rootIdentity(); checkOperation() }, () => metadata.routeStamps(canonical), error => error instanceof NativeHookReadRouteChanged)
+  const checkRoot = rootReads.verify
+  const run = async <T>(work: (check: () => void) => Promise<T>, owner: () => void = () => {}): Promise<T> => {
     if (activeOperations >= 16) held('actual catalog operation slots are occupied')
     activeOperations++
     const deadline = performance.now() + operationTimeoutMs
     let expired = false, timer: ReturnType<typeof setTimeout> | undefined
-    const check = () => {
-      checkRoot()
+    const parent = operationGuard.getStore()
+    const checkOwner = () => {
+      parent?.(); owner()
+      if (closed) held('the catalog is closed')
       if (expired || performance.now() >= deadline) held('the catalog operation expired')
     }
-    const actual = Promise.resolve().then(() => { check(); return work(check) })
-      .then(value => { check(); return value })
+    const check = () => { checkRoot(); checkOwner() }
+    const actual = operationGuard.run(checkOwner, () => Promise.resolve().then(() => { check(); return work(check) })
+      .then(value => { check(); return value }))
       .finally(() => { activeOperations--; operations.delete(actual); clearTimeout(timer) })
     operations.add(actual)
     return await Promise.race([actual, new Promise<never>((_, reject) => {
@@ -94,21 +112,21 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
     route(); verify()
     if (!record) { if (mirror) held('an allocation witness is missing'); return }
     if (mirror && mirror.text !== record.text) held('allocation mirrors disagree')
-    const result = { record, mirror, verify: () => { verify(); record.verify(); mirror?.verify(); checkRoot() } }
+    const result = { record, mirror, verify: () => rootReads.run(() => { verify(); record.verify(); mirror?.verify(); checkRoot() }) }
     result.verify()
     return result
   }
-  const pair = (file: string, verify = checkRoot): Pair | undefined => stableRead(() => pairOnce(file, verify))
+  const pair = (file: string, verify = checkRoot): Pair | undefined => rootReads.run(() => pairOnce(file, verify))
   const confirm = async (file: string, text: string, verify: () => void, retainedVerify = checkRoot): Promise<Pair> => {
     verify()
-    const publishedOutside = metadata.publish(`${file}.witness`, text, verify)
+    const publishedOutside = publish(`${file}.witness`, text, verify)
     const outside = metadata.read(`${file}.witness`, () => {})!
     publishedOutside.verify(); outside?.verify()
     if (outside?.text !== text) held('outside publication changed during confirmation')
     const fence = () => { verify(); outside.verify() }
     // The outside intent is durable before creating its mirror or a journal.
     await metadata.syncDirectory(canonical, fence)
-    const publishedInside = metadata.publish(file, text, fence)
+    const publishedInside = publish(file, text, fence)
     const inside = metadata.read(file, () => {})!
     publishedInside.verify(); inside?.verify()
     if (inside?.text !== text) held('inside publication changed during confirmation')
@@ -127,7 +145,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       if (exists(history(kind, index) + suffix)) held('a journal has no allocation authority')
     }
   }
-  const inspectAllocation = (kind: Kind, index: number, verify: () => void): Allocation | undefined => stableRead(() => {
+  const inspectAllocation = (kind: Kind, index: number, verify: () => void): Allocation | undefined => rootReads.run(() => {
     const route = metadata.routeStamps(canonical)
     const saved = pairOnce(`${base(kind, index)}.allocation`, verify), seal = pairOnce(`${base(kind, index)}.seal`, verify)
     if (!saved) {
@@ -155,18 +173,29 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       if (stamp(lstatSync(canonical, { bigint: true })) !== frontier) held('the allocation catalog changed during its scan')
     }
     const allocations: Allocation[] = [], keys = new Set<string>()
-    let inspected = 0, began = performance.now()
-    for (const kind of ['effects', 'outbox'] as const) for (let index = 0; index < count(kind); index++) {
-      verify()
-      const allocation = inspectAllocation(kind, index, verify)
-      if (allocation) {
+    const slots = (['effects', 'outbox'] as const).flatMap(kind => Array.from({ length: count(kind) }, (_, index) => ({ kind, index })))
+    for (let cursor = 0; cursor < slots.length;) {
+      const batch = rootReads.run(() => {
+        const found: Allocation[] = [], began = performance.now()
+        let next = cursor
+        do {
+          verify()
+          const { kind, index } = slots[next++]!, allocation = inspectAllocation(kind, index, verify)
+          if (allocation) found.push(allocation)
+        } while (next < slots.length && next - cursor < 64 && performance.now() - began < 20)
+        return { found, next }
+      })
+      unchanged()
+      // Only successful batches enter the complete scan. A changed route
+      // discards all temporary results, including apparent empty reservations.
+      for (const allocation of batch.found) {
+        const { kind } = allocation
         const key = `${kind}:${allocation.key}`
         if (keys.has(key)) held('a process has multiple allocations')
         keys.add(key); allocations.push(allocation)
       }
-      if (++inspected % 64 === 0 || performance.now() - began >= 20) {
-        await new Promise<void>(done => setImmediate(done)); began = performance.now(); unchanged()
-      }
+      cursor = batch.next
+      if (cursor < slots.length) { await new Promise<void>(done => setImmediate(done)); unchanged() }
     }
     // A scan must represent one complete allocation view. Its temporary root
     // stamp ends at exclusive publication; retained journal proofs use identity
@@ -245,7 +274,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
         if (index === undefined) held(`${kind} namespace capacity is exhausted`)
         const file = `${base(kind, index)}.allocation`, text = JSON.stringify([1, kind, index, hashed])
         before.verify()
-        try { metadata.publish(`${file}.witness`, text, before.verifyRecords, true) }
+        try { publish(`${file}.witness`, text, before.verifyRecords, true) }
         catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
           // Another process chose this exact slot. Re-read its immutable key
@@ -267,36 +296,47 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   const boundary = (allocation: Allocation, current: () => boolean): NativeHookJournalBoundary => {
     const directory = history(allocation.kind, allocation.index), file = `${base(allocation.kind, allocation.index)}.seal`
     let authorized: { pair: Pair; authority: ReturnType<typeof inspectNativeHookJournalAuthority> } | undefined
+    const checkOwner = () => { if (!current()) held('the original journal owner changed') }
     const baseVerify = () => {
       checkRoot(); allocation.pair.verify()
-      if (!current()) held('the original journal owner changed')
+      checkOwner()
     }
-    const verify = () => {
-      baseVerify()
-      if (authorized) { authorized.pair.verify(); authorized.authority.verify(); return }
+    const inspectSeal = () => {
       const sealed = pair(file, () => { checkRoot(); allocation.pair.verify() })
       if (sealed) {
         const authority = inspectNativeHookJournalAuthority(directory)
         if (sealed.record.text !== JSON.stringify([1, hash(allocation.pair.record.text), authority.fingerprint])) held('the allocated journal changed')
-        // Pin existing authority before the journal gets a chance to initialize
-        // anything. Missing/replaced established history is never a bootstrap.
-        authorized = { pair: sealed, authority }
+        return { pair: sealed, authority }
       }
     }
+    const verify = () => rootReads.run(() => {
+      baseVerify()
+      // Observe an existing seal before the journal may initialize anything.
+      // A discarded read must not install its temporary view as retained state.
+      const observed = authorized ?? inspectSeal()
+      if (observed) { observed.pair.verify(); observed.authority.verify() }
+    }, checkOwner)
     return {
       verify,
+      read: rootReads.run,
       authorize(proof, empty, checkOwner) {
         return run(async check => {
           checkOwner(); verify(); proof.verify()
           const expected = JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])
+          const prior = authorized ?? rootReads.run(inspectSeal)
           let verifyEmpty = () => {}
-          if (!authorized) { verifyEmpty = await empty(); check(); verify(); proof.verify() }
-          if (authorized && authorized.pair.record.text !== expected) held('the journal seal changed')
-          const prior = authorized
+          if (!prior) { verifyEmpty = await empty(); check(); verify(); proof.verify() }
+          if (prior && prior.pair.record.text !== expected) held('the journal seal changed')
+          if (authorized) {
+            // This exact immutable seal was already durably confirmed by this
+            // boundary. Fresh proofs above still fence every use; observations
+            // from a reconstructed boundary or a failed sync never enter here.
+            check(); checkOwner(); return
+          }
           const saved = await confirm(file, expected, () => { checkOwner(); check(); baseVerify(); prior?.pair.verify(); proof.verify(); verifyEmpty() }, baseVerify)
           checkOwner(); check(); authorized = { pair: saved, authority: proof }
           verify()
-        })
+        }, checkOwner)
       },
       acquireStage: (purpose, current) => pool.acquire(() => { verify(); return current() }, { purpose }),
       track(actual) {
@@ -307,18 +347,16 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   }
   return {
     async effects(processKey: string, current: () => boolean = () => true) {
-      const allocation = await run(check => allocate('effects', processKey, () => {
-        check(); if (!current()) held('the original journal owner changed')
-      }))
+      const allocation = await run(check => allocate('effects', processKey, check),
+        () => { if (!current()) held('the original journal owner changed') })
       return createNativeHookJournal({ directory: history('effects', allocation.index), processKey, current,
         maxBytes: NATIVE_HOOK_STORAGE_LIMITS.effectBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
         boundary: boundary(allocation, current) })
     },
     async outbox(shard: number, current: () => boolean = () => true) {
       if (!Number.isSafeInteger(shard) || shard < 0 || shard >= NATIVE_HOOK_STORAGE_LIMITS.outboxes) held('invalid outbox shard')
-      const allocation = await run(check => allocate('outbox', `native-hook-client:v1:shard:${shard}`, () => {
-        check(); if (!current()) held('the original journal owner changed')
-      }, shard))
+      const allocation = await run(check => allocate('outbox', `native-hook-client:v1:shard:${shard}`, check, shard),
+        () => { if (!current()) held('the original journal owner changed') })
       return createNativeHookOutbox({ directory: history('outbox', shard), shard, current,
         maxBytes: NATIVE_HOOK_STORAGE_LIMITS.outboxBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
         boundary: boundary(allocation, current) })

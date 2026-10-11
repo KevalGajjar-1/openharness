@@ -1319,3 +1319,8 @@ it.each(['records', 'bytes'] as const)('never lets a linked Stop bypass refused 
   expect(await f.post(body, {}, 'turn-stop')).toMatchObject({ status: 200, body: { ok: true } })
   expect(onTurnStop).toHaveBeenCalledOnce()
 })
+
+vi.mock('../engines/kit/nativeHookStorage.js', async original => ({
+  ...await original<object>(),
+  openNativeHookStorage: (await import('../testing/nativeHookAdmissionStorageFixture.js')).fixtureNativeHookAdmissionStorage,
+}))

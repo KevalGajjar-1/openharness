@@ -8,6 +8,12 @@ cli = Path(sys.argv[1]).resolve()
 staging = 'src/engines/kit/nativeHookStaging.ts'
 files = 'src/engines/kit/nativeHookFiles.ts'
 mutations = [
+    ('final acquisition deadline removed', staging,
+     "if (expired || acquiring && performance.now() >= deadline) held('acquisition exceeded its deadline')",
+     '', 'final namespace inspection crosses deadline'),
+    ('delivery failure loses cleanup owner', staging,
+     'leases.add(tracked)\n          try { if (!ownerCurrent())',
+     'try { if (!ownerCurrent())', 'delivery guard throws'),
     ('extra writer lane', staging, 'const LANES = 8,', 'const LANES = 9,', 'holds the ninth writer'),
     ('unknown owner treated as dead', staging, 'writer = structuredClone(writer)',
      'writer = structuredClone(writer); dead = async () => true', 'holds the ninth writer'),
@@ -21,8 +27,8 @@ mutations = [
     ('dead predecessor absence unchecked', staging,
      "try { lstatSync(path); held('predecessor stage was recreated during cleanup') } catch (error) { if (!missing(error)) throw error }", '',
      'does not retire a dead predecessor'),
-    ('new stages ignore request revocation', staging, 'check(); verifyGeneration(); verifyRetiredStages()',
-     'verifyGeneration(); verifyRetiredStages()', 'revokes new effects'),
+    ('new stages ignore request revocation', staging, 'const allowed = !closed && current()',
+     'const allowed = !closed', 'revokes new effects|final namespace inspection crosses revocation'),
     ('exclusive right recorded after fallible proof', staging,
      'created?.({ file, text, verify: () => proof().verify() })',
      'proof(); created?.({ file, text, verify: () => proof().verify() })',

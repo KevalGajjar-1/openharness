@@ -8,7 +8,16 @@ cli = Path(sys.argv[1]).resolve()
 staging = 'src/engines/kit/nativeHookStaging.ts'
 files = 'src/engines/kit/nativeHookFiles.ts'
 catalog = 'src/engines/kit/nativeHookCatalog.ts'
+read_fence = 'src/engines/kit/nativeHookReadFence.ts'
 mutations = [
+    ('catalog publication guard disconnected', catalog,
+     'metadata.publish(file, text, verify, exclusive, created, admitPublication)',
+     'metadata.publish(file, text, verify, exclusive, created)', 'last flat leaf check', 1),
+    ('observed seal treated as confirmed', catalog, 'if (authorized) {',
+     'if (prior) {', 'successful immutable seal', 1),
+    ('post-proof owner checks removed', read_fence,
+     'for (const check of finalChecks) synchronously(check)\n        if (after) synchronously(after)',
+     '', 'checks nested owners', 1),
     ('published identity discarded', catalog, 'publishedOutside.verify(); outside?.verify()',
      'outside?.verify()', 'first-version publication', 1),
     ('initial catalog absence forgotten', catalog,
@@ -16,8 +25,8 @@ mutations = [
      'return confirm(versionFile, versionText, () => { check() })', 'retains initial catalog absence', 1),
     ('initial journal emptiness forgotten', catalog, 'proof.verify(); verifyEmpty() }, baseVerify)',
      'proof.verify() }, baseVerify)', 'retains the empty journal frontier', 1),
-    ('fixed-name ancestor fences removed', catalog, 'const route = metadata.routeStamps(canonical)\n',
-     'const route = () => {}\n', 'discards an ancestor redirection', 2),
+    ('fixed-name ancestor fences removed', catalog, 'metadata.routeStamps(canonical)',
+     '(() => {})', 'discards an ancestor redirection', 4),
     ('existing key beyond a hole ignored', catalog,
      'before.allocations.find(item => item.kind === kind && item.key === hashed)',
      'before.allocations.find(() => false)', 'finds an existing key beyond', 1),
@@ -43,6 +52,7 @@ assert Path(environment.get('TMUX_TMPDIR', '/missing')).is_dir(), 'Private TMUX_
 def run(pattern=''):
     return subprocess.run(['node', 'node_modules/vitest/vitest.mjs', 'run',
                            'src/engines/kit/nativeHookCatalog.spec.ts',
+                           'src/engines/kit/nativeHookReadFence.spec.ts',
                            'src/engines/kit/nativeHookStaging.spec.ts', '--maxWorkers=1',
                            *(['-t', pattern] if pattern else [])], cwd=cli, env=environment,
                           text=True, capture_output=True, timeout=180)

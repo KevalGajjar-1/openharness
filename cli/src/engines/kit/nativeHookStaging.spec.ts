@@ -238,6 +238,61 @@ it('serializes sequential stages and drains cleanup before allowing another', as
   await second.finish(); await lease.close()
 })
 
+it.each(['deadline', 'revocation'])('refuses a lease when its final namespace inspection crosses %s', async kind => {
+  let now = 0, current = true, crossed = false
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+  const client = pool()
+  const lane = join(root, '.native-hook-stage-0')
+  fault.stat = (path, read) => {
+    try { return read() } finally {
+      if (path === lane + '.witnesses/00000000.release'
+        && readdirSync(lane + '.witnesses').includes('00000000.claim')) {
+        crossed = true
+        if (kind === 'deadline') now = 5_000
+        else current = false
+      }
+    }
+  }
+  try {
+    await expect(client.acquire(() => current, { timeoutMs: 1_000 })).rejects.toThrow(kind === 'deadline' ? 'deadline' : 'revoked')
+    expect(crossed).toBe(true)
+    expect(stages()).toEqual([])
+    // Expiration prevents admission but cannot revoke exact claim cleanup.
+    await client.close()
+    expect(lstatSync(lane + '.witnesses/00000000.release').isSymbolicLink()).toBe(true)
+  } finally { fault.stat = undefined; clock.mockRestore(); await client.close() }
+})
+
+it('retains lease cleanup when the delivery guard throws and its first cleanup publication fails', async () => {
+  let throwing = false, cleanupUnavailable = true, crossed = false
+  const closeWriter = vi.fn(), client = pool({ closeWriter })
+  const lane = join(root, '.native-hook-stage-0')
+  fault.stat = (path, read) => {
+    try { return read() } finally {
+      if (path === lane + '.witnesses/00000000.release'
+        && readdirSync(lane + '.witnesses').includes('00000000.claim')) {
+        crossed = true; queueMicrotask(() => { throwing = true })
+      }
+    }
+  }
+  fault.publish = (_text, path) => {
+    if (cleanupUnavailable && path.endsWith('00000000.release')) throw Error('fixture cleanup publication unavailable')
+  }
+  try {
+    await expect(client.acquire(() => {
+      if (throwing) throw Error('fixture delivery guard unavailable')
+      return true
+    })).rejects.toThrow('cleanup publication unavailable')
+    expect(crossed).toBe(true)
+    expect(closeWriter).not.toHaveBeenCalled()
+    cleanupUnavailable = false; fault.stat = undefined
+    await client.close()
+    expect(readdirSync(lane + '.witnesses')).toContain('00000000.release')
+    expect(lstatSync(lane + '.witnesses/00000000.release').isSymbolicLink()).toBe(true)
+    expect(closeWriter).toHaveBeenCalledOnce()
+  } finally { resetFaults(); await client.close() }
+})
+
 it('retains the local-root descriptor until actual acquisition settles after timeout', async () => {
   const closeWriter = vi.fn(), client = pool({ closeWriter })
   let release!: () => void, delayed = false
@@ -428,13 +483,20 @@ it('bounds acquisition responses and shares the actual disk limiter with file pu
     const privateRoot = join(root, String(index)); mkdirSync(privateRoot, { mode: 0o700 })
     return pool({ root: privateRoot }).acquire(() => true, { timeoutMs: 40 }).catch(error => error)
   })
-  const replies = await Promise.all([publication, ...acquisitions])
-  expect(replies.every(error => error instanceof Error && /deadline/.test(error.message))).toBe(true)
-  expect(pending.size).toBe(2)
-  for (const fd of pending.keys()) expect(() => fstatSync(fd)).not.toThrow()
-  fault.defer = undefined
-  for (const done of pending.values()) done(null)
-  await vi.waitFor(() => { for (const fd of pending.keys()) expect(() => fstatSync(fd)).toThrow() })
+  try {
+    const replies = await Promise.all([publication, ...acquisitions])
+    // A synchronous ownership proof may notice expiry before the deadline timer.
+    for (const error of replies) {
+      expect(error).toBeInstanceOf(Error)
+      expect(error.message).toMatch(/deadline|the preparation expired/)
+    }
+    expect(pending.size).toBe(2)
+    for (const fd of pending.keys()) expect(() => fstatSync(fd)).not.toThrow()
+  } finally {
+    fault.defer = undefined
+    for (const done of pending.values()) done(null)
+    await vi.waitFor(() => { for (const fd of pending.keys()) expect(() => fstatSync(fd)).toThrow() })
+  }
 })
 
 it.each(['initializer', 'claim'])('remembers exclusive %s ownership before a post-publication read fails', async kind => {

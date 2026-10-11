@@ -380,6 +380,45 @@ The new composition has no daemon configuration or service import. The daemon
 and bundled client still need to adopt this factory; composition alone does not
 complete their recovery behavior.
 
+The daemon now adopts the production storage factory. It opens only on demand
+after readiness, shares only an in-flight opening, and rechecks the precise owner
+after opening and allocation. Shutdown revokes admission immediately and waits
+for owned storage, including an opening that finishes after shutdown. Six real
+private HTTP/disk cases cover readiness, unavailable opening, replacement during
+opening, close during opening, sequential contention/restart/corruption, and
+actual byte exhaustion with same-ID completion. Existing admission tests use an
+explicit legacy-limit fixture adapter; they are not production quota evidence.
+
+Nested read-only proofs now share one synchronous, three-attempt observation.
+An invalidated observation and all its results are discarded. Immutable seal
+confirmation is reused only after this exact boundary has successfully synced
+it; reconstructed or unsuccessfully confirmed observations must sync again.
+Cheap owner/deadline guards run after the last complete proof and immediately
+before publication. Expiration cannot grant a lease or publish its mirror.
+Lease delivery remembers cleanup ownership before a throwing final guard, so a
+failed release remains owned until cleanup really finishes.
+
+Receipt `20261011T194250.972883Z-5598` passes types, all six production HTTP cases
+and the affected catalog lifetime cases. Its staging failure was an overly narrow
+deadline-message assertion, corrected without changing production code. All 48
+catalog/read-fence cases passed in `20261011T193837.971199Z-87272`. The unchanged
+admission/delivery/other-engine goldens pass in the focused receipts; their JSON
+artifacts remain unchanged. All twelve catalog mutants fail assertions in
+`20261011T194743.101653Z-27436`; all 39 staging cases and fifteen staging mutants
+pass in `20261011T194948.966910Z-36907`. The first cleanup mutant raised ENOENT
+instead of an assertion; its oracle now explicitly requires the release entry.
+
+The 133 journal/publication/outbox/composition/architecture/golden cases pass in
+`20261011T195035.085295Z-39120`. Its concurrent process lane failed two cases:
+separate Vitest invocations shared `/tmp/vw1`, and a paused claim did not complete.
+The two isolated diagnostic cases passed; the full serial lane then passed all
+sixteen real-process/capacity cases in `20261011T195434.734237Z-55640`. This is
+combined evidence, not a passing concurrent run. Independent review approved
+the storage/HTTP source conditional on these checks; exact-commit attestation
+follows the checkpoint. Implementation, validation and review overlapped through
+19:56 UTC on October 11. No merge or publication occurred. Bundled client replay,
+durable linked Stop completion, final coverage and overall PR acceptance remain.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

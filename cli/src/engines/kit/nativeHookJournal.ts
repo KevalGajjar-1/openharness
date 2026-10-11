@@ -15,7 +15,7 @@ import type { NativeHookStageLease } from './nativeHookStaging.js'
 
 let activeOperations = 0
 type OperationPurpose = 'normal' | 'terminal'
-type Operation = { purpose: OperationPurpose; check(): void; preparations: Set<Promise<unknown>>;
+type Operation = { purpose: OperationPurpose; check(): void; checkOwner(): void; preparations: Set<Promise<unknown>>;
   stage?: Promise<NativeHookStageLease>; stagePurpose?: OperationPurpose }
 
 export class NativeHookJournalHeld extends Error {
@@ -197,6 +197,8 @@ export function inspectNativeHookJournalAuthority(directory: string): NativeHook
 
 export interface NativeHookJournalBoundary {
   verify(): void
+  /** Coalesce root proofs only while this exact synchronous read is active. */
+  read(check: () => void, after: () => void): void
   /** Called before any intake, including recovery of an unfinished bootstrap. */
   authorize(proof: NativeHookJournalAuthority, empty: () => Promise<() => void>, check: () => void): Promise<void>
   acquireStage(purpose: OperationPurpose, current: () => boolean): Promise<NativeHookStageLease>
@@ -224,8 +226,11 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   const bootstrapFile = `${directory}.bootstrap`, sealFile = `${directory}.seal`
   maxRecords = Math.min(MAX_PROCESS_RECORDS, maxRecords)
   let closed = false
-  const check = () => { if (closed || !current()) held('the original process owner changed'); boundary?.verify() }
+  const checkOwner = () => { if (closed || !current()) held('the original process owner changed') }
+  const check = () => { boundary?.verify(); checkOwner() }
   const operations = new AsyncLocalStorage<Operation>()
+  const readFence = (read: () => void) => boundary
+    ? boundary.read(read, operations.getStore()?.checkOwner ?? checkOwner) : read()
   const operation = async <T>(purpose: OperationPurpose, work: () => Promise<T>, reuse = false): Promise<T> => {
     const parent = operations.getStore()
     // Only a private confirmation nested in its caller shares a lease. Every
@@ -237,8 +242,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     activeOperations++
     const deadline = performance.now() + 4500
     let expired = false, timer: ReturnType<typeof setTimeout> | undefined
-    const state: Operation = { purpose, preparations: new Set(), check: () => {
-      check()
+    const state: Operation = { purpose, preparations: new Set(), check: () => { check(); state.checkOwner() }, checkOwner: () => {
+      checkOwner()
       if (expired || performance.now() >= deadline) held('the journal operation expired')
     } }
     const actual = operations.run(state, async () => {
@@ -286,7 +291,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       // Share only that in-flight sync; each waiter still checks its own facts
       // and owner. An exclusive publisher can never join or inherit a claim.
       identity: exclusive ? undefined : `native-hook-confirm:${digest(text)}`,
-      retainConflicts: true, current: () => { owner?.check(); check(); verify(); return true },
+      retainConflicts: true, current: () => { readFence(() => { verify(); (owner?.check ?? check)() }); return true },
       track: actual => { owner?.preparations.add(actual) },
     })
   }
@@ -355,11 +360,11 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     }
     if (!saved) held('journal authority could not be confirmed')
     const value = JSON.parse(saved.text)
-    const verifyAuthority = () => {
+    const verifyAuthority = () => readFence(() => {
       verifyBootstrap(); saved!.verify()
       if (value.version !== 1 || !sameKind(value) || value.processKey !== processKey || value.bootstrap !== bootstrapHash || JSON.stringify(directories())
         !== JSON.stringify({ history: value.history, witnesses: value.witnesses })) held('journal namespace changed')
-    }
+    })
     verifyAuthority()
     const seal = JSON.stringify({ version: 1, ...log, processKey, bootstrap: bootstrapHash, authority: digest(saved.text),
       history: value.history, witnesses: value.witnesses })
@@ -371,7 +376,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       sealed = read(sealFile)
     }
     if (!sealed || sealed.text !== seal) held('journal initialization seal changed')
-    const verify = () => { verifyAuthority(); sealed!.verify() }
+    const verify = () => readFence(() => { verifyAuthority(); sealed!.verify() })
     verify()
     if (boundary) {
       const proof = inspectNativeHookJournalAuthority(directory)
@@ -381,7 +386,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         const verifyEmpty = () => { verify(); history.verify(); outside.verify() }
         verifyEmpty()
         return verifyEmpty
-      }, checkAttempt)
+      }, operations.getStore()?.checkOwner ?? checkOwner)
       verify(); proof.verify()
     }
     return { verify, records: [bootstrap, saved, sealed] }

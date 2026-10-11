@@ -219,7 +219,8 @@ it('finishes catalog-backed work across separate OS writers after normal staging
   const snapshot = await accepted(b, 'snapshot')
   expect(snapshot.active).toMatchObject({ id: first.id })
   await accepted(a, 'release')
-  expect(await claiming).toMatchObject({ ok: true, value: { token: snapshot.active.token } })
+  const claimed = await claiming
+  expect(claimed, claimed.error).toMatchObject({ ok: true, value: { token: snapshot.active.token } })
   await accepted(a, 'finish', { id: first.id, result: { accepted: true } })
   await accepted(b, 'claim', second)
   await accepted(b, 'finish', { id: second.id, result: { accepted: true } })

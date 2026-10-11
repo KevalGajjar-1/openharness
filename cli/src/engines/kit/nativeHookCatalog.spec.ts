@@ -60,6 +60,36 @@ afterEach(async () => {
   rmSync(dirname(root), { recursive: true, force: true })
 })
 
+it.each(['deadline', 'revocation'])('does not publish a catalog mirror after its last flat leaf check crosses %s', async kind => {
+  let now = 0, current = true, checkingMirror = false, crossed = false
+  vi.spyOn(performance, 'now').mockImplementation(() => now)
+  const version = join(root, '.native-hook-catalog'), original = nativeHookMetadata.publish
+  vi.spyOn(nativeHookMetadata, 'publish').mockImplementation((...args) => {
+    if (args[0] === version) {
+      const verify = args[2]
+      args[2] = () => {
+        checkingMirror = true
+        try { verify() } finally { checkingMirror = false }
+      }
+    }
+    return original(...args)
+  })
+  fault.stat = (path, read) => {
+    const info = read()
+    if (checkingMirror && path === version + '.witness') {
+      crossed = true
+      if (kind === 'deadline') now = 5_000
+      else current = false
+    }
+    return info
+  }
+  await expect(catalog(1_000).effects(processKey, () => current)).rejects.toThrow(kind === 'deadline' ? 'expired' : 'owner changed')
+  expect(crossed).toBe(true)
+  expect(existsSync(version + '.witness')).toBe(true)
+  expect(existsSync(version)).toBe(false)
+  expect(allocationFiles()).toEqual([])
+})
+
 it('durably allocates before initialization and retains one process namespace across reconstructed catalogs', async () => {
   const store = catalog()
   expect(readdirSync(root)).toEqual([])
@@ -156,6 +186,43 @@ it('holds intake until the catalog seal has actually been confirmed', async () =
   expect(readdirSync(allocated() + '.history.witnesses')).toEqual([])
   resume()
   await expect(pending).resolves.toMatchObject({ intake: { id: intake().id } })
+})
+
+it('reuses only its own successful immutable seal confirmation while a reconstructed boundary flushes again', async () => {
+  const journal = await catalog().effects(processKey), selected = allocated()
+  const sync = nativeHookMetadata.syncDirectory
+  let published = false, fail = true, confirmations = 0
+  fault.afterPublish = (_text, path) => { if (path === selected + '.seal.witness') published = true }
+  vi.spyOn(nativeHookMetadata, 'syncDirectory').mockImplementation(async (...args) => {
+    if (published) {
+      confirmations++
+      if (fail) throw Error('fixture first seal flush unavailable')
+    }
+    await sync(...args)
+  })
+  await expect(journal.retain(intake())).rejects.toThrow('first seal flush')
+  expect(confirmations).toBe(1)
+  expect(readdirSync(selected + '.history')).toEqual([])
+  fail = false
+  await journal.retain(intake())
+  expect(confirmations).toBe(2)
+  await journal.snapshot(); await journal.snapshot()
+  expect(confirmations).toBe(2)
+  const reconstructed = await catalog().effects(processKey), before = confirmations
+  await reconstructed.snapshot()
+  expect(confirmations).toBe(before + 1)
+})
+
+it.each(['seal.witness', 'history.bootstrap'])('refuses same-byte replacement of confirmed %s', async suffix => {
+  const journal = await catalog().effects(processKey)
+  await journal.retain(intake())
+  const file = allocated() + '.' + suffix
+  if (suffix === 'seal.witness') {
+    const text = readlinkSync(file); unlinkSync(file); symlinkSync(text, file)
+  } else {
+    const text = readFileSync(file); unlinkSync(file); writeFileSync(file, text, { mode: 0o600 })
+  }
+  await expect(journal.snapshot()).rejects.toThrow(/changed/)
 })
 
 it('retains the empty journal frontier until its first catalog seal is published', async () => {

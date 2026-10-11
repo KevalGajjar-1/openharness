@@ -29,7 +29,9 @@ import { isLoopbackRequest, loopbackHosts } from './lib/loopbackRequest.js'
 import { isTrustedLocal, listenLocalSocket, type LocalSocketServer } from './lib/localSocket.js'
 import { currentBootId } from './lib/bootId.js'
 import { secureStateDirectory } from './lib/secureState.js'
-import { createNativeHookJournal, type NativeHookClaim, type NativeHookDelivery } from './engines/kit/nativeHookJournal.js'
+import type { NativeHookClaim, NativeHookDelivery } from './engines/kit/nativeHookJournal.js'
+import { openNativeHookStorage, type NativeHookStorage } from './engines/kit/nativeHookStorage.js'
+import { bundledProcessImageHelper, invalidateProcessImageHelper } from './lib/nativeProcessImages.js'
 import { inspectNativeHookOrigin, nativeHookOriginCaller } from './engines/kit/nativeHookOrigin.js'
 import type { NativeHookCaller, NativeHookCallerReader, NativeHookOwner, NativeHookOwnerProof, NativeHookOwnerReader } from './engines/kit/nativeHookOwner.js'
 
@@ -418,10 +420,31 @@ export function startHookServer(
   const bytesCapacity = options.admissionBytesCapacity ?? 16 * 1024 * 1024
   let closed = false, boot: string | undefined
   const durableDirectory = join(env.ADAPTER_DATA_DIR, 'native-hook-deliveries')
-  type Journal = ReturnType<typeof createNativeHookJournal>
+  type Journal = Awaited<ReturnType<NativeHookStorage['effects']>>
+  let nativeStorage: NativeHookStorage | undefined
+  let openingStorage: Promise<NativeHookStorage> | undefined
+  let closingStorage: Promise<void> | undefined
+  const storage = (): Promise<NativeHookStorage> => {
+    if (closed) return Promise.reject(new IdentityReadUnavailable('native hook storage is closed'))
+    if (nativeStorage) return Promise.resolve(nativeStorage)
+    return openingStorage ??= (async () => {
+      secureStateDirectory(durableDirectory)
+      const opened = await openNativeHookStorage(durableDirectory, {
+        prepare: () => bundledProcessImageHelper({ retryUnavailable: true }), invalidate: invalidateProcessImageHelper,
+      })
+      nativeStorage = opened
+      if (closed) throw new IdentityReadUnavailable('native hook storage closed during opening')
+      return opened
+    })().finally(() => { openingStorage = undefined })
+  }
+  const closeStorage = () => closingStorage ??= (async () => {
+    const opened = nativeStorage ?? await openingStorage?.catch(() => undefined)
+    await (opened ?? nativeStorage)?.close()
+  })().catch(error => { closingStorage = undefined; throw error })
   type DurableProcess = { key: string; journal: Journal; restored: Set<string>; claims: Map<string, NativeHookClaim>;
     ready: boolean; confirming: number; owner?: NativeHookOwner }
   const durableProcesses = new Map<string, DurableProcess>()
+  const openingProcesses = new Map<string, Promise<DurableProcess>>()
   const nativeKeys = new Map<string, string>()
   const waitingAttaches = new Set<string>()
   const admissionHeld = (agentId: string, reason: string | undefined) => {
@@ -446,26 +469,41 @@ export function startHookServer(
     if (boot.startsWith('time:')) { boot = undefined; throw new IdentityReadUnavailable('the kernel boot identity is unavailable') }
     return `${boot}\u0000${processIdentityKey(row.engine, row.processIdentity)}`
   }
-  const durableProcess = (row: RegisteredSession, native?: NativeHookOwnerProof): DurableProcess => {
+  const durableProcess = async (row: RegisteredSession, native?: NativeHookOwnerProof): Promise<DurableProcess> => {
     if (native) {
       native.verify()
       nativeKeys.set(processIdentityKey(row.engine, row.processIdentity!), native.key)
     }
     const key = durableKey(row), known = durableProcesses.get(key)
-    if (known) {
-      if (native && known.owner?.evidence !== native.evidence) throw new IdentityReadUnavailable('the native process image changed')
-      return known
+    const verify = (context: DurableProcess) => {
+      native?.verify()
+      if (closed) throw new IdentityReadUnavailable('native hook recovery is closed')
+      if (native && context.owner?.evidence !== native.evidence) throw new IdentityReadUnavailable('the native process image changed')
+      return context
     }
-    if (durableProcesses.size >= 256) throw new IdentityReadUnavailable('native hook process recovery is at capacity')
-    secureStateDirectory(durableDirectory)
-    const journal = createNativeHookJournal({ directory: join(durableDirectory, createHash('sha256').update(key).digest('hex')),
-      processKey: key, current: () => !closed && registry.list().some(candidate => candidate.active && candidate.processIdentity
-        && (handlers.readNativeHookOwner ? nativeKeys.get(processIdentityKey(candidate.engine, candidate.processIdentity))
-          : `${boot}\u0000${processIdentityKey(candidate.engine, candidate.processIdentity)}`) === key) })
-    const context = { key, journal, restored: new Set<string>(), claims: new Map<string, NativeHookClaim>(), ready: false, confirming: 0,
-      ...(native ? { owner: { key: native.key, evidence: native.evidence } } : {}) }
-    durableProcesses.set(key, context)
-    return context
+    if (known) return verify(known)
+    const opening = openingProcesses.get(key)
+    if (opening) return verify(await opening)
+    if (durableProcesses.size + openingProcesses.size >= 256) throw new IdentityReadUnavailable('native hook process recovery is at capacity')
+    const current = () => !closed && registry.list().some(candidate => candidate.active && candidate.processIdentity
+      && (handlers.readNativeHookOwner ? nativeKeys.get(processIdentityKey(candidate.engine, candidate.processIdentity))
+        : `${boot}\u0000${processIdentityKey(candidate.engine, candidate.processIdentity)}`) === key)
+    const pending = (async (): Promise<DurableProcess> => {
+      const opened = await storage()
+      native?.verify()
+      if (!current()) throw new IdentityReadUnavailable('the original native process changed while opening storage')
+      const journal = await opened.effects(key, current)
+      try {
+        native?.verify()
+        if (!current()) throw new IdentityReadUnavailable('the original native process changed during allocation')
+        const context = { key, journal, restored: new Set<string>(), claims: new Map<string, NativeHookClaim>(), ready: false, confirming: 0,
+          ...(native ? { owner: { key: native.key, evidence: native.evidence } } : {}) }
+        durableProcesses.set(key, context)
+        return context
+      } catch (error) { journal.close(); throw error }
+    })()
+    openingProcesses.set(key, pending)
+    try { return verify(await pending) } finally { openingProcesses.delete(key) }
   }
   const ready = (context: DurableProcess, value: boolean) => {
     context.ready = value && !closed
@@ -542,7 +580,7 @@ export function startHookServer(
     const identity = paneReadIdentity(owner)
     try {
       const native = await handlers.readNativeHookOwner?.(owner, caller?.owner(owner))
-      const snapshot = await confirmedSnapshot(durableProcess(owner, native), owner)
+      const snapshot = await confirmedSnapshot(await durableProcess(owner, native), owner)
       if (snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)) {
         throw new IdentityReadUnavailable('an earlier native hook has no confirmed outcome')
       }
@@ -677,7 +715,7 @@ export function startHookServer(
     try {
       if (closed) return
       const owner = await handlers.readNativeHookOwner?.(processAgent, native.recovery?.owner ?? caller?.owner(processAgent))
-      context = durableProcess(processAgent, owner)
+      context = await durableProcess(processAgent, owner)
       if (native.recovery && context.key !== native.recovery.key) return
     } catch (error) {
       const detail = `Waiting for native hook ownership: ${error instanceof Error ? error.message : 'process unavailable'}`.slice(0, 1024)
@@ -886,7 +924,14 @@ export function startHookServer(
         inspect: async () => prepare() ?? (engine === 'hermes' && body.sessionId
           ? await inspectHermesKind(body.sessionId, live()?.hermesHome ?? undefined) : { kind: 'accept', value: undefined }),
         conclude: async decision => {
+          const changed = () => decision.kind === 'accept' && !committed
+            && (!current() || paneReadIdentity(live()) !== inspectionIdentity)
+          const refresh = { kind: 'hold' as const, reason: 'Waiting for fresh evidence after the binding changed.' }
+          // A source read may already have lost its owner. Do not reserve an
+          // effect for that stale observation and only discover this after fsync.
+          if (changed()) return refresh
           const snapshot = await confirmedSnapshot(context, processAgent)
+          if (changed()) return refresh
           if (claim && decision.kind === 'reject') {
             return { kind: 'hold', reason: 'Waiting for the original native hook effect to be reconciled before its intent can change.' }
           }
@@ -1009,17 +1054,15 @@ export function startHookServer(
             || context && context.confirming
             || [...admissionReceipts.get(row.agentId)?.records.values() ?? []].some(receipt => receipt.pending)
             || known && [...intakeReservations].some(key => key.startsWith(`${known}\u0000`))) continue
-          if (!handlers.readNativeHookOwner) {
-            const context = durableProcess(row)
-            if (!recovering.has(context.key) && !recovered.has(context.key)) void recover(row, context)
-          } else {
-            recovering.add(scope)
-            void handlers.readNativeHookOwner(row).then(native => {
-              if (!closed) return recover(row, durableProcess(row, native))
-            }).catch(error => {
-              if (!closed) recoveryHeld(row.agentId, `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'process unavailable'}`.slice(0, 1024))
-            }).finally(() => { recovering.delete(scope) })
-          }
+          recovering.add(scope)
+          void (async () => {
+            const native = await handlers.readNativeHookOwner?.(row)
+            if (closed) return
+            const context = await durableProcess(row, native)
+            if (!closed && !recovering.has(context.key) && !recovered.has(context.key)) await recover(row, context)
+          })().catch(error => {
+            if (!closed) recoveryHeld(row.agentId, `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'process unavailable'}`.slice(0, 1024))
+          }).finally(() => { recovering.delete(scope) })
         } catch (error) {
           recoveryHeld(row.agentId,
             `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'process unavailable'}`.slice(0, 1024))
@@ -1481,9 +1524,15 @@ export function startHookServer(
   const stopRecovery = () => {
     closed = true; clearTimeout(recoveryTimer); admissions.close(); waitingAttaches.clear()
     for (const context of durableProcesses.values()) context.journal.close()
+    void closeStorage().catch(error => console.warn('[hooks] storage cleanup remains held', error))
   }
   const close = server.close.bind(server)
-  server.close = callback => { stopRecovery(); return close(callback) }
+  server.close = callback => {
+    stopRecovery()
+    return close(error => {
+      void closeStorage().then(() => callback?.(error), failure => callback?.(error ?? (failure instanceof Error ? failure : new Error(String(failure)))))
+    })
+  }
   server.once('close', stopRecovery)
 
   return new Promise((resolve, reject) => {

@@ -142,3 +142,8 @@ afterAll(() => {
   if (RECORD) writeFileSync(GOLDEN, JSON.stringify(captured, null, 2) + '\n')
   else expect(Object.keys(captured).sort()).toEqual(Object.keys(expected).sort())
 })
+
+vi.mock('./engines/kit/nativeHookStorage.js', async original => ({
+  ...await original<object>(),
+  openNativeHookStorage: (await import('./testing/nativeHookAdmissionStorageFixture.js')).fixtureNativeHookAdmissionStorage,
+}))
