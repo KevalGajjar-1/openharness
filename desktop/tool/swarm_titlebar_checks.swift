@@ -662,8 +662,8 @@ private extension SwarmTabButton {
     try checkTitlebar(titleRect.minX == resting.minX, "Revealing a tab never moves its title")
     try checkTitlebar(selectButton.frame == bounds, "Selection and drag retain the whole tab target beneath its accessory")
     try checkTitlebar(subviews.count == 3 && closeButton.frame.maxX == bounds.maxX - 8 &&
-      messagesButton.frame.maxX == closeButton.frame.minX,
-      "The close action, and ⇄ just left of it, stay inset inside the tab's curved body")
+      closeButton.frame.minX - messagesButton.frame.maxX == 3,
+      "The close action, and ⇄ left of it past a dead gap, stay inset inside the tab's curved body")
   }
 
   /// Agent Messages' ⇄ (docs/design/2026-10-10-agent-messages.md): one revealed
@@ -696,9 +696,12 @@ private extension SwarmTabButton {
     let title = titleRect
     mouseEntered(with: hover)
     try checkTitlebar(displaysShortcut && !messagesButton.isHidden && !closeButton.isHidden &&
-      messagesButton.frame.maxX == closeButton.frame.minX && messagesButton.struck &&
+      closeButton.frame.minX - messagesButton.frame.maxX == 3 && messagesButton.struck &&
       messagesButton.restingOpacity == 0.45,
       "Hovered and off: the shortcut, a dim struck ⇄ just left of ×")
+    let gap = NSPoint(x: closeButton.frame.minX - 1.5, y: closeButton.frame.midY)
+    try checkTitlebar(!messagesButton.frame.contains(gap) && !closeButton.frame.contains(gap),
+      "A click between ⇄ and × lands on neither")
     try checkTitlebar(titleRect.minX == title.minX && indicatorRect.minX == titleRect.maxX + 6 &&
       indicatorRect.maxX <= messagesButton.frame.minX,
       "Revealing an idle tab shows its shortcut after the title without moving it")
@@ -717,6 +720,9 @@ private extension SwarmTabButton {
     showsShortcutHint = false
     try checkTitlebar(messagesButton.isHidden && closeButton.isHidden, "Releasing Command hides them again")
 
+    agentMessages = SwarmTabMessages(on: false, flowing: true)
+    try checkTitlebar(messagesButton.isHidden && closeButton.isHidden,
+      "Off, a tab at rest shows nothing even if its last traffic was recent")
     agentMessages = SwarmTabMessages(on: true, flowing: false)
     try checkTitlebar(messagesButton.isHidden, "On and quiet, a tab at rest shows nothing extra")
     mouseEntered(with: hover)
@@ -758,12 +764,14 @@ private extension SwarmTabButton {
     contentCenterY = 20
     name = "app"
     displayLabel = "app"
-    shortcutHint = "⌘1"
     activity = HarnessNativeActivity(["mark": "⠋", "label": "Working", "working": true, "color": Int64(0xff64d2ff)])
-    layoutSubtreeIfNeeded()
-    try checkTitlebar(bounds.width >= minimumWidth && titleRect.width >= 16,
-      "A 128pt tab keeps room for its name beside the status and the ⇄ and × reservations")
-    try checkCenteredLabel()
+    for digit in 1...9 {
+      shortcutHint = "⌘\(digit)"
+      layoutSubtreeIfNeeded()
+      try checkTitlebar(bounds.width >= minimumWidth && titleRect.width >= 16,
+        "A 128pt tab keeps 16pt for its name beside ⌘\(digit) and the ⇄ and × reservations")
+      try checkCenteredLabel()
+    }
   }
 
   func checkNameFitsOrHasTooltip() throws {

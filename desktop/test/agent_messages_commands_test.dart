@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/shortcuts/keymap_commands.dart';
 import 'package:harness/state/app_state.dart';
 
+import 'support/agent_messages_api.dart';
 import 'swarm_interactions_test.dart' show chord;
 import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp;
@@ -32,8 +33,9 @@ void main() {
   testWidgets('the palette turns Agent Messages on for this tab', (
     tester,
   ) async {
-    final app = createApp()..status = AppStatus.authenticated;
+    final app = createApp();
     addTearDown(app.dispose);
+    final api = await joinAgentMessagesDesk(app);
     await mount(tester, app);
     final tab = app.activeSwarmId;
     await search(tester, '> agent messages');
@@ -45,16 +47,31 @@ void main() {
       find.text('Agent Messages: turn on for this tab').hitTestable().first,
     );
     await tester.pump();
-    // This fixture has no backend: the turn on was asked for, then put back.
     await tester.pump(const Duration(milliseconds: 100));
-    expect(app.agentMessages.failureFor(tab), contains('turned on'));
-    expect(app.agentMessages.isOn(tab), isFalse);
+    expect(api.writes, [(tab, true)]);
+    expect(app.agentMessages.isOn(tab), isTrue);
+    await search(tester, '> agent messages');
+    expect(find.text('Agent Messages: turn off for this tab'), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a tab without Agent Messages lists neither command', (
+    tester,
+  ) async {
+    // Before the desk is joined there is no flag to show or set.
+    final app = createApp()..status = AppStatus.authenticated;
+    addTearDown(app.dispose);
+    await mount(tester, app);
+    await search(tester, '> agent messages');
+    expect(find.text('Show Agent Messages'), findsNothing);
+    expect(find.textContaining('for this tab'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('Show Agent Messages opens this tab\'s log', (tester) async {
-    final app = createApp()..status = AppStatus.authenticated;
+    final app = createApp();
     addTearDown(app.dispose);
+    await joinAgentMessagesDesk(app);
     await mount(tester, app);
     app.renameSwarm(app.activeSwarmId, 'app');
     await tester.pump();

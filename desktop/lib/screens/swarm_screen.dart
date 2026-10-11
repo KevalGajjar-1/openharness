@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' show TerminalTheme;
 
+import '../agent_messages/agent_messages.dart';
 import '../agent_messages/agent_messages_view.dart';
 import '../core/runtime_platform.dart';
 import '../api/api_client.dart';
@@ -729,6 +730,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
         // Subscription usage is read ahead, so opening a menu shows it without waiting.
         _modelsMenu!.start();
         _harnessMonitor.start();
+        // Agent Messages between harnesses on other machines, which their
+        // daemons tell only their own computer's windows.
+        app.agentMessagesRemote.start();
       });
     }
     if (_menuHost) {
@@ -2034,17 +2038,20 @@ class _SwarmScreenState extends State<SwarmScreen> {
                 activity,
                 color: activityInk(activity),
               ),
-            // Agent Messages' ⇄; absent where a tab has none (the Store).
-            if (!swarm.isStore) ...{
+            // Agent Messages' ⇄; absent where a tab has none
+            // (AppNotifier.agentMessagesOffered). Flowing only while on.
+            if (app.agentMessagesOffered(swarm.id)) ...{
               'agentMessages': app.agentMessages.isOn(swarm.id),
-              'agentMessagesFlowing': app.agentMessages.isFlowing(swarm.id),
+              'agentMessagesFlowing':
+                  app.agentMessages.stateOf(swarm.id) ==
+                  TabMessagesState.flowing,
             },
           },
       ],
       // The File menu's Agent Messages checkmark, for the active tab.
-      'activeAgentMessages': app.activeSwarm.isStore
-          ? null
-          : app.agentMessages.isOn(app.activeSwarmId),
+      'activeAgentMessages': app.agentMessagesOffered(app.activeSwarmId)
+          ? app.agentMessages.isOn(app.activeSwarmId)
+          : null,
     };
     final encoded = jsonEncode(payload);
     if (encoded == _nativeState) return;
@@ -2368,8 +2375,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
       case 'toggleAgentMessages':
         // From a tab's ⇄ or its menu (with its id), or the File menu (the
         // active tab).
-        _toggleAgentMessages(
-          args['id'] is String ? args['id'] as String : app.activeSwarmId,
+        unawaited(
+          _toggleAgentMessages(
+            args['id'] is String ? args['id'] as String : app.activeSwarmId,
+          ),
         );
       case 'showAgentMessages':
         unawaited(
@@ -2724,17 +2733,22 @@ class _SwarmScreenState extends State<SwarmScreen> {
   });
 
   /// Turn Agent Messages on or off for [id]. The ⇄ follows at once and goes
-  /// back if the backend does not take it.
-  void _toggleAgentMessages(String id) {
-    final swarm = app.swarms.where((s) => s.id == id).firstOrNull;
-    if (swarm == null || swarm.isStore) return;
-    unawaited(app.agentMessages.toggle(id));
+  /// back if the backend does not take it — and then says so where the click
+  /// was, since a ⇄ that quietly flips back reads as a click that missed.
+  Future<void> _toggleAgentMessages(String id) async {
+    if (!app.agentMessagesOffered(id)) return;
+    if (await app.agentMessages.toggle(id) || !mounted) return;
+    final failure = app.agentMessages.failureFor(id);
+    if (failure == null) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(failure)));
   }
 
   /// [id]'s Agent Messages log.
   Future<void> _showAgentMessages(String id) => _dialog(() async {
     final swarm = app.swarms.where((s) => s.id == id).firstOrNull;
-    if (swarm == null || swarm.isStore) return;
+    if (swarm == null || !app.agentMessagesOffered(id)) return;
     await showAgentMessages(
       context,
       app,
@@ -6576,7 +6590,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'pane.focus_$i': () => app.focusPaneByIndex(i - 1),
     'navigation.commands': _showSearchCommands,
     'agent_messages.show': () => _showAgentMessages(app.activeSwarmId),
-    'agent_messages.toggle': () => _toggleAgentMessages(app.activeSwarmId),
+    'agent_messages.toggle': () =>
+        unawaited(_toggleAgentMessages(app.activeSwarmId)),
     'app.customize': () => unawaited(_customize()),
     'pane.toggle_shading': () => unawaited(
       appearancePrefsStore.setShadeInactivePanes(
@@ -6630,7 +6645,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
       return false;
     }
     if (id == 'keyboard.open_config') return _keymap.store != null;
-    if (id.startsWith('agent_messages.')) return !app.activeSwarm.isStore;
+    if (id.startsWith('agent_messages.')) {
+      return app.agentMessagesOffered(app.activeSwarmId);
+    }
     if (id == 'agent.work') {
       return WorkspacePaneContext.focused(app)?.agent != null;
     }
@@ -7846,11 +7863,13 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                       app.requestCloseSwarm(swarm.id),
                                     )
                                   : null,
-                              agentMessages: swarm.isStore
-                                  ? null
-                                  : app.agentMessages.stateOf(swarm.id),
+                              agentMessages: app.agentMessagesOffered(swarm.id)
+                                  ? app.agentMessages.stateOf(swarm.id)
+                                  : null,
                               onToggleAgentMessages: _shortcutsEnabled
-                                  ? () => _toggleAgentMessages(swarm.id)
+                                  ? () => unawaited(
+                                      _toggleAgentMessages(swarm.id),
+                                    )
                                   : null,
                               activity:
                                   activity == null || activity.mark.isEmpty

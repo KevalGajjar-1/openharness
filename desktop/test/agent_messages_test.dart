@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fake_async/fake_async.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/agent_messages/agent_messages.dart';
 import 'package:harness/auth/auth_session.dart';
@@ -8,6 +9,8 @@ import 'package:harness/core/config.dart';
 import 'package:harness/core/models.dart';
 import 'package:harness/state/app_state.dart';
 import 'package:harness/terminal/terminal_session.dart';
+
+import 'support/agent_messages_api.dart';
 
 /// Agent Messages as the window keeps it (docs/design/2026-10-10-agent-messages.md):
 /// each tab's flag, the traffic `messages_changed` reports, the pane marks it
@@ -115,20 +118,35 @@ void main() {
       expect(messages.stateOf('off'), TabMessagesState.off);
     });
 
-    test(
-      'an older daemon or backend (404/503) or a failure reads as off',
-      () async {
-        final messages = controller();
-        addTearDown(messages.dispose);
-        backend.readNull = true;
-        await messages.refresh();
-        expect(messages.loaded, isFalse);
-        expect(messages.isOn('tab'), isFalse);
-        backend.readError = StateError('daemon down');
-        await messages.refresh();
-        expect(messages.isOn('tab'), isFalse);
-      },
-    );
+    test('an older daemon or backend (404) offers nothing, for good', () async {
+      backend.tabs = {'tab': true};
+      final messages = controller();
+      addTearDown(messages.dispose);
+      backend.readNull = true;
+      await messages.refresh();
+      expect(messages.loaded, isFalse);
+      expect(messages.isOn('tab'), isFalse);
+      backend.readNull = false;
+      await messages.refresh();
+      expect(messages.loaded, isTrue);
+      // The daemon was replaced by one without Agent Messages.
+      backend.readNull = true;
+      var notified = 0;
+      messages.addListener(() => notified++);
+      await messages.refresh();
+      expect(messages.loaded, isFalse);
+      expect(messages.isOn('tab'), isFalse);
+      expect(notified, 1);
+    });
+
+    test('a failure before any answer stays unanswered', () async {
+      final messages = controller();
+      addTearDown(messages.dispose);
+      backend.readError = StateError('daemon down');
+      await messages.refresh();
+      expect(messages.loaded, isFalse);
+      expect(messages.isOn('tab'), isFalse);
+    });
 
     test('a failed read keeps what was known', () async {
       backend.tabs = {'tab': true};
@@ -394,7 +412,41 @@ void main() {
       final empty = await controller(request: (_, _) async => {'messages': []})
           .history('tab', ['studio']);
       expect(empty.reached, isTrue);
+      expect(empty.complete, isTrue);
     });
+
+    test(
+      'a member machine that did not answer leaves the log incomplete',
+      () async {
+        final messages = controller(
+          request: (machineId, _) async => machineId == 'studio'
+              ? {
+                  'messages': [_row('m0000001', at: 1)],
+                }
+              : throw StateError('offline'),
+        );
+        addTearDown(messages.dispose);
+        final partial = await messages.history(
+          'tab',
+          ['studio', 'laptop'],
+          expected: {'studio', 'laptop'},
+        );
+        expect(partial.reached, isTrue);
+        expect(partial.complete, isFalse);
+        final unasked = await messages.history(
+          'tab',
+          ['studio'],
+          expected: {'studio', 'gone-offline'},
+        );
+        expect(unasked.complete, isFalse, reason: 'offline, so never asked');
+        final whole = await messages.history(
+          'tab',
+          ['studio'],
+          expected: {'studio'},
+        );
+        expect(whole.complete, isTrue);
+      },
+    );
 
     test('a later final state wins, and failed says why', () {
       AgentMessage message(String state, int at, {String? reason}) =>
@@ -422,6 +474,158 @@ void main() {
         failed.merge(message('delivered', 7)).stateOf(failed.to.single),
         AgentMessageState.delivered,
       );
+    });
+  });
+
+  group('other machines', () {
+    // A daemon tells `messages_changed` only to its own computer's windows:
+    // traffic between harnesses elsewhere is read from their logs.
+    final now = DateTime(2026, 10, 10, 12);
+    Map<String, dynamic> recent(String id, {required Duration ago}) =>
+        _row(id, at: now.subtract(ago).millisecondsSinceEpoch);
+
+    test('a new message that just moved flows and marks its panes', () async {
+      final asked = <(String, Map<String, dynamic>)>[];
+      final messages = AgentMessagesController(
+        read: backend.read,
+        write: backend.write,
+        request: (machineId, payload) async {
+          asked.add((machineId, payload));
+          return {
+            'messages': [
+              recent('m0000001', ago: const Duration(minutes: 5)),
+              recent('m0000002', ago: const Duration(seconds: 10)),
+            ],
+          };
+        },
+        nameOf: (_, agentId) => names[agentId],
+        now: () => now,
+      );
+      addTearDown(messages.dispose);
+      await messages.pollRemote([
+        (tabId: 'tab', machineIds: ['laptop']),
+      ]);
+      expect(asked.single.$1, 'laptop');
+      expect(asked.single.$2, {
+        'action': 'history',
+        'tabId': 'tab',
+        'limit': 20,
+      });
+      expect(messages.isFlowing('tab'), isTrue);
+      expect(messages.trafficFor('tab'), 1);
+      expect(messages.markFor('studio', 'lead')?.label, '→ API worker');
+      expect(messages.markFor('laptop', 'api')?.label, '← Lead');
+      // Already seen: the next round changes nothing, and neither does the
+      // same message's own frame.
+      messages.seen('studio', 'lead');
+      await messages.pollRemote([
+        (tabId: 'tab', machineIds: ['laptop']),
+      ]);
+      expect(messages.trafficFor('tab'), 1);
+      expect(messages.markFor('studio', 'lead'), isNull);
+      messages.handleEvent(_sent(id: 'm0000002', state: 'delivered'));
+      expect(messages.markFor('studio', 'lead'), isNull);
+    });
+
+    test('older messages are remembered, not announced', () async {
+      final messages = AgentMessagesController(
+        read: backend.read,
+        write: backend.write,
+        request: (_, _) async => {
+          'messages': [recent('m0000003', ago: const Duration(minutes: 2))],
+        },
+        nameOf: (_, _) => null,
+        now: () => now,
+      );
+      addTearDown(messages.dispose);
+      await messages.pollRemote([
+        (tabId: 'tab', machineIds: ['laptop']),
+      ]);
+      expect(messages.isFlowing('tab'), isFalse);
+      expect(messages.markFor('studio', 'lead'), isNull);
+      messages.handleEvent(_sent(id: 'm0000003', state: 'delivered'));
+      expect(
+        messages.markFor('studio', 'lead'),
+        isNull,
+        reason: 'its marks were due when it moved, not now',
+      );
+    });
+
+    test('one request at a time per machine', () async {
+      final answer = Completer<Map<String, dynamic>>();
+      final asked = <String>[];
+      final messages = AgentMessagesController(
+        read: backend.read,
+        write: backend.write,
+        request: (machineId, payload) {
+          asked.add('$machineId/${payload['tabId']}');
+          return machineId == 'laptop'
+              ? answer.future
+              : Future.value({'messages': const []});
+        },
+        nameOf: (_, _) => null,
+        now: () => now,
+      );
+      addTearDown(messages.dispose);
+      final tabs = <AgentMessagesRemoteTab>[
+        (tabId: 'one', machineIds: ['laptop', 'mini']),
+        (tabId: 'two', machineIds: ['laptop']),
+      ];
+      final first = messages.pollRemote(tabs);
+      await pumpEventQueue();
+      final second = messages.pollRemote(tabs);
+      await pumpEventQueue();
+      expect(asked, ['laptop/one', 'mini/one', 'mini/one']);
+      answer.complete({'messages': const []});
+      await Future.wait([first, second]);
+      expect(asked, ['laptop/one', 'mini/one', 'mini/one', 'laptop/two']);
+    });
+
+    test('a watch asks while the window is in front, every 15 seconds', () {
+      fakeAsync((async) {
+        final foreground = ValueNotifier(false);
+        var rounds = 0;
+        final messages = AgentMessagesController(
+          read: backend.read,
+          write: backend.write,
+          request: (_, _) async {
+            rounds++;
+            return {'messages': const []};
+          },
+          nameOf: (_, _) => null,
+          now: () => now,
+        );
+        var tabs = <AgentMessagesRemoteTab>[
+          (tabId: 'tab', machineIds: ['laptop']),
+        ];
+        final watch = AgentMessagesRemoteWatch(
+          controller: messages,
+          foreground: foreground,
+          tabs: () => tabs,
+        )..start();
+        async.flushMicrotasks();
+        expect(rounds, 0, reason: 'a background window asks nothing');
+        foreground.value = true;
+        async.flushMicrotasks();
+        expect(rounds, 1, reason: 'once on coming to the front');
+        async.elapse(const Duration(seconds: 15));
+        expect(rounds, 2);
+        async.elapse(const Duration(seconds: 15));
+        expect(rounds, 3);
+        tabs = [];
+        async.elapse(const Duration(seconds: 15));
+        expect(rounds, 3, reason: 'no tab is on with remote harnesses');
+        tabs = [
+          (tabId: 'tab', machineIds: ['laptop']),
+        ];
+        foreground.value = false;
+        async.elapse(const Duration(minutes: 1));
+        expect(rounds, 3);
+        expect(async.pendingTimers, isEmpty);
+        watch.dispose();
+        messages.dispose();
+        foreground.dispose();
+      });
     });
   });
 
@@ -478,6 +682,88 @@ void main() {
         app.agentMessages.reset();
       },
     );
+
+    test('flags are read when the desk is joined, on desk_changed, and '
+        'forgotten on sign-out', () async {
+      final api = await joinAgentMessagesDesk(app);
+      expect(api.reads, 1);
+      expect(app.agentMessages.loaded, isTrue);
+      await app.handleEventForTest('studio', {
+        'type': 'desk_changed',
+        'payload': {'revision': 0},
+      });
+      await pumpEventQueue();
+      expect(api.reads, 2);
+      app.expireSessionForTest('Signed out');
+      expect(app.agentMessages.loaded, isFalse);
+    });
+
+    test('only desk tabs, once answered, have Agent Messages', () async {
+      final desk = app.activeSwarmId;
+      expect(
+        app.agentMessagesOffered(desk),
+        isFalse,
+        reason: 'before the desk',
+      );
+      final api = await joinAgentMessagesDesk(app);
+      final joined = app.activeSwarmId;
+      expect(app.agentMessagesOffered(joined), isTrue);
+      app.openStore();
+      expect(app.activeSwarm.isStore, isTrue);
+      expect(app.agentMessagesOffered(app.activeSwarmId), isFalse);
+      app.newSwarm(draft: true, newTabPage: true);
+      expect(app.isDraftSwarm(app.activeSwarmId), isTrue);
+      expect(app.agentMessagesOffered(app.activeSwarmId), isFalse);
+      api.unsupported = true;
+      await app.agentMessages.refresh();
+      expect(
+        app.agentMessagesOffered(joined),
+        isFalse,
+        reason: 'an older CLI or backend',
+      );
+    });
+
+    test('a tab that is on polls its harnesses on other machines', () async {
+      const laptop = Machine(
+        machineId: 'laptop',
+        authMode: MachineAuthMode.remote,
+        name: 'Laptop',
+      );
+      app.machineStates['laptop'] = MachineState(laptop)
+        ..nodeOnline = true
+        ..connectionStatus = ConnectionStatus.connected
+        ..agentLoadStatus = AgentLoadStatus.loaded
+        ..agents = [
+          const Agent(id: 'web', name: 'Web', terminalAvailable: true),
+        ];
+      final api = await joinAgentMessagesDesk(app);
+      for (final (machineId, agentId) in [
+        ('studio', 'lead'),
+        ('laptop', 'web'),
+      ]) {
+        app.adoptSessionForTest(
+          TerminalSession(
+            machineId: machineId,
+            agentId: agentId,
+            agentName: agentId,
+            engineId: 'codex',
+            send: (_, _) async => true,
+            sendBinary: (_) async => true,
+          ),
+        );
+      }
+      final tab = app.activeSwarmId;
+      expect(app.agentMessagesRemoteTabs(), isEmpty, reason: 'off');
+      api.flags[tab] = true;
+      await app.agentMessages.refresh();
+      final remote = app.agentMessagesRemoteTabs().single;
+      expect(remote.tabId, tab);
+      // No daemon of this computer in this fixture: every machine is remote.
+      expect(remote.machineIds, ['studio', 'laptop']);
+      app.machineStates['laptop']!.connectionStatus =
+          ConnectionStatus.disconnected;
+      expect(app.agentMessagesRemoteTabs().single.machineIds, ['studio']);
+    });
 
     test('a tab asks this computer and its connected machines', () {
       expect(

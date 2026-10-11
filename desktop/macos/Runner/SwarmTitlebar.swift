@@ -2632,15 +2632,17 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private static let upperRadius: CGFloat = 10
   private static let shoulder: CGFloat = 8
   private static let topInset: CGFloat = 6
-  // Mirror AppDesktop.tabCloseInset and DesktopWorkspaceTab: × and, just left
-  // of it, Agent Messages' ⇄, as 32pt-tall targets inside the curved tab body.
-  // Their width is reserved on both sides of the centered title, and kept
-  // narrow enough that a 128pt tab still draws its name beside a status.
+  // Mirror AppDesktop.tabCloseInset and DesktopWorkspaceTab: × and, left of
+  // it, Agent Messages' ⇄, as 32pt-tall targets inside the curved tab body,
+  // with a dead gap between them so a click just off × never toggles ⇄. Their
+  // width is reserved on both sides of the centered title, and kept narrow
+  // enough that a 128pt tab still draws its name beside a status.
   private static let trailingInset: CGFloat = 8
   private static let accessoryHeight: CGFloat = 32
   private static let closeWidth: CGFloat = 16
-  private static let messagesWidth: CGFloat = 18
-  private static let contentInset: CGFloat = trailingInset + closeWidth + messagesWidth
+  private static let accessoryGap: CGFloat = 3
+  private static let messagesWidth: CGFloat = 16
+  private static let contentInset: CGFloat = trailingInset + closeWidth + accessoryGap + messagesWidth
   private static let gap: CGFloat = 6
   private static let activityWidth: CGFloat = 16
 
@@ -2832,7 +2834,8 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     let closeX = max(0, bounds.width - Self.trailingInset - Self.closeWidth)
     closeButton.frame = NSRect(x: closeX, y: contentCenterY - Self.accessoryHeight / 2,
       width: min(Self.closeWidth, bounds.width), height: Self.accessoryHeight)
-    messagesButton.frame = NSRect(x: max(0, closeX - Self.messagesWidth), y: contentCenterY - Self.accessoryHeight / 2,
+    messagesButton.frame = NSRect(x: max(0, closeX - Self.accessoryGap - Self.messagesWidth),
+      y: contentCenterY - Self.accessoryHeight / 2,
       width: min(Self.messagesWidth, bounds.width), height: Self.accessoryHeight)
     let fullName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     var hints: [String] = []
@@ -2865,9 +2868,10 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private var displaysShortcut: Bool { isRevealed && shortcutHint?.isEmpty == false }
   private func updateAccessoryVisibility() {
     closeButton.isHidden = !isRevealed
-    // At rest only a tab whose agents are messaging keeps its ⇄.
-    messagesButton.isHidden = agentMessages == nil ||
-      !(isRevealed || (actionsEnabled && agentMessages?.flowing == true))
+    // At rest only a tab whose agents are messaging keeps its ⇄ — on, since
+    // traffic seen as it was turned off says nothing about this tab now.
+    let flowing = agentMessages?.on == true && agentMessages?.flowing == true
+    messagesButton.isHidden = agentMessages == nil || !(isRevealed || (actionsEnabled && flowing))
   }
   /// The ⇄'s look, tooltip and accessibility, and the menu rows, for its state.
   private func updateMessagesControls() {

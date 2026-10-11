@@ -9,6 +9,10 @@ import 'package:harness/shared/theme/app_icons.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
 import 'package:harness/widgets/desktop_workspace_tab.dart';
 
+import 'support/agent_messages_api.dart';
+import 'swarm_screen_test.dart' show mount;
+import 'swarm_state_test.dart' show createApp;
+
 /// The tab's ⇄ and the one revealed state (docs/design/2026-10-10-agent-messages.md,
 /// "The tab"): hovering a tab or holding Command reveals the shortcut, ⇄ and ×;
 /// at rest only a tab whose agents are messaging keeps a bright ⇄.
@@ -96,10 +100,14 @@ void main() {
       'off: nothing at rest; revealed, ⌘1 and a struck dim ⇄ beside × '
       '(${brightness.name})',
       (tester) async {
+        final toggled = <String>[];
         await tester.pumpWidget(
-          _host(command, [
-            (id: 'app', messages: TabMessagesState.off, working: false),
-          ], brightness: brightness),
+          _host(
+            command,
+            [(id: 'app', messages: TabMessagesState.off, working: false)],
+            brightness: brightness,
+            onToggle: toggled.add,
+          ),
         );
         expect(_messages('app').hitTestable(), findsNothing);
         expect(_close('app').hitTestable(), findsNothing);
@@ -120,7 +128,14 @@ void main() {
         );
         final messages = tester.getRect(_messages('app'));
         final close = tester.getRect(_close('app'));
-        expect(messages.right, close.left, reason: '⇄ sits just left of ×');
+        expect(
+          close.left - messages.right,
+          DesktopWorkspaceTab.accessoryGap,
+          reason: '⇄ sits left of ×, past a gap that neither takes',
+        );
+        await tester.tapAt(Offset(close.left - 1.5, close.center.dy));
+        await tester.pump();
+        expect(toggled, isEmpty, reason: 'a click just off × toggles nothing');
         expect(
           messages.size,
           const Size(DesktopWorkspaceTab.messagesWidth, 32),
@@ -256,5 +271,29 @@ void main() {
     ];
     expect(actions, containsAll(['Close tab', 'Turn Agent Messages on']));
     semantics.dispose();
+  });
+
+  testWidgets('the workspace strip offers ⇄ only on desk tabs, once answered', (
+    tester,
+  ) async {
+    final app = createApp();
+    addTearDown(app.dispose);
+    await mount(tester, app);
+    final before = app.activeSwarmId;
+    expect(_messages(before), findsNothing, reason: 'before the desk');
+    await tester.pumpWidget(const SizedBox());
+    final api = await joinAgentMessagesDesk(app);
+    await mount(tester, app);
+    final tab = app.activeSwarmId;
+    expect(_messages(tab), findsOneWidget);
+    app.openStore();
+    await tester.pump();
+    expect(app.activeSwarm.isStore, isTrue);
+    expect(_messages(app.activeSwarmId), findsNothing, reason: 'the Store');
+    api.unsupported = true;
+    await app.agentMessages.refresh();
+    await tester.pump();
+    expect(_messages(tab), findsNothing, reason: 'an older CLI or backend');
+    await tester.pumpWidget(const SizedBox());
   });
 }

@@ -192,8 +192,17 @@ class AgentMessage {
 }
 
 /// A tab's log, merged from every daemon that answered. [reached] is false
-/// when none did, which is not the same as an empty log.
-typedef AgentMessageLog = ({List<AgentMessage> messages, bool reached});
+/// when none did, which is not the same as an empty log; [complete] is false
+/// when a machine with a harness in the tab did not answer (offline, or gone
+/// from the tab), so its side of the log may be missing.
+typedef AgentMessageLog = ({
+  List<AgentMessage> messages,
+  bool reached,
+  bool complete,
+});
+
+/// A tab with Agent Messages on, and the machines to ask for its traffic.
+typedef AgentMessagesRemoteTab = ({String tabId, List<String> machineIds});
 
 /// The short note a message leaves in a pane's header: `→ api` on the
 /// sender's, `← lead` on each recipient's.
@@ -236,14 +245,19 @@ class AgentMessagesController extends ChangeNotifier {
     required this.write,
     required this.request,
     required this.nameOf,
+    DateTime Function()? now,
     this.flowingFor = const Duration(seconds: 60),
     this.markLife = const Duration(seconds: 5),
-  });
+  }) : now = now ?? DateTime.now;
 
   final AgentMessageTabsRead read;
   final AgentMessagesWrite write;
   final AgentMessagesRequest request;
   final AgentNameOf nameOf;
+
+  /// Only to tell a message another machine's log holds from one that just
+  /// moved ([pollRemote]); lifetimes here run on timers.
+  final DateTime Function() now;
 
   /// How long a tab's ⇄ stays bright after the last message moved in it.
   final Duration flowingFor;
@@ -261,10 +275,14 @@ class AgentMessagesController extends ChangeNotifier {
   // mark goes — so nothing has to compare clocks to know it is over.
   final _flowing = <String, Timer>{};
   final _marks = <String, (PaneMessageMark, Timer)>{};
+  final _polling = <String>{};
   int _reads = 0, _account = 0;
   bool _disposed = false;
 
-  /// Whether the backend has answered once for this account.
+  /// Whether the daemon and backend answered for this account's tabs. Until
+  /// they have — and for good, with an older CLI or backend that does not know
+  /// Agent Messages (404) — there is no ⇄ and no menu row: "off" would be a
+  /// guess, and a click could not take.
   bool get loaded => _loaded;
   bool _loaded = false;
 
@@ -299,7 +317,8 @@ class AgentMessagesController extends ChangeNotifier {
   }
 
   /// Read every tab's flag again. A failure keeps what was known: one dropped
-  /// request must not turn a tab's ⇄ off under the person.
+  /// request must not turn a tab's ⇄ off under the person. An answer of null
+  /// is a daemon or backend without Agent Messages.
   Future<void> refresh() async {
     if (_disposed) return;
     final read = ++_reads, account = _account;
@@ -308,9 +327,14 @@ class AgentMessagesController extends ChangeNotifier {
     try {
       answer = await this.read();
     } catch (_) {
-      answer = null;
+      return;
     }
-    if (_disposed || account != _account || read != _reads || answer == null) {
+    if (_disposed || account != _account || read != _reads) return;
+    if (answer == null) {
+      if (!_loaded && _enabled.isEmpty) return;
+      _loaded = false;
+      _enabled.clear();
+      _notify();
       return;
     }
     final tabs = answer['tabs'];
@@ -385,21 +409,85 @@ class AgentMessagesController extends ChangeNotifier {
     }
     final tabId = payload['tabId'];
     if (tabId is! String || tabId.isEmpty) return;
+    _flow(tabId);
+    final id = payload['messageId'];
+    // Each status change says the message again; it marks its panes once.
+    if (id is String && _remember(id)) {
+      final from = AgentMessageParty.fromJson(payload['from']);
+      final to = [
+        for (final row
+            in payload['to'] is List ? payload['to'] as List : const [])
+          ?AgentMessageParty.fromJson(row),
+      ];
+      if (from != null) _markPanes(from, to);
+    }
+    _notify();
+  }
+
+  /// [tabId]'s ⇄ is bright for [flowingFor] from now, and an open log reads
+  /// again.
+  void _flow(String tabId) {
     _flowing.remove(tabId)?.cancel();
     _flowing[tabId] = Timer(flowingFor, () {
       _flowing.remove(tabId);
       _notify();
     });
     _traffic[tabId] = trafficFor(tabId) + 1;
-    final id = payload['messageId'];
-    // Each status change says the message again; it marks its panes once.
-    if (id is String && _seenMessages.add(id)) {
-      while (_seenMessages.length > 500) {
-        _seenMessages.remove(_seenMessages.first);
-      }
-      _markPanes(payload);
+  }
+
+  /// Whether [messageId] is new to this window; remembered either way.
+  bool _remember(String messageId) {
+    if (!_seenMessages.add(messageId)) return false;
+    while (_seenMessages.length > 500) {
+      _seenMessages.remove(_seenMessages.first);
     }
-    _notify();
+    return true;
+  }
+
+  /// Ask [tabs]' machines for what they hold: a daemon tells `messages_changed`
+  /// only to the windows on its own computer (the core's `clients.windows`), so
+  /// traffic between harnesses on other machines would never reach this one.
+  /// A message new to this window that moved within [flowingFor] counts as
+  /// traffic, exactly as if its frame had arrived. One request at a time per
+  /// machine; a machine still answering the last round is skipped.
+  Future<void> pollRemote(Iterable<AgentMessagesRemoteTab> tabs) async {
+    if (_disposed) return;
+    final byMachine = <String, List<String>>{};
+    for (final tab in tabs) {
+      for (final machineId in tab.machineIds) {
+        byMachine.putIfAbsent(machineId, () => []).add(tab.tabId);
+      }
+    }
+    await Future.wait([
+      for (final MapEntry(key: machineId, value: tabIds) in byMachine.entries)
+        if (!_polling.contains(machineId)) _poll(machineId, tabIds),
+    ]);
+  }
+
+  Future<void> _poll(String machineId, List<String> tabIds) async {
+    final account = _account;
+    _polling.add(machineId);
+    try {
+      for (final tabId in tabIds) {
+        // The newest few are enough to see what moved since the last round.
+        final messages = await _historyFrom(machineId, tabId, limit: 20);
+        if (_disposed || account != _account) return;
+        if (messages == null) continue;
+        var moved = false;
+        for (final message in messages) {
+          if (!_remember(message.id)) continue;
+          if (now().difference(message.at) >= flowingFor) continue;
+          moved = true;
+          _markPanes(message.from, message.to);
+        }
+        if (moved) {
+          _flow(tabId);
+          _notify();
+        }
+      }
+    } finally {
+      _polling.remove(machineId);
+    }
   }
 
   void _mark(String key, PaneMessageMark mark) {
@@ -413,14 +501,8 @@ class AgentMessagesController extends ChangeNotifier {
     );
   }
 
-  void _markPanes(Map<String, dynamic> payload) {
-    final from = AgentMessageParty.fromJson(payload['from']);
-    final to = [
-      for (final row
-          in payload['to'] is List ? payload['to'] as List : const [])
-        ?AgentMessageParty.fromJson(row),
-    ];
-    if (from == null || to.isEmpty) return;
+  void _markPanes(AgentMessageParty from, List<AgentMessageParty> to) {
+    if (to.isEmpty) return;
     final names = [for (final r in to) _name(r)];
     _mark(
       from.key,
@@ -473,15 +555,21 @@ class AgentMessagesController extends ChangeNotifier {
 
   /// [tabId]'s log from [machineIds]' daemons, merged by message id, oldest
   /// first. Each daemon holds what it sent and what it delivered, so one
-  /// alone can be missing half of a tab that spans machines.
+  /// alone can be missing half of a tab that spans machines; the log is
+  /// complete only when every one of [expected] answered.
   Future<AgentMessageLog> history(
     String tabId,
-    Iterable<String> machineIds,
-  ) async {
+    Iterable<String> machineIds, {
+    Iterable<String> expected = const [],
+  }) async {
+    final asked = machineIds.toSet().toList();
     final answers = await Future.wait([
-      for (final machineId in machineIds.toSet())
-        _historyFrom(machineId, tabId),
+      for (final machineId in asked) _historyFrom(machineId, tabId),
     ]);
+    final answered = {
+      for (var i = 0; i < asked.length; i++)
+        if (answers[i] != null) asked[i],
+    };
     final merged = <String, AgentMessage>{};
     for (final message in answers.nonNulls.expand((list) => list)) {
       merged.update(
@@ -495,17 +583,23 @@ class AgentMessagesController extends ChangeNotifier {
         final byTime = a.at.compareTo(b.at);
         return byTime != 0 ? byTime : a.id.compareTo(b.id);
       });
-    return (messages: messages, reached: answers.any((a) => a != null));
+    return (
+      messages: messages,
+      reached: answered.isNotEmpty,
+      complete: answered.containsAll(expected),
+    );
   }
 
   Future<List<AgentMessage>?> _historyFrom(
     String machineId,
-    String tabId,
-  ) async {
+    String tabId, {
+    int? limit,
+  }) async {
     try {
       final reply = await request(machineId, {
         'action': 'history',
         'tabId': tabId,
+        'limit': ?limit,
       });
       final rows = reply['messages'];
       if (reply['error'] != null || rows is! List) return null;
@@ -531,6 +625,7 @@ class AgentMessagesController extends ChangeNotifier {
     _writes.clear();
     _traffic.clear();
     _seenMessages.clear();
+    _polling.clear();
     _stopTimers();
     _loaded = false;
     _notify();
@@ -541,5 +636,58 @@ class AgentMessagesController extends ChangeNotifier {
     _disposed = true;
     _stopTimers();
     super.dispose();
+  }
+}
+
+/// Asks other machines for their traffic ([AgentMessagesController.pollRemote])
+/// every [every] while the window is in front, and once as soon as it comes
+/// back. A hidden or minimised window asks nothing.
+class AgentMessagesRemoteWatch {
+  AgentMessagesRemoteWatch({
+    required this.controller,
+    required this.foreground,
+    required this.tabs,
+    this.every = const Duration(seconds: 15),
+  });
+
+  final AgentMessagesController controller;
+  final ValueListenable<bool> foreground;
+
+  /// The tabs to ask about now: on, with a harness on another machine.
+  final List<AgentMessagesRemoteTab> Function() tabs;
+  final Duration every;
+  Timer? _timer;
+  bool _started = false, _disposed = false;
+
+  void start() {
+    if (_started || _disposed) return;
+    _started = true;
+    foreground.addListener(_foregroundChanged);
+    _foregroundChanged();
+  }
+
+  void _foregroundChanged() {
+    _timer?.cancel();
+    _timer = null;
+    if (foreground.value) unawaited(poll());
+  }
+
+  @visibleForTesting
+  Future<void> poll() async {
+    _timer?.cancel();
+    _timer = null;
+    if (_disposed || !foreground.value) return;
+    final targets = tabs();
+    if (targets.isNotEmpty) await controller.pollRemote(targets);
+    if (!_disposed && _started && foreground.value && _timer == null) {
+      _timer = Timer(every, () => unawaited(poll()));
+    }
+  }
+
+  void dispose() {
+    _disposed = true;
+    _timer?.cancel();
+    _timer = null;
+    if (_started) foreground.removeListener(_foregroundChanged);
   }
 }

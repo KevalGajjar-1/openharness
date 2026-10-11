@@ -297,9 +297,12 @@ shows changes only after server acknowledgement. Do not restore the old unscoped
 Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collaboration: its
 flag is per tab, not an Experimental switch — `GET /api/agent-messages` and
 `PATCH /api/agent-messages/tabs/:tabId` through the CLI like the desk, read after sign-in, after a
-toggle and on `desk_changed`; any failure reads as off. Traffic arrives as `messages_changed`, and a
-tab's log is the `agent_messages` `history` request to every daemon with a pane in it, merged by
-message id. The creature switch opens the account's
+toggle, on `desk_changed`, the desk safety-net poll and the backend coming back; a 404 (an older CLI
+or backend) offers no ⇄ at all, and the ⇄ waits for the first answer (`agentMessagesOffered`, which
+also needs a desk tab). Traffic arrives as `messages_changed` — but a daemon sends that only to its
+own computer's windows, so `AgentMessagesRemoteWatch` reads the last messages of each tab that is on
+from its other machines every 15 s while the window is in front. A tab's log is the
+`agent_messages` `history` request to every daemon with a pane in it, merged by message id. The creature switch opens the account's
 `ZooController` collection; disabling it hides the creature without deleting eggs, individuals or progress.
 Window-only preview collections are test/render fixtures, not a user setting.
 

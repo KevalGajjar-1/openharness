@@ -20,6 +20,7 @@ import 'package:harness/store/store_mark.dart';
 import 'package:harness/terminal/terminal_binary.dart';
 import 'package:harness/terminal/terminal_session.dart';
 import 'package:harness/widgets/pane_grid.dart';
+import 'package:harness/widgets/desktop_workspace_tab.dart';
 import 'package:harness/widgets/terminal_panel.dart';
 import 'package:harness/ws/local_cli_discovery.dart';
 import 'package:xterm/xterm.dart';
@@ -128,12 +129,13 @@ void main() {
       final commandName = tester.getRect(label);
       final commandHint = tester.getRect(find.text('⌘2'));
       expect(commandHint.left - commandName.right, closeTo(6, .1));
+      // Clear of ⇄'s slot, held left of × whether or not ⇄ is offered.
       expect(
         commandHint.right,
         lessThanOrEqualTo(
-          tester
-              .getRect(find.byKey(ValueKey('tab-agent-messages:${second.id}')))
-              .left,
+          tester.getRect(close).left -
+              DesktopWorkspaceTab.accessoryGap -
+              DesktopWorkspaceTab.messagesWidth,
         ),
       );
       expect(commandName, revealedName);

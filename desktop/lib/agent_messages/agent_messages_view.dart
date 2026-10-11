@@ -234,6 +234,21 @@ class _AgentMessagesViewState extends State<AgentMessagesView> {
                           ),
                         ),
                       ),
+                    // A machine with a harness here that did not answer
+                    // (offline, or gone from the tab) holds its own part of
+                    // the log.
+                    if (log != null && log.reached && !log.complete)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                        child: Text(
+                          'Some machines didn’t answer; their messages may be '
+                          'missing.',
+                          key: const ValueKey('agent-messages-incomplete'),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: DesktopChrome.metadata(),
+                        ),
+                      ),
                     const SizedBox(height: 12),
                     Divider(height: 1, color: DesktopChrome.rim),
                     Flexible(
@@ -409,11 +424,18 @@ class _MessageRow extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      Text(
-                        state.text,
-                        maxLines: 1,
-                        style: DesktopChrome.metadata(
-                          color: state.failed ? error : null,
+                      // Several recipients each with a state can outgrow the
+                      // row; the route keeps at least as much room.
+                      Flexible(
+                        child: Text(
+                          state.text,
+                          key: const ValueKey('agent-message-state'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.end,
+                          style: DesktopChrome.metadata(
+                            color: state.failed ? error : null,
+                          ),
                         ),
                       ),
                     ],

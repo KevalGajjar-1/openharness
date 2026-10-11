@@ -59,12 +59,13 @@ class DesktopWorkspaceTab extends StatefulWidget {
     return width;
   }
 
-  // × and, just left of it, ⇄, inside the tab's curved body. Their width is
+  // × and, left of it, ⇄, inside the tab's curved body, with a dead gap
+  // between them so a click just off × never toggles ⇄. Their width is
   // reserved on both sides, keeping the name centered and clear of them;
   // narrow enough that a 128pt tab still shows its name beside a status.
-  static const closeWidth = 16.0, messagesWidth = 18.0;
+  static const closeWidth = 16.0, messagesWidth = 16.0, accessoryGap = 3.0;
   static const _contentInset =
-      closeWidth + messagesWidth + grid.AppDesktop.tabCloseInset;
+      closeWidth + accessoryGap + messagesWidth + grid.AppDesktop.tabCloseInset;
   static const _indicatorGap = 6.0;
 
   /// What the ⇄ says it does, in each state.
@@ -373,6 +374,9 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
                                       flowing ? 1 : quietOpacity,
                                     ),
                                   ),
+                          ),
+                          const SizedBox(
+                            width: DesktopWorkspaceTab.accessoryGap,
                           ),
                           _accessory(
                             visible: revealed,

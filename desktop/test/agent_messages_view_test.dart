@@ -112,6 +112,7 @@ void main() {
         tester,
         () async => (
           reached: true,
+          complete: true,
           messages: [
             _message(
               'm0000001',
@@ -160,6 +161,7 @@ void main() {
       tester,
       () async => (
         reached: true,
+        complete: true,
         messages: [
           _message('m0000001', today, to: ['api']),
           _message('m0000002', today, from: 'api', to: ['lead']),
@@ -184,7 +186,7 @@ void main() {
   testWidgets('Esc closes', (tester) async {
     final opened = await open(
       tester,
-      () async => (reached: true, messages: <AgentMessage>[]),
+      () async => (reached: true, complete: true, messages: <AgentMessage>[]),
     );
     expect(find.text('app · Agent Messages'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -196,7 +198,10 @@ void main() {
   testWidgets('an empty log says how to start; an unreachable one says so', (
     tester,
   ) async {
-    await open(tester, () async => (reached: true, messages: <AgentMessage>[]));
+    await open(
+      tester,
+      () async => (reached: true, complete: true, messages: <AgentMessage>[]),
+    );
     expect(
       find.text(
         'No messages yet. Turn on Agent Messages, then agents use '
@@ -208,7 +213,7 @@ void main() {
     await tester.pumpAndSettle();
     await open(
       tester,
-      () async => (reached: false, messages: <AgentMessage>[]),
+      () async => (reached: false, complete: false, messages: <AgentMessage>[]),
     );
     expect(
       find.textContaining('Could not read this tab’s messages'),
@@ -216,10 +221,73 @@ void main() {
     );
   });
 
+  testWidgets('a machine that did not answer is said, once', (tester) async {
+    await open(
+      tester,
+      () async => (
+        reached: true,
+        complete: false,
+        messages: [_message('m0000001', today)],
+      ),
+    );
+    expect(
+      find.text('Some machines didn’t answer; their messages may be missing.'),
+      findsOneWidget,
+    );
+    expect(find.text('lead → api'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await open(
+      tester,
+      () async => (
+        reached: true,
+        complete: true,
+        messages: [_message('m0000001', today)],
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey('agent-messages-incomplete')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('many recipients each with a state never overflow a row', (
+    tester,
+  ) async {
+    final recipients = [for (var i = 0; i < 8; i++) 'worker-$i'];
+    await open(
+      tester,
+      () async => (
+        reached: true,
+        complete: true,
+        messages: [
+          _message(
+            'm0000001',
+            today,
+            to: recipients,
+            states: {
+              for (final (i, r) in recipients.indexed)
+                r: (i.isEven ? 'delivered' : 'queued', null),
+            },
+          ),
+        ],
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    final state = tester.widget<Text>(
+      find.byKey(const ValueKey('agent-message-state')),
+    );
+    expect(state.overflow, TextOverflow.ellipsis);
+    expect(state.data, contains('worker-0 delivered · worker-1 queued'));
+  });
+
   testWidgets('the switch turns Agent Messages on, and back when refused', (
     tester,
   ) async {
-    await open(tester, () async => (reached: true, messages: <AgentMessage>[]));
+    await open(
+      tester,
+      () async => (reached: true, complete: true, messages: <AgentMessage>[]),
+    );
     final toggle = find.byKey(const ValueKey('agent-messages-switch'));
     expect(tester.widget<Switch>(toggle).value, isFalse);
     await tester.tap(toggle);
@@ -239,6 +307,7 @@ void main() {
       reads++;
       return (
         reached: true,
+        complete: true,
         messages: [
           for (var i = 0; i < reads; i++)
             _message('m000000$i', today.add(Duration(minutes: i))),

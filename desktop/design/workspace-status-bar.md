@@ -109,16 +109,19 @@ reveals every tab. Revealed, the actual shortcut replaces the status beside the
 name, and Agent Messages' ⇄ and × show at the right, ⇄ just left of ×
 ([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)). At rest a tab
 shows only its name and status, plus a bright ⇄ for about a minute after its
-agents last messaged each other. The ⇄ is dim and struck through while Agent
-Messages are off, dim while on and quiet; its tooltip says what a click does
-("Agent messages off · click to turn on", "Agent messages on · click to turn
-off", "Agents messaging · click to turn off"), and a click toggles that tab's
-flag at once, going back if the backend refuses. The Store tab has no ⇄.
-Revealing never changes the tab width or moves the title: an idle tab shows its
-shortcut after the name, and only a name that would run into ⇄ gives up its
-tail. × (16 points wide) and ⇄ (18) are 32-point-tall targets whose width is
-reserved on both sides of the centered name, so a 128-point tab still draws its
-name beside a status. The tab's menu and File carry Agent Messages (a checkmark)
+agents last messaged each other while Agent Messages are on. The ⇄ is dim and
+struck through while off, dim while on and quiet; its tooltip says what a click
+does ("Agent messages off · click to turn on", "Agent messages on · click to
+turn off", "Agents messaging · click to turn off"), and a click toggles that
+tab's flag at once, going back — with a notice — if the backend refuses. Only a
+tab the desk holds has a ⇄ (not the Store, Devices, Companions, an orchestrator
+or a draft tab), and only once the daemon and backend have answered for Agent
+Messages; an older CLI or backend shows none. Revealing never changes the tab
+width or moves the title: an idle tab shows its shortcut after the name, and
+only a name that would run into ⇄ gives up its tail. × and ⇄ are 16-point-wide,
+32-point-tall targets with a 3-point dead gap between them, reserved on both
+sides of the centered name, so a 128-point tab still draws its name beside a
+status. The tab's menu and File carry Agent Messages (a checkmark)
 and Show Agent Messages beside Rename Tab and Close Tab. Cmd-W, remapped
 shortcuts, native menu access, and middle-click closing remain available.
 Preserve reorder, rename, keyboard focus, and terminal sessions. Cmd-T opens a

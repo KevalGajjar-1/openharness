@@ -1408,30 +1408,78 @@ class AppNotifier extends ChangeNotifier {
             ?.displayName,
   );
 
-  /// The machines whose daemons may hold [tabId]'s Agent Messages log: this
-  /// computer's, and every connected machine of the owner's with a harness in
-  /// the tab. A shared machine's harnesses never take part.
-  List<String> agentMessageMachines(String tabId) {
+  /// Whether [tabId] has Agent Messages to offer: a tab the desk holds, since
+  /// the backend keeps the flag per desk tab, once the daemon and backend have
+  /// answered for it. The Store, Devices and Companions, an orchestrator or a
+  /// draft tab, a window before it joins the desk, and an older CLI or backend
+  /// get no ⇄, menu row or command.
+  bool agentMessagesOffered(String tabId) {
+    final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
+    return swarm != null &&
+        _desk.enabled &&
+        _deskTracks(swarm) &&
+        isDeskId(swarm.id) &&
+        agentMessages.loaded;
+  }
+
+  /// The machines of the owner's with a harness in [tabId], and this
+  /// computer: every daemon that may hold part of the tab's log. A shared
+  /// machine's harnesses never take part.
+  Set<String> _agentMessageMembers(String tabId) {
     final tab = swarms.where((swarm) => swarm.id == tabId).firstOrNull;
-    final ids = <String>{
+    return {
       ?localMachineState?.machine.machineId,
       for (final pane in tab?.panes ?? const <TerminalPane>[])
-        if (pane.agentId != null) pane.machineId,
+        if (pane.agentId != null &&
+            machineStates[pane.machineId]?.machine.isShared != true)
+          pane.machineId,
     };
-    return [
-      for (final id in ids)
-        if (machineStates[id] case final machine?
-            when !machine.machine.isShared &&
-                !machine.needsLink &&
-                machine.nodeOnline != false &&
-                machine.connectionStatus == ConnectionStatus.connected)
-          id,
-    ];
   }
+
+  /// Of [_agentMessageMembers], those that can answer now.
+  List<String> agentMessageMachines(String tabId) => [
+    for (final id in _agentMessageMembers(tabId))
+      if (machineStates[id] case final machine?
+          when !machine.machine.isShared &&
+              !machine.needsLink &&
+              machine.nodeOnline != false &&
+              machine.connectionStatus == ConnectionStatus.connected)
+        id,
+  ];
 
   /// [tabId]'s Agent Messages log, from every daemon that may hold part of it.
   Future<AgentMessageLog> readAgentMessages(String tabId) =>
-      agentMessages.history(tabId, agentMessageMachines(tabId));
+      agentMessages.history(
+        tabId,
+        agentMessageMachines(tabId),
+        expected: _agentMessageMembers(tabId),
+      );
+
+  /// The tabs with Agent Messages on, each with its connected machines other
+  /// than this computer: their daemons' `messages_changed` reaches only their
+  /// own computer's windows, so [agentMessagesRemote] asks them instead. In a
+  /// browser every machine is another computer.
+  List<AgentMessagesRemoteTab> agentMessagesRemoteTabs() {
+    final local = localMachineState?.machine.machineId;
+    return [
+      for (final swarm in swarms)
+        if (agentMessagesOffered(swarm.id) && agentMessages.isOn(swarm.id))
+          if ([
+                for (final id in agentMessageMachines(swarm.id))
+                  if (id != local) id,
+              ]
+              case final remote when remote.isNotEmpty)
+            (tabId: swarm.id, machineIds: remote),
+    ];
+  }
+
+  /// Polls [agentMessagesRemoteTabs] while the window is in front; the
+  /// workspace starts it.
+  late final agentMessagesRemote = AgentMessagesRemoteWatch(
+    controller: agentMessages,
+    foreground: foreground,
+    tabs: agentMessagesRemoteTabs,
+  );
 
   final _orchestratorProjects = <String, OrchestratorController>{};
 
@@ -5247,6 +5295,8 @@ class AppNotifier extends ChangeNotifier {
       if (refetch && !machinesRefreshing) unawaited(retryMachines());
       if (currentUser == null) unawaited(_loadProfile());
       _deskEnsure(_authRevision);
+      // A daemon whose backend was away answered the last read with an error.
+      if (_desk.enabled) unawaited(agentMessages.refresh());
     }
     notifyListeners();
   }
@@ -7015,6 +7065,10 @@ class AppNotifier extends ChangeNotifier {
           _desk.enabled &&
           _desk.pending.isEmpty) {
         unawaited(_deskFetch());
+      }
+      // So are Agent Messages' flags (desk_changed); this catches a missed one.
+      if (!_disposed && status == AppStatus.authenticated && _desk.enabled) {
+        unawaited(agentMessages.refresh());
       }
       unawaited(_rereadMachinesInBackground(pushed: false));
     });
@@ -17440,6 +17494,7 @@ class AppNotifier extends ChangeNotifier {
     _modelManager?.dispose();
     harnessMonitor.dispose();
     _modelsMenu?.dispose();
+    agentMessagesRemote.dispose();
     agentMessages.dispose();
     for (final project in _orchestratorProjects.values) {
       project.dispose();

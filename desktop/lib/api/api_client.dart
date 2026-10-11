@@ -136,11 +136,11 @@ class ApiClient {
   // -- Agent Messages: which desk tabs let their harnesses message each other (proxied like the desk) --
 
   /// `{revision, machines, tabs: [{id, name, enabled, panes}]}` (backend routes/agentMessages.ts). Null
-  /// when the daemon or backend predates Agent Messages (404), is signed out (401) or cannot reach the
-  /// backend (503): every tab then reads as off, which is what a tab nobody turned on is anyway.
+  /// when the daemon or backend predates Agent Messages (404): the app then offers none. Signed out
+  /// (401) or a backend out of reach (503) throws [ApiException], a moment the app waits out.
   Future<Map<String, dynamic>?> readAgentMessageTabs() async {
     final res = await _dio.get('/api/agent-messages');
-    if (const {401, 404, 503}.contains(res.statusCode)) return null;
+    if (res.statusCode == 404) return null;
     return unwrapApiResponse(res) as Map<String, dynamic>?;
   }
 
