@@ -166,6 +166,9 @@ export interface CoreApi {
     /** What a live Claude Code or Codex agent's pane footer says it is doing ("Reading 3 files"), or null:
      *  the dial's working card. The pane is read by the core; only the line leaves it. */
     activityText(agentId: string): Promise<string | null>
+    /** `activityText` with the footer's timer, for a Harness Pro. Absent in a
+     *  core that cannot read them; the dial then gets the footer alone. */
+    activitySnapshot?(agentId: string): Promise<{ text: string; elapsedSeconds?: number } | null>
   }
   /** A device's or another machine's turns for an agent on this one: the doors the web and the hooks use. */
   turns: {
@@ -1348,6 +1351,7 @@ export interface CoreApiDeps {
   questions: CoreApi['questions']
   machine: CoreApi['machine']
   activityText: CoreApi['agents']['activityText']
+  activitySnapshot?: CoreApi['agents']['activitySnapshot']
   signedIn: CoreApi['account']['signedIn']
   environment: CoreApi['account']['environment']
   machines: CoreApi['account']['machines']
@@ -1370,7 +1374,7 @@ export interface CoreApiDeps {
 export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
   gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, observer, privateGridName, machineName, backend, onNotice,
-  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText,
+  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
   signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
 }: CoreApiDeps): CoreApi {
@@ -1402,6 +1406,7 @@ export function createCoreApi({
       create,
       dsh,
       activityText,
+      activitySnapshot,
     },
     turns,
     questions,

@@ -40,6 +40,8 @@ import { createServer, type Server } from 'http'
 import { homedir, hostname } from 'os'
 import { env } from '../config/env.js'
 import { VERSION } from '../version.js'
+import { withoutUpdate } from '../lib/cardUpdate.js'
+import { elapsedSecondsOf } from '../lib/footerTimer.js'
 import { sqlitePreflightMessage } from '../lib/sqliteAvailability.js'
 import { warmLoginShellEnvironment } from '../lib/loginShellEnv.js'
 import type { AppSwarms } from '../cable/cableSession.js'
@@ -769,6 +771,16 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
       const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
       return (await screens.read(session, screen.state === 'succeeded' ? screen.value : null))?.activity?.label ?? null
+    },
+    // The same footer for a Harness Pro, with its timer beside it (the agent's sentence comes from the cards).
+    activitySnapshot: async (agentId) => {
+      const session = registry.resolve(agentId)
+      if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
+      const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
+      const activity = (await screens.read(session, screen.state === 'succeeded' ? screen.value : null))?.activity
+      if (!activity) return null
+      const elapsedSeconds = elapsedSecondsOf(activity.indicator)
+      return { text: activity.label, ...(elapsedSeconds !== undefined ? { elapsedSeconds } : {}) }
     },
     // The devices' frames for the windows on this computer, never the cloud (createCoreApi checks their types).
     sendLocal: (frame) => {
@@ -2632,8 +2644,14 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // is queued for the Wi-Fi device (BackendSocket.sendCommander): a device fault here must cost neither
   // that frame nor whoever is sending it, which the guards and the devices' port see to.
   backend.onOutboundCommander = (frame) => {
-    wifiCore.card(frame as Record<string, unknown>)
-    ports.devices?.card(frame as Record<string, unknown>)
+    const card = frame as Record<string, unknown>
+    // The Pro's extras ride to the devices alone: the Wi-Fi device gets the card as it always did, and a
+    // summary reaches the dial with the turn's whole answer, as it does the Wi-Fi device.
+    wifiCore.card(withoutUpdate(card))
+    const payload = card.payload as Record<string, unknown> | undefined
+    const full = card.type === 'commander_event' && payload?.kind === 'summary' && typeof card.agentId === 'string'
+      ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) : undefined
+    ports.devices?.card(full ? { ...card, payload: { ...payload, fullText: full } } : card)
   }
 
   // Last: every handler is wired and the restored agents are confirmed, so requests that arrived while
