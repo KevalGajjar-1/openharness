@@ -28,6 +28,10 @@ const MAX_RESULT_BYTES = 16_384
 const MAX_PROCESS_RECORDS = 4_096
 // Reserve both copies of a bounded claim and result before owning an intake.
 const TERMINAL_BYTES = 2 * (MAX_RESULT_BYTES + 4_096)
+// An outbox ACK records ownership transfer, not a mutable HTTP response. This
+// includes both record copies, their chain framing and bounded phase identity.
+const ACK_BYTES = 4_096
+export type NativeHookPhase = 'registration' | 'stop' | 'event'
 
 export interface NativeHookIntake {
   id: string
@@ -38,16 +42,20 @@ export interface NativeHookIntake {
   firedAt?: number
   owner?: NativeHookOwner
   payload: Record<string, unknown>
+  /** Only outbox logs accept phases; the effect journal cannot interpret ACKs. */
+  phases?: readonly NativeHookPhase[]
 }
 type Event = { kind: 'intake'; intake: NativeHookIntake }
   | { kind: 'claim'; id: string; token: string; agentId: string; predecessor: string | null }
   | { kind: 'result'; id: string; token: string; value: Record<string, unknown> }
-type RecordValue = { version: 1; processKey: string; index: number; previous: string | null; event: Event }
+  | { kind: 'ack'; id: string; phase: NativeHookPhase }
+type RecordValue = { version: 1; log?: 'native-hook-outbox'; processKey: string; index: number; previous: string | null; event: Event }
 type Read = ReturnType<typeof read>
 export interface NativeHookDelivery {
   intake: NativeHookIntake
   result?: Record<string, unknown>
   resultToken?: string
+  acknowledgements?: Set<NativeHookPhase>
   verify(): void
 }
 export interface NativeHookClaim {
@@ -103,7 +111,7 @@ function read(file: string): { text: string; file: string; version: string; veri
   return { text, file, version: expected, verify }
 }
 
-function validIntake(value: unknown): value is NativeHookIntake {
+function validIntake(value: unknown, maxBytes = 300_000): value is NativeHookIntake {
   if (!object(value)) return false
   return typeof value.id === 'string' && idPattern.test(value.id)
     && typeof value.fingerprint === 'string' && hashPattern.test(value.fingerprint)
@@ -113,7 +121,7 @@ function validIntake(value: unknown): value is NativeHookIntake {
     && (value.owner === undefined || object(value.owner) && typeof value.owner.key === 'string' && value.owner.key.length > 0
       && value.owner.key.length <= 512 && typeof value.owner.evidence === 'string' && value.owner.evidence.length > 0
       && value.owner.evidence.length <= 128_000)
-    && object(value.payload) && Buffer.byteLength(JSON.stringify(value)) <= 300_000
+    && object(value.payload) && Buffer.byteLength(JSON.stringify(value)) <= maxBytes
 }
 
 /** A directory walk yields regularly and proves its complete, unchanged boundary. */
@@ -161,13 +169,23 @@ async function entries(path: string, limit: number): Promise<{ names: string[]; 
   return { names: names.sort(), inspected, verify }
 }
 
-/** The caller supplies boot + native process birth as processKey, never agentId.
- * Each record has a second immutable witness outside its history directory. A
- * lost receipt or replaced directory holds instead of making an old ID new.
- */
-export function createNativeHookJournal({ directory, processKey, current = () => true,
+interface JournalOptions {
+  directory: string; processKey: string; current?: () => boolean; maxRecords?: number; maxBytes?: number; pendingCapacity?: number
+}
+
+function createNativeHookLog({ directory, processKey, current = () => true,
   maxRecords = MAX_PROCESS_RECORDS, maxBytes = 256 * 1024 * 1024, pendingCapacity = 64,
-}: { directory: string; processKey: string; current?: () => boolean; maxRecords?: number; maxBytes?: number; pendingCapacity?: number }) {
+}: JournalOptions, kind: 'effects' | 'outbox') {
+  if (!processKey || processKey.length > 512) held('invalid journal namespace')
+  const log = kind === 'outbox' ? { log: 'native-hook-outbox' as const } : {}
+  const sameKind = (value: { log?: unknown }) => value.log === log.log
+  // Two full 256 KiB HTTP bodies are retained as base64 (~699 KiB). The bounded
+  // envelope and record framing still fit the existing 1 MiB publication limit.
+  const valid = (value: unknown): value is NativeHookIntake => validIntake(value, kind === 'outbox' ? 720 * 1024 : 300_000) && (kind === 'effects' ? value.phases === undefined
+    : Array.isArray(value.phases) && (value.phases.length === 1 && ['registration', 'stop', 'event'].includes(value.phases[0])
+      || JSON.stringify(value.phases) === '["registration","stop"]'))
+  const outstanding = (delivery: NativeHookDelivery) => delivery.intake.phases!.filter(phase => !delivery.acknowledgements?.has(phase)).length
+  const ackBytes = ACK_BYTES + 2 * Buffer.byteLength(JSON.stringify(processKey))
   const witnesses = `${directory}.witnesses`, authorityFile = `${directory}.authority`
   const bootstrapFile = `${directory}.bootstrap`, sealFile = `${directory}.seal`
   maxRecords = Math.min(MAX_PROCESS_RECORDS, maxRecords)
@@ -215,12 +233,12 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
         return routes.snapshot()
       })
       const verifyAbsent = () => { for (const facts of absentPaths) verifyNativePathFacts(facts) }
-      await publish(bootstrapFile, JSON.stringify({ version: 1, processKey, token: randomUUID(), directory, witnesses }), verifyAbsent, true)
+      await publish(bootstrapFile, JSON.stringify({ version: 1, ...log, processKey, token: randomUUID(), directory, witnesses }), verifyAbsent, true)
       bootstrap = read(bootstrapFile)
     }
     if (!bootstrap) held('journal bootstrap could not be confirmed')
     const initial = JSON.parse(bootstrap.text)
-    if (initial.version !== 1 || initial.processKey !== processKey || typeof initial.token !== 'string'
+    if (initial.version !== 1 || !sameKind(initial) || initial.processKey !== processKey || typeof initial.token !== 'string'
       || !idPattern.test(initial.token) || initial.directory !== directory || initial.witnesses !== witnesses) held('journal bootstrap changed')
     const bootstrapHash = digest(bootstrap.text)
     const verifyBootstrap = () => { check(); bootstrap!.verify() }
@@ -241,7 +259,7 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
         verifyBootstrap(); secureStateDirectory(path)
       }
       const expected = directories()
-      await publish(authorityFile, JSON.stringify({ version: 1, processKey, bootstrap: bootstrapHash, ...expected }), () => {
+      await publish(authorityFile, JSON.stringify({ version: 1, ...log, processKey, bootstrap: bootstrapHash, ...expected }), () => {
         verifyBootstrap()
         if (JSON.stringify(directories()) !== JSON.stringify(expected)) held('journal ownership changed')
       }, true)
@@ -251,11 +269,11 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     const value = JSON.parse(saved.text)
     const verifyAuthority = () => {
       verifyBootstrap(); saved!.verify()
-      if (value.version !== 1 || value.processKey !== processKey || value.bootstrap !== bootstrapHash || JSON.stringify(directories())
+      if (value.version !== 1 || !sameKind(value) || value.processKey !== processKey || value.bootstrap !== bootstrapHash || JSON.stringify(directories())
         !== JSON.stringify({ history: value.history, witnesses: value.witnesses })) held('journal namespace changed')
     }
     verifyAuthority()
-    const seal = JSON.stringify({ version: 1, processKey, bootstrap: bootstrapHash, authority: digest(saved.text),
+    const seal = JSON.stringify({ version: 1, ...log, processKey, bootstrap: bootstrapHash, authority: digest(saved.text),
       history: value.history, witnesses: value.witnesses })
     if (!sealed) {
       const history = await entries(directory, maxRecords), outside = await entries(witnesses, maxRecords)
@@ -290,7 +308,10 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     if (!repair && JSON.stringify(history.names) !== JSON.stringify(outside.names)) held('a journal record or witness is missing')
     const deliveries = new Map<string, NativeHookDelivery>()
     let active: { id: string; token: string; agentId: string; verify(): void } | undefined
-    let previous: string | null = null, lastResult: string | null = null, bytes = 0, began = performance.now()
+    let previous: string | null = null, lastResult: string | null = null,
+      bytes = kind === 'outbox' ? owned.records.reduce((total, record) => total + Buffer.byteLength(record.text), 0) : 0,
+      began = performance.now()
+    if (bytes > maxBytes) held('journal metadata exceeds its byte capacity')
     const versions: Array<{ file: string; version: string }> = []
     let tail: Exclude<Read, undefined>[] = owned.records
     let mirror: Exclude<Read, undefined> | undefined
@@ -303,22 +324,34 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
       bytes += Buffer.byteLength(record.text) * 2
       if (bytes > maxBytes) held('journal byte capacity is exhausted')
       const value: RecordValue = JSON.parse(record.text)
-      if (value.version !== 1 || value.processKey !== processKey || value.index !== index || value.previous !== previous
+      if (value.version !== 1 || !sameKind(value) || value.processKey !== processKey || value.index !== index || value.previous !== previous
         || !object(value.event)) held('invalid journal chain')
       const event = value.event
       versions.push({ file: record.file, version: record.version }, { file: witness.file, version: witness.version })
-      const verify = () => { record.verify(); witness.verify() }
+      const verify = () => {
+        // A recovered client may send these bytes after this snapshot ends.
+        // Keep its namespace and revocation proof, without freezing the mutable
+        // append frontier or invalidating it when a sibling delivery arrives.
+        if (kind === 'outbox') verifyAuthority()
+        record.verify(); witness.verify()
+      }
       if (event.kind === 'intake') {
-        if (!validIntake(event.intake) || deliveries.has(event.intake.id)) held('invalid or repeated journal intake')
-        deliveries.set(event.intake.id, { intake: event.intake, verify })
+        if (!valid(event.intake) || deliveries.has(event.intake.id)) held('invalid or repeated journal intake')
+        deliveries.set(event.intake.id, { intake: event.intake, verify, ...(kind === 'outbox' ? { acknowledgements: new Set<NativeHookPhase>() } : {}) })
+      } else if (event.kind === 'ack') {
+        const delivery = deliveries.get(event.id), phaseIndex = delivery?.intake.phases?.indexOf(event.phase) ?? -1
+        if (kind !== 'outbox' || !delivery || phaseIndex < 0 || delivery.acknowledgements!.has(event.phase)
+          || delivery.intake.phases!.slice(0, phaseIndex).some(phase => !delivery.acknowledgements!.has(phase))) held('unowned hook phase acknowledgement')
+        const before = delivery.verify
+        delivery.acknowledgements!.add(event.phase); delivery.verify = () => { before(); verify() }
       } else if (event.kind === 'claim') {
         const delivery = deliveries.get(event.id)
-        if (active || !delivery || delivery.result || event.agentId !== delivery.intake.agentId
+        if (kind !== 'effects' || active || !delivery || delivery.result || event.agentId !== delivery.intake.agentId
           || typeof event.token !== 'string' || !idPattern.test(event.token) || event.predecessor !== lastResult) held('invalid hook effect order')
         active = { id: event.id, token: event.token, agentId: event.agentId, verify }
       } else if (event.kind === 'result') {
         const delivery = deliveries.get(event.id)
-        if (!active || !delivery || active.id !== event.id || active.token !== event.token || !object(event.value)
+        if (kind !== 'effects' || !active || !delivery || active.id !== event.id || active.token !== event.token || !object(event.value)
           || Buffer.byteLength(JSON.stringify(event.value)) > MAX_RESULT_BYTES) held('unowned hook result')
         const before = delivery.verify
         delivery.result = event.value; delivery.resultToken = event.token; delivery.verify = () => { before(); verify() }
@@ -356,7 +389,7 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
   const append = async (before: Snapshot, event: Event) => {
     before.verify()
     if (before.length >= maxRecords) held('journal record capacity is exhausted')
-    const text = JSON.stringify({ version: 1, processKey, index: before.length, previous: before.previous, event } satisfies RecordValue)
+    const text = JSON.stringify({ version: 1, ...log, processKey, index: before.length, previous: before.previous, event } satisfies RecordValue)
     if (Buffer.byteLength(text) * 2 + before.bytes > maxBytes) held('journal byte capacity is exhausted')
     const name = `${String(before.length).padStart(8, '0')}.json`
     // The outside publication exclusively selects this log position across cores.
@@ -376,22 +409,42 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     snapshot,
     async retain(input: NativeHookIntake): Promise<NativeHookDelivery> {
       const intake = structuredClone(input)
-      if (!validIntake(intake)) held('invalid native delivery')
+      if (!valid(intake)) held('invalid native delivery')
       const before = await snapshot(), known = before.deliveries.get(intake.id)
       if (known) {
-        if (known.intake.fingerprint !== intake.fingerprint) held('HOOK_DELIVERY_CONFLICT')
+        if (known.intake.fingerprint !== intake.fingerprint || kind === 'outbox' && JSON.stringify(known.intake) !== JSON.stringify(intake)) held('HOOK_DELIVERY_CONFLICT')
         if (known.intake.agentId !== intake.agentId) held('the native process has a different agent owner')
         await before.confirm(); known.verify(); return known
       }
-      const pending = [...before.deliveries.values()].filter(item => !item.result).length
+      const deliveries = [...before.deliveries.values()]
+      const pending = deliveries.filter(item => kind === 'outbox' ? outstanding(item) > 0 : !item.result).length
       if (pending >= pendingCapacity) held('too many pending native hooks')
-      if (before.length + pending * 2 - Number(!!before.active) + 3 > maxRecords) held('journal record capacity cannot retain terminal outcomes')
-      if (before.bytes + (pending + 1) * TERMINAL_BYTES + 2 * Buffer.byteLength(JSON.stringify(intake)) + 4096 > maxBytes) held('journal byte capacity cannot retain terminal outcomes')
+      const needed = kind === 'outbox' ? deliveries.reduce((count, item) => count + outstanding(item), 0) + intake.phases!.length : pending * 2 - Number(!!before.active) + 2
+      const reservedBytes = kind === 'outbox' ? needed * ackBytes : (pending + 1) * TERMINAL_BYTES
+      const inputBytes = kind === 'outbox' ? 2 * Buffer.byteLength(JSON.stringify({ version: 1, ...log, processKey,
+        index: before.length, previous: before.previous, event: { kind: 'intake', intake } })) : 2 * Buffer.byteLength(JSON.stringify(intake)) + 4096
+      if (before.length + needed + 1 > maxRecords) held('journal record capacity cannot retain terminal outcomes')
+      if (before.bytes + reservedBytes + inputBytes > maxBytes) held('journal byte capacity cannot retain terminal outcomes')
       await before.confirm()
       const verify = await append(before, { kind: 'intake', intake })
-      return { intake, verify }
+      return { intake, verify, ...(kind === 'outbox' ? { acknowledgements: new Set<NativeHookPhase>() } : {}) }
+    },
+    async acknowledge(id: string, fingerprint: string, phase: NativeHookPhase): Promise<void> {
+      if (kind !== 'outbox') held('an effect journal cannot acknowledge a client phase')
+      const before = await snapshot(), delivery = before.deliveries.get(id)
+      if (!delivery || delivery.intake.fingerprint !== fingerprint) held('HOOK_DELIVERY_CONFLICT')
+      const phaseIndex = delivery.intake.phases!.indexOf(phase)
+      if (phaseIndex < 0 || delivery.intake.phases!.slice(0, phaseIndex).some(prior => !delivery.acknowledgements!.has(prior))) held('this hook phase cannot be acknowledged')
+      await before.confirm(); delivery.verify()
+      // Owned-pending and completed registration replies both transfer ownership.
+      // Duplicates confirm the original fact without consuming another slot.
+      if (delivery.acknowledgements!.has(phase)) return
+      const remaining = [...before.deliveries.values()].reduce((count, item) => count + outstanding(item), 0)
+      if (before.length + remaining > maxRecords || before.bytes + remaining * ackBytes > maxBytes) held('journal capacity cannot retain phase acknowledgements')
+      await append(before, { kind: 'ack', id, phase })
     },
     async claim(id: string, agentId: string, inspected?: { previous: string | null }): Promise<NativeHookClaim> {
+      if (kind !== 'effects') held('a client outbox cannot claim effects')
       const before = await snapshot(), delivery = before.deliveries.get(id)
       if (!delivery || delivery.result || delivery.intake.agentId !== agentId) held('this delivery cannot dispatch')
       if (before.active) held('an earlier native hook effect is unconfirmed')
@@ -431,4 +484,19 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     },
     close(): void { closed = true },
   }
+}
+
+/** The caller supplies boot + native process birth as processKey, never agentId.
+ * Each record has a second immutable witness outside its history directory. A
+ * lost receipt or replaced directory holds instead of making an old ID new.
+ */
+export function createNativeHookJournal(options: JournalOptions) {
+  const { snapshot, retain, claim, close } = createNativeHookLog(options, 'effects')
+  return { snapshot, retain, claim, close }
+}
+
+/** Client receipts record responsibility, never permission to dispatch an effect. */
+export function createNativeHookOutboxLog(options: JournalOptions) {
+  const { snapshot, retain, acknowledge, close } = createNativeHookLog(options, 'outbox')
+  return { snapshot, retain, acknowledge, close }
 }

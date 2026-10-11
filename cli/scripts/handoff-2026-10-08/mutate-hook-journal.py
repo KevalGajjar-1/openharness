@@ -17,7 +17,7 @@ mutations = [
      'if (!delivery || delivery.result || delivery.intake.agentId !== agentId)',
      'if (!delivery || delivery.intake.agentId !== agentId)', 'completed receipt'),
     ('changed retry accepted after process exit',
-     "if (known.intake.fingerprint !== intake.fingerprint) held('HOOK_DELIVERY_CONFLICT')", '',
+     "known.intake.fingerprint !== intake.fingerprint", 'false',
      'completed receipt'),
 ]
 environment = {**os.environ, 'TZ': 'UTC', 'TMPDIR': '/tmp'}
@@ -37,7 +37,7 @@ def run(pattern='', spec='nativeHookJournal.process.spec.ts'):
 baseline = run()
 if baseline.returncode:
     raise SystemExit('Baseline failed; no mutants ran.\n' + baseline.stdout + baseline.stderr)
-print('All seven OS-process baselines passed', flush=True)
+print('All OS-process baselines passed', flush=True)
 original = source.read_text()
 failures = []
 for label, before, after, pattern in mutations:

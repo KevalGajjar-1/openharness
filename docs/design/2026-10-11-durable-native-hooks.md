@@ -174,6 +174,44 @@ failed assertions. This is combined evidence, not an uninterrupted full suite.
 Independent review approved this origin slice over `96578014d`; client persistence,
 linked Stop completion, global budgets and final PR acceptance remain open.
 
+The client outbox storage now has its own persisted log kind. Golden-only commit
+`955065fc1` records the former effect journal before this extension; its records
+and HTTP delivery golden remain unchanged. The outbox wrapper freezes the exact
+wire bytes before its first await, includes namespace/UUID/time/port/endpoints/body
+in its fingerprint, and chooses a shard from namespace/UUID alone. Registration
+and linked Stop have separate append-only ownership acknowledgements. Compatible
+owned-pending and completed registration responses normalize to one fact;
+registration never acknowledges Stop or authorizes task deletion. Intake reserves
+every remaining ACK record and both copies' bytes under the exclusive frontier.
+No effect claim or finish API is exposed by an outbox.
+
+Independent review found and prompted two corrections: reconstructed/duplicate
+delivery proofs now retain namespace and close/current fences without freezing
+sibling appends, and canonical base64 avoids double JSON expansion of large
+escaped bodies. Two maximum 256 KiB request bodies and their ACKs fit the outbox's
+720 KiB intake envelope and existing 1 MiB record limit; the effects limit remains
+300,000 bytes. Recovery confirms durability before exposing ACK flags. Corrupt
+encoding, changed immutable bytes, unavailable sync and missing authority hold.
+The reviewer approved this storage slice over `955065fc1`, conditional on the
+subsequent passing affected checks; it is not final-head PR approval.
+
+Receipt `20261011T150641.977884Z-72716` passed types and the initial storage/journal
+regressions. `20261011T150937.744247Z-85420` passed nine actual OS-process cases
+(including outbox capacity contention and SIGKILL after registration ACK) and
+the five existing effect mutations, but failed the new mutation gate: redundant
+conflict checks masked two incomplete fingerprint oracles, and one changed-input
+test threw before its assertion. Those oracles were strengthened rather than
+counted as passing. Final storage receipt `20261011T151558.627196Z-14856` passed
+types, all outbox regressions, thirteen assertion-failing outbox mutations and
+both unchanged effect/delivery goldens. Its checks took 4.3, 16.3 and 1.0 seconds;
+implementation and independent review overlapped from approximately 15:00 to
+15:17 UTC. The golden recording receipt reports `source_changed` as expected;
+unchanged baseline receipt `20261011T150105.879117Z-47508` is the passing evidence.
+This is storage machinery, not yet a shipped client: catalog sealing, global
+logical/physical budgets, cross-process staging, bundled client emission/replay,
+durable server Stop completion and final private acceptance remain required.
+No merge or publication occurred.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

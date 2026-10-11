@@ -24,16 +24,17 @@ beforeAll(() => {
   buildSync({ stdin: { resolveDir: process.cwd(), sourcefile: 'journal-fixture.ts', contents: `
     import fs from 'node:fs'
     import { syncBuiltinESMExports } from 'node:module'
-    import { createNativeHookJournal } from ${JSON.stringify(resolve('src/engines/kit/nativeHookJournal.ts'))}
-    const [directory, encodedKey] = process.argv.slice(2), processKey = JSON.parse(encodedKey)
-    const journal = createNativeHookJournal({ directory, processKey }), claims = new Map()
-    let pauseClaim = false, pauseNextSync = false, release
+    import { createNativeHookJournal, createNativeHookOutboxLog } from ${JSON.stringify(resolve('src/engines/kit/nativeHookJournal.ts'))}
+    const [directory, encodedKey, options] = process.argv.slice(2), processKey = JSON.parse(encodedKey)
+    const { outbox, ...limits } = JSON.parse(options)
+    const journal = (outbox ? createNativeHookOutboxLog : createNativeHookJournal)({ directory, processKey, ...limits }), claims = new Map()
+    let pauseKind, pauseNextSync = false, release
     const link = fs.linkSync, flush = fs.fsync
     fs.linkSync = (source, target) => {
       link(source, target)
-      if (pauseClaim && String(target).startsWith(directory + '.witnesses/')
-        && JSON.parse(fs.readFileSync(target, 'utf8')).event?.kind === 'claim') {
-        pauseClaim = false; pauseNextSync = true
+      if (pauseKind && String(target).startsWith(directory + '.witnesses/')
+        && JSON.parse(fs.readFileSync(target, 'utf8')).event?.kind === pauseKind) {
+        pauseKind = undefined; pauseNextSync = true
       }
     }
     fs.fsync = (fd, done) => {
@@ -49,18 +50,22 @@ beforeAll(() => {
         let result
         if (operation === 'retain') {
           const delivery = await journal.retain(value)
-          result = { intake: delivery.intake, result: delivery.result }
+          result = { intake: delivery.intake, result: delivery.result, acknowledgements: delivery.acknowledgements && [...delivery.acknowledgements] }
         } else if (operation === 'snapshot') {
           const snapshot = await journal.snapshot(); snapshot.verify()
           result = { previous: snapshot.previous, active: snapshot.active,
-            deliveries: [...snapshot.deliveries.values()].map(item => ({ intake: item.intake, result: item.result })) }
+            length: snapshot.length, deliveries: [...snapshot.deliveries.values()].map(item => ({ intake: item.intake, result: item.result,
+              acknowledgements: item.acknowledgements && [...item.acknowledgements] })) }
+        } else if (operation === 'ack') {
+          await journal.acknowledge(value.id, value.fingerprint, value.phase)
         } else if (operation === 'claim') {
           const claim = await journal.claim(value.id, value.agentId, value.inspected)
           claim.verify(); claims.set(claim.id, claim); result = { token: claim.token }
         } else if (operation === 'finish') {
           const claim = claims.get(value.id); await claim.finish(value.result); result = { token: claim.token }
         } else if (operation === 'verify') { claims.get(value.id).verify(); result = true
-        } else if (operation === 'pause') { pauseClaim = true
+        } else if (operation === 'pause') { pauseKind = 'claim'
+        } else if (operation === 'pause-ack') { pauseKind = 'ack'
         } else if (operation === 'release') { if (!release) throw Error('No paused flush'); release(); release = undefined
         } else throw Error('Unknown fixture operation')
         process.send({ request, ok: true, value: result })
@@ -80,8 +85,8 @@ afterEach(async () => {
 })
 afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }))
 
-function worker() {
-  const child: ChildProcess = fork(script, [directory, JSON.stringify(processKey)], {
+function worker(options: { outbox?: boolean; maxRecords?: number } = {}) {
+  const child: ChildProcess = fork(script, [directory, JSON.stringify(processKey), JSON.stringify(options)], {
     execPath: process.execPath, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: { HOME: join(root, 'home'), ADAPTER_DATA_DIR: join(root, 'data'), ADAPTER_RUNTIME_DIR: join(root, 'runtime'),
       CODEX_HOME: join(root, 'codex'), CLAUDE_CONFIG_DIR: join(root, 'claude'), TZ: 'UTC', TMPDIR: '/tmp' },
@@ -204,4 +209,37 @@ it('restores a completed receipt after process exit without accepting a changed 
   expect(await b.call('claim', first)).toMatchObject({ ok: false, error: expect.stringContaining('cannot dispatch') })
   expect(await b.call('retain', { ...first, fingerprint: 'f'.repeat(64), payload: { prompt: 'changed' } }))
     .toMatchObject({ ok: false, error: expect.stringContaining('HOOK_DELIVERY_CONFLICT') })
+}, 30_000)
+
+it('reserves every outbox phase against separate clients contending for the last capacity', async () => {
+  const a = worker({ outbox: true, maxRecords: 3 }), b = worker({ outbox: true, maxRecords: 3 })
+  // Establish authority before the two clients race for one immutable frontier.
+  await accepted(a, 'snapshot')
+  const first = { ...intake(), phases: ['registration', 'stop'] }, second = { ...intake('fixture-delivery-0002'), phases: ['registration', 'stop'] }
+  const attempts = await Promise.all([a.call('retain', first), b.call('retain', second)])
+  expect(attempts.filter(attempt => attempt.ok)).toHaveLength(1)
+  expect(attempts.find(attempt => !attempt.ok)?.error).toMatch(/Native hook delivery is held:|Hook preparation is waiting:|Error: EEXIST:/)
+  const body = attempts[0].ok ? first : second, other = attempts[0].ok ? second : first
+  await accepted(a, 'ack', { ...body, phase: 'registration' })
+  expect(await b.call('retain', other)).toMatchObject({ ok: false, error: expect.stringContaining('capacity cannot retain terminal outcomes') })
+  await accepted(b, 'ack', { ...body, phase: 'stop' })
+  const snapshot = await accepted(worker({ outbox: true, maxRecords: 3 }), 'snapshot')
+  expect(snapshot.length).toBe(3)
+  expect(snapshot.deliveries).toHaveLength(1)
+  expect(snapshot.deliveries[0].acknowledgements).toEqual(['registration', 'stop'])
+}, 30_000)
+
+it('restores an outbox registration ACK after SIGKILL without acknowledging linked Stop', async () => {
+  const a = worker({ outbox: true }), body = { ...intake(), phases: ['registration', 'stop'] }
+  await accepted(a, 'retain', body); await accepted(a, 'pause-ack')
+  const paused = a.event('paused'), acknowledgement = a.call('ack', { ...body, phase: 'registration' })
+  await paused; await a.kill()
+  expect(await acknowledgement).toMatchObject({ ok: false })
+  const recovered = worker({ outbox: true }), snapshot = await accepted(recovered, 'snapshot')
+  expect(snapshot.deliveries[0].acknowledgements).toEqual(['registration'])
+  // Confirmation grants no effect claim and consumes no duplicate ACK record.
+  await accepted(recovered, 'ack', { ...body, phase: 'registration' })
+  expect((await accepted(recovered, 'snapshot')).length).toBe(2)
+  await accepted(recovered, 'ack', { ...body, phase: 'stop' })
+  expect((await accepted(recovered, 'snapshot')).deliveries[0].acknowledgements).toEqual(['registration', 'stop'])
 }, 30_000)
