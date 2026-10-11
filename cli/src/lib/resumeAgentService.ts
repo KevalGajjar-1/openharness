@@ -184,7 +184,6 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
       if (permissionMode !== undefined) {
         if (!permissionModeFlags(saved.engine, permissionMode)) return { ok: false, error: 'INVALID_PERMISSION_MODE' }
         const choice = { permissionMode, bypassPermission: permissionModeApproves(permissionMode) }
-        if (!current()) return resumeChanged
         saved = { ...saved, ...choice }
       }
       if (saved.grid && !saved.gridLaunch) return { ok: false, error: 'GRID_CREDENTIAL_REQUIRED', detail: 'The saved provider configuration is unavailable.' }

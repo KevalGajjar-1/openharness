@@ -1,7 +1,7 @@
 # Native launch preparation
 
 Status: hook durability mechanics landed as #1158 (`eef21b18b`, October 11
-at 01:30 UTC). Whole-launch integration is in draft PR #1160. They are part of
+at 01:30 UTC). Whole-launch integration is in reviewed PR #1160, awaiting final-head CI and merge. They are part of
 group 2 of the [daemon core checklist](2026-10-09-daemon-core-completion.md).
 The whole-launch integration below remains in progress in a separate worktree;
 neither group 2 nor the daemon refactor is complete. No release is authorized.
@@ -331,3 +331,66 @@ reservation design. The frozen corrected head still needs its exact-head review,
 final coverage, mutation checks, matched runtime cost and complete CI/end-to-end
 acceptance before landing. Startup maintenance still awaiting hooks is a separate
 recorded readiness move, not completed by this integration.
+
+## Final whole-launch validation, October 11 at 06:04 UTC
+
+The corrected implementation passed automatic Linux CI, including `ci/required`,
+in [run 38115806295](https://github.com/autonomous-ai/openharness/actions/runs/38115806295).
+The full [CLI end-to-end run 38115845461](https://github.com/autonomous-ai/openharness/actions/runs/38115845461)
+passed all eight Linux shards: 103 files exactly once, 579 cases passed and 20
+explicit platform/opt-in skips. The separate macOS full-disk lane also passed.
+This covers the original Codex tmux-crash resume, moved homes, stopped and live
+conversations, missing engines, Store/model outages, upgrades and the default
+160-turn soak. It does not substitute for the remaining lifecycle checklist.
+
+Local receipts:
+
+- `20261011T054548.491553Z-46263`: types, architecture/startup (30 cases), all
+  2,501 core/services cases at 100% per-file coverage, and harnessd (265 passed,
+  one platform skip) at 100% passed.
+- `20261011T055529.833588Z-92843`: types and 382 resume cases at 100% statements,
+  branches, functions and lines passed. Five added cases exercise retained native
+  identity/token, unavailable permission evidence, expired proof, and cancellation
+  at dispatch. A redundant synchronous guard left by the moved async permission
+  probe was removed; authority remains checked after actual preparation and at
+  dispatch. The initial 377-case run passed its tests but failed coverage; it is
+  not passing gate evidence.
+- `20261011T060018.809604Z-17701`: unchanged baselines passed and all 28 broken
+  native-launch wirings failed assertions. The preceding run caught 27 by
+  assertion; the missing-Messages case instead threw a TypeError. Its lookup now
+  lets the assertion report the absent hook. The runner was not weakened.
+- `20261011T060343.168480Z-33631`: the matching candidate bundle and complete
+  startup/launch cost workload passed alone, with private homes, ports, tmux and
+  fake native engines. The baseline bundle is main `16569f3d2`; candidate is
+  `3be7d7ca0` plus the final resume/assertion correction above.
+
+The independent reviewer approved `3be7d7ca0` against `16569f3d2` and separately
+approved the three-file final correction. That correction does not change the
+end-to-end behavior exercised above. Final committed-head attestation and its
+automatic CI are still required before merging.
+
+The four alternating cost samples (baseline, candidate, candidate, baseline)
+include all thirteen startup hook installers under Node 22.23.2 and tmux 3.5a
+on macOS. [Raw measurements](2026-10-11-native-launch-cost.json) retain each sample.
+Two observations per tree are descriptive measurements, not new performance gates.
+
+| Median measurement | Main | Whole-launch integration |
+| --- | ---: | ---: |
+| Readiness | 2,693 ms | 2,947 ms |
+| Core CPU at readiness | 535 ms | 520 ms |
+| Core RSS at readiness | 86.7 MiB | 86.2 MiB |
+| Cold launch request | 213 ms | 349 ms |
+| Warm launch request | 123 ms | 335 ms |
+| Core CPU per cold/warm launch | 60 / 30 ms | 80 / 60 ms |
+| Core RSS after warm launch | 88.4 MiB | 90.2 MiB |
+
+Fresh launch-shell capture and durable per-launch confirmation add work on every
+launch, including warm launches; these results do not claim a speedup. Startup
+still awaited global maintenance in both measured trees. Moving that maintenance
+after readiness is the separately reviewed next slice.
+
+Implementation ran from 01:31 through the final correction at 06:00 UTC, interleaved
+with review and validation. The final validation receipts above occupy
+05:45–06:04; the full remote run overlaps that interval. They are not added together
+as total elapsed time. Merge and publication remain zero at this checkpoint. No
+release is authorized.
