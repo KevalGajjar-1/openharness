@@ -7,7 +7,8 @@ import { createScreens } from './engines/screens.js'
 import { createScreenTransport } from './engines/screenTransport.js'
 import { inProcessScreen, preloadEngine } from '../engines/inProcess.js'
 import { opencodeMajorVersion } from '../engines/launchControl.js'
-import type { NativeLaunch } from '../engines/nativeLaunch.js'
+import { inspectNativeLaunch, type NativeLaunch } from '../engines/nativeLaunch.js'
+import { nativeHookLocations } from '../engines/kit/nativeLocations.js'
 import { createNativeLaunchPreparer } from '../engines/prepareNativeLaunch.js'
 import { createNativeInstallations } from '../engines/kit/nativeInstall.js'
 import { publishGridConfigDir } from '../lib/publishedGridConfig.js'
@@ -88,7 +89,8 @@ import { ApiConnectionMetadata } from '../lib/apiConnectionMetadata.js'
 import { prepareApiInstructions } from '../lib/apiInstructions.js'
 import type { AgentDshContext } from '../lib/agentFrame.js'
 import type { AgentGridTarget, GridAnnotation } from '../lib/gridAnnotation.js'
-import { sessionCodexHome } from '../lib/engineHomes.js'
+import { confirmHomes, sessionCodexHome } from '../lib/engineHomes.js'
+import { sessionStoreContracts } from '../engines/sessionStoreContracts.js'
 import { argvTokens, clearPaneRemainOnExit, lookupPaneEngineProcess, processRows, resolvePaneEngineProcess, tmuxPaneInfo, tmuxPaneState } from '../lib/tmux.js'
 import { ALL_TERMINAL_BACKENDS } from '../config/terminalConfig.js'
 import { TerminalBackendCoordinator } from '../lib/terminalBackendCoordinator.js'
@@ -1970,6 +1972,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const gridLaunchMachine = async (engine: AgentEngine, native?: NativeLaunch): Promise<GridLaunchMachine> => ({
     hermesSystemManaged: existsSync(HERMES_SYSTEM_MANAGED_DIR),
     opencodeMajor: native ? native.opencodeMajor : engine === 'opencode' ? await opencodeMajorVersion() : null,
+    ...(native?.environment.HOME ? {
+      grokHome: nativeHookLocations(native.environment).GROK_HOME,
+      piSkillsDir: join(nativeHookLocations(native.environment).PI_AGENT_DIR, 'skills'),
+    } : {}),
   })
 
   /**
@@ -1985,6 +1991,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     nameOf: id => installedDsh(id)?.manifest.name, account: () => ({ privateGrid: backend.gridName() }) })
   const prepareNativeLaunch = createNativeLaunchPreparer({
     installations: createNativeInstallations({ directory: join(env.ADAPTER_DATA_DIR, 'native-installations') }),
+    inspect: (engine, source) => inspectNativeLaunch(engine, source, {
+      confirmHome: (engine, home) => { confirmHomes({ [sessionStoreContracts[engine].sessions.moved.variable]: home }) },
+    }),
   })
   const launchOverridesDeps: LaunchOverridesDeps = {
     publishConfig: publishGridConfigDir,
@@ -1999,8 +2008,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   }
   // What a relaunch needs to bring a pane back (core/agents/launch.ts). Declared before the restore
   // pass below, which calls these for every pane it rebuilds.
+  const launchAuthority = createLaunchAuthority({ byAgent: id => registry.byAgent(id), revision: restoreRevision, cancelled: id => launchCancelled(id) })
   const launchHelpers = createLaunchHelpers({
-    authority: createLaunchAuthority({ byAgent: id => registry.byAgent(id), revision: restoreRevision, cancelled: id => launchCancelled(id) }),
+    authority: launchAuthority,
     prepareApiTools,
     launchOverridesDeps,
     setGridLaunch: (agentId, launch) => registry.setGridLaunch(agentId, launch),
@@ -2277,7 +2287,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     waiting: row => tmuxBackend?.isHeld({ backend: 'tmux', paneId: row.tmuxPane }, row.externalResume!.token).then(value => value === true) ?? Promise.resolve(false),
     inspect: request => ports.search?.inspect(request) ?? Promise.resolve(externalUnavailable()),
     preflight: createExternalPreflight({ blocksFolder: cwd => backend.purgeAgentService?.blocksFolder(cwd),
-      hookPort, hooksDisabled: env.DISABLE_HOOK_INSTALL, installOpencodePlugin: installOpencodePluginBeforeSpawn }),
+      native: prepareNativeLaunch, hookPort, hooksDisabled: env.DISABLE_HOOK_INSTALL, installOpencodePlugin: installOpencodePluginBeforeSpawn }),
     announce: announceSession, launch: () => { void heldLaunches.restoreHeld('search') },
     forget: id => forgetSession(id, { force: true }),
   })
@@ -2312,6 +2322,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Forking an agent (core/agents/fork.ts).
   backend.onForkAgent = createAgentForker({
+    native: prepareNativeLaunch,
+    prepareNative: launchOverridesDeps.prepareNative,
+    authority: launchAuthority,
     dshLaunch,
     tmuxBackend,
     registry,
@@ -2418,6 +2431,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Restarting an agent in its own pane (core/agents/restart.ts).
   const restartAgent = createAgentRestarter({
+    native: prepareNativeLaunch,
     restartJobs,
     registry,
     purgeBusy: (agentId) => restorePanes.busy(agentId) || backend.purgeAgentService?.busy(agentId),

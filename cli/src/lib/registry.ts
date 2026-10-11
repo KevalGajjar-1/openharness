@@ -1656,7 +1656,7 @@ class Registry {
 
   /** A stopped agent gets a new terminal route while keeping its saved conversation and identity.
    * Archived routes/processes are evidence only: none of them may be indexed or signalled here. */
-  resumePendingAgent(saved: RegisteredSession, runtimes: TerminalRuntimeRef[]): RegisteredSession | null {
+  resumePendingAgent(saved: RegisteredSession, runtimes: TerminalRuntimeRef[], nativeToken?: string): RegisteredSession | null {
     if (this.writeBlocked || this.agents.has(saved.agentId)
       || (saved.sessionId && this.bySession(saved.sessionId))) return null
     const routes = normalizedRuntimes(runtimes)
@@ -1667,7 +1667,7 @@ class Registry {
       boundAt: null,
       lastHookAt: 0,
       active: true,
-      launch: { state: 'starting' },
+      launch: { state: 'starting', ...(nativeToken ? { nativeToken } : {}) },
       processIdentity: null,
       runtimes: routes,
       primaryRuntimeKey: selectedRuntimeKey(routes, ''),

@@ -1,6 +1,7 @@
 # Native launch preparation
 
-Status: hook durability mechanics are in final validation. They are part of
+Status: hook durability mechanics landed as #1158 (`eef21b18b`, October 11
+at 01:30 UTC). Whole-launch integration is in draft PR #1160. They are part of
 group 2 of the [daemon core checklist](2026-10-09-daemon-core-completion.md).
 The whole-launch integration below remains in progress in a separate worktree;
 neither group 2 nor the daemon refactor is complete. No release is authorized.
@@ -84,6 +85,54 @@ during those waits; callback gaps measure that distinction, not actual Stop late
 Whole-launch cost, readiness, and unrelated Stop latency still require integration
 measurement. There is no cross-request configuration or durability cache.
 
+## Whole-launch integration checkpoint, October 11
+
+The former native argv and healthy installer behavior was recorded from main
+`eef21b18b` in golden-only commit `6d61d7678`. Generated Pi, OpenCode and Grok
+configuration was separately recorded in `23ba641c2`. Both artifacts remain
+unchanged. Their runners now exercise the new native snapshot, installer-only
+helper and immutable configuration publisher. Fixtures pin Linux and UTC and
+normalize private paths and executable locations.
+
+Draft #1160 retains one executable and the launch shell's native locations,
+checks bounded version/permission observations, prepares hooks before execution,
+and checks the retained evidence again after the pane's startup files. Missing
+engines run a separately journalled installer with no conversation arguments or
+first message. Seeing its new binary does not prove that installation finished.
+Durable uncertainty and failed installation hold later requests too.
+
+Generated configuration has immutable manifests, directory ownership and
+completion records. Borrowed native directories retain their original physical
+identity. A retry cannot replace edited files, recreate a removed conversation
+directory or adopt a replacement at the same path. Changed configurations use
+new directories, preserving those a live engine still reads. None are age-pruned.
+
+Plain create requests with a stable ID now keep their original input, local
+authorization and runtime label before dependency preparation. A bounded core
+retry reads the saved request afresh and publishes a visible hold reason;
+installation, models and Store preparation precede the final dispatch claim.
+Project creation, external creation, fork/restart/resume/retarget intent and
+durable Stop/Close revocation still need their complete lifecycle integration.
+This checkpoint does not complete checklist groups 2 or 3.
+
+Receipt `20261011T030244.771334Z-49993` passed typecheck and the fifteen-file
+focused gate. Receipt `20261011T031606.803317Z-13555` passed 560 tests in
+22 files, including architecture and both unchanged launch/configuration
+goldens; its typecheck failed on a test mock inferred as returning `never`.
+The annotation is corrected and awaits its next gate. These are development
+receipts, not landing evidence. Coverage, wiring mutations, private daemon
+acceptance, matched whole-launch cost and exact-head review remain required.
+
+Independent review of `d54e3f7f2` confirmed six earlier fixes and found three
+further cases: a fresh request bypassed a failed installer, a completed config
+could recreate a removed borrowed session directory, and a ready executable's
+status query could not settle a proven non-dispatch cancellation. Corrections
+and regressions are in progress; the reviewer has not approved this PR.
+
+The integration slice began October 11 at 01:31 UTC. At this checkpoint it
+contains implementation and local validation only. Draft CI and independent
+review overlapped implementation; no integration merge or publication occurred.
+
 ## Remaining launch integration
 
 Every create/fork/restart/retarget/restore/external-resume path must use a confirmed
@@ -105,7 +154,18 @@ PR does not enable the draft whole-launch integration.
 This slice began October 10 at 22:49 UTC. The checkpoint above was reached about
 an hour later, including implementation, focused validation and design review.
 Implementation and validation overlapped; receipt durations describe individual
-checks, not total delivery time. Merge and publication are both zero for this slice.
+checks, not total delivery time. The mechanics merge completed October 11 at
+01:30 UTC. Publication remains zero.
+
+Mechanics landing evidence: `20261011T012341.232142Z-93608` passed typecheck,
+architecture, 201 focused tests, all 2,393 core tests at 100% statements and
+branches, harnessd at 100%, and 441 unchanged hook golden cases.
+`20261011T011534.448579Z-59253` passed 359 affected tests with five explicitly
+environment-gated skips. `20261011T011530.711952Z-59124` killed all twelve wiring
+mutants by assertions. `20261011T012715.881253Z-11668` passed four eager-hook,
+three home-recovery and the original Codex tmux-crash-resume private e2e cases.
+Independent review covered head `05d4fba22` against base `93d49e9c8`; automatic
+CI and `ci/required` passed before the authorized merge. No CLI was released.
 
 ## Independent review corrections
 

@@ -36,6 +36,7 @@ import { DEFAULT_HARNESS_PERMISSION, freshHarnessEnvironment } from '../../lib/h
 import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
 import type { LaunchAuthority, LaunchPreparation } from '../../lib/launchPreparation.js'
 import type { publishGridConfigDir } from '../../lib/publishedGridConfig.js'
+import { nativeHookLocations } from '../../engines/kit/nativeLocations.js'
 import { engineHooks } from '../../engines/hooks.js'
 import { folderTrust } from '../../engines/launchPrep.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
@@ -115,6 +116,7 @@ export function createAgentCreator({
     const inspected = await inspectNative?.(engine, { ...input, permissionMode, bypassPermission }, authority)
     if (inspected && !inspected.ok) return inspected
     const native = inspected?.ok ? inspected.launch : undefined
+    if (engine === 'codex' && native) codexHome = nativeHookLocations(native.environment).CODEX_HOME
     const current = () => authority.current() && (!native || native.current())
     if (!current()) return stale()
     if (native && agent && !supportsNamedAgent(engine, native.opencodeMajor)) {
@@ -259,6 +261,9 @@ export function createAgentCreator({
       { ...gridLaunch?.env, ...dshEnv }, gridLaunch ? gridConflictingEnvToClear(gridLaunch) : [])) return {
       ok: false, error: 'NATIVE_LAUNCH_HELD', detail: 'Waiting to confirm the engine’s native hooks.', unavailable: 'native',
     }
+    // Harness configuration can change the profile after executable discovery. Binding and Resume
+    // must retain the home the prepared child will actually use.
+    if (engine === 'codex' && native) codexHome = nativeHookLocations(native.environment).CODEX_HOME
     // A Codex agent pointed at a profile OTHER than this machine's default reads hooks.json from
     // THAT folder, not the one `harness login` already installed into — without this, such an agent
     // fires no hook at all (no SessionStart/UserPromptSubmit/Stop) and never streams a single event.

@@ -139,6 +139,24 @@ describe('creating an agent', () => {
   })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it('records the final harness-selected Codex home used by real native preparation', async () => {
+    const executable = await import('../../engines/kit/launchExecutable.js')
+    vi.spyOn(executable, 'captureLaunchExecutable').mockResolvedValue({ state: 'ready',
+      executable: { command: '/fixture/engine', identity: 'fixture', current: () => true },
+      environment: { HOME: root, PATH: '/fixture/bin' },
+    })
+    const { inspectNativeLaunch } = await import('../../engines/nativeLaunch.js')
+    vi.mocked(installedDsh).mockReturnValue(installed() as never)
+    const finalHome = join(root, 'harness-codex')
+    launchDsh.mockResolvedValueOnce({ ok: true, launch: { env: { CODEX_HOME: finalHome }, args: [] } })
+    const { create } = setup({ native: (engine, source) => inspectNativeLaunch(engine, source), hooksDisabled: true })
+    const result = await create(request({ engine: 'codex', codexHome: join(root, 'selected-codex'), dsh: 'blender' }))
+    vi.mocked(installedDsh).mockReset().mockReturnValue(undefined)
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true })
+    expect(createAndRegisterPane).toHaveBeenCalledWith(expect.objectContaining({ codexHome: finalHome, env: expect.objectContaining({ CODEX_HOME: finalHome }) }))
+    expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].current?.()).toBe(true)
+  })
+
   it('does not open a Codex pane before its profile hooks are durably confirmed', async () => {
     let finish!: (installed: boolean) => void
     vi.mocked(engineHooks.codex.installIn).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))

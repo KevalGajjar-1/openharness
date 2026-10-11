@@ -184,8 +184,6 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
       if (permissionMode !== undefined) {
         if (!permissionModeFlags(saved.engine, permissionMode)) return { ok: false, error: 'INVALID_PERMISSION_MODE' }
         const choice = { permissionMode, bypassPermission: permissionModeApproves(permissionMode) }
-        const refusal = await refusePermissionFlagIfUnsupported(saved.engine, choice)
-        if (refusal) return { ok: false, ...refusal }
         if (!current()) return resumeChanged
         saved = { ...saved, ...choice }
       }
@@ -230,8 +228,14 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
         const built = await relaunchOverrides(saved, saved, sourceCurrent)
         if (sourceError) throw sourceError
         transcript?.verify()
-        if (!built.ok) return { ok: false, error: built.error, detail: built.detail }
+        if (!built.ok) return built
         if (!current()) return resumeChanged
+        if (permissionMode !== undefined) {
+          const refusal = await refusePermissionFlagIfUnsupported(saved.engine,
+            { permissionMode, bypassPermission: permissionModeApproves(permissionMode) }, undefined, built.overrides.native)
+          if (!sourceCurrent()) return resumeChanged
+          if (refusal) return { ok: false, ...refusal }
+        }
         if (resumeSessionId) {
           try { prepareSessionResume(saved) } catch (error) {
             if (error instanceof IdentityReadUnavailable) throw error
@@ -288,14 +292,15 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
         // Only actual dispatch can leave an unknown allocation. A held backend
         // gate releases the reservation so recovery may retry without spawning twice.
         const result = await createAndRegisterPane({
-          current: sourceCurrent,
+          current: () => sourceCurrent() && built.overrides.native?.current() !== false,
+          ...(built.overrides.native ? { nativeToken: built.overrides.native.token } : {}),
           onDispatch: () => { allocationAttempted = true },
           tmuxBackend: { ...tmuxBackend, create: async request => {
             const result = await tmuxBackend.create(request)
             if (result.dispatch !== 'not_started') allocationAttempted = true
             return result
           }, kill: runtime => tmuxBackend.kill(runtime) },
-          registry: { openPendingAgent: input => sourceCurrent() ? registry.resumePendingAgent(saved, input.runtimes) : null },
+          registry: { openPendingAgent: input => sourceCurrent() ? registry.resumePendingAgent(saved, input.runtimes, input.nativeToken) : null },
           maxAttempts: 1,
           engine: saved.engine,
           sessionLabel: buildHarnessSessionLabel(saved.engine),

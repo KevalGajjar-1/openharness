@@ -4,6 +4,7 @@ import { engineHooks } from '../../engines/hooks.js'
 import { buildEngineCommandArgv, refusePermissionFlagIfUnsupported } from '../../lib/engineLaunch.js'
 import { workspaceMissing } from '../../lib/workspaceCheck.js'
 import { createExternalPreflight } from './externalPreflight.js'
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 vi.mock('../../engines/inProcess.js', () => ({ loadEngine: vi.fn(async () => ({})) }))
 vi.mock('../../engines/hooks.js', () => ({ engineHooks: { codex: { installIn: vi.fn(async () => true) } } }))
 vi.mock('../../lib/engineLaunch.js', () => ({ buildEngineCommandArgv: vi.fn(() => []), refusePermissionFlagIfUnsupported: vi.fn(async () => null) }))
@@ -56,4 +57,32 @@ it('waits for profile durability before admitting a takeover and retains an unav
   expect(await pending).toMatchObject({ detail: expect.stringContaining('hooks') })
   expect(buildEngineCommandArgv).not.toHaveBeenCalled()
   expect(await setup().prepare(row('codex', { codexHome: '/fixture/profile' }), session)).toBeNull()
+})
+
+it('retains a checked native snapshot through takeover instead of starting another version or hook probe', async () => {
+  let current = true
+  const launch = { current: () => current, prepareHooks: vi.fn(async () => true) } as unknown as NativeLaunch
+  const native = vi.fn(async () => ({ ok: true as const, launch }))
+  const run = setup({ native })
+  const ready = await run.prepare(row('opencode'), session)
+  expect(ready).toHaveProperty('current')
+  if (!ready || !('current' in ready)) throw Error('fixture held')
+  expect(ready.current()).toBe(true)
+  expect(run.deps.installOpencodePlugin).not.toHaveBeenCalled()
+  expect(refusePermissionFlagIfUnsupported).toHaveBeenCalledWith('opencode', expect.any(Object), undefined, launch)
+  expect(buildEngineCommandArgv).toHaveBeenCalledWith('opencode', expect.objectContaining({ native: launch }))
+  current = false
+  expect(ready.current()).toBe(false)
+})
+
+it('keeps a takeover held while native preparation or its original owner is unavailable', async () => {
+  const held = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for installer' }
+  const native = vi.fn(async () => held)
+  expect(await setup({ native }).prepare(row(), session)).toMatchObject({ detail: held.detail })
+  native.mockClear()
+  expect(await setup({ native }).prepare(row(), session, () => false)).not.toBeNull()
+  expect(native).not.toHaveBeenCalled()
+  const launch = { current: () => true, prepareHooks: vi.fn(async () => false) } as unknown as NativeLaunch
+  expect(await setup({ native: async () => ({ ok: true, launch }) }).prepare(row(), session)).toMatchObject({ detail: expect.stringContaining('hooks') })
+  expect(buildEngineCommandArgv).not.toHaveBeenCalled()
 })

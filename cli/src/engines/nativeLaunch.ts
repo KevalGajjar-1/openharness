@@ -57,7 +57,9 @@ async function read(executable: string, args: readonly string[], environment: Re
 }
 
 /** Probe only. No settings, workspace, model or process mutation occurs here. */
-export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLaunchSource = {}): Promise<NativeLaunchResult> {
+export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLaunchSource = {},
+  deps: { confirmHome?: (engine: 'claude' | 'codex', home: string) => void } = {},
+): Promise<NativeLaunchResult> {
   if (isTerminalEngine(engine)) return { ok: true, launch: { ...noNative, environment: {}, proofs: [] } }
   source = { ...source }
   const captured = await captureLaunchExecutable(engine)
@@ -115,6 +117,10 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
           : engine === 'opencode' ? await hooks.installOpencodePlugin(port, { ...executable, major: opencodeMajor! }, options)
           : await installers[engine]?.(port, options) ?? true
         if (!installed || !executable.current() || !owner() || [...dependencies, ...confirmed].some(proof => !proof.current())) return false
+        // A login shell can move the session store without an explicit profile
+        // in the request. Discovery must know that same home before dispatch.
+        if (engine === 'claude' || engine === 'codex') deps.confirmHome?.(engine, home)
+        if (!executable.current() || !owner() || [...dependencies, ...confirmed].some(proof => !proof.current())) return false
         // The command locations and the proofs become dispatch authority together.
         // A failed or pending replacement can never expose B with A's proof set.
         selectedEnvironment = Object.freeze(chosen); proofs = Object.freeze(confirmed)

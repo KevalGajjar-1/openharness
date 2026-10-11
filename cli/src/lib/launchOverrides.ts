@@ -35,6 +35,7 @@ import { scmLaunchEnv } from '../scm/scmProjects.js'
 import type { ScmLaunchRecord } from '../scm/types.js'
 import type { CreationAuthority } from './agentCreationReceipt.js'
 import type { publishGridConfigDir } from './publishedGridConfig.js'
+import { nativeHookLocations } from '../engines/kit/nativeLocations.js'
 
 export interface LaunchOverrides {
   native?: NativeLaunch
@@ -206,6 +207,7 @@ export async function prepareLaunchOverrides(
   if (!current()) return changed
   if (inspected && !inspected.ok) return inspected
   const native = inspected?.ok ? inspected.launch : undefined
+  if (engine === 'codex' && native) source.codexHome = nativeHookLocations(native.environment).CODEX_HOME
   current = () => owner() && native?.current() !== false
   if (!current()) return changed
   const machine = { ...await deps.machine(engine, native) }

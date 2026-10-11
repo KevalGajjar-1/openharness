@@ -76,6 +76,26 @@ describe('restarting an agent', () => {
   beforeEach(() => { vi.spyOn(console, 'log').mockImplementation(() => {}) })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it('holds native installation before killing the live process, without an independent shell probe', async () => {
+    const native = vi.fn(async () => ({ ok: false as const, error: 'NATIVE_LAUNCH_HELD' as const, unavailable: 'native' as const, detail: 'Waiting for installation' }))
+    const run = setup(agent(), { native })
+    expect(await run.restart('a1')).toMatchObject({ unavailable: 'native' })
+    expect(commandAvailableInInteractiveShell).not.toHaveBeenCalled()
+    expect(run.deps.relaunchOverrides).not.toHaveBeenCalled()
+    expect(restartAgent).not.toHaveBeenCalled()
+  })
+
+  it('passes its one native snapshot through restart preparation and permission checks', async () => {
+    const launch = { current: () => true } as never
+    const run = setup(agent(), { native: async () => ({ ok: true, launch }),
+      relaunchOverrides: vi.fn(async () => ({ ok: true as const, overrides: { native: launch, env: {}, extraArgs: [], clearEnv: [] } })),
+    })
+    expect(await run.restart('a1')).toMatchObject({ ok: true })
+    expect(commandAvailableInInteractiveShell).not.toHaveBeenCalled()
+    expect(run.deps.relaunchOverrides).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), expect.any(Function), launch)
+    expect(run.deps.downgradedPermission).toHaveBeenCalledWith(expect.any(Object), true, 'restart', launch)
+  })
+
   it('never starts a fresh conversation when an admitted external resume fails', async () => {
     const actual = await vi.importActual<typeof import('../../lib/restartAgent.js')>('../../lib/restartAgent.js')
     vi.mocked(restartAgent).mockImplementationOnce(actual.restartAgent)

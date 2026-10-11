@@ -22,6 +22,7 @@ import { workspaceMissing } from '../../lib/workspaceCheck.js'
 import type { createLaunchHelpers } from './launch.js'
 import type { RestartAgent } from './launches.js'
 import type { PaneSwap } from './swap.js'
+import type { LaunchOverridesDeps } from '../../lib/launchOverrides.js'
 
 type LaunchHelpers = ReturnType<typeof createLaunchHelpers>
 
@@ -46,6 +47,7 @@ async function engineInstalled(engine: AgentEngine): Promise<boolean | null> {
 type RestartAgentHandler = RestartAgent
 
 export interface RestartDeps {
+  native?: LaunchOverridesDeps['native']
   restartJobs: PaneSwap['restartJobs']
   registry: typeof registry
   /** Whether a purge holds this agent (PurgeAgentService.busy). */
@@ -71,6 +73,7 @@ export interface RestartDeps {
 }
 
 export function createAgentRestarter({
+  native: inspectNative,
   restartJobs, registry, purgeBusy, stopJobs, pinnedControls, tmuxBackend, sameRestartTarget, agentReconciler,
   terminalHintMachineName, announceSession, refreshGridAssignment, relaunchOverrides, downgradedPermission, refreshGridWebSearch,
   liveBypassPermission, paneSwapDeps, restartHeld,
@@ -149,7 +152,11 @@ export function createAgentRestarter({
     // cannot come back. Asked anyway, the swap killed the working agent and gave up twenty seconds
     // later with "did not come back up" (updates.e2e.ts, round 24). Asked here, before anything is
     // touched, the agent goes on running and the person is told why.
-    const installed = await engineInstalled(engine)
+    const inspected = await inspectNative?.(engine, session, { id: session.agentId, current })
+    if (!current()) return changed
+    if (inspected && !inspected.ok) return inspected
+    const native = inspected?.ok ? inspected.launch : undefined
+    const installed = native ? true : await engineInstalled(engine)
     if (!current()) return changed
     if (installed === false) {
       console.warn(`[restart] ${sid(session.agentId)} refused · ${engine} is not installed`)
@@ -161,9 +168,9 @@ export function createAgentRestarter({
     // half, and an agent moved here by a retarget has nothing in the session env at all), or its
     // Codex profile. Refused before anything is killed, so a restart that cannot honour the grid
     // leaves the running process alone.
-    const built = await relaunchOverrides(session, session, current)
+    const built = await relaunchOverrides(session, session, current, native)
     if (!current()) return changed
-    if (!built.ok) return { ok: false, error: built.error, detail: built.detail }
+    if (!built.ok) return built
 
     agentReconciler.holdRoute(routeKey)
     try {

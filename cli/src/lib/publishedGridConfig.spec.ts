@@ -134,6 +134,20 @@ it('holds a removed published file instead of recreating it behind an existing p
   expect(() => lstatSync(join(first.directory, 'models.json'))).toThrow()
 })
 
+it.each(['missing', 'replaced'] as const)('holds a %s borrowed session directory without recreating or adopting it', async kind => {
+  const target = join(root, 'native-home', 'sessions')
+  const links = [{ name: 'sessions', target }]
+  const first = await publish('fixture-agent', files, links)
+  writeFileSync(join(target, 'conversation'), 'original history')
+  renameSync(target, target + '-retained')
+  if (kind === 'replaced') mkdirSync(target)
+  await expect(publish('fixture-agent', files, links)).rejects.toThrow()
+  expect(first.proof.current()).toBe(false)
+  expect(readFileSync(join(target + '-retained', 'conversation'), 'utf8')).toBe('original history')
+  if (kind === 'missing') expect(() => lstatSync(target)).toThrow()
+  else expect(readdirSync(target)).toEqual([])
+})
+
 it('does not recreate a removed publication directory that a live engine may still name', async () => {
   const first = await publish('fixture-agent', files)
   renameSync(first.directory, first.directory + '-retained')

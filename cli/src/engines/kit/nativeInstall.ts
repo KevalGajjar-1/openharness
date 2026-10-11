@@ -230,6 +230,9 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
           || (result.notDispatched !== true && (result.code === null) === (result.signal === null))
           || (result.notDispatched !== undefined && (result.notDispatched !== true || result.code !== null || result.signal !== null))
           || (marker.kind === 'cancelled' && result.notDispatched !== true)) throw Error('Invalid installation result')
+        if (claim.engine === engine && !result.notDispatched && (result.code !== 0 || result.signal !== null)) {
+          return hold('The engine installer stopped before it was ready. Its saved result requires repair confirmation before any launch of this engine.')
+        }
         if (claim.request === request && !result.notDispatched) {
           if (result.code !== 0 || result.signal !== null) return hold('The engine installer stopped before it was ready. Its saved result prevents an uncertain replay; repair the installation before continuing.')
           complete = true
@@ -253,6 +256,27 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
       // A helper may have linked its result just before its final directory sync failed.
       if (lastResult) await confirm(lastResult.file, lastResult.record, historyCurrent)
       if (!current() || !historyCurrent()) return hold('Waiting to confirm current installation ownership.')
+      if (pending?.slot) {
+        const { file, record, claim, slot } = pending
+        const marker = JSON.parse(slot.text) as Dispatch, hash = digest(record.text)
+        if (marker.token !== claim.token || marker.claim !== hash || !['run', 'cancelled'].includes(marker.kind)) throw Error('Invalid pending installer dispatch')
+        if (marker.kind === 'cancelled') {
+          // A durable cancellation proves the helper never ran. Complete only
+          // that result, including when a ready executable takes the status path.
+          const retained = () => {
+            try { record.verify(); slot.verify(); verifyNativePathFacts(claim.routes); return historyOwner() }
+            catch { return false }
+          }
+          const inside = maybe(`${file}.dispatch`)
+          if (inside) {
+            if (inside.text !== slot.text) throw Error('Changed cancellation marker')
+            await confirm(`${file}.dispatch`, inside, retained)
+          } else await publish(`${file}.dispatch`, slot.text, retained)
+          await confirm(claim.witness, slot, retained)
+          await publish(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash, code: null, signal: null, notDispatched: true } satisfies Result), retained)
+          return hold('The cancelled installer is settled; the saved launch can retry.')
+        }
+      }
       if (complete && !pending) return { complete: true }
       if (query) return pending && (pending.claim.engine === engine || pending.claim.request === request)
         ? hold('Waiting for the saved installer to settle. An executable appearing before completion is not installation authority.')
@@ -273,18 +297,8 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
       const claimed = readRecord(file)
       const claimCurrent = () => { try { authority!.verify(); claimed.verify(); verifyNativePathFacts(claim.routes); return physical() } catch { return false } }
       const result = JSON.stringify({ token: claim.token, claim: hash, code: null, signal: null, notDispatched: true } satisfies Result)
-      const settleCancelled = async (slot: ReturnType<typeof readRecord>) => {
-        const marker = maybe(`${file}.dispatch`)
-        if (marker) { if (marker.text !== slot.text) throw Error('Changed cancellation marker'); await confirm(`${file}.dispatch`, marker, claimCurrent) }
-        else await publish(`${file}.dispatch`, slot.text, claimCurrent)
-        await confirm(claim.witness, slot, claimCurrent)
-        await publish(`${file}.result`, result, claimCurrent)
-      }
       if (pending?.slot) {
-        const saved = JSON.parse(pending.slot.text) as Dispatch
-        if (saved.token !== claim.token || saved.claim !== hash || saved.kind !== 'cancelled') return hold('Waiting for the dispatched installer result. An uncertain dispatch is never repeated.')
-        await settleCancelled(pending.slot)
-        return hold('The cancelled installer is settled; the saved launch can retry.')
+        return hold('Waiting for the dispatched installer result. An uncertain dispatch is never repeated.')
       }
       // A missing outside witness with an inside sentinel is a lost history, not a new dispatch.
       if (maybe(`${file}.dispatch`)) return hold('The installer dispatch witness is missing; its previous worker may still own the installation.')

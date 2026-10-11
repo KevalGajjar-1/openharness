@@ -48,13 +48,13 @@ export function createLaunchHelpers({ authority, prepareApiTools, launchOverride
   // An agent on a saved API's model relaunches with that API's endpoint and key as saved now, so a key
   // pasted since takes effect, and a removed API is refused rather than kept on its old key: the models
   // service reads them as it builds the launch (`buildLaunchOverrides`, `refresh`).
-  const relaunchOverrides = async (session: RegisteredSession, source: LaunchSource = session, operationCurrent: () => boolean = () => true, native?: NativeLaunch): Promise<LaunchOverridesResult> => {
+  const relaunchOverrides = async (session: RegisteredSession, source: LaunchSource = session, operationCurrent: () => boolean = () => true, native?: NativeLaunch, configKey = session.agentId): Promise<LaunchOverridesResult> => {
     const dispatchCurrent = authority(session.agentId)
     const current = () => operationCurrent() && dispatchCurrent()
     session = structuredClone(session)
     const changed = { ok: false, error: 'AGENT_CHANGED', detail: 'The harness changed or stopped during launch preparation.' } as const
     if (!current()) return changed
-    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, session.agentId, current, native)
+    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, configKey, current, native)
     if (!current()) return changed
     if (!result.ok && (result.unavailable || result.error === 'AGENT_CHANGED')) return result
     // Saved-API instructions remain available after an ordinary semantic refusal, as before.

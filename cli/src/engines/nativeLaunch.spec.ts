@@ -98,6 +98,37 @@ it('does not treat a longer flag as support for the selected permission mode', a
   expect(await prepared.launch.permission({ bypassPermission: true })).toBe('unsupported')
 })
 
+it.each(['claude', 'codex'] as const)('confirms the final %s home before acknowledging hooks or readiness', async engine => {
+  const confirmHome = vi.fn<() => void>(() => { throw Error('adoption storage unavailable') })
+  const result = await inspectNativeLaunch(engine, {}, { confirmHome })
+  if (!result.ok) throw Error('fixture held')
+  const variable = engine === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'
+  const selected = `/fixture/selected-${engine}`
+  expect(await result.launch.prepareHooks(19473, () => true, { [variable]: selected })).toBe(false)
+  expect(confirmHome).toHaveBeenCalledWith(engine, selected)
+  expect(result.launch.ready?.()).toBe(false)
+  confirmHome.mockImplementation(() => {})
+  expect(await result.launch.prepareHooks(19473, () => true, { [variable]: selected })).toBe(true)
+  expect(result.launch.ready?.()).toBe(true)
+  expect(result.launch.environment[variable]).toBe(selected)
+})
+
+it('does not adopt a home when hooks fail or the owner is revoked', async () => {
+  const confirmHome = vi.fn()
+  const result = await inspectNativeLaunch('codex', {}, { confirmHome })
+  if (!result.ok) throw Error('fixture held')
+  fixture.hooks = false
+  expect(await result.launch.prepareHooks(19473, () => true)).toBe(false)
+  expect(confirmHome).not.toHaveBeenCalled()
+  fixture.hooks = true
+  expect(await result.launch.prepareHooks(19473, () => false)).toBe(false)
+  expect(confirmHome).not.toHaveBeenCalled()
+  let owner = true
+  confirmHome.mockImplementation(() => { owner = false })
+  expect(await result.launch.prepareHooks(19473, () => owner)).toBe(false)
+  expect(result.launch.ready?.()).toBe(false)
+})
+
 it('bounds actual probe concurrency and recovers after the children settle', async () => {
   fixture.stalled = true
   const running = Array.from({ length: 10 }, () => inspectNativeLaunch('opencode'))

@@ -45,7 +45,8 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
   const root = join(env.ADAPTER_DATA_DIR, 'grid-launch-config'), directory = join(root, digest)
   const manifest = join(root, `${digest}.json`), ready = join(directory, '.harness-config.json')
   const owner = `${manifest}.directory`, completion = `${manifest}.complete`
-  const destinations = [manifest, owner, completion, ready, ...files.map(file => join(directory, file.name))]
+  const linkRecord = (link: GridConfigLink) => `${manifest}.${link.name}.link`
+  const destinations = [manifest, owner, completion, ready, ...files.map(file => join(directory, file.name)), ...links.map(linkRecord)]
   const rootRoute = hookPreparationRoutes([manifest])
   const targetRoutes = links.length ? hookPreparationRoutes(links.map(link => join(link.target, '.harness-route'))) : undefined
   rootRoute.verify(); if (!current()) throw new HookPreparationHeld('the launch request changed')
@@ -88,6 +89,16 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
     }
     for (const link of links) {
       const path = join(directory, link.name)
+      const remembered = inspectHookFile(linkRecord(link), 0o600)
+      if (remembered.content !== null) {
+        const saved = JSON.parse(remembered.content)
+        if (saved.version !== 1 || saved.target !== link.target || !Array.isArray(saved.facts)) throw new HookPreparationHeld('the borrowed native authority changed')
+        verifyNativePathFacts(saved.facts)
+      } else {
+        if (settled.content !== null || completedBefore.content !== null) throw new HookPreparationHeld('the borrowed native authority is missing')
+        try { lstatSync(path); throw new HookPreparationHeld('the native link has no retained authority') }
+        catch (error) { if (!missing(error)) throw error }
+      }
       const route = hookPreparationRoutes([join(link.target, '.harness-route')])
       targetRoutes?.verify(); route.verify(); attempt.verify()
       mkdirSync(link.target, { recursive: true, mode: 0o700 })
@@ -96,6 +107,10 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
       const targetPaths = new NativePaths(new NativeEvidenceBudget(250)), target = targetPaths.resolveSync(link.target)
       if (!target?.info.isDirectory()) throw new HookPreparationHeld('the borrowed native location is not a directory')
       const retained = targetPaths.snapshot()
+      const authorityBytes = JSON.stringify({ version: 1, target: link.target, facts: retained })
+      if (remembered.content !== null && remembered.content !== authorityBytes) throw new HookPreparationHeld('the borrowed native location changed')
+      attempt.observe(link.target, () => verifyNativePathFacts(retained))
+      await remembered.replace(authorityBytes, attempt, remembered.content === null)
       for (let parent = target.path, depth = 0; ; parent = dirname(parent)) {
         if (depth++ > 256) throw new HookPreparationHeld('the borrowed location exceeds its depth limit')
         verifyNativePathFacts(retained); route.verify(); await syncDirectory(parent, attempt)
@@ -126,14 +141,22 @@ export async function publishGridConfigDir(key: string, inputFiles: readonly Gri
   for (const link of links) {
     const path = join(directory, link.name)
     if (!lstatSync(path).isSymbolicLink() || readlinkSync(path) !== link.target) throw new HookPreparationHeld('the borrowed native link changed before acknowledgement')
+    const saved = JSON.parse(inspectHookFile(linkRecord(link), 0o600).content ?? 'null')
+    if (!saved || saved.version !== 1 || saved.target !== link.target || !Array.isArray(saved.facts)) throw new HookPreparationHeld('the borrowed native authority is missing')
+    verifyNativePathFacts(saved.facts)
+    linkFacts.push(...saved.facts)
   }
   // Joined publishers still retain their own link routes, not a peer's closure.
-  if (!linkFacts.length && links.length) {
-    for (const link of links) {
-      const paths = new NativePaths(new NativeEvidenceBudget(250)); paths.resolveSync(join(directory, link.name)); linkFacts.push(...paths.snapshot())
-    }
+  for (const link of links) {
+    const paths = new NativePaths(new NativeEvidenceBudget(250)); paths.resolveSync(join(directory, link.name)); linkFacts.push(...paths.snapshot())
   }
-  linkFacts = [...new Map([...linkFacts, ...targetRoutes?.facts ?? []].map(fact => [fact.path, fact])).values()]
+  const retained = new Map<string, NativePathFact>()
+  for (const fact of [...linkFacts, ...targetRoutes?.facts ?? []]) {
+    const previous = retained.get(fact.path)
+    if (previous && JSON.stringify(previous) !== JSON.stringify(fact)) throw new HookPreparationHeld('the borrowed native route changed before acknowledgement')
+    retained.set(fact.path, fact)
+  }
+  linkFacts = [...retained.values()]
   const published = proof!
   const confirmed: HookPreparationProof = {
     files: published.files.map((file, index) => index === 0 ? { ...file, facts: [...file.facts, ...linkFacts] } : file),

@@ -54,6 +54,16 @@ it('reads installation obligations after reconstruction without creating a missi
   expect(install.dispatch).toHaveBeenCalledOnce()
 })
 
+it('holds a failed installation across different request IDs and a reconstructed core', async () => {
+  const install = controller()
+  await install.ensure('opencode', recipe, environment, 'failed-request', () => true)
+  complete(undefined, 1)
+  expect(await controller().status('opencode', 'new-request', () => true)).toMatchObject({ complete: false })
+  expect(await controller().ensure('opencode', recipe, environment, 'new-request', () => true)).toMatchObject({ complete: false })
+  expect(await controller().status('codex', 'unrelated-request', () => true)).toBeNull()
+  expect(install.dispatch).toHaveBeenCalledOnce()
+})
+
 it('retains one durable installation across duplicate requests and a reconstructed core', async () => {
   const install = controller()
   expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ complete: false })
@@ -92,6 +102,28 @@ it('never dispatches an unconfirmed claim and can recover before any publication
   fixture.failSync = false
   expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ complete: false })
   expect(install.dispatch).toHaveBeenCalledTimes(1)
+})
+
+it('settles a durable non-dispatch cancellation through the ready-executable status path', async () => {
+  const file = join(directory, '00000000.json')
+  fixture.onSync = () => { if (existsSync(file)) fixture.failSync = true }
+  const original = controller()
+  await original.ensure('opencode', recipe, environment, 'original', () => true)
+  expect(original.dispatch).not.toHaveBeenCalled()
+  fixture.failSync = false
+  const witness = `${directory}.00000000.dispatch`
+  fixture.onSync = () => { if (existsSync(witness)) fixture.failSync = true }
+  const other = controller()
+  await other.ensure('codex', recipe, environment, 'other', () => true)
+  expect(other.dispatch).not.toHaveBeenCalled()
+  expect(JSON.parse(readFileSync(witness, 'utf8')).kind).toBe('cancelled')
+  expect(existsSync(`${file}.result`)).toBe(false)
+  fixture.onSync = undefined; fixture.failSync = false
+  const recovered = controller()
+  expect(await recovered.status('opencode', 'original', () => true)).toMatchObject({ complete: false })
+  expect(JSON.parse(readFileSync(`${file}.result`, 'utf8')).notDispatched).toBe(true)
+  expect(await recovered.status('opencode', 'original', () => true)).toBeNull()
+  expect(recovered.dispatch).not.toHaveBeenCalled()
 })
 
 it('does not replay a dispatch whose reply was lost', async () => {
