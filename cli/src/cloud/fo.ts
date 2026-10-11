@@ -5,8 +5,8 @@
  *
  * Wajo publishes what the tools do but not their parameters' names, so they are read from `tools/list` on
  * first use and filled by what they mean: the person's words, the conversation, the pending reply. A reply
- * Fo ends with a question waits on the person, with the numbered choices it lists. Fo cannot be stopped from
- * here: it keeps working on its own.
+ * that lists choices waits on the person, with those choices; one that only ends with a question is a turn
+ * ended, as Claude Code's is. Fo cannot be stopped from here: it keeps working on its own.
  */
 import { CLOUD_AGENTS } from '../lib/cloudAgents.js'
 import type { McpClient, McpTool } from './mcp.js'
@@ -41,12 +41,17 @@ export function readReply(result: Record<string, unknown>): { working: boolean; 
     ids, progress: str(result.progress) ?? str(result.activity) ?? (working ? str(result.message) ?? str(result.text) : null) }
 }
 
-/** A reply that asks something: its last paragraph, and the numbered choices it lists (up to six). */
+/**
+ * A reply that offers choices: the paragraph that asks, and the choices it lists (up to six). Only choices make
+ * it a question. Fo chats, and most of its replies end with one ("Did that trip ever get a destination?"):
+ * as questions they lit its pane amber after every turn (2026-10-11), where a Claude Code turn that ends
+ * with a question in its words is simply over.
+ */
 export function questionIn(text: string): { text: string; choices: string[] } | null {
   const paragraphs = text.trim().split(/\n\s*\n/)
   const choices = text.split('\n').map((line) => /^\s*(?:\d+[.)]|[-•])\s+(.{1,60})\s*$/.exec(line)?.[1]?.trim()).filter((choice): choice is string => !!choice).slice(0, 6)
-  const asking = paragraphs.find((paragraph) => /\?\s*$/.test(paragraph.trim())) ?? (text.trim().endsWith('?') ? paragraphs.at(-1) : null)
-  if (!asking && choices.length < 2) return null
+  if (choices.length < 2) return null
+  const asking = paragraphs.find((paragraph) => /\?\s*$/.test(paragraph.trim()))
   return { text: (asking ?? paragraphs[0]).trim().slice(0, 500), choices }
 }
 

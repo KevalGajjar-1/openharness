@@ -252,6 +252,32 @@ void main() {
     },
   );
 
+  testWidgets('its title is renamed as a terminal pane\'s is: a double click', (
+    tester,
+  ) async {
+    final (app, connection) = await setUp(tester, cloudFrame());
+    await mountPane(tester, app);
+    final title = find.byKey(const ValueKey('cloud-pane-title'));
+    await tester.tap(title);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(title);
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('agent-rename-input'));
+    expect(field, findsOneWidget);
+    tester.testTextInput.enterText('Trip planning');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(connection.renames.single, {
+      'agentId': 'cloud_1',
+      'name': 'Trip planning',
+    });
+    connection.replies.single.complete({
+      'agent': {'id': 'cloud_1', 'name': 'Trip planning'},
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Trip planning'), findsOneWidget);
+  });
+
   testWidgets('words for it are sent, and a refusal is said in the pane', (
     tester,
   ) async {

@@ -3,8 +3,8 @@
  * They have no pane, so they are never registry rows. The cloud service publishes them through `core.cloud`
  * (`doors`); the core keeps the last list, sends each change to the apps and the dial as any agent's frame
  * (`location: 'cloud'`), and puts their questions wherever questions show. What a person does to one comes
- * back here first: a New Harness for a cloud agent, words for it, an answer to its question and Stop are
- * handed to the service's port, and everything else goes on to the terminal agents' own paths.
+ * back here first: a New Harness for a cloud agent, words for it, an answer to its question, a rename and Stop
+ * are handed to the service's port, and everything else goes on to the terminal agents' own paths.
  */
 import type { CloudCore, CloudPort, CloudResult } from '../api.js'
 import { CLOUD_DOWN } from '../api.js'
@@ -133,6 +133,29 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
       return call((cloud) => cloud.answer(agentId, requestId, answers), DOWN)
         .then((result): QuestionAnswerResult => (result.ok ? { ok: true }
           : { ok: false, error: result.error === 'STALE_QUESTION' ? 'STALE_QUESTION' : 'ANSWER_FAILED', detail: result.detail ?? '' }))
+    },
+    /**
+     * `agent_update` for a cloud harness, answered as a terminal agent's is (core/agents/update.ts): its frame
+     * after a rename, told to every window and the dial; its frame as it stands for an app opening it, since
+     * nothing here keeps a "last used"; null when it is not one. It has no model to move.
+     */
+    update(payload: Record<string, unknown>): Promise<Record<string, unknown>> | null {
+      const agentId = typeof payload.agentId === 'string' ? payload.agentId : ''
+      const harness = harnesses.get(agentId)
+      if (!harness) return null
+      if (!Object.prototype.hasOwnProperty.call(payload, 'name')) {
+        return Promise.resolve(payload.opened === true ? { agent: cloudAgentFrame(harness) } : { error: 'MISSING_UPDATE' })
+      }
+      const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : ''
+      if (!name) return Promise.resolve({ error: 'MISSING_NAME' })
+      return call((cloud) => cloud.rename(agentId, name), DOWN).then((result) => {
+        if (!result.ok) return { error: result.error, ...(result.detail ? { detail: result.detail } : {}) }
+        // As a terminal agent's rename is told; the service's next list says it again, which changes nothing.
+        const renamed: Frame = { type: 'agent_renamed', payload: { agentId, name, engine: harness.agent } }
+        clients.send(renamed)
+        clients.sendCommander(renamed)
+        return { agent: cloudAgentFrame({ ...harness, name }) }
+      })
     },
     /**
      * Stop Harness for a cloud harness, answered as `agent_delete` is; null when it is not one. The socket waits

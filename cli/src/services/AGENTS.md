@@ -228,7 +228,7 @@ To add one:
 Removing one is deleting those. Cloud agents (`src/services/cloud.ts`, `src/cloud/`) show an experiment that owns
 agents with no pane: it tells the core its harnesses and their questions through `core.cloud` (asked over its link
 out of process, `core/experimentQueries.ts`), and the core lists them, shows their questions and hands a New Harness,
-words, an answer and Stop Harness for one to its port (`core/agents/cloud.ts`, `core/cloudLink.ts`). A port member is
+words, an answer, a rename and Stop Harness for one to its port (`core/agents/cloud.ts`, `core/cloudLink.ts`). A port member is
 never called `stop`: the service host reads that as stopping the service. A port the core calls in line (the orchestrator's `roleOf`) is answered
 from what the process last reported (`src/core/orchestratorLink.ts`), as the viewers' are. Agent Messages
 (`src/services/messages.ts`) shows the rest: whether one of its typed deliveries may still be written, which

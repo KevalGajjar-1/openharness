@@ -15,6 +15,7 @@ import 'agent_drag.dart';
 import 'harness_activity_mark.dart';
 import 'engine_identity.dart';
 import 'pane_header_actions.dart';
+import 'rename_agent_dialog.dart';
 
 /// One message of a cloud harness's conversation, as `cloud_transcript` gives it.
 typedef CloudMessage = ({String id, String from, String text});
@@ -178,12 +179,25 @@ class _CloudChatPaneState extends State<CloudChatPane> {
                     message:
                         '${widget.agent.displayName}\n${widget.agent.cloud?.place ?? ''}',
                     waitDuration: const Duration(milliseconds: 500),
-                    child: Text(
-                      widget.agent.displayName,
-                      key: const ValueKey('cloud-pane-title'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: workspaceBarTextStyle(color: ink),
+                    // Renamed as a terminal pane's title is: a double click.
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onDoubleTap: () => unawaited(
+                        showAgentRenameDialog(
+                          context,
+                          widget.notifier,
+                          widget.machineId,
+                          widget.agent.id,
+                          widget.agent.displayName,
+                        ),
+                      ),
+                      child: Text(
+                        widget.agent.displayName,
+                        key: const ValueKey('cloud-pane-title'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: workspaceBarTextStyle(color: ink),
+                      ),
                     ),
                   ),
                 ),

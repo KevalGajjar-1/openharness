@@ -9,10 +9,11 @@ describe('cloud agents in their own process, as the core reaches them', () => {
     expect(await port.create({ engine: 'fo' })).toEqual({ ok: true, agent: { id: 'cloud_1' } })
     expect(await port.deliver('cloud_1', 'hi')).toEqual({ ok: true, detail: 'done' })
     expect(await port.answer('cloud_1', 'cloud_q_1', { answer: 'main' })).toEqual({ ok: true, detail: 'done' })
+    expect(await port.rename('cloud_1', 'Trip')).toEqual({ ok: true, detail: 'done' })
     expect(await port.stopHarness('cloud_1')).toEqual({ ok: true, detail: 'done' })
     expect(call.mock.calls).toEqual([
       ['create', { engine: 'fo' }], ['deliver', { agentId: 'cloud_1', text: 'hi' }],
-      ['answer', { agentId: 'cloud_1', questionId: 'cloud_q_1', answers: { answer: 'main' } }], ['stopHarness', { agentId: 'cloud_1' }],
+      ['answer', { agentId: 'cloud_1', questionId: 'cloud_q_1', answers: { answer: 'main' } }], ['rename', { agentId: 'cloud_1', name: 'Trip' }], ['stopHarness', { agentId: 'cloud_1' }],
     ])
   })
 

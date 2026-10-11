@@ -192,6 +192,18 @@ describe('a cloud harness', () => {
     expect(await service.port.stopHarness(devinId)).toEqual({ ok: false, error: 'CLOUD_FAILED', detail: 'Devin Cloud answered 500.' })
   })
 
+  it('renames one in Harness alone, and keeps the name', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    const [{ agentId, updatedAt }] = published()
+    expect(await service.port.rename(agentId, '  Login flake  ')).toEqual({ ok: true })
+    expect(published()[0]).toMatchObject({ name: 'Login flake', updatedAt })
+    expect(JSON.parse(readFileSync(join(dataDir, 'cloud', 'harnesses.json'), 'utf8')).harnesses[0].harness.name).toBe('Login flake')
+    expect(await service.port.rename(agentId, ' ')).toMatchObject({ ok: false, error: 'MISSING_NAME' })
+    expect(await service.port.rename('cloud_none', 'x')).toMatchObject({ ok: false, error: 'UNKNOWN_AGENT' })
+  })
+
   it('is watched again after a restart, and tells a reconnected core everything again', async () => {
     const devin = maker()
     const first = start({ 'devin-cloud': devin })

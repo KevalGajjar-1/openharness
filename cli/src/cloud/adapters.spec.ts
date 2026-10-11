@@ -242,6 +242,9 @@ describe('Fo', () => {
     expect(readReply({ text: 'Hi' })).toMatchObject({ working: false, text: 'Hi' })
     expect(questionIn('They have two times.\n\n1) 9:30\n2) 11:00\n3) neither\n\nWhich one?')).toEqual({ text: 'Which one?', choices: ['9:30', '11:00', 'neither'] })
     expect(questionIn('Booked for 9:30.')).toBeNull()
+    // A question in Fo's words, with no choices, ends its turn: Fo chats, and most replies end with one.
+    expect(questionIn('Hey! Did that trip ever get a destination?')).toBeNull()
+    expect(questionIn('Which one?\n1) 9:30')).toBeNull()
     expect(questionIn('Options:\n- a\n- b')).toEqual({ text: 'Options:\n- a\n- b', choices: ['a', 'b'] })
   })
 

@@ -20,6 +20,7 @@ const port = (): CloudPort & { [K in keyof CloudPort]: ReturnType<typeof vi.fn> 
   create: vi.fn(async () => ({ ok: true as const, agent: { id: 'cloud_2' } })),
   deliver: vi.fn(async () => ({ ok: true as const })),
   answer: vi.fn(async () => ({ ok: true as const })),
+  rename: vi.fn(async () => ({ ok: true as const })),
   stopHarness: vi.fn(async () => ({ ok: true as const, detail: 'Fo keeps working on its own.' })),
 })
 
@@ -110,6 +111,31 @@ describe('agents a service owns', () => {
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'X' })
   })
 
+  it('renames one through the service, tells every window and the dial, and answers an open with its frame', async () => {
+    const service = port()
+    const { cloud, clients } = setup(service)
+    cloud.doors.publish([harness({ agent: 'fo', name: 'hi' })])
+    clients.send.mockClear()
+    clients.sendCommander.mockClear()
+    expect(cloud.update({ agentId: 'a1', name: 'x' })).toBeNull()
+    expect(cloud.update({})).toBeNull()
+    expect(await cloud.update({ agentId: 'cloud_1', name: '  Trip planning  ' })).toEqual({ agent: expect.objectContaining({ id: 'cloud_1', name: 'Trip planning' }) })
+    expect(service.rename).toHaveBeenCalledWith('cloud_1', 'Trip planning')
+    const renamed = { type: 'agent_renamed', payload: { agentId: 'cloud_1', name: 'Trip planning', engine: 'fo' } }
+    expect(clients.send).toHaveBeenCalledWith(renamed)
+    expect(clients.sendCommander).toHaveBeenCalledWith(renamed)
+    expect(await cloud.update({ agentId: 'cloud_1', name: ' ' })).toEqual({ error: 'MISSING_NAME' })
+    expect(await cloud.update({ agentId: 'cloud_1', name: 3 })).toEqual({ error: 'MISSING_NAME' })
+    service.rename.mockResolvedValueOnce({ ok: false, error: 'UNKNOWN_AGENT', detail: 'gone' }).mockResolvedValueOnce({ ok: false, error: 'X' })
+    expect(await cloud.update({ agentId: 'cloud_1', name: 'y' })).toEqual({ error: 'UNKNOWN_AGENT', detail: 'gone' })
+    expect(await cloud.update({ agentId: 'cloud_1', name: 'y' })).toEqual({ error: 'X' })
+    // An app opening it: its frame as it stands, nothing told.
+    clients.send.mockClear()
+    expect(await cloud.update({ agentId: 'cloud_1', opened: true })).toEqual({ agent: expect.objectContaining({ id: 'cloud_1', name: 'hi' }) })
+    expect(await cloud.update({ agentId: 'cloud_1' })).toEqual({ error: 'MISSING_UPDATE' })
+    expect(clients.send).not.toHaveBeenCalled()
+  })
+
   it('says "stopping" when the maker is slow to stop, so the connection waits on no vendor', async () => {
     const service = port()
     service.stopHarness.mockImplementation(() => new Promise(() => {}))
@@ -126,6 +152,7 @@ describe('agents a service owns', () => {
     cloud.doors.ask('cloud_1', 'cloud_q_1', { text: 'Which?', choices: [] })
     expect(await cloud.answer({ requestId: 'cloud_q_1' })).toEqual({ ok: false, error: 'ANSWER_FAILED', detail: CLOUD_DOWN.detail })
     expect(await cloud.stop('cloud_1')).toEqual({ error: 'SERVICE_UNAVAILABLE', detail: CLOUD_DOWN.detail })
+    expect(await cloud.update({ agentId: 'cloud_1', name: 'x' })).toEqual({ error: 'SERVICE_UNAVAILABLE', detail: CLOUD_DOWN.detail })
   })
 
   it('logs a question by default', () => {

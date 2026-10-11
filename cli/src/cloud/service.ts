@@ -312,6 +312,18 @@ export function startCloudService(options: CloudServiceOptions) {
     return result
   }
 
+  /** Only the name Harness shows: nothing is asked of the maker, and its activity time stands. */
+  const rename = async (agentId: string, name: string): Promise<CloudResult> => {
+    const entry = entries.get(agentId)
+    if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
+    const trimmed = name.trim().slice(0, 120)
+    if (!trimmed) return { ok: false, error: 'MISSING_NAME', detail: 'A harness needs a name.' }
+    entry.harness.name = trimmed
+    save()
+    publish()
+    return { ok: true }
+  }
+
   const stopHarness = (agentId: string): Promise<CloudResult> => { interrupt(agentId); return serial(agentId, async () => {
     const entry = entries.get(agentId)
     if (!entry) return { ok: false, error: 'UNKNOWN_AGENT', detail: 'That cloud harness is gone.' }
@@ -365,7 +377,7 @@ export function startCloudService(options: CloudServiceOptions) {
 
   return {
     requests,
-    port: { create, deliver, answer, stopHarness } satisfies CloudPort,
+    port: { create, deliver, answer, rename, stopHarness } satisfies CloudPort,
     /** The core connected again (its restart): it is told every harness, and asked every open question, again. */
     republish(): void {
       publish()

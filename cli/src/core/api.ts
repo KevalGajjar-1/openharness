@@ -853,12 +853,14 @@ export interface CloudCore {
 /** What the cloud service answers the core: done, or why not, in words a person reads. */
 export type CloudResult = { ok: true; detail?: string } | { ok: false; error: string; detail?: string }
 
-/** The core's calls into the cloud agents' service: a New Harness for one, a person's words, an answer, a Stop. */
+/** The core's calls into the cloud agents' service: a New Harness for one, a person's words, an answer, a new name, a Stop. */
 export interface CloudPort {
   /** `agent_create` for a cloud agent: the new harness's frame, or why not. */
   create(request: Record<string, unknown>): Promise<{ ok: true; agent: Record<string, unknown> } | { ok: false; error: string; detail?: string }>
   deliver(agentId: string, text: string): Promise<CloudResult>
   answer(agentId: string, requestId: string, answers: Record<string, string>): Promise<CloudResult>
+  /** Rename Harness: the name Harness shows. The maker's own name for the work stays as it is. */
+  rename(agentId: string, name: string): Promise<CloudResult>
   /** Stop Harness. Not `stop`: a service host reads a port's `stop` as stopping the service itself. */
   stopHarness(agentId: string): Promise<CloudResult>
 }
@@ -866,7 +868,7 @@ export interface CloudPort {
 /** A call the cloud service could not take: it is off, failing, or slower than the core waits. */
 export const CLOUD_DOWN = { ok: false as const, error: 'SERVICE_UNAVAILABLE', detail: 'Cloud agents are not running here. Try again in a moment.' }
 /** What the core gets when the cloud service fails: each call is refused with a reason, and nothing is lost but it. */
-export const CLOUD_FALLBACKS: PortFallbacks<CloudPort> = { create: later(CLOUD_DOWN), deliver: later(CLOUD_DOWN), answer: later(CLOUD_DOWN), stopHarness: later(CLOUD_DOWN) }
+export const CLOUD_FALLBACKS: PortFallbacks<CloudPort> = { create: later(CLOUD_DOWN), deliver: later(CLOUD_DOWN), answer: later(CLOUD_DOWN), rename: later(CLOUD_DOWN), stopHarness: later(CLOUD_DOWN) }
 
 /** What a delivered turn answers: delivered, or refused with the machine's name and a reason a person can read. */
 export type SendResult = { ok: true } | { ok: false; machine: string; reason: string }

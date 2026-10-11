@@ -1466,11 +1466,17 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     .find((session) => session.tmuxPane === tmuxPane
       || session.runtimes.some((runtime) => runtime.backend === 'tmux' && runtime.paneId === tmuxPane))?.agentId ?? null
   // A rename, a model and effort, or an app opening an agent (core/agents/update.ts).
-  backend.agentUpdateProvider = createAgentUpdate({
+  const agentUpdate = createAgentUpdate({
     registry, clients: backend, toProject: (s) => backend.toProject(s), closeAgentService: () => backend.closeAgentService,
     onAgentRename: (session, name) => { void terminals.setTitle(session, name) },
     onRuntimeProfileUpdate: (sessionId, selectedModel) => runtimeController.setProfile(sessionId, selectedModel),
   }).agentUpdate
+  // A cloud harness is no registry row: its rename goes to the cloud service (core/agents/cloud.ts).
+  backend.agentUpdateProvider = async (payload, reply) => {
+    const cloud = cloudAgents?.update(payload)
+    if (cloud) reply(await cloud)
+    else await agentUpdate(payload, reply)
+  }
   runtimeProfiles.onChanged = (sessionId) => {
     const session = registry.resolve(sessionId)
     if (session) syncSession(session)
