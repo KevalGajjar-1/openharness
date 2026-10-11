@@ -32,6 +32,9 @@ to a release needs write access to the repository.
 
 ## The text
 
+Privacy policy, where a directory asks for one: https://www.autonomous.ai/privacy (Autonomous, Inc.; also in the
+bundle manifest's `privacy_policies`).
+
 Use the same words everywhere.
 
 - **Name**: Harness

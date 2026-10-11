@@ -50,6 +50,7 @@
   "tools_generated": true,
   "keywords": ["agents", "parallel", "claude-code", "codex", "orchestration", "tmux"],
   "license": "MIT",
+  "privacy_policies": ["https://www.autonomous.ai/privacy"],
   "compatibility": {
     "platforms": ["darwin", "linux"],
     "runtimes": {
