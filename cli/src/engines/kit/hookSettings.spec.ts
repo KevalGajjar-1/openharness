@@ -7,6 +7,7 @@ import { hooks as claude } from '../claude/hookContract.js'
 import { hooks as codex } from '../codex/hookContract.js'
 import { defaultHookHome, installHookSettings } from './hookSettings.js'
 import { HOOK_SCRIPT } from './notifyHooks.js'
+import type { HookPreparationProof } from './nativeHookFiles.js'
 
 // What every case writes and logs is engines/hookInstallers.golden.spec.ts; these are the kit's own edges.
 let root = ''
@@ -19,6 +20,16 @@ afterEach(() => {
 it('finds an engine\'s home in the person\'s home or in a daemon setting', () => {
   expect(defaultHookHome(claude.settings)).toBe(join(homedir(), '.claude'))
   expect(defaultHookHome(codex.settings)).toBe(env.CODEX_HOME)
+})
+
+it.each(['claude', 'codex'] as const)('publishes one current %s proof after both native and Agent Messages blocks', async engine => {
+  const settings = engine === 'claude' ? claude.settings : codex.settings
+  const home = join(root, engine), proofs: HookPreparationProof[] = []
+  expect(await installHookSettings(engine, settings, 19473, home, { onPrepared: proof => { proofs.push(proof) } })).toBe(true)
+  expect(proofs).toHaveLength(1)
+  expect(proofs[0]!.current()).toBe(true)
+  const content = JSON.parse(readFileSync(join(home, settings.file), 'utf8'))
+  expect(content.hooks[settings.inbox!.event].some((block: { hooks: { command: string }[] }) => block.hooks.some(hook => hook.command.includes('inbox-hook.mjs')))).toBe(true)
 })
 
 it('names a home literally in its log lines, whatever characters the path holds', async () => {
