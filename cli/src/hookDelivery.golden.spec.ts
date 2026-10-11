@@ -13,6 +13,11 @@ vi.mock('node:child_process', () => {
     spawn: forbidden, spawnSync: forbidden, fork: forbidden }
 })
 vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => 0 } }))
+// Healthy disk confirmation is deterministic; host fsync latency is tested in
+// private integration fixtures, never used to select a golden reply.
+vi.mock('node:fs', async original => ({ ...await original<object>(),
+  fsync: (_fd: number, done: (error: Error | null) => void) => queueMicrotask(() => done(null)),
+}))
 vi.mock('./lib/loginShellEnv.js', () => ({ loginShellEnvironment: () => ({}) }))
 vi.mock('./lib/bootId.js', async original => ({ ...await original<object>(), currentBootId: () => 'fixture-boot', bootChanged: () => false }))
 vi.mock('./lib/processLiveness.js', async original => ({ ...await original<object>(),
@@ -82,7 +87,7 @@ it.each(['linux', 'darwin'])('preserves stable delivery acknowledgement and prom
       onTurnStop: value => { turns.push({ stop: value }) },
       onToolStart: value => { turns.push({ tool: value }) },
       onSessionEnd: (sessionId, reason) => { ends.push({ sessionId, reason }) },
-    })
+    }, { deferNativeRecovery: true })
     server = started.server
     const send = async (endpoint: string, body: Record<string, unknown>, id?: string, firedAt = '1791590400123') => {
       const response = await fetch(`http://127.0.0.1:${started.port}/api/hook/${endpoint}`, {

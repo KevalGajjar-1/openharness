@@ -367,10 +367,11 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
       const verify = await append(before, { kind: 'intake', intake })
       return { intake, verify }
     },
-    async claim(id: string, agentId: string): Promise<NativeHookClaim> {
+    async claim(id: string, agentId: string, inspected?: { previous: string | null }): Promise<NativeHookClaim> {
       const before = await snapshot(), delivery = before.deliveries.get(id)
       if (!delivery || delivery.result || delivery.intake.agentId !== agentId) held('this delivery cannot dispatch')
       if (before.active) held('an earlier native hook effect is unconfirmed')
+      if (inspected && inspected.previous !== before.previous) held('native hook order changed after inspection')
       const pending = [...before.deliveries.values()].filter(item => !item.result).length
       if (before.length + pending * 2 > maxRecords || before.bytes + pending * TERMINAL_BYTES > maxBytes) held('journal capacity cannot retain terminal outcomes')
       await before.confirm()

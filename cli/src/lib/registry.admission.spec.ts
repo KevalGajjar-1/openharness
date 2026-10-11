@@ -10,11 +10,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 const clock = vi.hoisted(() => ({ now: 0 }))
 vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => clock.now } }))
 
-const fault = vi.hoisted(() => ({ file: '', rename: false, directorySync: false, renamed: false,
+const fault = vi.hoisted(() => ({ file: '', rename: false, directorySync: false, renamed: false, nativeSync: false,
   afterProof: undefined as (() => void) | undefined, beforeVerify: undefined as (() => void) | undefined }))
 vi.mock('fs', async original => {
   const actual = await original<typeof import('node:fs')>()
-  return { ...actual, renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+  return { ...actual, fsync: (_fd: number, done: (error: Error | null) => void) => queueMicrotask(() => done(fault.nativeSync ? Error('fixture native confirmation unavailable') : null)),
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
     if (fault.rename && String(args[1]) === fault.file) throw new Error('fixture registry write failure')
     const result = actual.renameSync(...args)
     if (String(args[1]) === fault.file) fault.renamed = true
@@ -57,6 +58,7 @@ const unchanged = (before: ReturnType<typeof snapshot>) => {
 }
 beforeEach(async () => {
   clock.now = 0
+  fault.nativeSync = false
   fault.rename = false; fault.directorySync = false; fault.renamed = false; fault.afterProof = undefined; fault.beforeVerify = undefined
   root = realpathSync(mkdtempSync(join(tmpdir(), 'registry-admission-')))
   home = join(root, 'codex'); file = join(root, 'data', 'registry.json'); fault.file = file
@@ -75,6 +77,7 @@ beforeEach(async () => {
 afterEach(async () => {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
   server = undefined
+  fault.nativeSync = false
   fault.rename = false; fault.directorySync = false; fault.renamed = false; fault.afterProof = undefined; fault.beforeVerify = undefined
   vi.restoreAllMocks(); vi.doUnmock('../engines/transcriptBindings.js'); vi.unstubAllEnvs(); vi.resetModules(); rmSync(root, { recursive: true, force: true })
 })
@@ -450,7 +453,7 @@ it('reconciles a whole alias-only ownership transfer after an unconfirmed write'
 
 
 async function httpFixture(blocked: (agentId: string) => boolean = () => false, admissionReceiptCapacity = 65_536,
-  overrides: Partial<HookServerHandlers> = {}, admissionBytesCapacity?: number) {
+  overrides: Partial<HookServerHandlers> = {}, admissionBytesCapacity?: number, deferNativeRecovery = false) {
   const { startHookServer } = await import('../hookServer.js')
   const { readHookCredential } = await import('./hookAuth.js')
   const prompts: string[] = [], registered = vi.fn(), reasons: Array<string | undefined> = []
@@ -459,7 +462,7 @@ async function httpFixture(blocked: (agentId: string) => boolean = () => false, 
     onPromptSubmitted: (_id, text) => prompts.push(text),
     onAdmissionHeld: (_id, reason) => reasons.push(reason),
     ...overrides,
-  }, { admissionReceiptCapacity, admissionBytesCapacity })
+  }, { admissionReceiptCapacity, admissionBytesCapacity, deferNativeRecovery })
   server = started.server
   const post = async (override: Record<string, unknown> = {}, order: { id?: string; firedAt?: number } = {}, path = 'session-start') => {
     const response = await fetch(`http://127.0.0.1:${started.port}/api/hook/${path}`, {
@@ -546,6 +549,52 @@ it('keeps immutable native delivery payload conflicts across a hook server resta
   })
   expect(recovered.prompts).toEqual([])
   expect(recovered.registered).not.toHaveBeenCalled()
+})
+
+it('restores accepted native prompt time before a delayed Stop after restart', async () => {
+  const firedAt = Date.now(), order = { id: 'fixture-restart-prompt-time', firedAt }
+  const before = await httpFixture()
+  expect(await before.post({}, order)).toEqual({ status: 200, body: { ok: true } })
+  await new Promise<void>(resolve => server!.close(() => resolve()))
+  server = undefined
+  const events: unknown[] = []
+  const recovered = await httpFixture(undefined, undefined, {
+    onPromptHook: (id, at) => { events.push(['prompt', id, at]) },
+    onTurnStop: body => { events.push(['stop', body.sessionId, body.firedAt]) },
+  }, undefined, true)
+  expect(await recovered.post({}, { firedAt: firedAt - 1 }, 'turn-stop')).toEqual({ status: 200, body: { ok: true } })
+  expect(events).toEqual([['prompt', A, firedAt], ['stop', A, firedAt - 1]])
+})
+
+it('does not credit a visible prompt result or apply Stop when its durability cannot be confirmed', async () => {
+  const before = await httpFixture()
+  expect(await before.post({}, { id: 'fixture-restart-unconfirmed', firedAt: Date.now() })).toEqual({ status: 200, body: { ok: true } })
+  await new Promise<void>(resolve => server!.close(() => resolve()))
+  server = undefined
+  fault.nativeSync = true
+  const prompt = vi.fn(), stop = vi.fn()
+  const recovered = await httpFixture(undefined, undefined, { onPromptHook: prompt, onTurnStop: stop }, undefined, true)
+  const response = await recovered.post({}, {}, 'turn-stop')
+  expect(response.status).toBe(202)
+  expect(response.body).toMatchObject({ pending: false, retry: true })
+  expect(prompt).not.toHaveBeenCalled()
+  expect(stop).not.toHaveBeenCalled()
+})
+
+it('revokes a bound hook before waiting for the HTTP server to close', async () => {
+  registry.register(input(A, transcript, '%2'))
+  let resolved!: (row: ReturnType<typeof registry.byAgent>) => void
+  const stop = vi.fn()
+  const f = await httpFixture(undefined, undefined, {
+    resolveHookAgent: () => new Promise(resolve => { resolved = row => resolve(row ?? null) }), onTurnStop: stop,
+  })
+  const response = f.post({}, {}, 'turn-stop')
+  await vi.waitFor(() => expect(resolved).toBeTypeOf('function'))
+  const closing = new Promise<void>(resolve => server!.close(() => resolve()))
+  resolved(registry.byAgent(source))
+  expect((await response).status).toBe(403)
+  expect(stop).not.toHaveBeenCalled()
+  await closing; server = undefined
 })
 
 it.each(['commandcode', 'grok', 'agy', 'copilot'] as const)('admits the %s SessionStart before its deterministic transcript directories exist', async engine => {

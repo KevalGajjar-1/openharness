@@ -9,8 +9,10 @@ same delivery ID is accepted after restart. Receipt
 passing Linux/macOS golden.
 
 Implementation checkpoint (October 11): the immutable journal and read-only
-registration preparation are implemented, but are not yet connected to HTTP
-admission or native client outboxes. This is not a completed delivery boundary.
+registration preparation are now connected to HTTP admission and background
+recovery. The three original restart regressions pass. Native client outboxes,
+precise process revalidation, global capacity and linked Stop completion remain
+unfinished; this is not a completed delivery boundary.
 Journal receipt `20261011T111043.022808Z-75081` passed TypeScript and 38 tests,
 including every first-initialization fsync boundary, both directory-creation
 interruptions, competing claims, immutable result retries and completion near the
@@ -27,6 +29,27 @@ review found no remaining storage blocker; process contention, HTTP integration,
 native conversation ordering, client migration and final acceptance remain open.
 The same review found mutable staged registration inputs and expired evidence
 budgets; preparation now copies inputs and retains facts verified with fresh budgets.
+
+HTTP checkpoint receipts `20261011T115141.118304Z-65604` and
+`20261011T115706.434998Z-88317` cover confirmed restoration of accepted native prompt
+times before a delayed Stop, no credit for an unconfirmed visible result, immediate
+shutdown revocation, and the transcript recovery barrier. The unchanged delivery
+golden, 162 queue/attach/golden cases, 40 journal cases and TypeScript pass. The first
+full HTTP/admission run passed 77 cases and found one regression: a newer pending
+intent could starve an already-owned effect. The queue now finishes its exclusive
+claim before selecting a successor; that regression and all six restart/Stop/
+shutdown cases passed the focused follow-up. This is combined evidence, not a
+second uninterrupted full admission run. Full coverage and end-to-end gates remain
+pending.
+
+The HTTP review also identified cross-core pending-intake order, acknowledgements
+after capacity refusal, registration callbacks after terminal publication, native
+process changes during disk waits and recovered Stop/Cancel authority. The first
+three have implementation fixes: claims compare the entire inspected frontier,
+pending conversations participate in ordering, capacity is reserved before intake,
+and synchronous registration dispatch precedes the terminal slot. Review of those
+fixes and separate-process contention evidence remain outstanding. Exact native
+birth evidence and durable Stop correlation are still open blockers.
 
 ## Ownership before acknowledgement
 

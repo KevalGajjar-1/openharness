@@ -34,6 +34,8 @@ import { createTurnReplacements } from './turnReplacement.js'
 export interface AttachDeps {
   liveFor: LiveFor
   resolve: (agentId: string) => RegisteredSession | undefined
+  /** Core restores accepted prompt times and unresolved hook effects before interpretation. */
+  nativeRecoveryReady?: (session: RegisteredSession) => boolean
   remoteLive?: Pick<LiveSessions, 'handles' | 'current' | 'prepare' | 'install' | 'discard' | 'retry'>
   /** Whether the session's terminal is known to be gone (core/terminals/control.ts `terminalGone`). */
   terminalGone: (session: RegisteredSession) => Promise<boolean>
@@ -75,6 +77,7 @@ export function createAttach({
   liveFor, resolve, remoteLive, terminalGone, normalizers, watcher, cursorDiscovery, device, runtimeProfiles, captureTerminal, emit,
   announceTurnAborted, questionWatcher, terminalLabel, dbs, devinHome, hermesDb, concurrency, relaunchMarks,
   wholeReadCapBytes = WHOLE_READ_CAP_BYTES, settled, readerLoadWaitMs, setInterpretationHold, announceSession,
+  nativeRecoveryReady = () => true,
 }: AttachDeps) {
   const {
     liveParsers, cursorNormalizers, opencodeReaders, kiloReaders, museNormalizers, ampNormalizers,
@@ -657,6 +660,9 @@ export function createAttach({
     replayFromStart = false,
     retryCurrent?: () => boolean,
   ): Promise<boolean> => {
+    // A held process remains bound and visible. Its core recovery callback
+    // retries this attach after the durable order facts are restored.
+    if (!nativeRecoveryReady(session)) return Promise.resolve(true)
     // Compaction and ordinary SessionStart also reconstruct parsers. A prior explicit closure still
     // belongs to this conversation and must survive those resets, not only native-evidence recovery.
     if (reset && turnReplacements.retains(session) && !session.identityHold && !session.interpretationHold
@@ -673,6 +679,7 @@ export function createAttach({
     const lifetime = lifetimes.get(session.sessionId) ?? {}
     lifetimes.set(session.sessionId, lifetime)
     const current = () => lifetimes.get(session.sessionId) === lifetime && paneReadIdentity(resolve(session.agentId)) === authority
+      && nativeRecoveryReady(session)
     if (!current()) return Promise.resolve(false)
     if (session.identityHold) return Promise.resolve(true)
     // Every caller observes this obligation, including an ordinary hook racing discovery's reset.
@@ -705,7 +712,7 @@ export function createAttach({
         }
         const attached = await attachSessionNow(session, current, reset, replayCursorFromStart, replayFromStart, handover)
         // A hold that arrived during the read is not evidence that the terminal disappeared.
-        return attached || !!resolve(session.agentId)?.identityHold || !!resolve(session.agentId)?.interpretationHold
+        return attached || !nativeRecoveryReady(session) || !!resolve(session.agentId)?.identityHold || !!resolve(session.agentId)?.interpretationHold
       } catch (error) {
         if (!session.interpretationHold) throw error
         if (current()) explainRecovery(session, `Waiting for transcript interpretation: ${error instanceof Error ? error.message : error}`)

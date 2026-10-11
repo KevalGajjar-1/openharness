@@ -83,6 +83,27 @@ it('never transfers a crashed publisher’s claim to a new caller', async () => 
   await expect(recovered.claim(body.id, body.agentId)).rejects.toThrow('earlier native hook effect')
 })
 
+it('refuses an effect inspected before another core advanced the accepted frontier', async () => {
+  const a = journal(), b = journal(), first = intake(), second = intake('fixture-delivery-0002')
+  await a.retain(first); await b.retain(second)
+  const inspected = await a.snapshot()
+  await (await b.claim(second.id, second.agentId)).finish({ accepted: true })
+  await expect(a.claim(first.id, first.agentId, { previous: inspected.previous })).rejects.toThrow('order changed after inspection')
+  expect((await a.snapshot()).active).toBeUndefined()
+  const current = await a.snapshot()
+  const claimed = await a.claim(first.id, first.agentId, { previous: current.previous })
+  await claimed.finish({ accepted: false, reply: { ignored: true, reason: 'stale_hook' } })
+})
+
+it('includes an unclaimed intake from another core in the effect frontier', async () => {
+  const a = journal(), b = journal(), first = intake()
+  await a.retain(first)
+  const inspected = await a.snapshot()
+  await b.retain(intake('fixture-delivery-0002'))
+  await expect(a.claim(first.id, first.agentId, { previous: inspected.previous })).rejects.toThrow('order changed after inspection')
+  expect((await a.snapshot()).active).toBeUndefined()
+})
+
 it('allows only the exclusive effect publisher to dispatch under contention', async () => {
   const a = journal(), b = journal(), body = intake()
   await a.retain(body)

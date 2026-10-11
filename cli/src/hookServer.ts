@@ -27,6 +27,9 @@ import type { HookTerminalHint } from './lib/terminalTypes.js'
 import { ENGINES, type AgentEngine } from './engines/types.js'
 import { isLoopbackRequest, loopbackHosts } from './lib/loopbackRequest.js'
 import { isTrustedLocal, listenLocalSocket, type LocalSocketServer } from './lib/localSocket.js'
+import { currentBootId } from './lib/bootId.js'
+import { secureStateDirectory } from './lib/secureState.js'
+import { createNativeHookJournal, type NativeHookClaim, type NativeHookDelivery } from './engines/kit/nativeHookJournal.js'
 
 /**
  * Which agent does a hook belong to, given the two grades of evidence?
@@ -90,6 +93,8 @@ export interface HookServerHandlers {
   /** Core lifecycle admission fence; Stop owns the pane before its first asynchronous capture. */
   hookAdmissionBlocked?: (agentId: string) => boolean
   onAdmissionHeld?: (agentId: string, reason: string | undefined) => void
+  /** The process's confirmed hook frontier is restored; a held attach can resume. */
+  onNativeRecoveryReady?: (entry: RegisteredSession) => void | Promise<void>
   /** Retain an uncorrelated native Stop before attaching a newly admitted conversation. */
   onAdmissionStop?: (entry: RegisteredSession, unmatched: boolean) => boolean
   /** Captured before a same-conversation registration waits; Cancel or forget supersedes that Stop. */
@@ -366,13 +371,16 @@ export interface HookServerOptions {
   admissionReceiptCapacity?: number
   /** Bound native payload and provenance retained by pending admission or linked Stop. */
   admissionBytesCapacity?: number
+  /** Production starts recovery only after the core readiness announcement. */
+  deferNativeRecovery?: boolean
 }
 
 export function startHookServer(
   port: number,
   handlers: HookServerHandlers,
   options: HookServerOptions = {},
-): Promise<{ server: http.Server; port: number; localSocket: LocalSocketServer | null }> {
+): Promise<{ server: http.Server; port: number; localSocket: LocalSocketServer | null; startRecovery(): void;
+  stopRecovery(): void; recoveryReady(row: RegisteredSession): boolean }> {
   const hookCredential = loadOrCreateHookCredential(env.ADAPTER_DATA_DIR)
   const admissions = createPendingAdmissions({ isProcessCurrent: (key, scope) => admissionProcessScope(registry.byAgent(key)) === scope })
   let admissionArrival = 0
@@ -383,6 +391,8 @@ export function startHookServer(
   const admissionReceipts = new Map<string, { scope: string; records: Map<string, Receipt> }>()
   const resolvingStops = new Map<string, { fingerprint: string; stop: LinkedStop }>()
   let receiptCount = 0, receiptBytes = 0
+  let reservedCount = 0, reservedBytes = 0
+  const intakeReservations = new Set<string>()
   const saveReceipt = (records: Map<string, Receipt>, id: string, next?: Receipt) => {
     const before = records.get(id)
     if (before) { receiptCount--; receiptBytes -= before.bytes }
@@ -391,9 +401,518 @@ export function startHookServer(
   }
   const receiptCapacity = options.admissionReceiptCapacity ?? 65_536
   const bytesCapacity = options.admissionBytesCapacity ?? 16 * 1024 * 1024
+  let closed = false, boot: string | undefined
+  const durableDirectory = join(env.ADAPTER_DATA_DIR, 'native-hook-deliveries')
+  type Journal = ReturnType<typeof createNativeHookJournal>
+  type DurableProcess = { key: string; journal: Journal; restored: Set<string>; claims: Map<string, NativeHookClaim>; ready: boolean }
+  const durableProcesses = new Map<string, DurableProcess>()
+  const waitingAttaches = new Set<string>()
+  const admissionHeld = (agentId: string, reason: string | undefined) => {
+    try { handlers.onAdmissionHeld?.(agentId, reason) }
+    catch (error) { console.warn('[hooks] admission status notification failed', error) }
+  }
+  const durableKey = (row: RegisteredSession): string => {
+    if (!row.processIdentity) throw new IdentityReadUnavailable('the original native process identity is unavailable')
+    boot ??= currentBootId()
+    if (boot.startsWith('time:')) { boot = undefined; throw new IdentityReadUnavailable('the kernel boot identity is unavailable') }
+    return `${boot}\u0000${processIdentityKey(row.engine, row.processIdentity)}`
+  }
+  const durableProcess = (row: RegisteredSession): DurableProcess => {
+    const key = durableKey(row), known = durableProcesses.get(key)
+    if (known) return known
+    if (durableProcesses.size >= 256) throw new IdentityReadUnavailable('native hook process recovery is at capacity')
+    secureStateDirectory(durableDirectory)
+    const journal = createNativeHookJournal({ directory: join(durableDirectory, createHash('sha256').update(key).digest('hex')),
+      processKey: key, current: () => !closed && registry.list().some(candidate => candidate.active && candidate.processIdentity
+        && `${boot}\u0000${processIdentityKey(candidate.engine, candidate.processIdentity)}` === key) })
+    const context = { key, journal, restored: new Set<string>(), claims: new Map<string, NativeHookClaim>(), ready: false }
+    durableProcesses.set(key, context)
+    return context
+  }
+  const ready = (context: DurableProcess, value: boolean) => {
+    context.ready = value && !closed
+    if (!context.ready) return
+    for (const agentId of waitingAttaches) {
+      const row = registry.byAgent(agentId)
+      if (!row?.active || !row.processIdentity) { waitingAttaches.delete(agentId); continue }
+      if (durableKey(row) !== context.key) continue
+      waitingAttaches.delete(agentId)
+      try { void Promise.resolve(handlers.onNativeRecoveryReady?.(row)).catch(error => console.warn('[hooks] recovery notification failed', error)) }
+      catch (error) { console.warn('[hooks] recovery notification failed', error) }
+    }
+  }
+  const recoveryReady = (row: RegisteredSession): boolean => {
+    if (row.engine === 'terminal') return true
+    if (!closed && recoveryStarted) {
+      try { if (durableProcesses.get(durableKey(row))?.ready) return true } catch { /* This process remains held. */ }
+    }
+    waitingAttaches.add(row.agentId)
+    return false
+  }
+  const restoreDeliveryOrder = (context: DurableProcess, row: RegisteredSession, deliveries: ReadonlyMap<string, NativeHookDelivery>) => {
+    for (const [id, delivery] of deliveries) {
+      const result = delivery.result
+      if (!result) continue
+      if (result.accepted === true) {
+        admissions.restore(row.agentId, delivery.intake.conversationId, {
+          scope: admissionProcessScope(row) ?? row.agentId, firedAt: delivery.intake.firedAt, arrival: Number(result.arrival) || 0,
+        })
+        if (!context.restored.has(id) && delivery.intake.firedAt && delivery.intake.payload.hookEvent === 'UserPromptSubmit') {
+          handlers.onPromptHook?.(delivery.intake.conversationId, delivery.intake.firedAt)
+        }
+      }
+      context.restored.add(id)
+    }
+  }
+  const confirmedSnapshot = async (context: DurableProcess, row: RegisteredSession) => {
+    ready(context, false)
+    const snapshot = await context.journal.snapshot()
+    // Visible bytes can be the last write of a crashed publisher. Restore
+    // control facts only after both copies and the namespace are durable.
+    await snapshot.confirm()
+    const owner = registry.byAgent(row.agentId)
+    if (closed || !owner?.active || durableKey(owner) !== context.key) {
+      throw new IdentityReadUnavailable('the native hook recovery owner changed')
+    }
+    restoreDeliveryOrder(context, row, snapshot.deliveries)
+    ready(context, !snapshot.active && [...snapshot.deliveries.values()].every(delivery => delivery.result))
+    return snapshot
+  }
+  const verifiedMutation = async (body: BoundHookBody): Promise<RegisteredSession | null> => {
+    const owner = await verifiedBoundMutation(body, handlers)
+    if (closed || !owner) return null
+    const identity = paneReadIdentity(owner)
+    try {
+      const snapshot = await confirmedSnapshot(durableProcess(owner), owner)
+      if (snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)) {
+        throw new IdentityReadUnavailable('an earlier native hook has no confirmed outcome')
+      }
+    } catch (error) {
+      const reason = `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024)
+      admissionHeld(owner.agentId, reason)
+      throw new IdentityReadUnavailable(reason)
+    }
+    return !closed && paneReadIdentity(registry.byAgent(owner.agentId)) === identity ? registry.byAgent(owner.agentId)! : null
+  }
   // Filled in once the port is bound: the Host a request must name is the port actually taken.
   let hosts: ReadonlySet<string> = new Set()
   let lastRefusalLogAt = 0
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined, recoveryStarted = false, recoveryCursor = 0
+  const recovering = new Set<string>(), recovered = new Set<string>()
+  const admitStart = async (body: BoundHookBody, native: { firedAt?: number; deliveryId?: string | string[]; recovery?: { agentId: string; key: string } },
+    respond: (status: number, reply: unknown) => void,
+  ): Promise<void> => {
+    // Every rejection below says WHY, out loud. They used to be silent, and a hook that arrives and
+    // is dropped looks exactly like a hook that never fired — which is precisely the confusion behind
+    // "the agent is running in my terminal but the list does not show it".
+    // Answered once: a hook answered before its resolution waited is only logged after it.
+    let answered = false
+    const answer = (code: number, reply: unknown): void => {
+      if (answered) return
+      answered = true
+      respond(code, reply)
+    }
+    const ignore = (reason: string): void => {
+      console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} ignored · ${reason}`)
+      answer(200, { ignored: true, reason })
+    }
+    const runtimeHints = normalizedRuntimeHints(body)
+    if (!runtimeHints.length) { ignore('not_in_terminal'); return }
+    // A plugin/extension is loaded ONCE per engine process, so a pane opened before an update keeps
+    // running the old copy — silently, and for hours. Measured on amp: a pane started at 11:49 was
+    // still writing transcripts with no tool calls long after the fix reached disk. The engines that
+    // use shell hooks re-read the file on every call and cannot drift like this; these three can, so
+    // they stamp their build and the mismatch is said out loud instead of being discovered later.
+    const pluginVersion = (body as { pluginVersion?: unknown }).pluginVersion
+    if (typeof pluginVersion === 'string' && pluginVersion && pluginVersion !== VERSION) {
+      console.warn(`[hooks] ${sid(body.sessionId ?? '?')} ${body.engine ?? '?'} plugin is v${pluginVersion}`
+        + ` but this machine is v${VERSION} — that pane loaded an older copy.`)
+      console.warn('[hooks] restart the pane (or reload its plugins) to pick up the current build')
+    }
+    const engine = body.engine ?? 'claude'
+    // Capture before process resolution yields. Native time is unchanged across client retries.
+    const admissionOrder = { firedAt: native.firedAt, arrival: ++admissionArrival }
+    const fingerprint = createHash('sha256').update(JSON.stringify([body, admissionOrder.firedAt])).digest('hex')
+    const originalBody = structuredClone(body)
+    const deliveryHeader = native.deliveryId
+    const nativeDeliveryId = typeof deliveryHeader === 'string' && /^[a-zA-Z0-9_-]{16,96}$/.test(deliveryHeader) ? deliveryHeader : undefined
+    const deliveryId = nativeDeliveryId ?? randomUUID()
+    const carriesStop = !!nativeDeliveryId && (engine === 'cursor' && body.hookEvent === 'stop'
+      || engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure'))
+    const stopProvenance = (value: BoundHookBody, firedAt: number | undefined) => JSON.stringify([
+      value.engine, value.sessionId, value.callerPid, normalizedRuntimeHints(value), firedAt, value.status,
+    ])
+    const originalStop = stopProvenance(body, admissionOrder.firedAt)
+    const conflict = { status: 409, reply: { pending: false, error: 'HOOK_DELIVERY_CONFLICT' } }
+    const scopeOf = (row: RegisteredSession | undefined) => row && JSON.stringify([
+      row.agentId, row.engine, row.processIdentity ? processIdentityKey(row.engine, row.processIdentity) : null,
+    ])
+    const resolving = resolvingStops.get(deliveryId)
+    if (resolving) {
+      const reply = resolving.fingerprint === fingerprint ? await resolving.stop(body, admissionOrder.firedAt) : conflict
+      answer(reply.status, reply.reply); return
+    }
+    // A preliminary lookup grants no binding authority. It only remembers
+    // cancellation before process resolution yields; the proved owner below
+    // must match this exact process/conversation before the witness applies.
+    const preliminary = carriesStop && body.sessionId ? registry.bySession(body.sessionId) : undefined
+    const stopScope = preliminary?.engine === engine ? scopeOf(preliminary) : undefined
+    const stopWitness = stopScope ? handlers.captureAdmissionStop?.(preliminary!) : undefined
+    let deferred = false
+    if (carriesStop) resolvingStops.set(deliveryId, { fingerprint, stop: (stop, firedAt) => {
+      if (stopProvenance(stop, firedAt) !== originalStop) return conflict
+      deferred = true
+      return { status: 202, reply: { pending: false, retry: true, detail: 'Waiting for the engine process record; Stop admission is not queued yet.' } }
+    } })
+    let processAgent: RegisteredSession | null
+    const recoveredOwner = native.recovery && registry.byAgent(native.recovery.agentId)
+    if (native.recovery && (!recoveredOwner?.active || durableKey(recoveredOwner) !== native.recovery.key)) return
+    try { processAgent = handlers.resolveHookAgent
+      ? await handlers.resolveHookAgent({
+        engine,
+        tmuxPane: body.tmuxPane,
+        runtimeHints,
+        callerPid: recoveredOwner?.processIdentity?.pid
+          ?? (Number.isSafeInteger(body.callerPid) && body.callerPid! > 0 ? body.callerPid : undefined),
+        // A relaunch records its engine's process a moment after the engine starts, and a hook in that
+        // moment waits for the record, up to 20s. Its client does not: the engine's hook command gives
+        // up on a reply after 500ms and then writes the registry itself, as for a daemon that is down
+        // (hook/notify.mjs, fallbackRegister), with a row of its own in place of the agent's, which
+        // the running daemon's next save took in. Told the registration is pending, it writes nothing,
+        // as for a transcript not yet written below, and the wait goes on here.
+        // Hermes admission has a separate bounded queue after resolution. Do not
+        // claim a slot before one exists: its hook client can retry this live hold.
+        onWait: () => { deferred = true; answer(202, { pending: false, retry: true, detail: 'Waiting for the engine process record; admission is not queued yet.' }) },
+      })
+      : body.tmuxPane ? registry.byPaneEngine(body.tmuxPane, engine) ?? null : null
+    } finally { if (carriesStop) resolvingStops.delete(deliveryId) }
+    if (!processAgent || processAgent.engine !== engine) { ignore('no_matching_engine_process'); return }
+    if (native.recovery && (processAgent.agentId !== native.recovery.agentId || durableKey(processAgent) !== native.recovery.key)) return
+    // Own the process incarnation. Each inspection refreshes its routing,
+    // but can never follow the original hinted pane to a replacement process.
+    body.processIdentity = processAgent.processIdentity ? { ...processAgent.processIdentity } : undefined
+    body.runtimes = processAgent.runtimes.map(runtime => ({ ...runtime }))
+    body.primaryRuntimeKey = processAgent.primaryRuntimeKey
+    if (isRecentlyDeleted(body.sessionId)) { ignore('deleted'); return }
+    const scope = scopeOf(processAgent)!
+    if (carriesStop && stopScope !== scope) deferred = true
+    if (scopeOf(registry.byAgent(processAgent.agentId)) !== scope) { ignore('stale_hook'); return }
+    // Pending jobs and completed receipts survive routing observations within
+    // this process incarnation. Native hints are rechecked before every commit.
+    const receiptScope = scopeOf
+    for (const [id, history] of admissionReceipts) if (receiptScope(registry.byAgent(id)) !== history.scope) {
+      for (const delivery of history.records.keys()) saveReceipt(history.records, delivery)
+      admissionReceipts.delete(id)
+    }
+    const history = admissionReceipts.get(processAgent.agentId) ?? { scope: receiptScope(processAgent)!, records: new Map() }
+    admissionReceipts.set(processAgent.agentId, history)
+    // Include the retained process snapshot and closure overhead, and reserve
+    // against concurrent HTTP requests before any intake becomes daemon-owned.
+    const retainedBytes = 2 * (JSON.stringify(body).length + JSON.stringify(processAgent).length) + 2_048
+    let reservation: string | undefined
+    let context: DurableProcess, durable: NativeHookDelivery
+    try {
+      if (closed) return
+      context = durableProcess(processAgent)
+      const snapshot = await confirmedSnapshot(context, processAgent)
+      if (!snapshot.active && [...snapshot.deliveries.values()].every(item => item.result || history.records.has(item.intake.id))) recovered.add(context.key)
+      const known = snapshot.deliveries.get(deliveryId)
+      if (!known?.result && !history.records.has(deliveryId)) {
+        const key = `${context.key}\u0000${deliveryId}`
+        if (intakeReservations.has(key) || receiptCount + reservedCount >= receiptCapacity
+          || receiptBytes + reservedBytes + retainedBytes > bytesCapacity) {
+          if (known) {
+            recovered.delete(context.key)
+            admissionHeld(processAgent.agentId, 'Waiting for capacity to resume this retained native hook.')
+            answer(200, { pending: true })
+          } else answer(429, { pending: false, error: 'HOOK_ADMISSION_BUSY', detail: 'Hook acknowledgement storage is full; this delivery was not queued.' })
+          return
+        }
+        intakeReservations.add(key); reservedCount++; reservedBytes += retainedBytes; reservation = key
+      }
+      if (!known?.result) ready(context, false)
+      durable = await context.journal.retain({ id: deliveryId, fingerprint, agentId: processAgent.agentId,
+        conversationId: body.sessionId ?? '', ...(admissionOrder.firedAt ? { firedAt: admissionOrder.firedAt } : {}),
+        payload: { ...originalBody } })
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('HOOK_DELIVERY_CONFLICT')) answer(conflict.status, conflict.reply)
+      else {
+        const detail = `Waiting for durable native hook intake: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024)
+        admissionHeld(processAgent.agentId, detail)
+        answer(202, { pending: false, retry: true, detail })
+      }
+      return
+    } finally {
+      if (reservation) { intakeReservations.delete(reservation); reservedCount--; reservedBytes -= retainedBytes }
+    }
+    if (durable.result) {
+      if (typeof durable.result.status !== 'number' || !durable.result.reply) {
+        answer(202, { pending: false, retry: true, detail: 'Waiting for a complete native hook outcome.' }); return
+      }
+      answer(durable.result.status, durable.result.reply); return
+    }
+    const completed = history.records.get(deliveryId)
+    if (completed) {
+      if (completed.fingerprint === fingerprint) answer(completed.status, completed.reply)
+      else answer(409, { pending: false, error: 'HOOK_DELIVERY_CONFLICT' })
+      return
+    }
+    let inspectionIdentity: string | undefined
+    let prepared: RegisterInput = body
+    let preparedRegistration: ReturnType<typeof registry.prepareRegistration> = null
+    let committed: ReturnType<typeof registry.register> = null
+    let claim: NativeHookClaim | undefined, notified = false
+    let settled = false, stopRetained = false, stopUnmatched = false, stopInvocationClaimed = false
+    const stopCurrent = processAgent.sessionId === body.sessionId && stopScope === scope ? stopWitness : undefined
+    let followupFingerprint: string | undefined, committedIdentity: string | undefined
+    const live = () => registry.byAgent(processAgent.agentId)
+    const current = () => !closed && !isRecentlyDeleted(processAgent.agentId) && !isRecentlyDeleted(body.sessionId)
+      && live()?.active !== false && scopeOf(live()) === scope
+    const publishHold = () => {
+      const reason = [...admissionHolds.get(processAgent.agentId)?.values() ?? []].at(-1)
+      admissionHeld(processAgent.agentId, reason)
+    }
+    const held = (reason: string) => {
+      deferred = true
+      const holds = admissionHolds.get(processAgent.agentId) ?? new Map<string, string>()
+      holds.set(deliveryId, reason); admissionHolds.set(processAgent.agentId, holds)
+      publishHold()
+      console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} held · ${reason}`)
+      answer(200, { pending: true })
+    }
+    const clearHold = () => {
+      const holds = admissionHolds.get(processAgent.agentId)
+      if (!holds?.delete(deliveryId)) return
+      if (!holds.size) admissionHolds.delete(processAgent.agentId)
+      publishHold()
+    }
+    const completedReply = (status: number, reply: unknown) => {
+      // A pruned old process cannot reinsert its receipts from a late callback.
+      if (admissionReceipts.get(processAgent.agentId) === history) saveReceipt(history.records, deliveryId,
+        { ...history.records.get(deliveryId)!, status, reply, pending: false, bytes: carriesStop ? retainedBytes : 0 })
+      settled = true
+      answer(status, reply)
+    }
+    const linkedStop: LinkedStop = async (stop, firedAt) => {
+      if (stopProvenance(stop, firedAt) !== originalStop) return conflict
+      const sent = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
+      if (followupFingerprint && sent !== followupFingerprint) return conflict
+      followupFingerprint = sent
+      // The registration itself owns this native Stop, even if its second
+      // HTTP delivery outruns source recovery. Never close a later live turn.
+      if (!settled || stopRetained) {
+        deferred = true
+        return { status: 200, reply: { pending: true } }
+      }
+      if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
+      if (stopInvocationClaimed) return { status: 200, reply: { ok: true, duplicate: true } }
+      const owner = await verifiedMutation(stop)
+      if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
+      if (stopInvocationClaimed) return { status: 200, reply: { ok: true, duplicate: true } }
+      if (stopRetained) return { status: 200, reply: { pending: true } }
+      if (!current() || live()?.sessionId !== body.sessionId) {
+        return { status: 403, reply: { error: 'UNBOUND_HOOK' } }
+      }
+      if (!owner || paneReadIdentity(owner) !== committedIdentity) {
+        // The original delivery still belongs to this process/conversation,
+        // but its parser or routing was rebuilt. Preserve completion without
+        // applying it to whichever turn the replacement happened to load.
+        stopRetained = handlers.onAdmissionStop?.(live()!, true) ?? false
+        return stopRetained ? { status: 200, reply: { pending: true } }
+          : { status: 202, reply: { pending: false, retry: true, detail: 'Waiting for core ownership of the unmatched Stop.' } }
+      }
+      if (!stopInvocationClaimed) {
+        // Claim after the final authority fence, before optional async drains.
+        stopInvocationClaimed = true
+        handlers.onTurnStop?.({ sessionId: owner.sessionId, status: stop.status,
+          transcriptPath: stop.transcriptPath, ...(firedAt ? { firedAt } : {}) })
+        return { status: 200, reply: { ok: true } }
+      }
+      return { status: 200, reply: { ok: true, duplicate: true } }
+    }
+    const prepare = (): AdmissionDecision<string | undefined> | null => {
+      if (!current()) return { kind: 'reject', reason: 'stale_hook' }
+      if (handlers.hookAdmissionBlocked?.(processAgent.agentId)) return { kind: 'hold', reason: 'Waiting for Stop to settle before admitting the hook.' }
+      const row = live()!
+      if (!runtimeHints.some(hint => row.runtimes.some(runtime => runtime.backend === hint.backend && runtime.paneId === hint.paneId))) {
+        return { kind: 'hold', reason: 'Waiting for the original hook pane to belong to its engine process.' }
+      }
+      inspectionIdentity = paneReadIdentity(row)
+      prepared = { ...body, processIdentity: row.processIdentity ? { ...row.processIdentity } : undefined,
+        runtimes: row.runtimes.map(runtime => ({ ...runtime })), primaryRuntimeKey: row.primaryRuntimeKey,
+        transcriptPath: knownTranscriptFor(body, row) }
+      const admission = admitHook(engine, prepared)
+      if (!admission.accepted) return admission.reason === 'engine_hook_failed'
+        ? { kind: 'hold', reason: 'Waiting for complete native hook evidence.' } : { kind: 'reject', reason: admission.reason }
+      return null
+    }
+    const commit = (hermesHome: string | undefined): AdmissionDecision<string | undefined> => {
+      if (!current() || paneReadIdentity(live()) !== inspectionIdentity) return { kind: 'hold', reason: 'Waiting for fresh evidence after the binding changed.' }
+      if (handlers.hookAdmissionBlocked?.(processAgent.agentId)) return { kind: 'hold', reason: 'Waiting for Stop to settle before admitting the hook.' }
+      const prior = live()
+      const before = prior && { sessionId: prior.sessionId, transcriptPath: prior.transcriptPath,
+        held: !!(prior.identityHold || prior.interpretationHold) }
+      committed = preparedRegistration!.commit(() => {
+        if (!current() || paneReadIdentity(live()) !== inspectionIdentity || handlers.hookAdmissionBlocked?.(processAgent.agentId)) {
+          throw new IdentityReadUnavailable('the native hook owner changed before binding')
+        }
+        claim!.verify()
+      })
+      if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
+      if (committed && carriesStop && !stopRetained && !stopInvocationClaimed) {
+        stopUnmatched ||= deferred || before?.sessionId !== committed.entry.sessionId
+          || before?.transcriptPath !== committed.entry.transcriptPath || before?.held === true
+        if (!handlers.onAdmissionStop && stopUnmatched) return { kind: 'hold', reason: 'Waiting for core ownership of the unmatched Stop.' }
+        stopRetained = handlers.onAdmissionStop?.(committed.entry, stopUnmatched) ?? false
+        if (stopUnmatched && !stopRetained) return { kind: 'hold', reason: 'Waiting for core ownership of the unmatched Stop.' }
+      }
+      if (committed) committedIdentity = paneReadIdentity(committed.entry)
+      return committed ? { kind: 'accept', value: hermesHome } : { kind: 'reject', reason: 'invalid_session_registration' }
+    }
+    const notify = () => {
+      const result = committed!
+      clearHold()
+      console.log(`[hooks] ${sid(result.entry.sessionId)} ${body.hookEvent ?? 'session-start'} · engine=${result.entry.engine} · isNew=${result.isNew}`
+        + (engine === 'hermes' ? ` · after a source check${result.entry.hermesHome ? ` · home=${result.entry.hermesHome}` : ''}` : ''))
+      const optional = (call: () => void | Promise<void>) => {
+        try { void Promise.resolve(call()).catch(error => console.warn('[hooks] committed admission notification failed', error)) }
+        catch (error) { console.warn('[hooks] committed admission notification failed', error) }
+      }
+      // Native prompt credit follows the durable bind, never an attempted one.
+      if (body.hookEvent === 'UserPromptSubmit') {
+        optional(() => handlers.onPromptSubmitted?.(result.entry.agentId, body.prompt ?? ''))
+        if (admissionOrder.firedAt && body.sessionId) optional(() => handlers.onPromptHook?.(body.sessionId!, admissionOrder.firedAt!))
+      }
+      optional(() => handlers.onRegistered(result.entry, { isNew: result.isNew, evicted: result.evicted, rebound: result.rebound,
+        orphaned: result.orphaned, hookEvent: body.hookEvent }))
+    }
+    const enqueue = () => {
+      saveReceipt(history.records, deliveryId, { fingerprint, status: 200, reply: { pending: true }, pending: true, bytes: retainedBytes,
+        ...(carriesStop ? { linkedStop } : {}) })
+      const queued = admissions.submit(processAgent.agentId, deliveryId, {
+        conversationId: body.sessionId,
+        order: { ...admissionOrder, scope: admissionProcessScope(processAgent) ?? processAgent.agentId },
+        binding: () => { const row = live(); return row && { id: row.sessionId, at: row.boundAt } },
+        current,
+        ownsEffect: () => !!claim,
+        inspect: async () => prepare() ?? (engine === 'hermes' && body.sessionId
+          ? await inspectHermesKind(body.sessionId, live()?.hermesHome ?? undefined) : { kind: 'accept', value: undefined }),
+        conclude: async decision => {
+          const snapshot = await confirmedSnapshot(context, processAgent)
+          if (claim && decision.kind === 'reject') {
+            return { kind: 'hold', reason: 'Waiting for the original native hook effect to be reconciled before its intent can change.' }
+          }
+          if (decision.kind === 'accept' && !committed && !claim) {
+            const order = admissions.status(processAgent.agentId, body.sessionId ?? deliveryId,
+              { ...admissionOrder, scope: admissionProcessScope(processAgent) ?? processAgent.agentId })
+            if (order === 'older') decision = { kind: 'reject', reason: 'stale_hook' }
+            if (order === 'ambiguous') return { kind: 'hold', reason: 'Waiting for unambiguous durable native hook order.' }
+            if (decision.kind === 'accept') {
+              let before = true
+              for (const [id, delivery] of snapshot.deliveries) {
+                if (id === deliveryId) { before = false; continue }
+                if (delivery.result) continue
+                const prior = delivery.intake
+                // Other cores do not share this queue. Their unresolved inputs
+                // participate in the same native-time decision before any claim.
+                const sameConversation = prior.conversationId === (body.sessionId ?? '')
+                if (sameConversation ? before : prior.firedAt === undefined || admissionOrder.firedAt === undefined
+                  || prior.firedAt >= admissionOrder.firedAt) {
+                  return { kind: 'hold', reason: 'Waiting for the earlier or ambiguous retained native hook to be resolved.' }
+                }
+              }
+            }
+          }
+          if (decision.kind === 'accept' && !committed) {
+            preparedRegistration = registry.prepareRegistration(decision.value ? { ...prepared, hermesHome: decision.value } : prepared,
+              { verifiedNativeSource: true })
+            if (!preparedRegistration) decision = { kind: 'reject', reason: 'invalid_session_registration' }
+          }
+          claim ??= await context.journal.claim(deliveryId, processAgent.agentId, { previous: snapshot.previous })
+          context.claims.set(deliveryId, claim)
+          if (decision.kind === 'accept' && !committed) {
+            const result = commit(decision.value)
+            if (result.kind === 'hold') return result
+            decision = result
+          }
+          const status = decision.kind === 'accept' || decision.reason !== 'invalid_session_registration' ? 200 : 400
+          const reply = decision.kind === 'accept' ? { ok: true } : status === 400 ? { error: 'invalid session registration' }
+            : { ignored: true, reason: decision.reason }
+          // Registration callbacks synchronously settle ownership and initiate
+          // interpretation. Dispatch them while this effect still owns the slot,
+          // before a successor can confirm its terminal record and overtake it.
+          if (decision.kind === 'accept' && !notified) { claim.verify(); notified = true; notify() }
+          await claim.finish({ status, reply, accepted: decision.kind === 'accept', arrival: admissionOrder.arrival })
+          context.claims.delete(deliveryId); context.restored.add(deliveryId)
+          ready(context, [...snapshot.deliveries.values()].every(delivery => delivery.result || delivery.intake.id === deliveryId))
+          return decision
+        },
+        held,
+        reject: reason => {
+          clearHold()
+          console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} ignored · ${reason}`)
+          if (reason === 'invalid_session_registration') completedReply(400, { error: 'invalid session registration' })
+          else completedReply(200, { ignored: true, reason })
+        },
+        accept: () => { completedReply(200, { ok: true }) },
+      })
+      if (queued) {
+        // Synchronous native admission settles in this turn's microtasks. A
+        // queued predecessor or asynchronous source gets an owned pending reply.
+        if (engine === 'hermes') answer(200, { pending: true })
+        else setTimeout(() => { if (!settled) deferred = true; answer(200, { pending: true }) }, 100)
+      } else {
+        saveReceipt(history.records, deliveryId)
+        recovered.delete(context.key)
+        const detail = 'Waiting for capacity to resume this retained native hook.'
+        admissionHeld(processAgent.agentId, detail)
+        console.log(`[hooks] ${sid(body.sessionId ?? '?')} held · ${detail}`)
+        answer(200, { pending: true })
+      }
+    }
+    enqueue()
+  }
+  const recover = async (row: RegisteredSession, context: DurableProcess): Promise<void> => {
+    recovering.add(context.key)
+    try {
+      const snapshot = await confirmedSnapshot(context, row)
+      if (snapshot.active && context.claims.get(snapshot.active.id)?.token !== snapshot.active.token) {
+        admissionHeld(row.agentId, 'Waiting for an authoritative outcome of a native hook interrupted by the previous core.')
+        return
+      }
+      const pending = [...snapshot.deliveries.values()].find(delivery => !delivery.result
+        && !admissionReceipts.get(delivery.intake.agentId)?.records.has(delivery.intake.id))
+      if (!pending) { recovered.add(context.key); return }
+      if (!validHookBody(pending.intake.payload)) throw new IdentityReadUnavailable('the retained native hook body is invalid')
+      await admitStart(structuredClone(pending.intake.payload), { deliveryId: pending.intake.id, firedAt: pending.intake.firedAt,
+        recovery: { agentId: pending.intake.agentId, key: context.key } }, () => {})
+    } catch (error) {
+      if (!closed) admissionHeld(row.agentId,
+        `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024))
+    } finally { recovering.delete(context.key) }
+  }
+  const recoveryPass = () => {
+    if (closed) return
+    {
+      const rows = registry.list().filter(row => row.active && row.processIdentity && row.engine !== 'terminal')
+      for (let offset = 0; offset < rows.length && recovering.size < 4; offset++) {
+        const row = rows[recoveryCursor++ % rows.length]!
+        try {
+          const context = durableProcess(row)
+          if (!recovering.has(context.key) && !recovered.has(context.key)) void recover(row, context)
+        } catch (error) {
+          admissionHeld(row.agentId,
+            `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'process unavailable'}`.slice(0, 1024))
+        }
+      }
+    }
+    recoveryTimer = setTimeout(recoveryPass, 500); recoveryTimer.unref()
+  }
+  const startRecovery = () => {
+    if (closed || recoveryStarted) return
+    recoveryStarted = true
+    recoveryTimer = setTimeout(recoveryPass, 0); recoveryTimer.unref()
+  }
   const handle: http.RequestListener = (req, res) => {
     void (async () => {
       const url = (req.url ?? '').split('?')[0]
@@ -469,274 +988,7 @@ export function startHookServer(
           if (!validHookBody(parsed)) { json(400, { error: 'invalid hook body' }); return }
           body = parsed
         } catch { json(400, { error: 'bad json' }); return }
-        // Every rejection below says WHY, out loud. They used to be silent, and a hook that arrives and
-        // is dropped looks exactly like a hook that never fired — which is precisely the confusion behind
-        // "the agent is running in my terminal but the list does not show it".
-        // Answered once: a hook answered before its resolution waited is only logged after it.
-        let answered = false
-        const answer = (code: number, reply: unknown): void => {
-          if (answered) return
-          answered = true
-          json(code, reply)
-        }
-        const ignore = (reason: string): void => {
-          console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} ignored · ${reason}`)
-          answer(200, { ignored: true, reason })
-        }
-        const runtimeHints = normalizedRuntimeHints(body)
-        if (!runtimeHints.length) { ignore('not_in_terminal'); return }
-        // A plugin/extension is loaded ONCE per engine process, so a pane opened before an update keeps
-        // running the old copy — silently, and for hours. Measured on amp: a pane started at 11:49 was
-        // still writing transcripts with no tool calls long after the fix reached disk. The engines that
-        // use shell hooks re-read the file on every call and cannot drift like this; these three can, so
-        // they stamp their build and the mismatch is said out loud instead of being discovered later.
-        const pluginVersion = (body as { pluginVersion?: unknown }).pluginVersion
-        if (typeof pluginVersion === 'string' && pluginVersion && pluginVersion !== VERSION) {
-          console.warn(`[hooks] ${sid(body.sessionId ?? '?')} ${body.engine ?? '?'} plugin is v${pluginVersion}`
-            + ` but this machine is v${VERSION} — that pane loaded an older copy.`)
-          console.warn('[hooks] restart the pane (or reload its plugins) to pick up the current build')
-        }
-        const engine = body.engine ?? 'claude'
-        // Capture before process resolution yields. Native time is unchanged across client retries.
-        const admissionOrder = { firedAt: hookFiredAt(req), arrival: ++admissionArrival }
-        const fingerprint = createHash('sha256').update(JSON.stringify([body, admissionOrder.firedAt])).digest('hex')
-        const deliveryHeader = req.headers['x-harness-hook-delivery-id']
-        const nativeDeliveryId = typeof deliveryHeader === 'string' && /^[a-zA-Z0-9_-]{16,96}$/.test(deliveryHeader) ? deliveryHeader : undefined
-        const deliveryId = nativeDeliveryId ?? randomUUID()
-        const carriesStop = !!nativeDeliveryId && (engine === 'cursor' && body.hookEvent === 'stop'
-          || engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure'))
-        const stopProvenance = (value: BoundHookBody, firedAt: number | undefined) => JSON.stringify([
-          value.engine, value.sessionId, value.callerPid, normalizedRuntimeHints(value), firedAt, value.status,
-        ])
-        const originalStop = stopProvenance(body, admissionOrder.firedAt)
-        const conflict = { status: 409, reply: { pending: false, error: 'HOOK_DELIVERY_CONFLICT' } }
-        const scopeOf = (row: RegisteredSession | undefined) => row && JSON.stringify([
-          row.agentId, row.engine, row.processIdentity ? processIdentityKey(row.engine, row.processIdentity) : null,
-        ])
-        const resolving = resolvingStops.get(deliveryId)
-        if (resolving) {
-          const reply = resolving.fingerprint === fingerprint ? await resolving.stop(body, admissionOrder.firedAt) : conflict
-          answer(reply.status, reply.reply); return
-        }
-        // A preliminary lookup grants no binding authority. It only remembers
-        // cancellation before process resolution yields; the proved owner below
-        // must match this exact process/conversation before the witness applies.
-        const preliminary = carriesStop && body.sessionId ? registry.bySession(body.sessionId) : undefined
-        const stopScope = preliminary?.engine === engine ? scopeOf(preliminary) : undefined
-        const stopWitness = stopScope ? handlers.captureAdmissionStop?.(preliminary!) : undefined
-        let deferred = false
-        if (carriesStop) resolvingStops.set(deliveryId, { fingerprint, stop: (stop, firedAt) => {
-          if (stopProvenance(stop, firedAt) !== originalStop) return conflict
-          deferred = true
-          return { status: 202, reply: { pending: false, retry: true, detail: 'Waiting for the engine process record; Stop admission is not queued yet.' } }
-        } })
-        let processAgent: RegisteredSession | null
-        try { processAgent = handlers.resolveHookAgent
-          ? await handlers.resolveHookAgent({
-            engine,
-            tmuxPane: body.tmuxPane,
-            runtimeHints,
-            callerPid: Number.isSafeInteger(body.callerPid) && body.callerPid! > 0 ? body.callerPid : undefined,
-            // A relaunch records its engine's process a moment after the engine starts, and a hook in that
-            // moment waits for the record, up to 20s. Its client does not: the engine's hook command gives
-            // up on a reply after 500ms and then writes the registry itself, as for a daemon that is down
-            // (hook/notify.mjs, fallbackRegister), with a row of its own in place of the agent's, which
-            // the running daemon's next save took in. Told the registration is pending, it writes nothing,
-            // as for a transcript not yet written below, and the wait goes on here.
-            // Hermes admission has a separate bounded queue after resolution. Do not
-            // claim a slot before one exists: its hook client can retry this live hold.
-            onWait: () => { deferred = true; answer(202, { pending: false, retry: true, detail: 'Waiting for the engine process record; admission is not queued yet.' }) },
-          })
-          : body.tmuxPane ? registry.byPaneEngine(body.tmuxPane, engine) ?? null : null
-        } finally { if (carriesStop) resolvingStops.delete(deliveryId) }
-        if (!processAgent || processAgent.engine !== engine) { ignore('no_matching_engine_process'); return }
-        // Own the process incarnation. Each inspection refreshes its routing,
-        // but can never follow the original hinted pane to a replacement process.
-        body.processIdentity = processAgent.processIdentity ? { ...processAgent.processIdentity } : undefined
-        body.runtimes = processAgent.runtimes.map(runtime => ({ ...runtime }))
-        body.primaryRuntimeKey = processAgent.primaryRuntimeKey
-        if (isRecentlyDeleted(body.sessionId)) { ignore('deleted'); return }
-        const scope = scopeOf(processAgent)!
-        if (carriesStop && stopScope !== scope) deferred = true
-        if (scopeOf(registry.byAgent(processAgent.agentId)) !== scope) { ignore('stale_hook'); return }
-        // Pending jobs and completed receipts survive routing observations within
-        // this process incarnation. Native hints are rechecked before every commit.
-        const receiptScope = scopeOf
-        for (const [id, history] of admissionReceipts) if (receiptScope(registry.byAgent(id)) !== history.scope) {
-          for (const delivery of history.records.keys()) saveReceipt(history.records, delivery)
-          admissionReceipts.delete(id)
-        }
-        const history = admissionReceipts.get(processAgent.agentId) ?? { scope: receiptScope(processAgent)!, records: new Map() }
-        admissionReceipts.set(processAgent.agentId, history)
-        const completed = history.records.get(deliveryId)
-        if (completed) {
-          if (completed.fingerprint === fingerprint) answer(completed.status, completed.reply)
-          else answer(409, { pending: false, error: 'HOOK_DELIVERY_CONFLICT' })
-          return
-        }
-        // Strings can occupy two bytes per code unit; include the immutable
-        // process snapshot and fixed closure/record overhead in this admission budget.
-        const retainedBytes = 2 * (JSON.stringify(body).length + JSON.stringify(processAgent).length) + 2_048
-        if (receiptCount >= receiptCapacity || receiptBytes + retainedBytes > bytesCapacity) {
-          answer(429, { pending: false, error: 'HOOK_ADMISSION_BUSY', detail: 'Hook acknowledgement storage is full; this delivery was not queued.' })
-          return
-        }
-        let inspectionIdentity: string | undefined
-        let prepared: RegisterInput = body
-        let committed: ReturnType<typeof registry.register> = null
-        let settled = false, stopRetained = false, stopUnmatched = false, stopInvocationClaimed = false
-        const stopCurrent = processAgent.sessionId === body.sessionId && stopScope === scope ? stopWitness : undefined
-        let followupFingerprint: string | undefined, committedIdentity: string | undefined
-        const live = () => registry.byAgent(processAgent.agentId)
-        const current = () => !isRecentlyDeleted(processAgent.agentId) && !isRecentlyDeleted(body.sessionId)
-          && live()?.active !== false && scopeOf(live()) === scope
-        const publishHold = () => {
-          const reason = [...admissionHolds.get(processAgent.agentId)?.values() ?? []].at(-1)
-          try { handlers.onAdmissionHeld?.(processAgent.agentId, reason) }
-          catch (error) { console.warn('[hooks] admission status notification failed', error) }
-        }
-        const held = (reason: string) => {
-          deferred = true
-          const holds = admissionHolds.get(processAgent.agentId) ?? new Map<string, string>()
-          holds.set(deliveryId, reason); admissionHolds.set(processAgent.agentId, holds)
-          publishHold()
-          console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} held · ${reason}`)
-          answer(200, { pending: true })
-        }
-        const clearHold = () => {
-          const holds = admissionHolds.get(processAgent.agentId)
-          if (!holds?.delete(deliveryId)) return
-          if (!holds.size) admissionHolds.delete(processAgent.agentId)
-          publishHold()
-        }
-        const completedReply = (status: number, reply: unknown) => {
-          // A pruned old process cannot reinsert its receipts from a late callback.
-          if (admissionReceipts.get(processAgent.agentId) === history) saveReceipt(history.records, deliveryId,
-            { ...history.records.get(deliveryId)!, status, reply, pending: false, bytes: carriesStop ? retainedBytes : 0 })
-          settled = true
-          answer(status, reply)
-        }
-        const linkedStop: LinkedStop = async (stop, firedAt) => {
-          if (stopProvenance(stop, firedAt) !== originalStop) return conflict
-          const sent = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
-          if (followupFingerprint && sent !== followupFingerprint) return conflict
-          followupFingerprint = sent
-          // The registration itself owns this native Stop, even if its second
-          // HTTP delivery outruns source recovery. Never close a later live turn.
-          if (!settled || stopRetained) {
-            deferred = true
-            return { status: 200, reply: { pending: true } }
-          }
-          if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
-          if (stopInvocationClaimed) return { status: 200, reply: { ok: true, duplicate: true } }
-          const owner = await verifiedBoundMutation(stop, handlers)
-          if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
-          if (stopInvocationClaimed) return { status: 200, reply: { ok: true, duplicate: true } }
-          if (stopRetained) return { status: 200, reply: { pending: true } }
-          if (!current() || live()?.sessionId !== body.sessionId) {
-            return { status: 403, reply: { error: 'UNBOUND_HOOK' } }
-          }
-          if (!owner || paneReadIdentity(owner) !== committedIdentity) {
-            // The original delivery still belongs to this process/conversation,
-            // but its parser or routing was rebuilt. Preserve completion without
-            // applying it to whichever turn the replacement happened to load.
-            stopRetained = handlers.onAdmissionStop?.(live()!, true) ?? false
-            return stopRetained ? { status: 200, reply: { pending: true } }
-              : { status: 202, reply: { pending: false, retry: true, detail: 'Waiting for core ownership of the unmatched Stop.' } }
-          }
-          if (!stopInvocationClaimed) {
-            // Claim after the final authority fence, before optional async drains.
-            stopInvocationClaimed = true
-            handlers.onTurnStop?.({ sessionId: owner.sessionId, status: stop.status,
-              transcriptPath: stop.transcriptPath, ...(firedAt ? { firedAt } : {}) })
-            return { status: 200, reply: { ok: true } }
-          }
-          return { status: 200, reply: { ok: true, duplicate: true } }
-        }
-        const prepare = (): AdmissionDecision<string | undefined> | null => {
-          if (!current()) return { kind: 'reject', reason: 'stale_hook' }
-          if (handlers.hookAdmissionBlocked?.(processAgent.agentId)) return { kind: 'hold', reason: 'Waiting for Stop to settle before admitting the hook.' }
-          const row = live()!
-          if (!runtimeHints.some(hint => row.runtimes.some(runtime => runtime.backend === hint.backend && runtime.paneId === hint.paneId))) {
-            return { kind: 'hold', reason: 'Waiting for the original hook pane to belong to its engine process.' }
-          }
-          inspectionIdentity = paneReadIdentity(row)
-          prepared = { ...body, processIdentity: row.processIdentity ? { ...row.processIdentity } : undefined,
-            runtimes: row.runtimes.map(runtime => ({ ...runtime })), primaryRuntimeKey: row.primaryRuntimeKey,
-            transcriptPath: knownTranscriptFor(body, row) }
-          const admission = admitHook(engine, prepared)
-          if (!admission.accepted) return admission.reason === 'engine_hook_failed'
-            ? { kind: 'hold', reason: 'Waiting for complete native hook evidence.' } : { kind: 'reject', reason: admission.reason }
-          return null
-        }
-        const commit = (hermesHome: string | undefined): AdmissionDecision<string | undefined> => {
-          if (!current() || paneReadIdentity(live()) !== inspectionIdentity) return { kind: 'hold', reason: 'Waiting for fresh evidence after the binding changed.' }
-          if (handlers.hookAdmissionBlocked?.(processAgent.agentId)) return { kind: 'hold', reason: 'Waiting for Stop to settle before admitting the hook.' }
-          const prior = live()
-          const before = prior && { sessionId: prior.sessionId, transcriptPath: prior.transcriptPath,
-            held: !!(prior.identityHold || prior.interpretationHold) }
-          committed = registry.register(hermesHome ? { ...prepared, hermesHome } : prepared, { verifiedNativeSource: true })
-          if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
-          if (committed && carriesStop && !stopRetained && !stopInvocationClaimed) {
-            stopUnmatched ||= deferred || before?.sessionId !== committed.entry.sessionId
-              || before?.transcriptPath !== committed.entry.transcriptPath || before?.held === true
-            if (!handlers.onAdmissionStop && stopUnmatched) return { kind: 'hold', reason: 'Waiting for core ownership of the unmatched Stop.' }
-            stopRetained = handlers.onAdmissionStop?.(committed.entry, stopUnmatched) ?? false
-            if (stopUnmatched && !stopRetained) return { kind: 'hold', reason: 'Waiting for core ownership of the unmatched Stop.' }
-          }
-          if (committed) committedIdentity = paneReadIdentity(committed.entry)
-          return committed ? { kind: 'accept', value: hermesHome } : { kind: 'reject', reason: 'invalid_session_registration' }
-        }
-        const notify = () => {
-          const result = committed!
-          clearHold()
-          console.log(`[hooks] ${sid(result.entry.sessionId)} ${body.hookEvent ?? 'session-start'} · engine=${result.entry.engine} · isNew=${result.isNew}`
-            + (engine === 'hermes' ? ` · after a source check${result.entry.hermesHome ? ` · home=${result.entry.hermesHome}` : ''}` : ''))
-          const optional = (call: () => void | Promise<void>) => {
-            try { void Promise.resolve(call()).catch(error => console.warn('[hooks] committed admission notification failed', error)) }
-            catch (error) { console.warn('[hooks] committed admission notification failed', error) }
-          }
-          // Native prompt credit follows the durable bind, never an attempted one.
-          if (body.hookEvent === 'UserPromptSubmit') {
-            optional(() => handlers.onPromptSubmitted?.(result.entry.agentId, body.prompt ?? ''))
-            if (admissionOrder.firedAt && body.sessionId) optional(() => handlers.onPromptHook?.(body.sessionId!, admissionOrder.firedAt!))
-          }
-          optional(() => handlers.onRegistered(result.entry, { isNew: result.isNew, evicted: result.evicted, rebound: result.rebound,
-            orphaned: result.orphaned, hookEvent: body.hookEvent }))
-        }
-        const enqueue = () => {
-          saveReceipt(history.records, deliveryId, { fingerprint, status: 200, reply: { pending: true }, pending: true, bytes: retainedBytes,
-            ...(carriesStop ? { linkedStop } : {}) })
-          const queued = admissions.submit(processAgent.agentId, deliveryId, {
-            conversationId: body.sessionId,
-            order: { ...admissionOrder, scope: admissionProcessScope(processAgent) ?? processAgent.agentId },
-            binding: () => { const row = live(); return row && { id: row.sessionId, at: row.boundAt } },
-            current,
-            inspect: async () => prepare() ?? (engine === 'hermes' && body.sessionId
-              ? await inspectHermesKind(body.sessionId, live()?.hermesHome ?? undefined) : { kind: 'accept', value: undefined }),
-            commit,
-            held,
-            reject: reason => {
-              clearHold()
-              console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} ignored · ${reason}`)
-              if (reason === 'invalid_session_registration') completedReply(400, { error: 'invalid session registration' })
-              else completedReply(200, { ignored: true, reason })
-            },
-            accept: () => { completedReply(200, { ok: true }); notify() },
-          })
-          if (queued) {
-            // Synchronous native admission settles in this turn's microtasks. A
-            // queued predecessor or asynchronous source gets an owned pending reply.
-            if (engine === 'hermes') answer(200, { pending: true })
-            else setImmediate(() => { if (!settled) deferred = true; answer(200, { pending: true }) })
-          } else {
-            saveReceipt(history.records, deliveryId)
-            const detail = 'Too many unverified hooks are pending; this hook was not queued. Retry after recovery.'
-            console.log(`[hooks] ${sid(body.sessionId ?? '?')} held · ${detail}`)
-            answer(429, { pending: false, error: 'HOOK_ADMISSION_BUSY', detail })
-          }
-        }
-        enqueue()
+        await admitStart(body, { firedAt: hookFiredAt(req), deliveryId: req.headers['x-harness-hook-delivery-id'] }, json)
         return
       }
 
@@ -748,7 +1000,7 @@ export function startHookServer(
           if (!validHookBody(parsed)) { json(400, { error: 'invalid hook body' }); return }
           body = parsed
         } catch { json(400, { error: 'bad json' }); return }
-        if (!await verifiedBoundMutation(body, handlers)) { json(403, { error: 'UNBOUND_HOOK' }); return }
+        if (!await verifiedMutation(body)) { json(403, { error: 'UNBOUND_HOOK' }); return }
         if (body.sessionId) {
           console.log(`[hooks] ${sid(body.sessionId)} session-end${body.reason ? ` · reason=${body.reason}` : ''}`)
           handlers.onSessionEnd(body.sessionId, body.reason)
@@ -765,7 +1017,7 @@ export function startHookServer(
           if (!validHookBody(parsed)) { json(400, { error: 'invalid hook body' }); return }
           body = parsed
         } catch { json(400, { error: 'bad json' }); return }
-        if (!await verifiedBoundMutation(body, handlers)) { json(403, { error: 'UNBOUND_HOOK' }); return }
+        if (!await verifiedMutation(body)) { json(403, { error: 'UNBOUND_HOOK' }); return }
         if (body.sessionId && body.toolUseId && body.toolName) {
           console.log(`[hooks] ${sid(body.sessionId)} tool-start · tool=${body.toolName}`)
           handlers.onToolStart?.({
@@ -787,7 +1039,7 @@ export function startHookServer(
           if (!validHookBody(parsed)) { json(400, { error: 'invalid hook body' }); return }
           body = parsed
         } catch { json(400, { error: 'bad json' }); return }
-        if (!await verifiedBoundMutation(body, handlers)) { json(403, { error: 'UNBOUND_HOOK' }); return }
+        if (!await verifiedMutation(body)) { json(403, { error: 'UNBOUND_HOOK' }); return }
         if (body.sessionId) handlers.onTurnStart?.({ sessionId: body.sessionId })
         json(200, { ok: true })
         return
@@ -813,7 +1065,7 @@ export function startHookServer(
             json(202, { pending: false, retry: true, detail: 'Waiting for the linked Stop registration to be admitted.' }); return
           }
         }
-        const owner = await verifiedBoundMutation(body, handlers)
+        const owner = await verifiedMutation(body)
         if (!owner) { json(403, { error: 'UNBOUND_HOOK' }); return }
         if (body.sessionId) {
           const identity = paneReadIdentity(owner)
@@ -821,7 +1073,7 @@ export function startHookServer(
           const fired = hookFiredAt(req)
           const stop = { sessionId: body.sessionId, status: body.status, transcriptPath: body.transcriptPath, ...(fired ? { firedAt: fired } : {}) }
           if (handlers.stopHookDelayMs) setTimeout(() => {
-            if (paneReadIdentity(registry.byAgent(owner.agentId)) === identity) handlers.onTurnStop?.(stop)
+            if (!closed && paneReadIdentity(registry.byAgent(owner.agentId)) === identity) handlers.onTurnStop?.(stop)
           }, handlers.stopHookDelayMs)
           else handlers.onTurnStop?.(stop)
         }
@@ -1086,13 +1338,20 @@ export function startHookServer(
       // holds up that engine's turn until its own timeout, and the desktop waits out thirty seconds.
       console.error(`[hooks] ${req.method} ${(req.url ?? '').split('?')[0].slice(0, 80)} failed:`, error instanceof Error ? error.message : error)
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'INTERNAL' }))
+        const held = error instanceof IdentityReadUnavailable
+        res.writeHead(held ? 202 : 500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(held ? { pending: false, retry: true, detail: error.message } : { error: 'INTERNAL' }))
       } else if (!res.writableEnded) res.end()
     })
   }
   const server = http.createServer(handle)
-  server.once('close', () => admissions.close())
+  const stopRecovery = () => {
+    closed = true; clearTimeout(recoveryTimer); admissions.close(); waitingAttaches.clear()
+    for (const context of durableProcesses.values()) context.journal.close()
+  }
+  const close = server.close.bind(server)
+  server.close = callback => { stopRecovery(); return close(callback) }
+  server.once('close', stopRecovery)
 
   return new Promise((resolve, reject) => {
     let fellBack = false
@@ -1117,14 +1376,15 @@ export function startHookServer(
       const actual = (server.address() as AddressInfo).port
       hosts = loopbackHosts(actual)
       console.log(`[hooks] listening on 127.0.0.1:${actual} (SessionStart/SessionEnd callbacks)`)
+      if (!options.deferNativeRecovery) startRecovery()
       const socketPath = options.socketPath
-      if (!socketPath) { resolve({ server, port: actual, localSocket: null }); return }
+      if (!socketPath) { resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady }); return }
       // The private socket is mandatory when opting into multi-user startup. A duplicate daemon
       // must not survive on a random port while another one owns this user's socket.
       listenLocalSocket(handle, socketPath).then(
         (localSocket) => {
           console.log(`[hooks] listening on ${socketPath}`)
-          resolve({ server, port: actual, localSocket })
+          resolve({ server, port: actual, localSocket, startRecovery, stopRecovery, recoveryReady })
         },
         (error: unknown) => {
           if (options.allowPortFallback) {
@@ -1134,7 +1394,7 @@ export function startHookServer(
             return
           }
           console.warn(`[hooks] local socket unavailable (${socketPath}): ${error instanceof Error ? error.message : error}`)
-          resolve({ server, port: actual, localSocket: null })
+          resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady })
         },
       )
     })

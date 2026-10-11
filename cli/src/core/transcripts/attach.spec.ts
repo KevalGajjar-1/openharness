@@ -487,6 +487,30 @@ describe('attaching a session whose engine\'s code could not be loaded', () => {
 })
 
 describe('attaching a session', () => {
+  it('keeps the binding without starting interpretation until native hook recovery is ready', async () => {
+    let ready = false
+    const run = setup({ nativeRecoveryReady: () => ready }), row = session('claude', '/fixture/transcript')
+    expect(await run.attach.attachSession(row)).toBe(true)
+    expect(run.deps.terminalGone).not.toHaveBeenCalled()
+    expect(run.deps.watcher.addSession).not.toHaveBeenCalled()
+    expect(run.deps.emit).not.toHaveBeenCalled()
+    ready = true
+    expect(await run.attach.attachSession(row)).toBe(true)
+    expect(run.deps.terminalGone).toHaveBeenCalled()
+  })
+
+  it('revokes a started attach when native recovery loses authority during its first await', async () => {
+    let ready = true, finish!: () => void
+    const run = setup({ nativeRecoveryReady: () => ready }), row = session('claude', '/fixture/transcript')
+    vi.mocked(run.deps.terminalGone).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(false) }))
+    const pending = run.attach.attachSession(row)
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    ready = false; finish()
+    expect(await pending).toBe(true)
+    expect(run.deps.watcher.addSession).not.toHaveBeenCalled()
+    expect(run.deps.emit).not.toHaveBeenCalled()
+  })
+
 
   it('installs worker state after hydration, keeps device/profile observations and reuses only a current binding', async () => {
     const p = remoteSetup(true), s = session('claude', '/private/transcript')
