@@ -88,13 +88,17 @@ harness start</code></pre>
   <p>The <code>harness</code> skill tells an agent when to use Harness and how. It comes as a plugin for Claude Code
     and Codex, which also registers Harness's MCP server (<code>harness mcp</code>, over stdio).</p>
   <h3>Claude Code</h3>
-  <pre><code>/plugin marketplace add autonomous-ai/openharness
-/plugin install harness@openharness</code></pre>
-  <p>From a shell: <code>claude plugin marketplace add autonomous-ai/openharness</code>, then
-    <code>claude plugin install harness@openharness</code>.</p>
+  <pre><code>claude plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin plugins
+claude plugin install harness@openharness</code></pre>
+  <p>Inside a session, the same is <code>/plugin marketplace add autonomous-ai/openharness</code>, then
+    <code>/plugin install harness@openharness</code>. Without <code>--sparse</code> the whole repository is cloned,
+    several hundred megabytes, which takes a minute or more. Run <code>/reload-plugins</code> or start a new session
+    to load it.</p>
   <h3>Codex</h3>
-  <pre><code>codex plugin marketplace add autonomous-ai/openharness
+  <pre><code>codex plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin --sparse plugins
 codex plugin add harness@openharness</code></pre>
+  <p>Start a new Codex session to load it. Inside Codex, <code>/plugins</code> opens the plugin browser, where the
+    marketplace's plugins are listed once it is added.</p>
   <h3>Any agent that reads SKILL.md</h3>
   <pre><code>mkdir -p ~/.agents/skills/harness
 curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plugins/harness/skills/harness/SKILL.md \

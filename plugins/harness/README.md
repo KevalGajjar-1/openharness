@@ -21,19 +21,22 @@ harness start
 Claude Code:
 
 ```
-/plugin marketplace add autonomous-ai/openharness
-/plugin install harness@openharness
+claude plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin plugins
+claude plugin install harness@openharness
 ```
 
 Codex:
 
 ```
-codex plugin marketplace add autonomous-ai/openharness
+codex plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin --sparse plugins
 codex plugin add harness@openharness
 ```
 
 The marketplace is [`.claude-plugin/marketplace.json`](../../.claude-plugin/marketplace.json) at the root of this
-repository; Codex reads the same file. Any other agent that reads `SKILL.md` can take the skill alone: copy
+repository; Codex reads the same file. `--sparse` checks out only the marketplace and this folder: on October 11,
+2026 that took 4 seconds and 3 MB for Claude Code, against 70 seconds and 670 MB for the whole repository, and
+7 against 135 seconds for Codex. Inside a Claude Code session, `/plugin marketplace add autonomous-ai/openharness`
+and `/plugin install harness@openharness` do the same, cloning the whole repository. Any other agent that reads `SKILL.md` can take the skill alone: copy
 `skills/harness/` into its skills folder (`~/.agents/skills/` for Codex, `~/.claude/skills/` for Claude Code).
 
 ## Changing it

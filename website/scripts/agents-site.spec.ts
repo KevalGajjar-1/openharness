@@ -97,6 +97,23 @@ describe("the pages and skill agents read", () => {
     }
   });
 
+  it("checks out, with --sparse, the marketplace and the plugin it lists", () => {
+    // A full clone of this repository was 670 MB and 70 seconds (135 for Codex); the sparse one 3 MB and 4. A
+    // plugin moved outside the sparse paths would install from neither.
+    const entry = marketplace.plugins.find((plugin) => plugin.name === "harness")!;
+    for (const text of [page, llms]) {
+      const claude = text.match(/claude plugin marketplace add autonomous-ai\/openharness --sparse ([^\n<`]+)/);
+      const codex = text.match(/codex plugin marketplace add autonomous-ai\/openharness ((?:--sparse [^\s`<]+ ?)+)/);
+      expect(claude).not.toBeNull();
+      expect(codex).not.toBeNull();
+      for (const paths of [claude![1].trim().split(/\s+/), codex![1].trim().split(/\s+/).filter((word) => word !== "--sparse")]) {
+        expect(paths).toContain(".claude-plugin");
+        expect(paths.some((path) => entry.source.replace(/^\.\//, "").startsWith(`${path}/`))).toBe(true);
+        for (const path of paths) expect(existsSync(join(repo, path)), path).toBe(true);
+      }
+    }
+  });
+
   it("links the skill where it is in this repository", () => {
     for (const text of [page, llms]) {
       for (const m of text.matchAll(/https:\/\/(?:raw\.githubusercontent\.com\/autonomous-ai\/openharness\/main|github\.com\/autonomous-ai\/openharness\/(?:blob|tree)\/main)\/([^\s")]+)/g)) {

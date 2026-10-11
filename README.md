@@ -140,11 +140,11 @@ hn
 ```
 
 **For agents:** Claude Code and Codex can start, wait for and read other harnesses with the `harness` skill
-([harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)):
+([harness.autonomous.ai/agents](https://harness.autonomous.ai/agents), which has the Codex lines too):
 
-```
-/plugin marketplace add autonomous-ai/openharness
-/plugin install harness@openharness
+```bash
+claude plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin plugins
+claude plugin install harness@openharness
 ```
 
 <details>
