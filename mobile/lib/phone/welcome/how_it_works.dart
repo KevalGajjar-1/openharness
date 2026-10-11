@@ -27,7 +27,7 @@ class HowItWorksPage extends StatelessWidget {
           'They keep going when you close the app.',
     ),
     (
-      'Swarm',
+      'Tab',
       'A group of harnesses, shown together in the workspace. Add a harness to '
           'include it. With Agent Messages on for it, its agents can message each '
           'other.',

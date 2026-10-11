@@ -172,10 +172,6 @@ master too old to run it starts it beside itself, still in its own process (`src
   what the core reads back in line it reads from what they last said of each session.
   `e2e/recapsProcess.e2e.ts` proves turns end on time with them killed, hung or slow, and
   `e2e/recapsCompat.e2e.ts` that the dial and the windows hear the same cards and recaps as before.
-- State built from every change must get every change exactly once: the core numbers each change and
-  keeps it until the process acknowledges it; on each connection the process says what it applied and
-  gets what it lacks, or starts over. A value the core reads back synchronously is answered from what
-  the process last reported, and is "unknown" (the fallback) while a change to it is on its way.
 
 ## On demand
 

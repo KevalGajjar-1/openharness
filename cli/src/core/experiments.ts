@@ -73,7 +73,7 @@ export function createExperimentHooks(deps: {
     for (const name of deps.experiments) if (deps.outOfProcess.has(name)) deps.notify(name, { type: 'service_event', payload: { kind: 'notice', notice } })
   }, deps.log)
   return {
-    want(service: string): void { deps.want(service) },
+    want: deps.want,
     onNotice: notices.onNotice,
     notice: notices.notice,
   }
