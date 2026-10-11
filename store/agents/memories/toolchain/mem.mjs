@@ -22,7 +22,7 @@
 
 import { readFileSync } from 'node:fs'
 import { homes } from '../lib/agents.mjs'
-import { readAbout, writeAbout } from '../lib/about.mjs'
+import { citeSessions, readAbout, writeAbout } from '../lib/about.mjs'
 import { deliver, status as deliveryStatus } from '../lib/deliver.mjs'
 import { due } from '../lib/due.mjs'
 import { asks, search, MARK_OPEN, MARK_CLOSE } from '../lib/sessions.mjs'
@@ -164,7 +164,14 @@ export async function run(argv, { out = (line) => process.stdout.write(line + '\
         // `--gen`: a copy of another machine's build keeps that build's generation (the memory service).
         const gen = flags.gen !== undefined ? Number(flags.gen) : undefined
         if (gen !== undefined && !Number.isInteger(gen)) { err('--gen takes a whole number'); return 2 }
-        const path = writeAbout(h.memory, stdin(), gen !== undefined ? { gen } : {})
+        // A copy from another machine is written as that machine built it.
+        let text = stdin()
+        if (gen === undefined) {
+          const index = await sessionIndex(h)
+          const lookup = index.db?.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
+          if (lookup) text = citeSessions(text, (id) => Boolean(lookup.get(id)))
+        }
+        const path = writeAbout(h.memory, text, gen !== undefined ? { gen } : {})
         if (flags.json) {
           const refreshed = path ? deliver('refresh', { env, home }) : { results: [] }
           print({ written: Boolean(path), refreshed: refreshed.results.filter((r) => r.ok && r.changed).map((r) => r.agent) })
