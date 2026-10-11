@@ -26,7 +26,7 @@ export function heldFor(row: Pick<RegisteredSession, 'launch'> | undefined): str
 export interface HeldLaunchesDeps {
   registry: Pick<typeof registry, 'list' | 'byAgent'>
   /** The boot's restore, of exactly these agents, outside the registry's transaction (lib/restoreAgents.ts `only`). */
-  restore: (only: ReadonlySet<string>) => Promise<RestoreSummary>
+  restore: (only: ReadonlySet<string>, current: () => boolean) => Promise<RestoreSummary>
   log: (line: string) => void
 }
 
@@ -38,6 +38,8 @@ export function createHeldLaunches({ registry, restore, log }: HeldLaunchesDeps)
   let opened!: () => void
   const ready = new Promise<void>(done => { opened = done })
   let closed = false
+  // Closing revokes preparations already waiting on hooks or a service, too.
+  const current = () => !closed
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   const active = new Map<string, Promise<RestoreSummary>>()
   let nextAgent = 0
@@ -65,7 +67,7 @@ export function createHeldLaunches({ registry, restore, log }: HeldLaunchesDeps)
       retryContention(summary)
       return Promise.resolve(summary)
     }
-    const flight = Promise.resolve().then(() => closed ? empty() : restore(new Set([agentId]))).then(summary => {
+    const flight = Promise.resolve().then(() => closed ? empty() : restore(new Set([agentId]), current)).then(summary => {
       active.delete(agentId)
       retryContention(summary)
       return summary
@@ -130,8 +132,8 @@ export function createHeldLaunches({ registry, restore, log }: HeldLaunchesDeps)
 
   return {
     /** The boot's restore, before any pass here: they wait for it, whether it restores, fails or has nothing to do. */
-    boot: async <T>(run: () => Promise<T>): Promise<T> => {
-      try { return await run() } finally { opened() }
+    boot: async <T>(run: (current: () => boolean) => Promise<T>): Promise<T> => {
+      try { return await run(current) } finally { opened() }
     },
     restoreHeld,
     restartHeld,

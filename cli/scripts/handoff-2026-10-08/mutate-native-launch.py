@@ -38,6 +38,8 @@ mutations = [
     ('lose legacy pane ownership', 'src/lib/nativePaneHold.ts', 'const command = `/usr/bin/env HARNESS_DAEMON=${owner} ${heldCommand}`', 'const command = heldCommand', 'src/lib/nativePaneHold.spec.ts', 'sourced true'),
     ('wait indefinitely for the tmux client', 'src/lib/nativePaneHold.ts', 'timeout:2000', 'timeout:60000', 'src/lib/nativePaneHold.spec.ts', 'stalled transition'),
     ('fail unconfirmed native launch', 'src/core/agents/newPane.ts', 'registry.setLaunch(pending.agentId, nativeToken', 'registry.setLaunch(pending.agentId, false', 'src/core/agents/newPane.spec.ts', 'post-rc native guard hold'),
+    ('forget an unconfirmed native launch after crash', 'src/lib/restoreAgents.ts', 'if (nativeToken) {\n      // A core crash', 'if (false) {\n      // A core crash', 'src/lib/restoreAgents.spec.ts', 'unrecognized inert launch'),
+    ('retain restore authority after shutdown', 'src/core/agents/heldLaunches.ts', 'restore(new Set([agentId]), current)', 'restore(new Set([agentId]), () => true)', 'src/lib/restoreAgents.spec.ts', 'shutdown begins during launch preparation'),
     ('forget prepared dispatch authority', 'src/core/agents/launches.ts', "if (!authority.current()) return { state: 'unconfirmed' }", 'void authority', 'src/core/agents/launches.spec.ts', 'before invocation'),
 ]
 environment = dict(os.environ, TZ='UTC', TMPDIR='/tmp', HARNESS_CONNECTIONS_PORT='0')

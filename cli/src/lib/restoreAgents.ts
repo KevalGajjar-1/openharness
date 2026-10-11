@@ -847,6 +847,16 @@ async function watchRestoredPane(
       await sleep(delayMs)
       delayMs = Math.min(delayMs * 2, 750)
     }
+    if (!current()) return
+    const latest = deps.registry.byAgent(agentId)
+    const nativeToken = latest?.launch?.state === 'starting' ? latest.launch.nativeToken : undefined
+    if (nativeToken) {
+      // A core crash can lose the new-pane watcher while the guard's tmux
+      // publication is unavailable. No process observation is proof of failure.
+      deps.registry.setLaunch(agentId, { state: 'held', service: 'native', nativeToken,
+        detail: 'Waiting to confirm the native engine process. The original launch and terminal are preserved.' })
+      return
+    }
     fail('START_TIMEOUT', `${engine} did not expose an engine process within ${Math.round(budgetMs / 60_000)} minutes. The terminal remains available.`)
   } catch (error) {
     deps.log(`[restore] ${engine} · agent ${agentId} · watch failed · ${error instanceof Error ? error.message : error}`)

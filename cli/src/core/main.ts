@@ -434,10 +434,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   let searchGeneration = 0
   let restoreCancelled = (_agentId: string): boolean => false
   let launchCancelled = (_agentId: string): boolean => false
-  let restoreOnly: ((only: ReadonlySet<string>) => Promise<RestoreSummary>) | null = null
+  let restoreOnly: ((only: ReadonlySet<string>, current: () => boolean) => Promise<RestoreSummary>) | null = null
   const heldLaunches = createHeldLaunches({
     registry,
-    restore: (only) => restoreOnly?.(only) ?? Promise.resolve({ restored: [], skipped: [], failed: [], held: [], unsurveyed: [] }),
+    restore: (only, current) => restoreOnly?.(only, current) ?? Promise.resolve({ restored: [], skipped: [], failed: [], held: [], unsurveyed: [] }),
     log: (line) => console.log(line),
   })
   wakeGateway({ outOfProcess: servicesTheMasterRuns(process.env, KNOWN_SERVICES), signedIn: !!session, dataDir: env.ADAPTER_DATA_DIR, want: (service) => coreLink.want(service) })
@@ -2055,7 +2055,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     if (saved && !isTerminalEngine(saved.engine)) retainExitedSession(entry, true)
   }
   // Later passes over held agents (core/agents/heldLaunches.ts) wait for this one.
-  await heldLaunches.boot(async () => {
+  await heldLaunches.boot(async (current) => {
   if (tmuxBackend) {
    // Best effort, like the cwd repair above it: panes that cannot be rebuilt cost this boot its
    // tiles, not the daemon. `restoreDegraded` then stops discovery retiring the rows whose panes
@@ -2063,7 +2063,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
    try {
     const backend = tmuxBackend
     const restoreDeps: RestoreAgentsDeps = {
-      cancelled: (agentId) => restoreCancelled(agentId),
+      cancelled: (agentId) => !current() || restoreCancelled(agentId),
       revision: (agentId) => restoreRevision(agentId),
       paneOperation: restorePanes.run,
       paneAllocations: restorePanes.runMany,
@@ -2133,7 +2133,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       killPane: async (runtime) => { await backend.kill(runtime) },
     }
     // Later passes launch the held agents, into the panes they wait in, outside this pass's transaction.
-    restoreOnly = (only) => restoreAgents({ ...restoreDeps, only })
+    restoreOnly = (only, current) => restoreAgents({ ...restoreDeps, only, cancelled: id => !current() || restoreCancelled(id) })
     const summary = await restoreAgents({ ...restoreDeps, defer: true })
     // A row restore could not look at keeps its pane for discovery to judge, but not to retire this boot.
     for (const agentId of summary.unsurveyed) restoreUnsurveyed.add(agentId)

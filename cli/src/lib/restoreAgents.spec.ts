@@ -8,6 +8,7 @@ import { AgentRestartCoordinator } from './restartAgent.js'
 import { createHeldLaunches } from '../core/agents/heldLaunches.js'
 import { createPaneSwap } from '../core/agents/swap.js'
 import { createPaneOperations } from '../core/agents/paneOperations.js'
+import { createAgentRestarter, type RestartDeps } from '../core/agents/restart.js'
 
 vi.mock('./captureResumeIdentity.js', () => ({ captureResumeIdentity: async (entry: RegisteredSession) => entry }))
 
@@ -78,6 +79,51 @@ it.each(['held alive', 'held gone', 'starting alive', 'starting gone'] as const)
   expect(await held.restartHeld(entry.agentId)).toMatchObject({ ok: false, error: 'SERVICE_UNAVAILABLE' })
   await held.restoreHeld()
   held.close()
+  expect(h.launches).toEqual([])
+  expect(h.paneCreates).toBe(0)
+  expect(h.respawns).toBe(0)
+  expect(h.deps.keepAbandoned).not.toHaveBeenCalled()
+})
+
+it('revokes an active held restore when shutdown begins during launch preparation', async () => {
+  const entry = row({ launch: heldLaunch('native') }), before = structuredClone(entry)
+  const h = harness([entry], { alivePanes: ['%3'] })
+  let finish!: (launch: RestoreLaunch) => void, preparationCurrent!: () => boolean
+  h.deps.buildLaunch = vi.fn(async (_entry, control) => {
+    preparationCurrent = control.current!
+    expect(preparationCurrent()).toBe(true)
+    return new Promise<RestoreLaunch>(done => { finish = done })
+  })
+  h.deps.keepAbandoned = vi.fn()
+  const held = createHeldLaunches({ registry: h.deps.registry, log: () => {},
+    restore: (only, current) => restoreAgents({ ...h.deps, only, cancelled: () => !current() }) })
+  await held.boot(async () => {})
+  const pending = held.restoreHeld()
+  await vi.waitFor(() => expect(h.deps.buildLaunch).toHaveBeenCalledOnce())
+  held.close()
+  expect(preparationCurrent()).toBe(false)
+  finish({ argv: ['must-not-run-after-shutdown'] })
+  await pending
+  expect(entry).toEqual(before)
+  expect(h.paneCreates).toBe(0)
+  expect(h.respawns).toBe(0)
+  expect(h.deps.keepAbandoned).not.toHaveBeenCalled()
+})
+
+it.each([false, 'unknown'] as const)('keeps an unrecognized inert launch held after crash and watcher expiry: %s', async waiting => {
+  const entry = row({ sessionId: '', launch: { state: 'starting', nativeToken: 'original' } })
+  const h = harness([entry], { alivePanes: ['%3'], budgetMs: 0 })
+  h.deps.waitingPane = vi.fn(async () => waiting)
+  h.deps.keepAbandoned = vi.fn()
+  await restoreAgents(h.deps)
+  await settled(h, 1)
+  expect(entry.launch).toMatchObject({ state: 'held', service: 'native', nativeToken: 'original' })
+  const restart = createAgentRestarter({
+    registry: { ...h.deps.registry, resolve: (id: string) => h.rows.get(id) },
+    restartJobs: new AgentRestartCoordinator(), purgeBusy: () => false,
+    stopJobs: new Map(), pinnedControls: new Set(), tmuxBackend: null, restartHeld: () => null,
+  } as unknown as RestartDeps)
+  expect(await restart(entry.agentId)).toMatchObject({ ok: false, error: 'NATIVE_LAUNCH_HELD' })
   expect(h.launches).toEqual([])
   expect(h.paneCreates).toBe(0)
   expect(h.respawns).toBe(0)

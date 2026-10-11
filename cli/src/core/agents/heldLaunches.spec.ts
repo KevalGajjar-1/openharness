@@ -15,7 +15,7 @@ const summary = (over: Partial<RestoreSummary> = {}): RestoreSummary => ({ resto
 function setup(rows: RegisteredSession[], answer: (only: ReadonlySet<string>) => RestoreSummary = (only) => summary({ restored: [...only] })) {
   const registry = new Map(rows.map((r) => [r.agentId, r]))
   const asked: string[][] = []
-  const restore = vi.fn(async (only: ReadonlySet<string>) => {
+  const restore = vi.fn(async (only: ReadonlySet<string>, _current: () => boolean) => {
     asked.push([...only])
     const result = answer(only)
     for (const id of result.restored) { const r = registry.get(id); if (r) r.launch = { state: 'starting' } }
@@ -36,6 +36,25 @@ describe('agents held until a service is ready', () => {
     if (state === 'closed') queueMicrotask(() => h.held.close())
     expect(await running).toMatchObject({ restored: [] })
     expect(h.restore).not.toHaveBeenCalled()
+  })
+
+  it('revokes the boot and every active restore authority immediately on close', async () => {
+    const h = setup([row('a', HELD)])
+    let bootCurrent!: () => boolean, flightCurrent!: () => boolean, finish!: () => void
+    await h.held.boot(async current => { bootCurrent = current; expect(current()).toBe(true) })
+    const restore = vi.fn(async (_only: ReadonlySet<string>, current: () => boolean) => {
+      flightCurrent = current
+      expect(current()).toBe(true)
+      await new Promise<void>(done => { finish = done })
+      return summary()
+    })
+    h.restore.mockImplementation(restore)
+    const pending = h.held.restoreHeld()
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce())
+    h.held.close()
+    expect(bootCurrent()).toBe(false)
+    expect(flightCurrent()).toBe(false)
+    finish(); await pending
   })
 
   it('bounds actual preparation flights and lets a later ready agent progress after one slot settles', async () => {
