@@ -258,11 +258,16 @@ describe('the router', () => {
 })
 
 describe('the router this computer runs', () => {
-  it('asks Jev through the person\'s key, and logs as [route]', () => {
+  it('asks Jev through the person\'s key or the account\'s backend, and logs as [route]', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const made = defaultRouter()
+    const core = fakeCore()
+    const backend = vi.spyOn(core.account, 'backend').mockResolvedValue({ status: 200, body: {} })
+    const made = defaultRouter(core)
     // No key or fetch of its own: the client finds the person's key when it is asked, and not before.
-    expect(createJevDecide).toHaveBeenCalledWith({ onCost: expect.any(Function) })
+    expect(createJevDecide).toHaveBeenCalledWith({ backend: expect.any(Function), onCost: expect.any(Function) })
+    // Harness's key is the core's to sign for: the router holds no credential.
+    await vi.mocked(createJevDecide).mock.calls[0]![0]!.backend!('POST', '/api/route/jev', { state: {} })
+    expect(backend).toHaveBeenCalledWith('POST', '/api/route/jev', { state: {} })
     expect(made.jev).toEqual(expect.any(Function))
     expect(Object.keys(made).sort()).toEqual(['jev', 'log'])
     made.log!('session — 2 sessions')

@@ -8,15 +8,14 @@
  * A person with an OpenRouter key of their own asks with it: OPENROUTER_API_KEY, the account `ori login`
  * saved, or the credentials file at ~/.config/typesafe/credentials (or $TYPESAFE_CREDENTIALS). It is read
  * when a decision is asked for and never logged. Everyone else asks on Harness's key, through the backend
- * (backend/src/routes/jevRoute.ts), signed in as themselves: the owner chose to pay for these decisions
- * (2026-10-11), and the key cannot ship here because this code is public.
+ * (backend/src/routes/jevRoute.ts): the owner chose to pay for these decisions (2026-10-11), and the key
+ * cannot ship here because this code is public. That request is the core's to sign (`core.account.backend`):
+ * the router holds no credential of its own.
  */
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { AuthSessionManager, readAuthSession } from '../authSession.js'
 import { resolveOpenRouterKey } from '../openrouter.js'
-import { routeApiBase } from '../routeApi.js'
 
 const ENDPOINT = 'https://openrouter.ai/api/alpha/decisions'
 const MODEL = 'typesafe/jev-1.13'
@@ -32,22 +31,12 @@ export class JevUnavailable extends Error {
   constructor(readonly code: 'NO_KEY' | 'AUTH' | 'CREDITS' | 'BUSY' | 'UNAVAILABLE' | 'INVALID', message: string) { super(message) }
 }
 
-/** Where Harness's own key answers: the backend's route, and this person's sign-in for it. */
-export interface HostedJev { url: string; headers: Record<string, string> }
+/** A read or write of the account's backend, signed in by the core (`CoreApi['account']['backend']`). A
+ *  failure is an answer, never a throw: 401 signed out, 502 unreachable, 504 too slow. */
+export type AccountBackend = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: Record<string, unknown> }>
 
+/** Harness's Jev, on the backend. */
 export const HOSTED_JEV_PATH = '/api/route/jev'
-
-/** Harness's Jev, as this signed-in person; null when signed out or the sign-in cannot be refreshed. */
-export async function hostedJev(): Promise<HostedJev | null> {
-  const session = readAuthSession()
-  if (!session) return null
-  try {
-    const token = await new AuthSessionManager(routeApiBase()).accessToken()
-    return { url: `${routeApiBase()}${HOSTED_JEV_PATH}`, headers: { authorization: `Bearer ${token}`, 'x-autonomous-env': session.autonomousEnv } }
-  } catch {
-    return null
-  }
-}
 
 /** The key, or null when this computer has none. */
 export async function resolveJevKey(environment: NodeJS.ProcessEnv = process.env): Promise<string | null> {
@@ -82,23 +71,44 @@ async function readJson(response: Response): Promise<unknown> {
   try { return JSON.parse(text) } catch { throw new JevUnavailable('INVALID', 'Jev answered something that is not JSON') }
 }
 
-/** Why the backend did not answer, from its status and its error code. */
-async function hostedRefusal(response: Response): Promise<JevUnavailable> {
-  let code: unknown
-  try { code = ((await response.json()) as { error?: { code?: unknown } } | null)?.error?.code } catch { /* no body */ }
-  if (response.status === 401 || response.status === 403) return new JevUnavailable('AUTH', 'Harness could not confirm your sign-in')
-  if (response.status === 429) return new JevUnavailable('BUSY', 'too many ⌘B decisions, try again in a minute')
-  if (code === 'JEV_CREDITS') return new JevUnavailable('CREDITS', "Harness's Jev credit has run out")
+/** The backend's error code: the route's `{ error: { code } }`, or the core's own `{ error: 'CODE' }`. */
+function errorCode(body: Record<string, unknown>): string | undefined {
+  const error = body.error
+  if (typeof error === 'string') return error
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return typeof code === 'string' ? code : undefined
+}
+
+/** Why Harness's Jev did not answer, in the router's words. */
+function hostedRefusal(status: number, code: string | undefined): JevUnavailable {
+  if (code === 'NOT_SIGNED_IN') return new JevUnavailable('NO_KEY', 'sign in to Harness to use ⌘B')
+  if (status === 401 || status === 403) return new JevUnavailable('AUTH', 'Harness could not confirm your sign-in')
+  // Signed in, but the refresh could not be made just now: not a reason to tell anyone to sign in.
+  if (code === 'AUTH_UNAVAILABLE') return new JevUnavailable('UNAVAILABLE', 'Harness could not refresh your sign-in')
+  if (status === 429) return new JevUnavailable('BUSY', 'too many ⌘B decisions, try again in a minute')
+  if (code === 'JEV_CREDITS') return new JevUnavailable('CREDITS', "Harness's Jev budget has run out")
   if (code === 'JEV_BUSY') return new JevUnavailable('BUSY', 'Jev is busy')
+  if (code === 'BACKEND_TIMEOUT') return new JevUnavailable('UNAVAILABLE', "Harness's server did not answer in time")
+  if (code === 'BACKEND_UNREACHABLE' || code === 'SERVICE_UNAVAILABLE') return new JevUnavailable('UNAVAILABLE', "Harness's server cannot be reached")
   // An older backend, before the route: the CLI self-updates on its own schedule and can arrive first.
-  if (response.status === 404) return new JevUnavailable('UNAVAILABLE', "Harness's server cannot decide yet")
-  return new JevUnavailable('UNAVAILABLE', `Harness's server answered ${response.status}`)
+  if (status === 404) return new JevUnavailable('UNAVAILABLE', "Harness's server cannot decide yet")
+  return new JevUnavailable('UNAVAILABLE', `Harness's server answered ${status}`)
+}
+
+/** [work], or the reason [signal] gives once it fires: the caller's slot is freed when it stops waiting. */
+function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason)
+    signal.addEventListener('abort', stop, { once: true })
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+  })
 }
 
 export function createJevDecide(options: {
   key?: () => Promise<string | null>
-  /** Harness's key, for a computer with none of its own. */
-  hosted?: () => Promise<HostedJev | null>
+  /** The account's backend, signed in by the core: Harness's key, for a computer with none of its own. */
+  backend?: AccountBackend
   fetch?: typeof fetch
   /** What each answer cost, as OpenRouter reports it (USD) — what a person's own key is charged. */
   onCost?: (usd: number, inputTokens: number) => void
@@ -108,16 +118,10 @@ export function createJevDecide(options: {
     const timeout = AbortSignal.timeout(TIMEOUT_MS)
     const abort = signal ? AbortSignal.any([signal, timeout]) : timeout
     if (!key) {
-      const hosted = await (options.hosted ?? hostedJev)()
-      if (!hosted) throw new JevUnavailable('NO_KEY', 'sign in to Harness to use ⌘B')
-      const response = await (options.fetch ?? fetch)(hosted.url, {
-        method: 'POST',
-        signal: abort,
-        headers: { ...hosted.headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state, questions }),
-      })
-      if (!response.ok) throw await hostedRefusal(response)
-      return readAnswers(((await readJson(response)) as { data?: { answers?: unknown } } | null)?.data?.answers)
+      if (!options.backend) throw new JevUnavailable('NO_KEY', 'no OpenRouter key on this computer')
+      const answer = await bounded(options.backend('POST', HOSTED_JEV_PATH, { state, questions }), abort)
+      if (answer.status !== 200) throw hostedRefusal(answer.status, errorCode(answer.body))
+      return readAnswers((answer.body.data as { answers?: unknown } | undefined)?.answers)
     }
     const response = await (options.fetch ?? fetch)(ENDPOINT, {
       method: 'POST',

@@ -11,15 +11,18 @@
  * (cli/src/lib/jev/jevClient.ts); this route is for everyone else.
  *
  * WHAT IS FIXED HERE. The model and the endpoint: a caller sends the decision, never a model name, so
- * this key buys Jev routing and nothing else. The size of a decision is bounded to what the router builds
- * (a message and up to four questions of 41 options, lib/routeDecide.ts), which is what bounds its price.
+ * this key buys Jev decisions and nothing else. The size of a decision is bounded just above what the
+ * router builds (cli/src/lib/routeDecide.ts: a message of up to 16,000 characters, and up to four
+ * questions of at most 41 options of at most 600 characters), which is what bounds its price.
  *
  * WHAT IS NOT KEPT. The message and the session descriptions are relayed and dropped. The log carries the
  * account, the time, the cost and the token count, never the words. Every request is OpenRouter-titled
  * "Harness router": an unnamed app burned $60 on 2026-10-10 before anyone could tell which one it was.
  *
- * THE BUDGET is the key's credit limit on OpenRouter. The per-account caps below only keep one account
- * (or one runaway client) from spending everyone's share: a person presses ⌘B, a loop does not.
+ * THE BUDGET is the key's credit limit on OpenRouter, with a daily ceiling across every account
+ * (JEV_DAILY_DECISIONS) under it. Each account is capped too, so one account or one runaway client cannot
+ * spend everyone's share: a person presses ⌘B, a loop does not. The caps count in Redis, shared by every
+ * process and pod; a process-local count would multiply by both and reset on every deploy.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -32,16 +35,20 @@ export const JEV_ROUTE_PATH = '/api/route/jev'
 
 const ENDPOINT = 'https://openrouter.ai/api/alpha/decisions'
 const MODEL = 'typesafe/jev-1.13'
-/** The CLI waits 8 s for Jev directly; one hop more, and it still gives up first. */
+/** The CLI waits 8 s for Jev; one hop more, and this gives up first. */
 const TIMEOUT_MS = 7_000
 const MAX_REPLY_CHARS = 128_000
 
-/** A message is at most 16,000 characters in the CLI (services/router.ts MAX_TEXT). */
-const MAX_STATE_CHARS = 20_000
-const MAX_QUESTIONS = 8
-const MAX_OPTIONS = 64
-const MAX_OPTION_CHARS = 1_000
-const MAX_INSTRUCTION_CHARS = 4_000
+/** The router's message is at most 16,000 characters; the previous session's name rides beside it. */
+const MAX_STATE_CHARS = 17_000
+const MAX_STATE_KEYS = 4
+/** The router asks target, topic, project and agent; 41 options at most (40 and "new"), each cut to 600. */
+const MAX_QUESTIONS = 4
+const MAX_OPTIONS = 48
+const MAX_OPTION_CHARS = 640
+const MAX_INSTRUCTION_CHARS = 1_500
+/** Bytes, for a request at those bounds in any script: enforced before the body is parsed. */
+const MAX_BODY_BYTES = 512 * 1024
 
 /** Per account: a burst of quick ⌘B presses passes, a client in a loop does not get far. */
 const MINUTE_MS = 60_000
@@ -49,49 +56,54 @@ const PER_MINUTE = 30
 const DAY_MS = 24 * 60 * 60_000
 const PER_DAY = 1_000
 
-const minuteBuckets = new Map<string, { count: number; resetAt: number }>()
-const dayBuckets = new Map<string, { count: number; resetAt: number }>()
+/** The count after this one, in a fixed window named by the key; the ttl only cleans up. */
+export type JevCounter = (key: string, ttlMs: number) => Promise<number>
 
-function take(buckets: Map<string, { count: number; resetAt: number }>, userId: string, windowMs: number, max: number, now: number): boolean {
-  const bucket = buckets.get(userId)
-  if (!bucket || now >= bucket.resetAt) {
-    buckets.set(userId, { count: 1, resetAt: now + windowMs })
-    return true
+/** A count in this process alone: tests, and the fallback when the shared one fails. */
+export function localJevCounter(now: () => number = Date.now): JevCounter {
+  const counts = new Map<string, { count: number; expiresAt: number }>()
+  return async (key, ttlMs) => {
+    const at = now()
+    for (const [old, entry] of counts) if (entry.expiresAt <= at) counts.delete(old)
+    const entry = counts.get(key) ?? { count: 0, expiresAt: at + ttlMs }
+    entry.count++
+    counts.set(key, entry)
+    return entry.count
   }
-  if (bucket.count >= max) return false
-  bucket.count++
-  return true
 }
 
-/** Process-local by design, like agentRoute's limiter: the key's credit limit is the real ceiling. */
-export function jevRateLimitAllows(userId: string, now = Date.now()): boolean {
-  const day = dayBuckets.get(userId)
-  if (day && now < day.resetAt && day.count >= PER_DAY) return false
-  if (!take(minuteBuckets, userId, MINUTE_MS, PER_MINUTE, now)) return false
-  return take(dayBuckets, userId, DAY_MS, PER_DAY, now)
+/**
+ * Whether one more decision may be asked: null when it may, or who is over. The account's caps are counted
+ * first, so asks refused for one account never spend the day's shared ceiling.
+ */
+export async function jevAllowance(count: JevCounter, userId: string, now: number, ceiling: number): Promise<'account' | 'everyone' | null> {
+  const minute = Math.floor(now / MINUTE_MS), day = Math.floor(now / DAY_MS)
+  if (await count(`jev:m:${userId}:${minute}`, MINUTE_MS) > PER_MINUTE) return 'account'
+  if (await count(`jev:d:${userId}:${day}`, DAY_MS) > PER_DAY) return 'account'
+  if (await count(`jev:all:${day}`, DAY_MS) > ceiling) return 'everyone'
+  return null
 }
 
-/** Test seam. */
-export function resetJevRateLimits(): void {
-  minuteBuckets.clear()
-  dayBuckets.clear()
-}
+const own = (record: Record<string, unknown>, key: string): boolean => Object.hasOwn(record, key)
 
 const choiceSchema = z.object({
   type: z.literal('choice'),
   instructions: z.string().min(1).max(MAX_INSTRUCTION_CHARS),
+  // One option is a real question: a desk with no sessions offers only "new".
   criteria: z
     .record(z.string().min(1).max(64), z.string().max(MAX_OPTION_CHARS))
     .refine((criteria) => {
       const count = Object.keys(criteria).length
-      return count >= 2 && count <= MAX_OPTIONS
-    }, `between 2 and ${MAX_OPTIONS} options`),
+      return count >= 1 && count <= MAX_OPTIONS
+    }, `between 1 and ${MAX_OPTIONS} options`),
 })
 
 const jevBodySchema = z.object({
+  // Characters as typed, not as JSON escapes them: a pasted 16,000-character stack trace is one message.
   state: z
     .record(z.string().max(64), z.string())
-    .refine((state) => JSON.stringify(state).length <= MAX_STATE_CHARS, 'state is too long'),
+    .refine((state) => Object.keys(state).length <= MAX_STATE_KEYS, 'state has too many fields')
+    .refine((state) => Object.values(state).reduce((sum, value) => sum + value.length, 0) <= MAX_STATE_CHARS, 'state is too long'),
   questions: z
     .record(z.string().min(1).max(64), choiceSchema)
     .refine((questions) => {
@@ -116,25 +128,40 @@ export function parseJevAnswers(raw: unknown, questions: JevBody['questions']): 
   if (!answers || typeof answers !== 'object') return null
   const out: Record<string, JevAnswer> = {}
   for (const [id, value] of Object.entries(answers as Record<string, unknown>)) {
-    const question = questions[id]
+    const question = own(questions, id) ? questions[id] : undefined
     const answer = value as { choice?: unknown; probabilities?: unknown } | null
-    if (!question || typeof answer?.choice !== 'string' || !(answer.choice in question.criteria)) continue
+    if (!question || typeof answer?.choice !== 'string' || !own(question.criteria, answer.choice)) continue
     if (!answer.probabilities || typeof answer.probabilities !== 'object') continue
     const probabilities: Record<string, number> = {}
     for (const [option, p] of Object.entries(answer.probabilities as Record<string, unknown>)) {
-      if (option in question.criteria && typeof p === 'number' && Number.isFinite(p)) probabilities[option] = p
+      if (own(question.criteria, option) && typeof p === 'number' && Number.isFinite(p)) probabilities[option] = p
     }
     out[id] = { choice: answer.choice, probabilities }
   }
   return Object.keys(out).length > 0 ? out : null
 }
 
+export interface JevRouteOptions {
+  /** Shared by every process (server.ts passes Redis); this process's own count when absent. */
+  count?: JevCounter
+  now?: () => number
+}
+
 /**
  * ORDINARY SSO GATING, as /api/route/agents: the daemon signs in as a person and presents that access
  * token; the middleware puts the account on `request.user`, which the caps count.
  */
-export async function jevRouteRoutes(app: FastifyInstance): Promise<void> {
-  app.post<{ Body: JevBody }>(JEV_ROUTE_PATH, { preHandler: [validateBody(jevBodySchema)] }, async (req, reply) => {
+export async function jevRouteRoutes(app: FastifyInstance, options: JevRouteOptions = {}): Promise<void> {
+  const now = options.now ?? Date.now
+  const local = localJevCounter(now)
+  const shared = options.count ?? local
+  // Redis down must not mean uncapped: count in this process until it answers again.
+  const count: JevCounter = (key, ttlMs) => shared(key, ttlMs).catch((err: unknown) => {
+    logger.error('jev-route: shared count failed, counting in this process', { error: err instanceof Error ? err.message : String(err) })
+    return local(key, ttlMs)
+  })
+
+  app.post<{ Body: JevBody }>(JEV_ROUTE_PATH, { bodyLimit: MAX_BODY_BYTES, preHandler: [validateBody(jevBodySchema)] }, async (req, reply) => {
     // Fail CLOSED: an absent key must never read as "decide some other way" on a path that spends credit.
     if (!env.JEV_OPENROUTER_API_KEY) {
       logger.error('jev-route: JEV_OPENROUTER_API_KEY not configured — refusing')
@@ -142,17 +169,27 @@ export async function jevRouteRoutes(app: FastifyInstance): Promise<void> {
       return
     }
     const userId = req.user?.sub ?? ''
-    if (!jevRateLimitAllows(userId)) {
+    const over = await jevAllowance(count, userId, now(), env.JEV_DAILY_DECISIONS)
+    if (over === 'account') {
       sendError(reply, 'Too many ⌘B decisions; try again in a minute', 'RATE_LIMITED', 429)
+      return
+    }
+    if (over === 'everyone') {
+      logger.error('jev-route: daily ceiling reached', { ceiling: env.JEV_DAILY_DECISIONS })
+      sendError(reply, "Harness's Jev budget for today has run out", 'JEV_CREDITS', 503)
       return
     }
 
     const started = Date.now()
     const { state, questions } = req.body
+    // A CLI that gave up has nobody waiting on the answer: stop paying for it.
+    const gone = new AbortController()
+    const onClose = () => { if (!reply.raw.writableFinished) gone.abort() }
+    reply.raw.once('close', onClose)
     try {
       const res = await fetch(ENDPOINT, {
         method: 'POST',
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), gone.signal]),
         headers: {
           Authorization: `Bearer ${env.JEV_OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
@@ -191,8 +228,10 @@ export async function jevRouteRoutes(app: FastifyInstance): Promise<void> {
       })
       sendSuccess(reply, { answers })
     } catch (err) {
-      logger.error('jev-route failed', { userId, ms: Date.now() - started, error: err instanceof Error ? err.name : String(err) })
+      logger.error('jev-route failed', { userId, ms: Date.now() - started, gone: gone.signal.aborted, error: err instanceof Error ? err.name : String(err) })
       sendError(reply, 'Jev did not answer', 'JEV_UNAVAILABLE', 502)
+    } finally {
+      reply.raw.off('close', onClose)
     }
   })
 }

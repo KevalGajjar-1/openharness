@@ -66,14 +66,21 @@ export function routeInput(payload: Record<string, unknown>): RouteInput | null 
 
 export type Router = RouteDeps
 
-/** Jev, on the person's key or Harness's, and the router's log. */
-export function defaultRouter(): Router {
+/** Jev, on the person's key or on Harness's through the account's backend, which the core signs; and the
+ *  router's log. */
+export function defaultRouter(core: CoreApi): Router {
   const log = (line: string): void => console.log(`[route] ${line}`)
-  // Every answer's price on the person's own key, as OpenRouter charged it. On Harness's key the backend logs it.
-  return { jev: createJevDecide({ onCost: (usd, tokens) => log(`jev cost $${usd.toFixed(6)} for ${tokens} tokens`) }), log }
+  return {
+    jev: createJevDecide({
+      backend: (method, path, body) => core.account.backend(method, path, body),
+      // Every answer's price on the person's own key, as OpenRouter charged it. On Harness's key the backend logs it.
+      onCost: (usd, tokens) => log(`jev cost $${usd.toFixed(6)} for ${tokens} tokens`),
+    }),
+    log,
+  }
 }
 
-export function startRouter(_core: CoreApi, router: Router = defaultRouter()): ServiceRequests {
+export function startRouter(core: CoreApi, router: Router = defaultRouter(core)): ServiceRequests {
   /** Decisions in flight, each with the connection that asked: what the limits count. */
   const pending = new Map<object, unknown>()
   return {

@@ -5,27 +5,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { AuthSessionManager, readAuthSession } from '../authSession.js'
 import { resolveOpenRouterKey } from '../openrouter.js'
-import { createJevDecide, hostedJev, JevUnavailable, resolveJevKey, type HostedJev, type JevChoice } from './jevClient.js'
+import { createJevDecide, JevUnavailable, resolveJevKey, type AccountBackend, type JevChoice } from './jevClient.js'
 
 // The env key and `ori login`'s file are openrouter.ts's to read, and its spec's to test: here they are none,
 // unless a test says otherwise.
 vi.mock('../openrouter.js', () => ({ resolveOpenRouterKey: vi.fn(async () => null) }))
-// Never this computer's own sign-in: signed out unless a test says otherwise.
-vi.mock('../authSession.js', () => ({
-  readAuthSession: vi.fn(() => null),
-  AuthSessionManager: vi.fn(function () { return { accessToken: vi.fn(async () => 'sso-fixture') } }),
-}))
-vi.mock('../routeApi.js', () => ({ routeApiBase: () => 'https://backend.test' }))
 
 let root: string
 beforeAll(() => { root = mkdtempSync(join(tmpdir(), 'jev-client-')) })
 afterAll(() => { rmSync(root, { recursive: true, force: true }) })
-beforeEach(() => {
-  vi.mocked(resolveOpenRouterKey).mockResolvedValue(null)
-  vi.mocked(readAuthSession).mockReturnValue(null)
-})
+beforeEach(() => { vi.mocked(resolveOpenRouterKey).mockResolvedValue(null) })
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
@@ -125,12 +115,12 @@ describe('asking Jev', () => {
     expect(costs).toEqual([[0.000167, 3986], [0.0001, 0]])
   })
 
-  it('asks nothing without a key or a sign-in', async () => {
+  it('asks nothing without a key or a backend to ask', async () => {
     const fetch = fetching()
-    const failure = await createJevDecide({ key: async () => null, hosted: async () => null, fetch })(STATE, QUESTIONS).catch((error: unknown) => error)
+    const failure = await createJevDecide({ key: async () => null, fetch })(STATE, QUESTIONS).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(JevUnavailable)
     expect(failure).toBeInstanceOf(Error)
-    expect(failure).toMatchObject({ code: 'NO_KEY', message: 'sign in to Harness to use ⌘B' })
+    expect(failure).toMatchObject({ code: 'NO_KEY', message: 'no OpenRouter key on this computer' })
     expect(fetch).not.toHaveBeenCalled()
   })
 
@@ -148,9 +138,9 @@ describe('asking Jev', () => {
 
   it("prefers the person's own key over Harness's", async () => {
     const fetch = fetching()
-    const hosted = vi.fn(async (): Promise<HostedJev | null> => ({ url: 'https://backend.test/api/route/jev', headers: {} }))
-    await createJevDecide({ key: async () => 'sk-or-fixture', hosted, fetch })(STATE, QUESTIONS)
-    expect(hosted).not.toHaveBeenCalled()
+    const backend = vi.fn<AccountBackend>(async () => ({ status: 200, body: {} }))
+    await createJevDecide({ key: async () => 'sk-or-fixture', backend, fetch })(STATE, QUESTIONS)
+    expect(backend).not.toHaveBeenCalled()
     expect(fetch.mock.calls[0]![0]).toBe('https://openrouter.ai/api/alpha/decisions')
   })
 
@@ -206,69 +196,50 @@ describe("asking Jev on Harness's key", () => {
   const QUESTIONS: Record<string, JevChoice> = { target: { type: 'choice', instructions: 'Which?', criteria: { s0: 'billing', new: 'none' } } }
   const STATE = { message: 'why was the card charged twice' }
   const ANSWERS = { target: { choice: 's0', probabilities: { s0: 0.9, new: 0.1 } } }
-  const HOSTED: HostedJev = { url: 'https://backend.test/api/route/jev', headers: { authorization: 'Bearer sso-fixture', 'x-autonomous-env': 'prod' } }
-  const reply = (body: unknown, status = 200) => vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
-    new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }))
-  const decide = (fetch: ReturnType<typeof reply>, onCost?: (usd: number, tokens: number) => void) =>
-    createJevDecide({ key: async () => null, hosted: async () => HOSTED, fetch, onCost })
+  const answering = (status: number, body: Record<string, unknown>) => vi.fn<AccountBackend>(async () => ({ status, body }))
+  const decide = (backend: AccountBackend, onCost?: (usd: number, tokens: number) => void) =>
+    createJevDecide({ key: async () => null, backend, onCost })
 
-  it('posts the state and the questions to the backend as the signed-in person, and reads the answers', async () => {
-    const fetch = reply({ success: true, data: { answers: ANSWERS } })
+  it('posts the state and the questions to the backend the core signs, and reads the answers', async () => {
+    const backend = answering(200, { success: true, data: { answers: ANSWERS } })
     const onCost = vi.fn()
-    expect(await decide(fetch, onCost)(STATE, QUESTIONS)).toEqual(ANSWERS)
-    const [url, init] = fetch.mock.calls[0]!
-    expect(url).toBe(HOSTED.url)
-    expect(init!.headers).toEqual({ ...HOSTED.headers, 'Content-Type': 'application/json' })
+    expect(await decide(backend, onCost)(STATE, QUESTIONS)).toEqual(ANSWERS)
     // No model and no key from here: the backend fixes both.
-    expect(JSON.parse(init!.body as string)).toEqual({ state: STATE, questions: QUESTIONS })
-    expect(init!.signal).toBeInstanceOf(AbortSignal)
+    expect(backend).toHaveBeenCalledWith('POST', '/api/route/jev', { state: STATE, questions: QUESTIONS })
     // Harness pays, so nothing is charged to the person.
     expect(onCost).not.toHaveBeenCalled()
   })
 
   it.each([
-    [401, {}, 'AUTH', 'Harness could not confirm your sign-in'],
+    [401, { success: false, error: { code: 'NOT_SIGNED_IN' } }, 'NO_KEY', 'sign in to Harness to use ⌘B'],
+    [401, { success: false, error: { code: 'UNAUTHORIZED' } }, 'AUTH', 'Harness could not confirm your sign-in'],
     [403, {}, 'AUTH', 'Harness could not confirm your sign-in'],
-    [429, { error: { code: 'RATE_LIMITED' } }, 'BUSY', 'too many ⌘B decisions, try again in a minute'],
-    [503, { error: { code: 'JEV_CREDITS' } }, 'CREDITS', "Harness's Jev credit has run out"],
-    [503, { error: { code: 'JEV_BUSY' } }, 'BUSY', 'Jev is busy'],
-    [503, { error: { code: 'JEV_NOT_CONFIGURED' } }, 'UNAVAILABLE', "Harness's server answered 503"],
-    [404, 'not found', 'UNAVAILABLE', "Harness's server cannot decide yet"],
-    [502, '', 'UNAVAILABLE', "Harness's server answered 502"],
+    [502, { success: false, error: { code: 'AUTH_UNAVAILABLE' } }, 'UNAVAILABLE', 'Harness could not refresh your sign-in'],
+    [429, { success: false, error: { code: 'RATE_LIMITED' } }, 'BUSY', 'too many ⌘B decisions, try again in a minute'],
+    [503, { success: false, error: { code: 'JEV_CREDITS' } }, 'CREDITS', "Harness's Jev budget has run out"],
+    [503, { success: false, error: { code: 'JEV_BUSY' } }, 'BUSY', 'Jev is busy'],
+    [504, { success: false, error: { code: 'BACKEND_TIMEOUT' } }, 'UNAVAILABLE', "Harness's server did not answer in time"],
+    [502, { success: false, error: { code: 'BACKEND_UNREACHABLE' } }, 'UNAVAILABLE', "Harness's server cannot be reached"],
+    [503, { error: 'SERVICE_UNAVAILABLE' }, 'UNAVAILABLE', "Harness's server cannot be reached"],
+    [404, {}, 'UNAVAILABLE', "Harness's server cannot decide yet"],
+    [503, { success: false, error: { code: 'JEV_NOT_CONFIGURED' } }, 'UNAVAILABLE', "Harness's server answered 503"],
+    [502, { error: 7 }, 'UNAVAILABLE', "Harness's server answered 502"],
   ])('names a %i (%j) as %s', async (status, body, code, message) => {
-    await expect(decide(reply(body, status))(STATE, QUESTIONS)).rejects.toMatchObject({ code, message })
+    await expect(decide(answering(status, body))(STATE, QUESTIONS)).rejects.toMatchObject({ code, message })
   })
 
   it('refuses a reply with no answers', async () => {
-    await expect(decide(reply({ success: true, data: {} }))(STATE, QUESTIONS)).rejects.toMatchObject({ code: 'INVALID' })
-    await expect(decide(reply('null'))(STATE, QUESTIONS)).rejects.toMatchObject({ code: 'INVALID' })
+    await expect(decide(answering(200, { success: true, data: {} }))(STATE, QUESTIONS)).rejects.toMatchObject({ code: 'INVALID' })
+    await expect(decide(answering(200, {}))(STATE, QUESTIONS)).rejects.toMatchObject({ code: 'INVALID' })
   })
 
-  it('is asked by default when this computer has no key', async () => {
-    vi.mocked(readAuthSession).mockReturnValue({ autonomousEnv: 'prod' } as never)
-    const fetch = reply({ success: true, data: { answers: ANSWERS } })
-    vi.stubGlobal('fetch', fetch)
-    vi.stubEnv('TYPESAFE_CREDENTIALS', join(root, 'missing'))
-    expect(await createJevDecide()(STATE, QUESTIONS)).toEqual(ANSWERS)
-    expect(fetch.mock.calls[0]![0]).toBe('https://backend.test/api/route/jev')
-  })
-})
-
-describe('hostedJev', () => {
-  it('is the backend route, as the signed-in person', async () => {
-    vi.mocked(readAuthSession).mockReturnValue({ autonomousEnv: 'staging' } as never)
-    expect(await hostedJev()).toEqual({
-      url: 'https://backend.test/api/route/jev',
-      headers: { authorization: 'Bearer sso-fixture', 'x-autonomous-env': 'staging' },
-    })
-  })
-
-  it('is none when signed out, or when the sign-in cannot be refreshed', async () => {
-    expect(await hostedJev()).toBeNull()
-    vi.mocked(readAuthSession).mockReturnValue({ autonomousEnv: 'prod' } as never)
-    vi.mocked(AuthSessionManager).mockImplementationOnce(function () {
-      return { accessToken: async () => { throw new Error('refused') } } as never
-    })
-    expect(await hostedJev()).toBeNull()
+  it('stops waiting when the caller does: its slot is not held by a slow backend', async () => {
+    const never = vi.fn<AccountBackend>(() => new Promise(() => {}))
+    const caller = new AbortController()
+    const asked = decide(never)(STATE, QUESTIONS, caller.signal)
+    caller.abort(new Error('the window closed'))
+    await expect(asked).rejects.toThrow('the window closed')
+    // Already gone before it asked.
+    await expect(decide(never)(STATE, QUESTIONS, caller.signal)).rejects.toThrow('the window closed')
   })
 })
