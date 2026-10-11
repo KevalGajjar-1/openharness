@@ -2,9 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { addressOf, agentOrigin, closeCommand, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
+import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
+import { writeAgentSettings } from '../lib/agentSettings.js'
 import type { Frame } from './model.js'
 
 const NOW = Date.parse('2026-10-11T12:00:00Z')
@@ -62,7 +63,7 @@ function harness(daemon: FakeDaemon, over: Partial<ClientDeps> & { others?: Reco
   const out: string[] = [], err: string[] = []
   let clock = NOW
   const deps: ClientDeps = {
-    pane: '%lead', where: () => where,
+    pane: '%lead', env: {}, where: () => where,
     open: async (_w, machineId) => {
       if (!machineId || machineId === 'm') return daemon
       const other = over.others?.[machineId]
@@ -96,6 +97,16 @@ describe('harness ps', () => {
     expect(text).toMatch(/lead +Claude Code +idle +person \(you\)/)
     expect(text).not.toContain('sh ')
     expect(d.closed).toBe(true)
+  })
+
+  it('tells an agent outside Harness that it is one', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('kid')]
+    const h = harness(d, { pane: undefined, env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'S1' } })
+    h.ledger.append({ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'claude-code:S1', name: 'Claude Code', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'kid' } })
+    expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out[0].split('\n')[0]).toBe('You are Claude Code, outside Harness.')
+    expect(h.out[0]).toMatch(/\nkid +Codex +\w+ +you /)
   })
 
   it('prints JSON for programs, and asks for stopped ones with --all', async () => {
@@ -489,6 +500,22 @@ describe('harness close', () => {
     expect(await closeCommand(['theirs'], harness(d, { pane: '%own' }).deps)).toBe(EXIT.ok)
   })
 
+  it('lets an agent outside Harness close only what its session started', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('mine'), frame('theirs'), frame('sh', { engine: 'terminal', tmuxPane: '%sh' })]
+    const h = harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 'T1' } })
+    h.ledger.append({ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'codex:T1', name: 'Codex', engine: 'codex' }, child: { machineId: 'm', agentId: 'mine', name: 'mine' } })
+    expect(await closeCommand(['theirs'], h.deps)).toBe(EXIT.failed)
+    expect(h.err[0]).toBe('You did not start theirs, so you may not close it. Only the person can.')
+    expect(await closeCommand(['mine'], h.deps)).toBe(EXIT.ok)
+    // Another session of the same agent did not start it.
+    const other = harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 'T2' } })
+    expect(await closeCommand(['mine'], other.deps)).toBe(EXIT.failed)
+    // From a person's terminal in Harness: still the agent its shell names.
+    const inTile = harness(d, { pane: '%sh', env: { AI_AGENT: 'cursor_1-2_agent' }, where: () => ({ ...where, harnessPane: true }) })
+    expect(await closeCommand(['theirs'], inTile.deps)).toBe(EXIT.failed)
+  })
+
   it('says what to do when it is working or changed, and passes on any other refusal', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('k')]
@@ -527,7 +554,20 @@ describe('harness new, run by an agent', () => {
     const down = async () => { throw new Error('down') }
     expect(await agentOrigin(harness(d, { open: down }).deps)).toBeNull()
     const unknown = (await agentOrigin(harness(d, { open: down, where: () => ({ ...where, harnessPane: true }) }).deps))!
-    await expect(unknown.check()).rejects.toThrow(/could not tell which harness/)
+    await expect(unknown.check()).rejects.toThrow(/could not tell who is starting this/)
+  })
+
+  it('refuses every agent when the person has turned agents starting agents off, and never the person', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    writeAgentSettings(dir, { agentsStartAgents: false })
+    const inPane = (await agentOrigin(harness(d).deps))!
+    await expect(inPane.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    const outside = (await agentOrigin(harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 't' } }).deps))!
+    await expect(outside.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    expect(await agentOrigin(harness(d, { pane: undefined }).deps)).toBeNull()
+    writeAgentSettings(dir, { agentsStartAgents: true })
+    await expect((await agentOrigin(harness(d).deps))!.check()).resolves.toBeUndefined()
   })
 
   it('refuses from what is left of an agent whose harness is gone', async () => {
@@ -566,6 +606,25 @@ describe('harness new, run by an agent', () => {
     expect(origin.next({ id: 'abcdef123456', name: 'code review' })).toContain('harness show "code review" ·')
     expect(addressOf({ machineId: 'm', agentId: 'abcdef123456', name: 'so we have built harness web,', engine: 'claude' })).toBe('abcdef12')
     expect(addressOf({ machineId: 'm', agentId: 'abcdef123456', name: 'x'.repeat(41), engine: 'claude' })).toBe('abcdef12')
+  })
+
+  it('gives an agent outside Harness its limits and a header, records it by its session, and leaves out the reply', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('sh', { engine: 'terminal', tmuxPane: '%9' })]
+    const claude = { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'S1' }
+    const h = harness(d, { pane: undefined, env: claude })
+    const origin = (await agentOrigin(h.deps))!
+    await expect(origin.check()).resolves.toBeUndefined()
+    expect(origin.prompt('review it', 'm')).toBe('[from Claude Code outside Harness · studio, the agent that started you. It reads your answer itself.]\n\nreview it')
+    expect(await origin.created('m', { id: 'kid', name: 'reviewer' })).toBeNull()
+    expect(h.ledger.all()).toEqual([{ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'claude-code:S1', name: 'Claude Code', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'reviewer' } }])
+    // Nothing can message it: it has no pane.
+    expect(origin.next({ id: 'kid', name: 'reviewer' })).toBe('Read it: harness show reviewer · wait for it: harness wait reviewer')
+    // In a person's terminal in Harness, it is still that agent.
+    expect(await agentOrigin(harness(d, { pane: '%9', env: claude, where: () => ({ ...where, harnessPane: true }) }).deps)).not.toBeNull()
+    // The daemon did not answer: refused, never the person.
+    const down = (await agentOrigin(harness(d, { pane: undefined, env: claude, open: async () => { throw new Error('down') } }).deps))!
+    await expect(down.check()).rejects.toThrow(/could not tell who is starting this/)
   })
 
   it('keeps the record on the other machine too, and says when that machine could not keep it', async () => {

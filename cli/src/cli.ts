@@ -143,6 +143,8 @@ Machine:
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
   harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
+  harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
+  harness settings [<name> on|off]  what agents may do here (agents-start-agents), as Settings ▸ Agents
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})
@@ -2447,8 +2449,10 @@ async function logsExportCommand(json: boolean): Promise<void> {
 }
 
 import { orchestratorCommand } from './orchestrator/command.js'
-import { sendCommand } from './messages/command.js'
+import { paneOwner, sendCommand } from './messages/command.js'
 import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
+import { harnessRunner, mcpCommand } from './agentClient/mcp.js'
+import { settingsCommand } from './agentClient/settings.js'
 
 // ── arg parse ──────────────────────────────────────────────────────────────────────────────────
 // `hn` is the terminal client's short name (like tmux, fzf): the same CLI, entered at `tui`. A call
@@ -2483,6 +2487,14 @@ switch (cmd) {
   case 'ps':
     psCommand(rest).then(code => { process.exitCode = code }).catch(onError)
     break
+  case 'settings':
+    process.exitCode = settingsCommand(rest, env.ADAPTER_DATA_DIR)
+    break
+  case 'mcp': {
+    const pane = process.env.TMUX_PANE
+    mcpCommand({ run: harnessRunner(SCRIPT_PATH), inPane: !!pane && !!paneOwner(pane) }).then(code => { process.exitCode = code }).catch(onError)
+    break
+  }
   case 'show':
     showCommand(rest).then(code => { process.exitCode = code }).catch(onError)
     break
@@ -2565,7 +2577,7 @@ switch (cmd) {
     else if (args[0] === 'setup') {
       gridSetupCommand({
         port: daemonPort(),
-        localMachineId: readAuthSession()?.machineId ?? null,
+        localMachineId: wantedDaemonIdentity(),
         daemonRunning: isDaemonRunning,
         connect: (url) => new NewCommandSocket(url),
         output: (line) => console.log(line),
@@ -2599,7 +2611,7 @@ switch (cmd) {
       cwd: process.cwd(),
       home: homedir(),
       port: daemonPort(),
-      localMachineId: readAuthSession()?.machineId ?? null,
+      localMachineId: wantedDaemonIdentity(),
       daemonRunning: isDaemonRunning,
       listMachines: async () => {
         const { session, headers } = await controlPlaneAuth()
@@ -2625,7 +2637,7 @@ switch (cmd) {
   case 'remote':
     remoteCommand({
       tmuxPane: process.env.TMUX_PANE,
-      localMachineId: readAuthSession()?.machineId ?? null,
+      localMachineId: wantedDaemonIdentity(),
       port: daemonPort(),
       daemonRunning: isDaemonRunning,
       listMachines: async () => {

@@ -13,6 +13,7 @@ import { setUpWithin } from '../../lib/setUpWithin.js'
 import { writeGridConfigDir } from '../../lib/gridConfigDir.js'
 import type { GridLaunchAnswer, GridLaunchRequest } from '../../lib/gridLaunchWire.js'
 import { engineHooks } from '../../engines/hooks.js'
+import { ENUMERATION_ATTEMPTS } from '../../engines/kit/nativeFiles.js'
 import { loadEngine } from '../../engines/inProcess.js'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { stopSessionOwner, type SessionOwner } from '../../lib/sessionSearch/external.js'
@@ -179,10 +180,13 @@ describe('creating an agent', () => {
       }
       if (mode === 'redirected during enumeration') {
         const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
-        vi.mocked(opendirSync).mockImplementationOnce((path, options) => {
+        // Redirected during every look (`ENUMERATION_ATTEMPTS`): one redirect alone is looked at again.
+        let redirects = 0
+        vi.mocked(opendirSync).mockImplementation((path, options) => {
+          if (++redirects > ENUMERATION_ATTEMPTS) return actual.opendirSync(path, options)
           renameSync(parent, parent + '-original'); mkdirSync(cwd, { recursive: true })
           try { return actual.opendirSync(path, options) }
-          finally { renameSync(parent, parent + '-redirected'); renameSync(parent + '-original', parent) }
+          finally { renameSync(parent, `${parent}-redirected-${redirects}`); renameSync(parent + '-original', parent) }
         })
       }
       if (mode === 'error' || mode === 'thrown text') preTrustCodexProject.mockImplementationOnce(() => { throw mode === 'error' ? Error('fixture denied') : 'fixture denied' })

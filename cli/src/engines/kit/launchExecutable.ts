@@ -76,7 +76,7 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         try {
-          const paths = new NativePaths(new NativeEvidenceBudget(250))
+          const paths = new NativePaths(new NativeEvidenceBudget())
           if (paths.resolveSync(path, true)) return held('Waiting for the engine search path to stop changing.')
           // A dangling executable/ancestor alias is an existing user choice,
           // not evidence that installation is safe. Ordinary missing folders

@@ -38,7 +38,7 @@ const hold = (detail: string): NativeInstallation => ({ complete: false, detail 
 
 /** Never read a growing journal file without a bound, or tighten foreign permissions to trust it. */
 function readRecord(file: string): { text: string; file: string; stamp: string; facts: NativePathFact[]; verify(): void } {
-  const paths = new NativePaths(new NativeEvidenceBudget(250))
+  const paths = new NativePaths(new NativeEvidenceBudget())
   const location = paths.resolveSync(file, true), facts = paths.snapshot()
   if (!location) {
     // An ancestor may be an ordinary alias, such as macOS /var. Absence
@@ -161,7 +161,7 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
         return null
       }
       secureStateDirectory(directory, !authority)
-      const paths = new NativePaths(new NativeEvidenceBudget(250))
+      const paths = new NativePaths(new NativeEvidenceBudget())
       paths.resolveSync(directory)
       const directoryFacts = paths.snapshot(), directoryId = identity(lstatSync(directory, { bigint: true }))
       const physical = () => { try { verifyNativePathFacts(directoryFacts); return true } catch { return false } }
@@ -287,7 +287,7 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
         : complete ? { complete: true } : null
       if (!pending && names.length >= MAX_INSTALLATIONS) return hold('The engine installation history is full. Its saved records need review before another installation.')
       // HOME gets a fresh budget after history enumeration and yields.
-      const homes = new NativePaths(new NativeEvidenceBudget(250)), home = homes.resolveSync(environment.HOME)
+      const homes = new NativePaths(new NativeEvidenceBudget()), home = homes.resolveSync(environment.HOME)
       if (!home?.info.isDirectory()) return hold('Waiting to confirm the native installation home.')
       const routes = [...directoryFacts, ...homes.snapshot()]
       const file = pending?.file ?? join(directory, `${String(names.length).padStart(8, '0')}.json`)

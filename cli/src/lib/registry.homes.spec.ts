@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { ENUMERATION_ATTEMPTS } from '../engines/kit/nativeFiles.js'
 
 const fault = vi.hoisted(() => ({ beforeVerify: undefined as (() => void) | undefined, captures: 0,
   onDirectoryOpen: undefined as (() => void) | undefined }))
@@ -52,9 +53,11 @@ it('repairs a child-overwritten parent from an adopted Codex home before the log
   }]), { mode: 0o600 })
   vi.resetModules()
   const { registry } = await import('./registry.js')
+  // An ancestor that changes during every look (`ENUMERATION_ATTEMPTS`); one change alone is looked at again.
+  let looks = ENUMERATION_ATTEMPTS
   fault.onDirectoryOpen = () => {
-    fault.onDirectoryOpen = undefined
-    writeFileSync(join(root!, 'sibling'), 'changed during enumeration')
+    if (--looks === 0) fault.onDirectoryOpen = undefined
+    writeFileSync(join(root!, `sibling-${looks}`), 'changed during enumeration')
   }
   registry.load()
   expect(fault.onDirectoryOpen).toBeUndefined()

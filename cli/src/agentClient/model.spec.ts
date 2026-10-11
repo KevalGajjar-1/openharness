@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Ledger, ledgerPath } from './ledger.js'
-import { callerOf, clip, lastTurn, matching, rowsOf, stateOf, STOPPED_WITHIN_MS, type Frame } from './model.js'
+import { callerOf, clip, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Frame } from './model.js'
 
 const dirs: string[] = []
 const ledger = (): Ledger => {
@@ -42,6 +42,23 @@ describe('a harness as the agent verbs show it', () => {
     expect(callerOf([frame('x', { tmuxPane: '%1', status: 'stopped', updatedAt: undefined }), frame('y', { tmuxPane: '%1', status: 'stopped', updatedAt: undefined })], '%1', 'm')?.agentId).toBe('x')
     expect(callerOf(frames, undefined, 'm')).toBeNull()
     expect(callerOf([frame('abcdefghij', { name: '', tmuxPane: '%7' })], '%7', 'm')?.name).toBe('abcdefgh')
+  })
+
+  it('knows an agent outside Harness by what it sets in its shell, one caller a session', () => {
+    expect(outsideCaller({}, 'm')).toBeNull()
+    expect(outsideCaller({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: ' S1 ', AI_AGENT: 'claude-code_2-1-296_agent' }, 'm'))
+      .toEqual({ machineId: 'm', agentId: 'claude-code:S1', name: 'Claude Code', engine: 'claude', outside: true })
+    expect(outsideCaller({ CODEX_THREAD_ID: 'T1' }, 'm')).toEqual({ machineId: 'm', agentId: 'codex:T1', name: 'Codex', engine: 'codex', outside: true })
+    // An agent that names only itself is one caller for every session of it.
+    expect(outsideCaller({ AI_AGENT: 'cursor_1-2_agent' }, 'm')).toEqual({ machineId: 'm', agentId: 'agent:cursor', name: 'Cursor', engine: 'cursor', outside: true })
+    expect(outsideCaller({ AI_AGENT: 'claude-desktop' }, 'm')).toMatchObject({ name: 'Claude Desktop', engine: 'claude-desktop' })
+    expect(outsideCaller({ AI_AGENT: 'codex' }, 'm')).toMatchObject({ name: 'Codex', engine: 'codex' })
+    expect(outsideCaller({ AI_AGENT: 'newagent' }, 'm')).toMatchObject({ name: 'newagent' })
+    expect(outsideCaller({ CLAUDECODE: '1' }, 'm')).toMatchObject({ agentId: 'agent:claude-code', name: 'Claude Code', engine: 'claude' })
+    expect(outsideCaller({ CLAUDECODE: '0', CLAUDE_CODE_SESSION_ID: 'S1' }, 'm')).toBeNull()
+    // What runs `harness` for it and knows its session says so (`harness mcp`).
+    expect(outsideCaller({ AI_AGENT: 'cursor', HARNESS_AGENT_SESSION: 'mcp-42' }, 'm')).toMatchObject({ agentId: 'agent:cursor:mcp-42', name: 'Cursor' })
+    expect(outsideCaller({ AI_AGENT: '  ' }, 'm')).toBeNull()
   })
 
   it('lists agents only, working first, says who started each, and keeps a stopped one a week with --all', () => {

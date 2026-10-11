@@ -20,8 +20,14 @@ export interface Frame {
   updatedAt?: string
 }
 
-/** The harness running the verb: an agent in its own pane. Null for a person at a terminal. */
-export interface Caller extends LedgerMember { name: string; engine: string }
+/** The agent running the verb: a harness in its own pane, or an agent outside Harness. Null for a person at a terminal. */
+export interface Caller extends LedgerMember {
+  name: string
+  engine: string
+  /** An agent Harness did not start (in a terminal app, an editor, the person's own tmux): no pane, so nothing can
+   *  message it, and it is told apart by the session its shell names. */
+  outside?: boolean
+}
 
 export type State = 'working' | 'idle' | 'needs-input' | 'stopped' | 'offline' | 'unknown'
 
@@ -70,6 +76,33 @@ export function callerOf(frames: Frame[], pane: string | undefined, machineId: s
   if (!frame || !isAgent(frame)) return null
   return { machineId, agentId: frame.id, name: frame.name || frame.id.slice(0, 8), engine: frame.engine ?? '' }
 }
+
+/**
+ * The agent outside Harness whose shell runs this, as the agent marks the shells it runs commands in: Claude Code sets
+ * CLAUDECODE and its session's id, Codex its thread's id, and others AI_AGENT. Taken for the person, an agent from
+ * outside had no limits and could close every harness on the machine. One session is one caller, so what one Claude
+ * Code session started another may not close; an agent that names only itself (AI_AGENT) is one caller for all its
+ * sessions.
+ */
+export function outsideCaller(env: NodeJS.ProcessEnv, machineId: string): Caller | null {
+  const claude = env.CLAUDECODE === '1' ? env.CLAUDE_CODE_SESSION_ID?.trim() : ''
+  if (claude) return { machineId, agentId: `claude-code:${claude}`, name: 'Claude Code', engine: 'claude', outside: true }
+  const codex = env.CODEX_THREAD_ID?.trim()
+  if (codex) return { machineId, agentId: `codex:${codex}`, name: 'Codex', engine: 'codex', outside: true }
+  // "claude-code_2-1-296_agent": the agent's name, then its version.
+  const named = (env.AI_AGENT?.trim() || (env.CLAUDECODE === '1' ? 'claude-code' : '')).split('_')[0].slice(0, 40)
+  if (!named) return null
+  // A wrapper that knows the session when the agent does not say it: `harness mcp`, one server a session.
+  const session = env[AGENT_SESSION_ENV]?.trim().slice(0, 80)
+  const engine = named === 'claude-code' ? 'claude' : named
+  return { machineId, agentId: `agent:${named}${session ? `:${session}` : ''}`, name: AGENT_NAMES[named] ?? engineName(engine), engine, outside: true }
+}
+
+/** Agents that are not an engine Harness runs, by the name they give. */
+const AGENT_NAMES: Record<string, string> = { 'claude-desktop': 'Claude Desktop', windsurf: 'Windsurf', cline: 'Cline', zed: 'Zed' }
+
+/** Set beside AI_AGENT by what runs `harness` for an agent and knows its session (`harness mcp`): one caller a session. */
+export const AGENT_SESSION_ENV = 'HARNESS_AGENT_SESSION'
 
 export interface RowContext {
   machineId: string

@@ -7,6 +7,7 @@
  * Signed in to the fake backend, which answers the account's tabs: none has Agent Messages on.
  */
 import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
@@ -21,16 +22,42 @@ const signIn = (d: IsolatedDaemon) => writeFileSync(join(d.root, 'auth', 'sessio
 }), { mode: 0o600 })
 
 /** `harness <args>` from [pane], as an agent's shell tool runs it: not a terminal, so plain text. */
-function harness(d: IsolatedDaemon, pane: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
+function harness(d: IsolatedDaemon, pane: string, args: string[], extra: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
   return new Promise((done) => {
     const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
-      cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: pane }, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: pane, ...extra }, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = '', err = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.on('data', (chunk) => { err += chunk })
     child.on('close', (code) => done({ code: code ?? -1, out, err }))
   })
+}
+
+/** `harness mcp` as an MCP client starts it: requests in on stdin, answers by id from stdout. */
+function mcp(d: IsolatedDaemon, extra: Record<string, string> = {}) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp'], {
+    cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: '', ...extra }, stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const waiting = new Map<number, (reply: Record<string, any>) => void>()
+  createInterface({ input: child.stdout }).on('line', (line) => {
+    const reply = JSON.parse(line)
+    waiting.get(reply.id)?.(reply)
+  })
+  let next = 1
+  return {
+    request(method: string, params: Record<string, unknown> = {}): Promise<Record<string, any>> {
+      const id = next++
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      return new Promise((done) => waiting.set(id, done))
+    },
+    notify(method: string): void { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`) },
+    async call(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+      const reply = await this.request('tools/call', { name, arguments: args })
+      return { text: reply.result.content.map((c: { text: string }) => c.text).join('\n'), isError: reply.result.isError === true }
+    },
+    close(): void { child.stdin.end() },
+  }
 }
 
 describe('Harness for agents, end to end', () => {
@@ -117,5 +144,136 @@ describe('Harness for agents, end to end', () => {
     const after = await run('ps', '--all', '--json')
     expect(JSON.parse(after.out).harnesses).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'kid', state: 'stopped', startedBy: 'you' })]))
     client.close()
+  })
+
+  it('signed out, the person starts, waits for, reads and closes a harness from a terminal', async () => {
+    // Never signed in: the daemon runs as this computer (core/main.ts), and the app made harnesses while `harness new`
+    // refused with "This computer is not signed in to Harness".
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const dir = join(d.projectsDir, 'solo')
+    mkdirSync(dir, { recursive: true })
+    const run = (...args: string[]) => harness(d, '', args)
+
+    const started = await run('new', 'claude', dir, '--name', 'solo', '--', 'hello solo')
+    expect(started.code, started.out + started.err).toBe(0)
+    expect(started.out).toContain('Created solo on this computer')
+    const waited = await run('wait', 'solo', '--timeout', '2m')
+    expect(waited.code, waited.out + waited.err).toBe(0)
+    const shown = await run('show', 'solo')
+    expect(shown.code, shown.err).toBe(0)
+    expect(shown.out).toContain('hello solo')
+    // The person's task, as they typed it: no header.
+    expect(shown.out).not.toContain('[from')
+    const closed = await run('close', 'solo')
+    expect(closed.code, closed.err).toBe(0)
+  })
+
+  it('an agent outside Harness starts, reads and closes a harness of its own, and may not close the person\'s', async () => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const client = await LocalClient.connect(d)
+    const personDir = join(d.projectsDir, 'person')
+    mkdirSync(personDir, { recursive: true })
+    const theirs = await client.request('agent_create', { engine: 'claude', cwd: personDir, bypassPermission: true, name: 'theirs' }, 90_000)
+    expect(theirs.error, JSON.stringify(theirs)).toBeUndefined()
+    // Claude Code in a terminal app: no pane, and the session its shell names.
+    const run = (...args: string[]) => harness(d, '', args, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'outside-session' })
+
+    const ps = await run('ps')
+    expect(ps.code, ps.err).toBe(0)
+    expect(ps.out.split('\n')[0]).toBe('You are Claude Code, outside Harness.')
+    const dir = join(d.projectsDir, 'helper')
+    mkdirSync(dir, { recursive: true })
+    const started = await run('new', 'claude', dir, '--name', 'helper', '--', 'check it')
+    expect(started.code, started.out + started.err).toBe(0)
+    // Nothing can message an agent with no pane: no `send` in what to do next.
+    expect(started.out).toContain('Read it: harness show helper · wait for it: harness wait helper')
+    expect(started.out).not.toContain('harness send')
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: 'claude-code:outside-session', name: 'Claude Code' }), child: expect.objectContaining({ name: 'helper' }) })])
+
+    const waited = await run('wait', 'helper', '--timeout', '2m')
+    expect(waited.code, waited.out + waited.err).toBe(0)
+    const shown = await run('show', 'helper')
+    expect(shown.out).toContain('asked: [from Claude Code outside Harness · ')
+    expect(shown.out).toContain('the agent that started you. It reads your answer itself.]')
+    expect(shown.out).toContain('check it')
+
+    const person = await run('close', 'theirs')
+    expect(person.code).toBe(1)
+    expect(person.err).toContain('You did not start theirs')
+    // Another session of the same agent did not start it either.
+    const other = await harness(d, '', ['close', 'helper'], { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'another-session' })
+    expect(other.code).toBe(1)
+    const closed = await run('close', 'helper')
+    expect(closed.code, closed.err).toBe(0)
+    client.close()
+  })
+
+  it('an agent that uses MCP does the same through harness mcp', async () => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const client = await LocalClient.connect(d)
+    const personDir = join(d.projectsDir, 'person')
+    mkdirSync(personDir, { recursive: true })
+    const theirs = await client.request('agent_create', { engine: 'claude', cwd: personDir, bypassPermission: true, name: 'theirs' }, 90_000)
+    expect(theirs.error, JSON.stringify(theirs)).toBeUndefined()
+    // An editor's agent: nothing in its environment says whose session it is, so the server does.
+    const server = mcp(d)
+    const hello = await server.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'cursor', version: '1' } })
+    expect(hello.result).toMatchObject({ protocolVersion: '2025-06-18', serverInfo: { name: 'harness' } })
+    expect(hello.result.instructions).toContain('Never give work to, or close, a harness you did not start')
+    server.notify('notifications/initialized')
+    const tools = (await server.request('tools/list')).result.tools.map((t: { name: string }) => t.name)
+    expect(tools).toEqual(['harness_list', 'harness_start', 'harness_wait', 'harness_read', 'harness_close'])
+
+    const dir = join(d.projectsDir, 'mcp-kid')
+    mkdirSync(dir, { recursive: true })
+    const started = await server.call('harness_start', { task: 'hello from mcp', folder: dir, name: 'mcpkid' })
+    expect(started.isError, started.text).toBe(false)
+    expect(started.text).toContain('Created mcpkid on this computer')
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(ledger).toEqual([expect.objectContaining({ by: expect.objectContaining({ agentId: expect.stringMatching(/^agent:cursor:mcp-\d+$/), name: 'Cursor' }) })])
+    const waited = await server.call('harness_wait', { names: ['mcpkid'], timeout_seconds: 120 })
+    expect(waited).toEqual({ text: 'mcpkid: idle · read it: harness show mcpkid', isError: false })
+    const read = await server.call('harness_read', { name: 'mcpkid' })
+    expect(read.text).toContain('asked: [from Cursor outside Harness · ')
+    expect(read.text).toContain('hello from mcp')
+    const listed = await server.call('harness_list', {})
+    expect(listed.text.split('\n')[0]).toBe('You are Cursor, outside Harness.')
+    expect(listed.text).toMatch(/\nmcpkid +Claude Code +\w+ +you /)
+    const refused = await server.call('harness_close', { name: 'theirs' })
+    expect(refused).toEqual({ text: 'You did not start theirs, so you may not close it. Only the person can.', isError: true })
+    const closed = await server.call('harness_close', { name: 'mcpkid' })
+    expect(closed).toEqual({ text: 'Closed mcpkid. Its conversation is kept.', isError: false })
+    server.close()
+    client.close()
+  })
+
+  it('an agent may not start a harness once the person turns that off', async () => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const dir = join(d.projectsDir, 'held')
+    mkdirSync(dir, { recursive: true })
+    // The person, at a terminal; then Claude Code in a terminal app.
+    const off = await harness(d, '', ['settings', 'agents-start-agents', 'off'])
+    expect(off.out.trim()).toBe('agents-start-agents is off.')
+    const refused = await harness(d, '', ['new', 'claude', dir, '--name', 'held', '--', 'hello'], { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'held-session' })
+    expect(refused.code, refused.out).toBe(1)
+    expect(refused.err).toContain('The person has turned off agents starting harnesses on this computer')
+    const listed = await harness(d, '', ['ps', '--json'])
+    expect(JSON.parse(listed.out).harnesses).toEqual([])
+    // The setting is the daemon's, as the window reads it.
+    const read = await fetch(`http://127.0.0.1:${d.port}/api/agent-settings`)
+    expect(await read.json()).toEqual({ agentsStartAgents: false })
   })
 })
