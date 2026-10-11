@@ -50,7 +50,12 @@ export function questionIn(text: string): { text: string; choices: string[] } | 
   return { text: (asking ?? paragraphs[0]).trim().slice(0, 500), choices }
 }
 
-export function foAdapter(client: () => Promise<McpClient>, now: () => Date = () => new Date()): CloudAdapter {
+/** A refusal Fo asks to be retried: its conversation is still finishing the run that just replied (2026-10-11:
+ *  an answer sent a second after Fo's question was refused "session busy with another run, retry"). */
+const BUSY = /session busy|busy with another run|retry/i
+
+export function foAdapter(client: () => Promise<McpClient>, now: () => Date = () => new Date(),
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))): CloudAdapter {
   let schema: Promise<Map<string, McpTool>> | null = null
   /** A reply Fo gave at once, kept for the next look. */
   const ready = new Map<string, string>()
@@ -72,7 +77,18 @@ export function foAdapter(client: () => Promise<McpClient>, now: () => Date = ()
     const freshParam = Object.keys(props(askTool)).find((name) => /^new/i.test(name) && props(askTool)[name]?.type === 'boolean')
     if (conversation && conversationParam) args[conversationParam] = conversation
     else if (!conversation && freshParam) args[freshParam] = true
-    const reply = readReply(await (await client()).call('ask_fo', args, 60_000))
+    let reply: ReturnType<typeof readReply> | null = null
+    // Retried while Fo says its conversation is busy, for up to half a minute; then the person is told.
+    for (let attempt = 0; !reply; attempt++) {
+      try {
+        reply = readReply(await (await client()).call('ask_fo', args, 60_000))
+      } catch (error) {
+        if (!(error instanceof CloudError) || !BUSY.test(error.message) || attempt >= 9) {
+          throw error instanceof CloudError && BUSY.test(error.message) ? new CloudError('BUSY', `${NAME} is still working. Send it again in a moment.`) : error
+        }
+        await pause(3_000)
+      }
+    }
     const id = reply.ids.conversation_id ?? reply.ids.conversationId ?? conversation ?? 'current'
     const pending = Object.fromEntries(Object.entries(reply.ids).filter(([key]) => !/conversation/i.test(key)))
     if (!reply.working && reply.text) ready.set(id, reply.text)

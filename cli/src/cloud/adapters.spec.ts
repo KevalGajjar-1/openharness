@@ -277,6 +277,24 @@ describe('Fo', () => {
     expect(fo.calls.at(-1)!.args).toEqual({ message: 'again' })
   })
 
+  it('retries while Fo says its conversation is busy, then says so', async () => {
+    let busy = 2
+    const call = vi.fn(async (tool: string) => {
+      if (tool === 'ask_fo' && busy-- > 0) throw new CloudError('CLOUD_FAILED', 'Fo: ask_fo: session busy with another run, retry')
+      return { status: 'done', reply: 'Blue it is.', conversationId: 'c1' }
+    })
+    const mcp = { tools: async () => [{ name: 'ask_fo', inputSchema: { properties: { message: { type: 'string' }, conversationId: { type: 'string' } } } }], call } as unknown as McpClient
+    const pauses: number[] = []
+    const adapter = foAdapter(async () => mcp, () => new Date(), async (ms) => { pauses.push(ms) })
+    expect(await adapter.send({ id: 'c1' }, 'Blue')).toEqual({ id: 'c1', run: undefined })
+    expect(pauses).toEqual([3_000, 3_000])
+    busy = 100
+    await expect(adapter.send({ id: 'c1' }, 'Blue')).rejects.toMatchObject({ code: 'BUSY', message: 'Fo is still working. Send it again in a moment.' })
+    call.mockImplementationOnce(async () => { throw new CloudError('CLOUD_FAILED', 'Fo: bad args') })
+    busy = 0
+    await expect(adapter.send({ id: 'c1' }, 'Blue')).rejects.toThrow('bad args')
+  })
+
   it('refuses an MCP server with no ask_fo', async () => {
     const adapter = foAdapter(async () => ({ tools: async () => [], call: async () => ({}) }) as unknown as McpClient)
     await expect(adapter.start({ task: 't', repository: null, options: {} })).rejects.toThrow('no ask_fo')
