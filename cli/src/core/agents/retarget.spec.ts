@@ -13,6 +13,7 @@ import { workspaceMissing } from '../../lib/workspaceCheck.js'
 import { TerminalAgentReconciler } from '../../lib/terminalAgentReconciler.js'
 import { terminalRouteKey } from '../../lib/terminalRuntime.js'
 import { createAgentRetargeter, type RetargetDeps } from './retarget.js'
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 
 vi.mock('../../engines/launchControl.js', async (real) => ({
   ...await real<object>(),
@@ -86,6 +87,47 @@ describe('retargeting an agent', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
+
+  it('holds an unavailable native retarget before inspecting or mutating the pane', async () => {
+    const held = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for native evidence.' } as const
+    const run = setup(agent(), { launchOverridesDeps: { native: async () => held } as never })
+    expect(await run.retarget({ agentId: 'a1', grid })).toEqual(held)
+    expect(run.deps.captureTerminal).not.toHaveBeenCalled()
+    expect(restartAgent).not.toHaveBeenCalled()
+  })
+
+  it.each(['ready', 'permission', 'snapshot'] as const)('keeps retarget native write and dispatch on one snapshot: %s', async mode => {
+    let nativeCurrent = true
+    const launch = { current: () => nativeCurrent, executable: '/fixture/native/opencode', opencodeMajor: 2 } as unknown as NativeLaunch
+    const run = setup(agent({ engine: 'opencode' }), {
+      launchOverridesDeps: { native: async () => ({ ok: true, launch }) } as never,
+      relaunchOverrides: async () => ({ ok: true, overrides: { native: launch, env: { HOME: '/fixture/home' }, extraArgs: [], clearEnv: [], sessionModel: 'fixture/model' } }),
+      downgradedPermission: async () => {
+        if (mode === 'snapshot') nativeCurrent = false
+        return { bypassPermission: false, ...(mode === 'permission' ? { nativeHold: 'Waiting for native permission flags.' } : {}) }
+      },
+    })
+    vi.mocked(applyOpencodeSessionModel).mockImplementationOnce(async (_input, options) => {
+      expect(options?.current?.()).toBe(true)
+      expect(options).toMatchObject({ executable: launch.executable, environment: { HOME: '/fixture/home' } })
+      return { ok: true }
+    })
+    const result = await run.retarget({ agentId: 'a1', grid })
+    expect(opencodeMajorVersion).not.toHaveBeenCalled()
+    if (mode === 'ready') {
+      expect(result).toEqual({ ok: true })
+      expect(restartAgent).toHaveBeenCalledOnce()
+    } else {
+      expect(result).toMatchObject({ ok: false, error: 'NATIVE_LAUNCH_HELD' })
+      expect(restartAgent).not.toHaveBeenCalled()
+    }
+    const current = vi.mocked(applyOpencodeSessionModel).mock.calls[0]![1]!.current!
+    nativeCurrent = false
+    expect(current()).toBe(false)
+    nativeCurrent = true
+    vi.mocked(run.deps.registry.byAgent).mockReturnValue(undefined)
+    expect(current()).toBe(false)
+  })
 
   it('keeps an admitted external conversation when its retarget resume fails', async () => {
     const actual = await vi.importActual<typeof import('../../lib/restartAgent.js')>('../../lib/restartAgent.js')

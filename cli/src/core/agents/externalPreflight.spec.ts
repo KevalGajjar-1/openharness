@@ -9,7 +9,7 @@ vi.mock('../../engines/inProcess.js', () => ({ loadEngine: vi.fn(async () => ({}
 vi.mock('../../engines/hooks.js', () => ({ engineHooks: { codex: { installIn: vi.fn(async () => true) } } }))
 vi.mock('../../lib/engineLaunch.js', () => ({ buildEngineCommandArgv: vi.fn(() => []), refusePermissionFlagIfUnsupported: vi.fn(async () => null) }))
 vi.mock('../../lib/workspaceCheck.js', () => ({ workspaceMissing: vi.fn(() => null) }))
-afterEach(() => { vi.clearAllMocks() })
+afterEach(() => { vi.clearAllMocks(); vi.mocked(refusePermissionFlagIfUnsupported).mockReset().mockResolvedValue(null) })
 const session = { sessionId: 'conversation', cwd: '/fixture/work', launchArgs: ['-p', 'work'] } as never
 const row = (engine = 'claude', extra = {}) => ({ engine, permissionMode: 'ask', bypassPermission: false, ...extra }) as never
 function setup(over = {}) {
@@ -85,4 +85,16 @@ it('keeps a takeover held while native preparation or its original owner is unav
   const launch = { current: () => true, prepareHooks: vi.fn(async () => false) } as unknown as NativeLaunch
   expect(await setup({ native: async () => ({ ok: true, launch }) }).prepare(row(), session)).toMatchObject({ detail: expect.stringContaining('hooks') })
   expect(buildEngineCommandArgv).not.toHaveBeenCalled()
+})
+
+it.each(['inspection', 'permission', 'hooks', 'disabled hooks'] as const)('retains owner authority across %s', async stage => {
+  let current = true
+  const launch = { current: () => current, prepareHooks: vi.fn(async () => { if (stage === 'hooks') current = false; return true }) } as unknown as NativeLaunch
+  const native = vi.fn(async () => { if (stage === 'inspection') current = false; return { ok: true as const, launch } })
+  vi.mocked(refusePermissionFlagIfUnsupported).mockImplementationOnce(async () => { if (stage === 'permission') current = false; return null })
+  const result = await setup({ native, hooksDisabled: stage === 'disabled hooks' }).prepare(row(), session, () => current)
+  if (stage === 'disabled hooks') {
+    expect(result).toHaveProperty('current')
+    expect(launch.prepareHooks).toHaveBeenCalledWith(0, expect.any(Function))
+  } else expect(result).toMatchObject({ detail: expect.stringContaining('authority') })
 })

@@ -28,6 +28,39 @@ function setup(rows: RegisteredSession[], answer: (only: ReadonlySet<string>) =>
 }
 
 describe('agents held until a service is ready', () => {
+  it.each(['removed', 'closed'] as const)('does not restore a queued row that was %s before its preparation', async state => {
+    const h = setup([row('a', HELD)])
+    await h.held.boot(async () => {})
+    if (state === 'removed') vi.spyOn(h.registry, 'get').mockReturnValueOnce(undefined)
+    const running = h.held.restoreHeld()
+    if (state === 'closed') queueMicrotask(() => h.held.close())
+    expect(await running).toMatchObject({ restored: [] })
+    expect(h.restore).not.toHaveBeenCalled()
+  })
+
+  it('bounds actual preparation flights and lets a later ready agent progress after one slot settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = setup(Array.from({ length: 5 }, (_, index) => row(String(index), HELD)))
+      const complete: Array<() => void> = []
+      h.restore.mockImplementation(only => new Promise(resolve => complete.push(() => {
+        for (const id of only) h.registry.get(id)!.launch = { state: 'starting' }
+        resolve(summary({ restored: [...only] }))
+      })))
+      await h.held.boot(async () => {})
+      const first = h.held.restoreHeld()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(h.restore).toHaveBeenCalledTimes(4)
+      expect(await h.held.restartHeld('4')).toMatchObject({ error: 'SERVICE_UNAVAILABLE' })
+      complete.shift()!()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(h.restore).toHaveBeenCalledTimes(5)
+      complete.splice(0).forEach(done => done())
+      await first
+      expect(h.registry.get('4')?.launch).toEqual({ state: 'starting' })
+    } finally { vi.useRealTimers() }
+  })
+
   it('names the service a row is held for, and none for any other', () => {
     expect(heldFor(row('a', HELD))).toBe('models')
     expect(heldFor(row('a', { state: 'ready' }))).toBeNull()

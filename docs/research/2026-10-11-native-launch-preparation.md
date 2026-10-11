@@ -115,19 +115,28 @@ Project creation, external creation, fork/restart/resume/retarget intent and
 durable Stop/Close revocation still need their complete lifecycle integration.
 This checkpoint does not complete checklist groups 2 or 3.
 
-Receipt `20261011T030244.771334Z-49993` passed typecheck and the fifteen-file
-focused gate. Receipt `20261011T031606.803317Z-13555` passed 560 tests in
-22 files, including architecture and both unchanged launch/configuration
-goldens; its typecheck failed on a test mock inferred as returning `never`.
-The annotation is corrected and awaits its next gate. These are development
-receipts, not landing evidence. Coverage, wiring mutations, private daemon
-acceptance, matched whole-launch cost and exact-head review remain required.
+Create, fork, restart, restore, retarget and external takeover now carry the
+captured executable through native permission checks, final hook preparation and
+dispatch. Fork preparation retains the original source authority while its native
+snapshot is being prepared. Create and fork persist the final harness-selected
+Codex home. External takeover rechecks the native proof before signalling an
+external process and before admission.
 
-Independent review of `d54e3f7f2` confirmed six earlier fixes and found three
-further cases: a fresh request bypassed a failed installer, a completed config
-could recreate a removed borrowed session directory, and a ready executable's
-status query could not settle a proven non-dispatch cancellation. Corrections
-and regressions are in progress; the reviewer has not approved this PR.
+Independent review corrected failed-installer bypass, borrowed-session directory
+recreation, cancelled installer recovery, final-home persistence and stale takeover
+proofs. Integration with Agent Messages also exposed required-hook proof replacement,
+foreign hook deletion, and approval of only the first managed block in an event.
+The combined publication now retains the required proof across reservations,
+preserves foreign commands and siblings, and approves every exact managed hook.
+Each correction has a regression. Exact-head landing review is still required.
+
+The new private daemon regression retains two native-held requests through a core
+crash, cancels one durably, preserves malformed hook settings, and dispatches the
+other exactly once with its saved prompt after repair. Focused core coverage and
+hook review checks pass. Broader coverage, wiring mutations, all affected private
+lanes and matched whole-launch cost remain landing gates. A Claude e2e hold under
+concurrent filesystem-heavy validation is being diagnosed; the isolated case
+passes without source changes. It is not recorded as an uninterrupted green run.
 
 The integration slice began October 11 at 01:31 UTC. At this checkpoint it
 contains implementation and local validation only. Draft CI and independent

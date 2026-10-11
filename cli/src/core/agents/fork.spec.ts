@@ -84,6 +84,46 @@ describe('forking an agent', () => {
   })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it.each(['initial', 'source', 'inspect', 'harness', 'overrides', 'hooks', 'permission', 'instructions'] as const)(
+    'cannot dispatch a fork whose original owner is revoked during %s', async stage => {
+      let current = stage !== 'initial'
+      const revoke = (at: string) => { if (stage === at) current = false }
+      const launch = { current: () => true, environment: { HOME: root }, opencodeMajor: 1 } as unknown as NativeLaunch
+      vi.mocked(installedDsh).mockReturnValue({ manifest: { name: 'Fixture' } } as never)
+      vi.mocked(refusePermissionFlagIfUnsupported).mockImplementation(async () => { revoke('permission'); return null })
+      vi.mocked(prepareInstructionWrites).mockImplementation(async () => revoke('instructions'))
+      const run = setup(source({ dsh: 'fixture/tools' }), {
+        authority: () => () => stage !== 'source',
+        native: async (_engine, _source, authority) => { authority.hold({ service: 'native', detail: 'Checking fixture' }); revoke('inspect'); return { ok: true, launch } },
+        dshLaunch: { launch: async () => { revoke('harness'); return { ok: true, launch: { env: {}, args: [] } } } },
+        relaunchOverrides: async () => { revoke('overrides'); return { ok: true, overrides: { native: launch, env: {}, extraArgs: [], clearEnv: [] } } },
+        prepareNative: async () => { revoke('hooks'); return true },
+      })
+      try {
+        const result = await run.fork.prepare({ agentId: 'a1', name: null, prompt: 'original prompt' },
+          { id: 'fixture', label: 'harness-claude-fixture', current: () => current, hold: vi.fn() })
+        expect(result).toMatchObject({ ok: false, error: 'AGENT_CHANGED' })
+        expect(createAndRegisterPane).not.toHaveBeenCalled()
+      } finally {
+        vi.mocked(installedDsh).mockReset().mockReturnValue(undefined)
+        vi.mocked(refusePermissionFlagIfUnsupported).mockReset().mockResolvedValue(null)
+        vi.mocked(prepareInstructionWrites).mockReset().mockResolvedValue(undefined)
+      }
+    },
+  )
+
+  it('holds an unconfirmed final fork configuration before permission checks or dispatch', async () => {
+    const launch = { current: () => true, environment: { HOME: root }, opencodeMajor: 1 } as unknown as NativeLaunch
+    const run = setup(source(), {
+      native: async (_engine, _source, authority) => { authority.hold({ service: 'native', detail: 'Checking fixture' }); return { ok: true, launch } },
+      relaunchOverrides: async () => ({ ok: true, overrides: { native: launch, env: {}, extraArgs: [], clearEnv: [] } }),
+      prepareNative: async () => false,
+    })
+    expect(await run.fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ unavailable: 'native' })
+    expect(refusePermissionFlagIfUnsupported).not.toHaveBeenCalled()
+    expect(createAndRegisterPane).not.toHaveBeenCalled()
+  })
+
   it('holds unavailable native preparation without touching the source or opening a pane', async () => {
     const native = vi.fn(async () => ({ ok: false as const, error: 'NATIVE_LAUNCH_HELD' as const, unavailable: 'native' as const, detail: 'Installing' }))
     const run = setup(source(), { native })

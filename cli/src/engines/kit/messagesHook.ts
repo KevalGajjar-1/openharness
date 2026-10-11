@@ -18,7 +18,7 @@
  * agent's messages.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
 import type { HookBlock } from './notifyHooks.js'
 
@@ -95,15 +95,27 @@ function shellQuote(value: string): string {
 }
 
 /** The command an engine runs at each tool call: a shell test first, Node only when something waits. */
-export function messagesCommand(root: string): string {
+export function messagesCommand(root: string, node: string = managedNodePath()): string {
   const script = join(root, 'hook.mjs')
   return `p=${shellQuote(join(root, 'inbox'))}/"\${TMUX_PANE#%}"; [ -n "\${TMUX_PANE:-}" ] && [ -d "$p" ] || exit 0; `
-    + `${shellQuote(managedNodePath())} ${shellQuote(script)} --root ${shellQuote(root)}; exit 0 # ${MESSAGES_HOOK_MARK}`
+    + `${shellQuote(node)} ${shellQuote(script)} --root ${shellQuote(root)}; exit 0 # ${MESSAGES_HOOK_MARK}`
+}
+
+/** Only the complete literal command we publish is ours to replace or approve.
+ * A marker in somebody else's script, or a shell suffix, grants no ownership. */
+export function isMessagesCommand(value: unknown): boolean {
+  if (typeof value !== 'string' || value.length > 64 * 1024 || value.includes('\0')) return false
+  const words = value.match(/'(?:[^']|'\\'')*'/g)
+  if (words?.length !== 4) return false
+  const [inbox, node, script, root] = words.map(word => word.slice(1, -1).replace(/'\\''/g, "'"))
+  if (![inbox, node, script, root].every(isAbsolute) || !/^(?:node|nodejs)(?:\.exe)?$/.test(basename(node))
+    || inbox !== join(root, 'inbox') || script !== join(root, 'hook.mjs')) return false
+  return value === messagesCommand(root, node)
 }
 
 /** Whether a block is Agent Messages' own. */
 export function isMessagesBlock(block: HookBlock): boolean {
-  return Array.isArray(block?.hooks) && block.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(MESSAGES_HOOK_MARK))
+  return Array.isArray(block?.hooks) && block.hooks.some(hook => hook?.type === 'command' && isMessagesCommand(hook.command))
 }
 
 /** Write the script where the command runs it, when it is not already there as it should be. */

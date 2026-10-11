@@ -14,6 +14,7 @@ import { parseNewAgentModel } from '../../lib/newAgentModel.js'
 import { parseProjectFolder, prepareProjectFolder, ProjectFolderError } from '../../lib/projectFolder.js'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { createLaunchRequests, type CreateAgent, type ForkAgent, type LaunchRequestDeps, type RestartAgent, type ResumeAgent } from './launches.js'
+import * as pendingLaunches from './pendingLaunches.js'
 
 /**
  * The requests that start an agent's process, answered by the core: every refusal before a pane exists,
@@ -102,6 +103,72 @@ function setup(over: Partial<LaunchRequestDeps> = {}, launches: { create?: Creat
 }
 
 describe('agent_create, refused before any pane exists', () => {
+  it('keeps a selected model pending before native preparation, then dispatches its fresh resolution once', async () => {
+    vi.mocked(parseNewAgentModel).mockReturnValue({ state: 'ok', selection: { model: 'fixture-model', grid: 'fixture-grid' } })
+    const grid = { networkId: 'fixture', networkName: 'Fixture', baseUrl: 'http://fixture.invalid', apiKey: 'fixture' }
+    resolveNewAgentModel.mockResolvedValueOnce(null).mockResolvedValue(grid)
+    const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>(async () => ({ ok: true, dispatch }))
+    const run = setup({ prepareCreate })
+    const input = { creationId: CREATION, engine: 'claude', cwd: '/fixture/work', prompt: 'original prompt' }
+    await run.ask(input)
+    await vi.waitFor(() => expect(run.replies[0]).toMatchObject({ state: 'pending', held: { service: 'models' } }))
+    expect(prepareCreate).not.toHaveBeenCalled()
+    await run.ask(input)
+    await vi.waitFor(() => expect(run.replies[1]).toMatchObject({ state: 'created' }))
+    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({ grid, prompt: 'original prompt' }), expect.any(Object))
+    expect(dispatch).toHaveBeenCalledOnce()
+  })
+
+  it.each(['model', 'native'] as const)('retains durable cancellation while %s preparation settles', async phase => {
+    vi.mocked(parseNewAgentModel).mockReturnValue({ state: 'ok', selection: { model: 'fixture-model', grid: 'fixture-grid' } })
+    const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
+    const run = setup({
+      modelTarget: async () => {
+        if (phase === 'model') run.deps.receipts.cancelIntent(CREATION)
+        return { networkId: 'fixture', networkName: 'Fixture', baseUrl: 'http://fixture.invalid', apiKey: 'fixture' }
+      },
+      prepareCreate: async () => {
+        run.deps.receipts.cancelIntent(CREATION)
+        return { ok: true, dispatch }
+      },
+    })
+    await run.ask({ creationId: CREATION, engine: 'claude', cwd: '/fixture/work' })
+    await vi.waitFor(() => expect(run.replies[0]).toMatchObject({ state: 'cancelled' }))
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it.each(['refused', 'bare refusal', 'held', 'uncertain dispatch'] as const)('records native preparation outcomes truthfully: %s', async outcome => {
+    const dispatch = vi.fn(async () => ({ ok: false as const, error: 'SPAWN_FAILED' }))
+    const run = setup({ prepareCreate: async () => outcome === 'uncertain dispatch' ? { ok: true, dispatch }
+      : outcome === 'held' ? { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native' }
+      : { ok: false, error: 'PERMISSION_MODE_UNSUPPORTED', ...(outcome === 'refused' ? { detail: 'Unsupported fixture mode.' } : {}) } })
+    const payload = { creationId: CREATION, engine: 'claude', cwd: '/fixture/work' }
+    await run.ask(payload)
+    await vi.waitFor(() => expect(run.replies).toHaveLength(1))
+    expect(run.replies[0]).toMatchObject(outcome === 'held' ? { state: 'pending', held: { service: 'native', detail: 'Waiting for launch preparation.' } }
+      : outcome === 'uncertain dispatch' ? { state: 'unconfirmed' } : { state: 'failed', failure: { code: 'PERMISSION_MODE_UNSUPPORTED' } })
+    await run.ask(payload)
+    await vi.waitFor(() => expect(run.replies).toHaveLength(2))
+    expect(dispatch).toHaveBeenCalledTimes(outcome === 'uncertain dispatch' ? 1 : 0)
+  })
+
+  it('fences a prepared native dispatch if receipt authority changes before invocation', async () => {
+    let prepare!: Parameters<typeof pendingLaunches.createPendingLaunches>[0]['prepare']
+    const factory = pendingLaunches.createPendingLaunches
+    vi.spyOn(pendingLaunches, 'createPendingLaunches').mockImplementation(deps => { prepare = deps.prepare; return factory(deps) })
+    const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
+    setup({ prepareCreate: async () => ({ ok: true, dispatch }) })
+    let current = true
+    const ready = await prepare({ kind: 'native-create-v1', input: { engine: 'claude', cwd: '/fixture/work' },
+      label: 'harness-claude-fixture', local: false }, { id: CREATION, current: () => current, hold: vi.fn() })
+    expect(ready).not.toBeNull()
+    current = false
+    expect(await ready!()).toEqual({ state: 'unconfirmed' })
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(preTrustClaudeProject).not.toHaveBeenCalled()
+  })
+
   it('recovers native and later service holds with the same request label and original authority', async () => {
     const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
     const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>().mockResolvedValueOnce({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for installation.' })
@@ -551,8 +618,10 @@ describe('durable model request validation', () => {
   })
 
   it('holds unfamiliar or incomplete saved intent without preparing a project or dispatching', async () => {
-    const { deps, requests, create } = setup()
-    const records = [{ kind: 'future-kind' }, { kind: 'model-create-v1', local: true, input: {}, selection: {} }]
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>()
+    const { deps, requests, create } = setup({ prepareCreate })
+    const records = [{ kind: 'future-kind' }, { kind: 'model-create-v1', local: true, input: {}, selection: {} },
+      { kind: 'native-create-v1' }, { kind: 'native-create-v1', local: true, input: {}, label: 'harness-claude-fixture' }]
     const held = { service: 'models', detail: 'Waiting for the model.' }
     for (const [n, request] of records.entries()) {
       await deps.receipts.runIntent(`${CREATION}-${n}`, creationFingerprint(request), request, held, async () => null)
@@ -564,6 +633,7 @@ describe('durable model request validation', () => {
     expect(resolveNewAgentModel).not.toHaveBeenCalled()
     expect(prepareProjectFolder).not.toHaveBeenCalled()
     expect(create).not.toHaveBeenCalled()
+    expect(prepareCreate).not.toHaveBeenCalled()
   })
 
   it('holds recovery while no local creator is available', async () => {

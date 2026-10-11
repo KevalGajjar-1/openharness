@@ -37,6 +37,22 @@ function setup(over: Partial<PaneWatcherDeps> = {}) {
 }
 
 describe('watching a new pane', () => {
+  it.each(['held', 'row removed', 'not held', 'unknown', 'no probe'] as const)('retains a post-rc native guard hold without failing or archiving: %s', async result => {
+    const entry = { ...pending, launch: { state: 'starting', nativeToken: 'fixture-native' } } as RegisteredSession
+    const waitingPane = vi.fn(async () => result === 'unknown' ? 'unknown' as const : result === 'held' || result === 'row removed')
+    const { deps, watch } = setup(result === 'no probe' ? {} : { waitingPane })
+    if (result === 'row removed') vi.mocked(deps.registry.setLaunch).mockReturnValue(null)
+    const watching = watch('claude', entry, spawned, ['claude'], undefined, 1)
+    await vi.advanceTimersByTimeAsync(50)
+    await watching
+    expect(deps.retainExitedSession).not.toHaveBeenCalled()
+    expect(deps.registry.releaseEngine).not.toHaveBeenCalled()
+    if (result === 'held' || result === 'row removed') {
+      expect(deps.registry.setLaunch).toHaveBeenCalledWith('a1', expect.objectContaining({ state: 'held', service: 'native', nativeToken: 'fixture-native' }))
+      expect(deps.announceSession).toHaveBeenCalledTimes(result === 'held' ? 1 : 0)
+    } else expect(deps.registry.setLaunch).toHaveBeenCalledWith('a1', expect.objectContaining({ error: 'START_TIMEOUT' }))
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.spyOn(console, 'log').mockImplementation(() => {})

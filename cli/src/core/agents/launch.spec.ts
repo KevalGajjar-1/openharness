@@ -38,6 +38,12 @@ function setup() {
 describe('relaunch helpers', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it('preserves an unknown native permission observation as a launch hold', async () => {
+    const { helpers } = setup()
+    vi.mocked(dropPermissionFlagIfUnsupported).mockResolvedValueOnce({ choice: { bypassPermission: false }, droppedFlag: null, nativeHold: 'Waiting for help.' })
+    expect(await helpers.downgradedPermission(session(), true, 'restore')).toEqual({ bypassPermission: false, nativeHold: 'Waiting for help.' })
+  })
+
   it('rejects preparation that was already revoked before dispatch', async () => {
     const { deps } = setup()
     deps.authority = () => () => false

@@ -76,6 +76,22 @@ describe('restarting an agent', () => {
   beforeEach(() => { vi.spyOn(console, 'log').mockImplementation(() => {}) })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
+  it.each(['inspection', 'permission', 'snapshot'] as const)('preserves the live process when restart loses %s evidence', async stage => {
+    let nativeCurrent = true
+    const launch = { current: () => nativeCurrent } as never
+    const run = setup(agent(), {
+      native: async () => { if (stage === 'inspection') run.state.live = false; return { ok: true, launch } },
+      relaunchOverrides: async () => ({ ok: true, overrides: { native: launch, env: {}, extraArgs: [], clearEnv: [] } }),
+      downgradedPermission: async () => {
+        if (stage === 'snapshot') nativeCurrent = false
+        return { bypassPermission: false, ...(stage === 'permission' ? { nativeHold: 'Waiting for native flags.' } : {}) }
+      },
+    })
+    expect(await run.restart('a1')).toMatchObject({ ok: false, error: stage === 'inspection' ? 'AGENT_CHANGED' : 'NATIVE_LAUNCH_HELD' })
+    expect(restartAgent).not.toHaveBeenCalled()
+    expect(run.deps.registry.updateProcessIdentity).not.toHaveBeenCalled()
+  })
+
   it('holds native installation before killing the live process, without an independent shell probe', async () => {
     const native = vi.fn(async () => ({ ok: false as const, error: 'NATIVE_LAUNCH_HELD' as const, unavailable: 'native' as const, detail: 'Waiting for installation' }))
     const run = setup(agent(), { native })

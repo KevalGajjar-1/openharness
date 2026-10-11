@@ -79,6 +79,56 @@ const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)}))
   expect((await launch).error).toBe('AGENT_UNSUPPORTED')
 }, 90_000)
 
+it('retains and cancels native-held requests across a core crash, then recovers one launch with its saved prompt', async () => {
+  const d = daemon = await IsolatedDaemon.create({ scriptPath: bundle, env: { HARNESS_CONNECTIONS_PORT: '0' } })
+  onTestFailed(() => console.log(d.log()))
+  const executable = join(d.root, 'late-codex')
+  d.env.CODEX_PATH = executable
+  await d.start()
+  let c = client = await LocalClient.connect(d)
+  const cwd = join(d.projectsDir, 'native-held'); mkdirSync(cwd)
+  const request = { engine: 'codex', cwd, bypassPermission: true, prompt: 'saved native launch prompt', creationId: 'native-held-recovery' }
+  const cancelled = { ...request, creationId: 'native-held-cancelled' }
+  for (const payload of [request, cancelled]) {
+    expect(await c.request('agent_create', payload, 15_000)).toMatchObject({ state: 'pending', held: { service: 'native' } })
+  }
+  expect((await c.request('agents_list', { includeStopped: true })).agents).toHaveLength(0)
+  const before = d.log().length
+  process.kill(d.corePid()!, 'SIGKILL'); c.close()
+  await until('core readiness while the native executable is unavailable', () => d.log().slice(before).includes('[cli] ready'), 15_000)
+  c = client = await LocalClient.connect(d)
+  expect(await c.request('agent_create_status', { creationId: request.creationId })).toMatchObject({ state: 'pending', held: { service: 'native' } })
+  expect(await c.request('agent_create_cancel', { creationId: cancelled.creationId })).toMatchObject({ state: 'cancelled' })
+  const terminal = await c.request('agent_create', { engine: 'terminal', cwd }, 15_000)
+  expect(terminal.error, JSON.stringify(terminal)).toBeUndefined()
+  const settings = join(d.engineConfig.codexHome, 'hooks.json'), original = readFileSync(settings)
+  writeFileSync(settings, '{incomplete native configuration')
+  const calls = join(d.root, 'native-dispatches'), wrapper = readFileSync(join(d.root, 'bin', 'codex'), 'utf8')
+  const line = wrapper.indexOf('\n') + 1
+  writeFileSync(executable, wrapper.slice(0, line) + `import { appendFileSync as recordNativeLaunch } from 'node:fs';\nif (!process.argv.includes('--version') && !process.argv.includes('--help')) recordNativeLaunch(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n` + wrapper.slice(line), { mode: 0o755 })
+  await until('the saved request to name its hook hold', async () => {
+    const status = await c.request('agent_create_status', { creationId: request.creationId })
+    return status.state === 'pending' && /hook/i.test(status.held?.detail ?? '')
+  }, 15_000)
+  expect(readFileSync(settings, 'utf8')).toBe('{incomplete native configuration')
+  expect((await c.request('agents_list', { includeStopped: true })).agents).toHaveLength(1)
+  writeFileSync(settings, original)
+  const recovered = await until('the native request to recover after configuration repair', async () => {
+    const status = await c.request('agent_create_status', { creationId: request.creationId })
+    return status.state === 'created' ? status.agent : null
+  }, 30_000)
+  await until('the recovered Codex to bind', async () => {
+    const agents = (await c.request('agents_list', { includeStopped: true })).agents
+    return agents.find((agent: any) => agent.id === recovered.id && agent.sessionId && agent.status === 'active')
+  }, 30_000)
+  expect(await c.request('agent_create', request)).toMatchObject({ state: 'created', agent: { id: recovered.id } })
+  expect(await c.request('agent_create', cancelled)).toMatchObject({ state: 'cancelled' })
+  expect((await c.request('agents_list', { includeStopped: true })).agents).toHaveLength(2)
+  const launched = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(launched).toHaveLength(1)
+  expect(launched[0].at(-1)).toBe(request.prompt)
+}, 120_000)
+
 it.each([['missing', 'claude'], ['stalled', 'codex']] as const)(
   '%s shared hooks: ready, native files installed, OpenCode launch and %s Stop/resume work', async (mode, engine) => {
     const lean = readLeanBundle(readFileSync(bundle))!

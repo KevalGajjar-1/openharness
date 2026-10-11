@@ -179,6 +179,15 @@ it('holds admission when native preparation changes during the last search read'
   expect(test.deps.launch).not.toHaveBeenCalled()
 })
 
+it('does not take over a terminal when its completed native preparation is already obsolete', async () => {
+  const test = setup(); test.inspect.mockImplementation(async request => held(request))
+  vi.mocked(test.deps.preflight).mockResolvedValue({ current: () => false })
+  const id = await test.stage({ takeOver: 'idle' }); await test.controller.settled()
+  expect(test.deps.stopOwner).not.toHaveBeenCalled()
+  expect(test.deps.launch).not.toHaveBeenCalled()
+  expect(test.rows.get(id)?.launch?.state).toBe('held')
+})
+
 it('explicit takeover of unknown activity never manufactures a continuation prompt', async () => {
   const test = setup()
   test.inspect.mockImplementation(async request => ({ ...held(request), busy: true }))

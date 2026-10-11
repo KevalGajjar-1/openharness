@@ -115,7 +115,7 @@ export function isOurs(block: HookBlock): boolean {
 
 /** A managed command can share a block with somebody else's command. Updating
  * ours must keep those siblings and the block's matcher and other fields. */
-export function foreignHookBlocks(blocks: HookBlock[]): HookBlock[] {
+export function foreignHookBlocks(blocks: HookBlock[], owns: (block: HookBlock) => boolean = isOurs): HookBlock[] {
   for (const block of blocks) {
     if (!block || typeof block !== 'object' || !Array.isArray(block.hooks) || block.hooks.some(hook =>
       !hook || typeof hook !== 'object' || (hook.command !== undefined && typeof hook.command !== 'string'))) {
@@ -123,8 +123,8 @@ export function foreignHookBlocks(blocks: HookBlock[]): HookBlock[] {
     }
   }
   return blocks.flatMap(block => {
-    if (!isOurs(block)) return [block]
-    const hooks = block.hooks.filter(hook => !isOurs({ hooks: [hook] }))
+    if (!owns(block)) return [block]
+    const hooks = block.hooks.filter(hook => !owns({ hooks: [hook] }))
     return hooks.length ? [{ ...block, hooks }] : []
   })
 }

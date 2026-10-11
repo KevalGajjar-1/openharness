@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,8 +22,13 @@ import { createAgentCreator, type CreateAgentDeps } from './create.js'
 import { prepareInstructionWrites } from '../../scm/scmProjects.js'
 import { opencodeMajorVersion } from '../../engines/launchControl.js'
 import { installOpencodePlugin } from '../../engines/nativeHooks.js'
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 
 vi.mock('../../scm/scmProjects.js', async real => ({ ...await real<object>(), prepareInstructionWrites: vi.fn(async () => {}) }))
+vi.mock('node:fs/promises', async real => {
+  const actual = await real<typeof import('node:fs/promises')>()
+  return { ...actual, readdir: vi.fn(actual.readdir) }
+})
 
 vi.mock('../../dsh/installed.js', () => ({ installedDsh: vi.fn(() => undefined) }))
 vi.mock('../../dsh/manifest.js', async (real) => ({ ...await real<object>(), dshPinnedPermissionMode: vi.fn(() => null) }))
@@ -138,6 +144,104 @@ describe('creating an agent', () => {
     vi.mocked(createAndRegisterPane).mockReset().mockResolvedValue({ ok: true, spawned: { runtime: { paneId: '%1' } }, pending } as never)
   })
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
+
+  it.each(['folder inspection', 'tmux capabilities', 'config publication'] as const)('holds a create revoked during %s before launch side effects', async stage => {
+    let current = true
+    vi.mocked(installedDsh).mockReturnValue(installed() as never)
+    const run = setup()
+    if (stage === 'folder inspection') vi.mocked(readdir).mockImplementationOnce(async () => { current = false; return [] })
+    if (stage === 'tmux capabilities') vi.mocked(tmuxSupportsSessionEnv).mockImplementationOnce(async () => { current = false; return true })
+    if (stage === 'config publication') vi.mocked(writeGridConfigDir).mockImplementationOnce(async () => { current = false; return '/fixture/config' })
+    buildGridLaunch.mockResolvedValueOnce({ ok: true, override: { networkId: 'fixture', networkName: 'Fixture', baseUrl: 'http://fixture.invalid', apiKey: 'fixture' }, launch: {
+      env: {}, args: [], webSearch: 'unsupported', configDir: { envVar: 'PI_CONFIG', files: [] },
+    } })
+    try {
+      expect(await run.create.prepare(request(stage === 'folder inspection' ? { dsh: 'blender' } : { grid: { networkName: 'Fixture' } }),
+        { id: 'fixture', label: 'harness-claude-fixture', current: () => current, hold: vi.fn() }))
+        .toMatchObject({ error: 'LAUNCH_AUTHORITY_CHANGED' })
+      expect(createAndRegisterPane).not.toHaveBeenCalled()
+      expect(run.deps.prepareApiTools).not.toHaveBeenCalled()
+    } finally {
+      vi.mocked(installedDsh).mockReset().mockReturnValue(undefined)
+      buildGridLaunch.mockReset().mockImplementation(async request => ({ ok: true, override: request.override,
+        launch: { env: { GRID_KEY: 'k' }, args: ['--grid'], webSearch: 'unsupported' } }))
+    }
+  })
+
+  it('uses the confirmed native version for a named launch and forwards preparation holds', async () => {
+    const launch = { current: () => true, environment: { HOME: root }, prepareHooks: async () => true, opencodeMajor: 1 } as unknown as NativeLaunch
+    const run = setup({ native: async (_engine, _source, authority) => {
+      authority.hold({ service: 'native', detail: 'Checking fixture executable' })
+      return { ok: true, launch }
+    } })
+    expect(await run.create(request({ engine: 'opencode', agent: 'named' }))).toMatchObject({ ok: true })
+    expect(namedAgentArgs).toHaveBeenCalledWith('opencode', 'named', 1)
+    expect(opencodeMajorVersion).not.toHaveBeenCalled()
+  })
+
+  it.each(['initial', 'inspect', 'permission', 'models', 'account', 'materialize', 'harness', 'instructions', 'api', 'dispatch'] as const)(
+    'revokes preparation at %s before any native pane dispatch', async stage => {
+      let current = stage !== 'initial'
+      const revoke = (at: string) => { if (stage === at) current = false }
+      const launch = { current: () => true, environment: { HOME: root }, prepareHooks: async () => true, opencodeMajor: 1 } as unknown as NativeLaunch
+      vi.mocked(installedDsh).mockReturnValue(installed() as never)
+      vi.mocked(refusePermissionFlagIfUnsupported).mockImplementationOnce(async () => { revoke('permission'); return null })
+      const run = setup({ native: async () => { revoke('inspect'); return { ok: true, launch } },
+        buildGridLaunch: async request => { revoke('models'); return { ok: true, override: request.override, launch: { env: {}, args: [], webSearch: 'unsupported' } } },
+        privateGridName: async () => { revoke('account'); return null },
+        dshLaunch: {
+          materialize: async () => { revoke('materialize'); return { ok: true, warnings: [], created: [], kept: [] } },
+          launch: async () => { revoke('harness'); return { ok: true, launch: { env: {}, args: [] } } },
+        },
+        prepareApiTools: () => revoke('api'),
+      })
+      vi.mocked(prepareInstructionWrites).mockImplementationOnce(async () => revoke('instructions'))
+      try {
+        const prepared = await run.create.prepare(request({ dsh: 'blender', grid: { networkName: 'fixture' } }),
+          { id: 'fixture', label: 'harness-claude-fixture', current: () => current, hold: vi.fn() })
+        revoke('dispatch')
+        const result = prepared.ok ? await prepared.dispatch() : prepared
+        expect(result).toMatchObject({ ok: false, error: 'LAUNCH_AUTHORITY_CHANGED' })
+        expect(createAndRegisterPane).not.toHaveBeenCalled()
+      } finally {
+        vi.mocked(installedDsh).mockReset().mockReturnValue(undefined)
+        vi.mocked(refusePermissionFlagIfUnsupported).mockReset().mockResolvedValue(null)
+        vi.mocked(prepareInstructionWrites).mockReset().mockResolvedValue(undefined)
+      }
+    },
+  )
+
+  it('holds an unavailable native snapshot, unsupported named engine and incomplete hook preparation', async () => {
+    const held = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for executable' } as const
+    expect(await setup({ native: async () => held }).create(request())).toEqual(held)
+    const launch = { current: () => true, environment: { HOME: root }, prepareHooks: async () => false, opencodeMajor: 2 } as unknown as NativeLaunch
+    const run = setup({ native: async () => ({ ok: true, launch }) })
+    expect(await run.create(request({ engine: 'opencode', agent: 'named' }))).toMatchObject({ error: 'AGENT_UNSUPPORTED' })
+    expect(await run.create(request())).toMatchObject({ unavailable: 'native', detail: expect.stringContaining('hooks') })
+    expect(createAndRegisterPane).not.toHaveBeenCalled()
+  })
+
+  it.each(['published', 'legacy', 'no retain', 'revoked proof', 'write failed'] as const)('keeps generated native configuration authoritative: %s', async mode => {
+    const proof = { files: [], current: () => true }
+    const launch = { current: () => true, environment: { HOME: root }, prepareHooks: async () => true, opencodeMajor: null,
+      ...(mode === 'no retain' ? {} : { retain: vi.fn(() => mode !== 'revoked proof') }),
+    } as unknown as NativeLaunch
+    const publishConfig = vi.fn<NonNullable<CreateAgentDeps['publishConfig']>>(async (_key, _files, _links, current) => {
+      expect(current?.()).toBe(true)
+      if (mode === 'write failed') throw Error('fixture publication unavailable')
+      return { directory: '/fixture/published', proof }
+    })
+    const run = setup({ native: async () => ({ ok: true, launch }), ...(mode === 'legacy' ? {} : { publishConfig }),
+      buildGridLaunch: async request => ({ ok: true, override: request.override, launch: { env: {}, args: [], webSearch: 'unsupported',
+        configDir: { envVar: 'PI_CONFIG', files: [], links: [] } } }),
+    })
+    const result = await run.create(request({ engine: 'pi', grid: { networkName: 'fixture' } }))
+    if (mode === 'published' || mode === 'legacy') expect(result).toMatchObject({ ok: true })
+    else {
+      expect(result).toMatchObject({ ok: false, unavailable: mode === 'write failed' ? 'native' : 'launch' })
+      expect(createAndRegisterPane).not.toHaveBeenCalled()
+    }
+  })
 
   it('records the final harness-selected Codex home used by real native preparation', async () => {
     const executable = await import('../../engines/kit/launchExecutable.js')
