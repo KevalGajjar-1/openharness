@@ -102,6 +102,30 @@ The reply address is the name when it is a plain word or two, else the start of 
 called by its session title, a sentence that can hold the comma `harness send` splits recipients on (found in the
 live trial: "so we have built harness web,").
 
+### Agents outside Harness
+
+Most agents do not run in a harness: Claude Code or Codex in a terminal app, an editor, or the person's own tmux.
+With no harness pane to tell them by, they were the person, with no limits and the right to close every harness.
+They are told by what they set in the shells they run commands in: `CLAUDECODE=1` and `CLAUDE_CODE_SESSION_ID`
+(Claude Code), `CODEX_THREAD_ID` (Codex), `AI_AGENT` (others; one caller for all of that agent's sessions). One
+session is one caller in the record (`claude-code:<session>`), with the limits and the header a harness gets:
+
+```
+[from Claude Code outside Harness · studio, the agent that started you. It reads your answer itself.]
+```
+
+It may close only what its session started. Nothing can message it, having no pane, so neither the header nor
+`new` tells anyone to. A person who runs `harness` through their agent (Claude Code's `!`) is that agent here; a
+plain terminal is the person.
+
+An agent that installs Harness starts the daemon from its shell, and a tmux server the daemon starts hands its
+environment to every pane: every harness would have been that agent's session, with its messaging token. The
+master and the core drop those variables before they start anything, and the core removes them from a tmux
+server's environment as it removes harnessd's own (`lib/agentSessionEnv.ts`).
+
+Signed out, all of this works: the daemon runs as this computer, and `harness new` now asks for that identity as
+`harness start` does (#1183). It used to read the sign-in file alone and refuse.
+
 ## Limits
 
 Spawning is cheap, so runaway spawning is the risk (the Jev loops cost $60 at one caller). Every limit refuses

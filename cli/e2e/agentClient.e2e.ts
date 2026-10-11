@@ -21,10 +21,10 @@ const signIn = (d: IsolatedDaemon) => writeFileSync(join(d.root, 'auth', 'sessio
 }), { mode: 0o600 })
 
 /** `harness <args>` from [pane], as an agent's shell tool runs it: not a terminal, so plain text. */
-function harness(d: IsolatedDaemon, pane: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
+function harness(d: IsolatedDaemon, pane: string, args: string[], extra: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
   return new Promise((done) => {
     const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
-      cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: pane }, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: pane, ...extra }, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = '', err = ''
     child.stdout.on('data', (chunk) => { out += chunk })
@@ -142,5 +142,49 @@ describe('Harness for agents, end to end', () => {
     expect(shown.out).not.toContain('[from')
     const closed = await run('close', 'solo')
     expect(closed.code, closed.err).toBe(0)
+  })
+
+  it('an agent outside Harness starts, reads and closes a harness of its own, and may not close the person\'s', async () => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const client = await LocalClient.connect(d)
+    const personDir = join(d.projectsDir, 'person')
+    mkdirSync(personDir, { recursive: true })
+    const theirs = await client.request('agent_create', { engine: 'claude', cwd: personDir, bypassPermission: true, name: 'theirs' }, 90_000)
+    expect(theirs.error, JSON.stringify(theirs)).toBeUndefined()
+    // Claude Code in a terminal app: no pane, and the session its shell names.
+    const run = (...args: string[]) => harness(d, '', args, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'outside-session' })
+
+    const ps = await run('ps')
+    expect(ps.code, ps.err).toBe(0)
+    expect(ps.out.split('\n')[0]).toBe('You are Claude Code, outside Harness.')
+    const dir = join(d.projectsDir, 'helper')
+    mkdirSync(dir, { recursive: true })
+    const started = await run('new', 'claude', dir, '--name', 'helper', '--', 'check it')
+    expect(started.code, started.out + started.err).toBe(0)
+    // Nothing can message an agent with no pane: no `send` in what to do next.
+    expect(started.out).toContain('Read it: harness show helper · wait for it: harness wait helper')
+    expect(started.out).not.toContain('harness send')
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: 'claude-code:outside-session', name: 'Claude Code' }), child: expect.objectContaining({ name: 'helper' }) })])
+
+    const waited = await run('wait', 'helper', '--timeout', '2m')
+    expect(waited.code, waited.out + waited.err).toBe(0)
+    const shown = await run('show', 'helper')
+    expect(shown.out).toContain('asked: [from Claude Code outside Harness · ')
+    expect(shown.out).toContain('the agent that started you. It reads your answer itself.]')
+    expect(shown.out).toContain('check it')
+
+    const person = await run('close', 'theirs')
+    expect(person.code).toBe(1)
+    expect(person.err).toContain('You did not start theirs')
+    // Another session of the same agent did not start it either.
+    const other = await harness(d, '', ['close', 'helper'], { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'another-session' })
+    expect(other.code).toBe(1)
+    const closed = await run('close', 'helper')
+    expect(closed.code, closed.err).toBe(0)
+    client.close()
   })
 })

@@ -25,7 +25,7 @@
 // (Claude Code) works on after its first stop because the /goal hook refused it (`!goalpause <condition>`:
 // refused, and the goal paused with no further output), `!compactmid` compacts in the
 // middle of a turn as an automatic compaction does, `!version` answers with the version this
-// process is, `!env <prefix>` with the names of the variables in its environment that start with the
+// process is, `!env <prefix>[,<prefix>…]` with the names of the variables in its environment that start with a
 // prefix (never their values), as an agent that reads its own environment can, `!goal` and `!goal done`
 // (Codex) start and achieve a goal the way Codex 0.160 shows one under its composer, `!browse` (Codex) leaves Codex browsing its transcript in its default fullscreen
 // mode, and `!browse scrollback` in its scrollback mode, `!transcript` (Claude Code) leaves it in its
@@ -1452,7 +1452,8 @@ export async function run(engine, config = {}, { native = false } = {}) {
     }
     if (directive?.[1] === 'version') { await finish(versionLine); return }
     if (directive?.[1] === 'env') {
-      const names = Object.keys(process.env).filter((name) => name.startsWith(directive[2])).sort()
+      const prefixes = directive[2].split(',').filter(Boolean)
+      const names = Object.keys(process.env).filter((name) => prefixes.some((prefix) => name.startsWith(prefix))).sort()
       await finish(`env ${directive[2]}: ${names.join(',') || '(none)'}`)
       return
     }

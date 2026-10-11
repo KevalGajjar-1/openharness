@@ -22,10 +22,12 @@ import { engineName } from '../messages/model.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
-import { callerOf, clip, isAgent, lastTurn, matching, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
+import { callerOf, clip, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
 
 export interface ClientDeps {
   pane?: string | undefined
+  /** The caller's environment: an agent outside Harness is told by what it sets there (`outsideCaller`). */
+  env?: NodeJS.ProcessEnv
   where?: () => Where
   open?: (where: Where, machineId?: string) => Promise<Daemon>
   ledger?: (dataDir: string) => Ledger
@@ -83,6 +85,7 @@ interface Opened {
 function setup(deps: ClientDeps) {
   return {
     pane: 'pane' in deps ? deps.pane : process.env.TMUX_PANE,
+    env: deps.env ?? process.env,
     where: deps.where ?? (() => whereFor('pane' in deps ? deps.pane : process.env.TMUX_PANE)),
     open: deps.open ?? ((where: Where, machineId?: string) => openDaemon(where, machineId)),
     ledger: deps.ledger ?? ((dataDir: string) => new Ledger(ledgerPath(dataDir))),
@@ -120,11 +123,13 @@ async function opened(s: Setup, includeStopped = false): Promise<Opened> {
   const daemon = await s.open(where)
   try {
     const frames = await list(daemon, includeStopped)
-    const caller = callerOf(frames, s.pane, where.machineId)
+    const inPane = callerOf(frames, s.pane, where.machineId)
     // Any status: the core marks every session inactive as it starts (core/main.ts), and a person's terminal is theirs
     // through it. A stopped harness keeps no pane (`toStoppedProject`), so an old pane number never matches one.
     const terminal = frames.some((f) => f.tmuxPane === s.pane && f.engine === 'terminal')
-    const orphan = !!s.pane && !!where.harnessPane && !caller && !terminal
+    const orphan = !!s.pane && !!where.harnessPane && !inPane && !terminal
+    // Not a harness: an agent outside Harness when its shell says so, even in a terminal of Harness's own.
+    const caller = inPane ?? (orphan ? null : outsideCaller(s.env, where.machineId))
     return { where, daemon, frames, caller, orphan, stopped: includeStopped, ledger: s.ledger(where.dataDir), machine: machineNameOf(where.dataDir) }
   } catch (error) { daemon.close(); throw error }
 }
@@ -271,7 +276,8 @@ export function formatRows(rows: Row[], caller: Caller | null, now: number): str
     const about = r.about ?? (r.asks?.length ? `asked: ${r.asks[0]}` : '')
     return about ? `${line}\n${' '.repeat(2)}${clip(about.replace(/\s+/g, ' '), 200)}` : line
   })
-  return [caller ? `You are "${caller.name}" (${caller.agentId.slice(0, 8)}).` : null, head, ...lines].filter((l) => l !== null).join('\n')
+  const you = !caller ? null : caller.outside ? `You are ${caller.name}, outside Harness.` : `You are "${caller.name}" (${caller.agentId.slice(0, 8)}).`
+  return [you, head, ...lines].filter((l) => l !== null).join('\n')
 }
 
 export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
@@ -530,16 +536,17 @@ const refusing = (code: string, message: string): NewOrigin => ({
 })
 
 /**
- * When an agent runs `harness new` from its pane: its limits, the header on its task, and the record of it. Null for
- * the person. A pane Harness made whose harness cannot be told is refused, never taken for the person: a daemon that
- * did not answer used to mean no limits, no header and no record (the review of #1180).
+ * When an agent runs `harness new`, from its pane or from outside Harness: its limits, the header on its task, and the
+ * record of it. Null for the person. A pane Harness made whose harness cannot be told is refused, never taken for the
+ * person: a daemon that did not answer used to mean no limits, no header and no record (the review of #1180).
  */
 export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesRpc): Promise<NewOrigin | null> {
   const s = setup(deps)
-  if (!s.pane) return null
+  const agentOutside = !!outsideCaller(s.env, '')
+  if (!s.pane && !agentOutside) return null
   let o: Opened
   try { o = await opened(s) } catch {
-    return s.where().harnessPane ? refusing('UNKNOWN_CALLER', 'Harness could not tell which harness is starting this. Try again in a moment.') : null
+    return s.where().harnessPane || agentOutside ? refusing('UNKNOWN_CALLER', 'Harness could not tell who is starting this. Try again in a moment.') : null
   }
   o.daemon.close()
   if (o.orphan) return refusing('NOT_YOURS', ORPHAN)
@@ -555,9 +562,12 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       // owner's). The answer route works where the two share a machine (Agent Messages' lineage scope).
       const here = machineId === o.where.machineId
       // It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its whole report
-      // back as a message as well, which would land in the middle of the starter's own turn.
-      const reply = here ? ` It reads your answer itself; to ask it something while you work: harness send ${addressOf(caller)} "…"` : ' It reads your answer itself.'
-      const header = `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you.${reply}]\n\n`
+      // back as a message as well, which would land in the middle of the starter's own turn. An agent outside Harness
+      // has no pane for a message to reach.
+      const reply = here && !caller.outside ? ` It reads your answer itself; to ask it something while you work: harness send ${addressOf(caller)} "…"` : ' It reads your answer itself.'
+      const header = caller.outside
+        ? `[from ${caller.name} outside Harness · ${o.machine}, the agent that started you.${reply}]\n\n`
+        : `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you.${reply}]\n\n`
       if (header.length + text.length <= MAX_FIRST_PROMPT_CHARS) return header + text
       // A first message holds 2,000 characters (engineLaunch.ts), and a task an agent hands on is often longer: the
       // first eval's prompts were refused whole. The task goes in a file the new harness is told to read.
@@ -594,7 +604,7 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     },
     next: (agent) => {
       const at = addressOf({ machineId: '', agentId: String(agent.id ?? ''), name: String(agent.name ?? ''), engine: '' })
-      return `Read it: harness show ${at} · wait for it: harness wait ${at} · message it: harness send ${at} "…"`
+      return `Read it: harness show ${at} · wait for it: harness wait ${at}${caller.outside ? '' : ` · message it: harness send ${at} "…"`}`
     },
   }
 }

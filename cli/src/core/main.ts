@@ -57,6 +57,7 @@ import { awakeTimeout } from '../lib/sleepAware.js'
 import { removePidFileIf, onError } from '../lib/daemonLaunch.js'
 import { ensureTmuxOnPath } from '../lib/tmuxOnPath.js'
 import { harnessdEnv, holdHarnessdEnv, isHarnessdVariable } from '../lib/harnessdEnv.js'
+import { dropAgentSessionEnv, isAgentSessionVariable } from '../lib/agentSessionEnv.js'
 import { AUTH_DIR, AuthSessionManager, clearAuthSession, ensureSignInEpoch, readAuthSession, signInOf, type AuthSession } from '../lib/authSession.js'
 import { ENGINES, enginePathOverride } from '../lib/engineBin.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
@@ -557,8 +558,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       console.log(`[terminal] renamed tmux session ${adopted.from} → ${adopted.to} (pane ${adopted.paneId}) · named by a build before the harness- prefix`)
     }
     // Before the first pane this boot makes or restarts: a server an earlier core started still has that
-    // core's HARNESSD_* (the service token among them) in the environment it gives every new pane.
-    const forgotten = await tmuxBackend.unsetServerEnvironment(isHarnessdVariable)
+    // core's HARNESSD_* (the service token among them) in the environment it gives every new pane, and one
+    // started from an agent's shell that agent's session (lib/agentSessionEnv.ts).
+    const forgotten = await tmuxBackend.unsetServerEnvironment((name) => isHarnessdVariable(name) || isAgentSessionVariable(name))
     if (forgotten.length) console.log(`[terminal] tmux: removed ${forgotten.join(', ')} from the environment new panes start with`)
     const tmuxStartup = await tmuxBackend.inventory()
     console.log(tmuxStartup.state === 'available'
@@ -2771,6 +2773,7 @@ export function runCore(scriptPath: string): void {
   // First, before anything this core starts can inherit them: a tmux server, an engine, a shell
   // (lib/harnessdEnv.ts).
   holdHarnessdEnv()
+  dropAgentSessionEnv()
   SCRIPT_PATH = scriptPath
   // Inert unless the end-to-end suite asks for its event loop to be held (core/stall.ts).
   startStalls(testFaults(harnessdEnv().HARNESSD_TEST_FAULTS))
@@ -2781,6 +2784,7 @@ export function runCore(scriptPath: string): void {
 /** `harness start -f` with `HARNESS_NO_MASTER=1`, and a start under tsx: the core alone, in the process of the command that asked for it. */
 export function runCoreInForeground(session: AuthSession | null, scriptPath: string): Promise<void> {
   holdHarnessdEnv()
+  dropAgentSessionEnv()
   SCRIPT_PATH = scriptPath
   return runForeground(session)
 }

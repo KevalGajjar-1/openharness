@@ -1,5 +1,6 @@
 /**
- * What a pane is started with, end to end: never harnessd's own variables. The master gives the core and
+ * What a pane is started with, end to end: never harnessd's own variables, nor the session of an agent whose shell
+ * started the daemon (lib/agentSessionEnv.ts). The master gives the core and
  * each service the `HARNESSD_*` they run by, the service token among them. The tmux server the core
  * started copied them into every pane it made, so every agent, terminal tile and hook had them all (found
  * 2026-10-11: `env` in an agent's pane listed every one). The core now takes them out of its
@@ -40,28 +41,37 @@ async function create(d: IsolatedDaemon, client: LocalClient, engine: Engine | '
   }, 60_000, 500)
 }
 
-/** The `HARNESSD_*` names an agent's engine has, asked as an agent reads its environment (fakeEngine `!env`). */
-async function engineHas(client: LocalClient, agentId: string): Promise<string> {
+/** An agent's own session, as Claude Code and Codex set it in the shells they run commands in: made-up values. */
+const AGENT_SESSION = {
+  AI_AGENT: 'claude-code_2-1-296_agent', CLAUDECODE: '1', CLAUDE_CODE_MESSAGING_TOKEN: 'agent-token', CLAUDE_CODE_SESSION_ID: 'agent-session',
+  CODEX_THREAD_ID: 'agent-thread',
+}
+const HARNESSD = 'HARNESSD_'
+const SESSION = 'AI_AGENT,CLAUDECODE,CLAUDE_CODE_MESSAGING,CLAUDE_CODE_SESSION,CODEX_THREAD'
+
+/** The names an agent's engine has that start with [prefixes], asked as an agent reads its environment (fakeEngine `!env`). */
+async function engineHas(client: LocalClient, agentId: string, prefixes = HARNESSD): Promise<string> {
   const ended = client.next(isTurn('turn_ended', agentId), 45_000, 'turn_ended (!env)')
-  client.send('message', { agentId, content: '!env HARNESSD_' })
+  client.send('message', { agentId, content: `!env ${prefixes}` })
   await ended
   const { sessionId } = (await row(client, agentId))!
   return until('the !env answer in the thread', async () => {
     const page = await client.request<{ events?: Array<{ type: string; payload: Record<string, any> }> }>('session_get', { sessionId, limit: 200 }, 30_000)
     const answer = (page.events ?? []).filter((event) => event.type === 'text_delta').map((event) => String(event.payload.content))
-      .find((text) => text.startsWith('env HARNESSD_: '))
-    return answer?.slice('env HARNESSD_: '.length) ?? null
+      .find((text) => text.startsWith(`env ${prefixes}: `))
+    return answer?.slice(`env ${prefixes}: `.length) ?? null
   }, 15_000, 250)
 }
 
-/** The `HARNESSD_*` names in the environment of the shell a pane runs, written to a file by that shell. */
-async function shellHas(d: IsolatedDaemon, pane: string, name: string): Promise<string[]> {
+/** The names starting with [prefixes] in the environment of the shell a pane runs, written to a file by that shell. */
+async function shellHas(d: IsolatedDaemon, pane: string, name: string, prefixes = HARNESSD): Promise<string[]> {
   const file = join(d.root, `${name}.env`)
   await d.tmux.run('send-keys', '-t', pane, `env > ${file}.tmp && mv ${file}.tmp ${file}`, 'Enter')
   await until(`${name}'s shell to write its environment`, () => existsSync(file) || null, 20_000, 100)
-  return names(readFileSync(file, 'utf8'))
+  return names(readFileSync(file, 'utf8'), prefixes)
 }
-const names = (env: string): string[] => env.split('\n').map((line) => line.split('=')[0]).filter((name) => name.startsWith('HARNESSD_')).sort()
+const names = (env: string, prefixes = HARNESSD): string[] =>
+  env.split('\n').map((line) => line.split('=')[0]).filter((name) => prefixes.split(',').some((prefix) => name.startsWith(prefix))).sort()
 
 describe('a pane\'s environment', () => {
   let daemon: IsolatedDaemon | undefined
@@ -74,14 +84,14 @@ describe('a pane\'s environment', () => {
     return d
   }
 
-  /** Every kind of pane the daemon makes: Claude Code, Codex and a terminal tile, each without harnessd's variables. */
-  const expectNoneIn = async (d: IsolatedDaemon, client: LocalClient): Promise<void> => {
+  /** Every kind of pane the daemon makes: Claude Code, Codex and a terminal tile, each without the variables. */
+  const expectNoneIn = async (d: IsolatedDaemon, client: LocalClient, prefixes = HARNESSD): Promise<void> => {
     for (const engine of ['claude', 'codex'] as const) {
       const agent = await create(d, client, engine, `pane-${engine}`)
-      expect(await engineHas(client, agent.id), engine).toBe('(none)')
+      expect(await engineHas(client, agent.id, prefixes), engine).toBe('(none)')
     }
     const tile = await create(d, client, 'terminal', 'pane-terminal')
-    expect(await shellHas(d, tile.tmuxPane, 'terminal')).toEqual([])
+    expect(await shellHas(d, tile.tmuxPane, 'terminal', prefixes)).toEqual([])
   }
 
   it('has none of harnessd\'s variables when the daemon started the tmux server, under a master that gave the core them', async () => {
@@ -107,6 +117,20 @@ describe('a pane\'s environment', () => {
     expect(d.log()).toContain(`[terminal] tmux: removed ${Object.keys(EARLIER_BOOT).sort().join(', ')} from the environment new panes start with`)
     const client = await LocalClient.connect(d)
     await expectNoneIn(d, client)
+    client.close()
+  }, 300_000)
+
+  it('has none of an agent\'s session when that agent\'s shell started the daemon and the tmux server', async () => {
+    // An agent that installs Harness runs `harness start` from its shell: the master, and a tmux server started
+    // from that shell, have that agent's session, and every pane would have looked like that agent's.
+    const d = await IsolatedDaemon.create({ env: AGENT_SESSION })
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await exec('tmux', ['-S', d.tmux.socket, 'new-session', '-d', '-s', 'agent-shell', '/bin/sh', '-c', 'sleep 600'], { env: d.env, timeout: 10_000 })
+    await d.start()
+    expect(d.log()).toContain(`[terminal] tmux: removed ${Object.keys(AGENT_SESSION).sort().join(', ')} from the environment new panes start with`)
+    const client = await LocalClient.connect(d)
+    await expectNoneIn(d, client, SESSION)
     client.close()
   }, 300_000)
 })
