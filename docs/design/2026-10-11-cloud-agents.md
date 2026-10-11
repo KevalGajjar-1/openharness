@@ -54,6 +54,10 @@ started from New Harness. They are not a second product beside the panes.
    Up to 5 ACUs                                      New Harness
   ```
 
+  As built:
+
+  ![New Harness with Devin Cloud: its cloud for a computer, a GitHub repository, an ACU limit](images/cloud-new-harness.png)
+
   Its chat pane's footer carries the session's branch and pull request like any pane's:
 
   ```

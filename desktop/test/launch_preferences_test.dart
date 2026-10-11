@@ -591,7 +591,11 @@ void main() {
         'grok',
         'opencode',
       ];
-      final engines = allEngines.map((engine) => engine.id).toSet();
+      // Every agent, the cloud agents among them (Devin Cloud beside Devin).
+      final engines = {
+        ...allEngines.map((engine) => engine.id),
+        ...cloudAgents.map((agent) => agent.id),
+      };
       final initial = box.options.map((option) => option.id).toList();
       expect(initial.take(leading.length), leading);
       expect(initial.take(engines.length).toSet(), engines);
