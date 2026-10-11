@@ -13,6 +13,7 @@ import { incompatibleHarnessEngine } from './compatibility.js'
 import { storeLaunchPort } from '../services/storeLaunch.js'
 import { forkRuntimeKey, harnessRuntimeDir, migrateHarnessInstructions, prepareHarnessLaunch } from './runtime.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
+import { HARNESS_INSTRUCTIONS, joinedInstructions } from '../lib/agentAttribution.js'
 
 let root: string
 let ws: string
@@ -144,7 +145,8 @@ describe('session isolation and lifecycle', () => {
     const result = await buildLaunchOverrides(deps, 'claude', { dsh: pkg.id, cwd: ws, dshRuntime: 'original' }, 'registry-agent-id')
     expect(result.ok && result.overrides.env.HARNESS_CONTEXT_FILE).toBe(first.env.HARNESS_CONTEXT_FILE)
     expect(result.ok && result.overrides.env.HARNESS_PRIVATE_GRID).toBe('new-grid')
-    expect(result.ok && result.overrides.extraArgs).toEqual(first.args)
+    // Its own argv as it first launched, its context prompt and what every harness is told joined into one.
+    expect(result.ok && result.overrides.extraArgs).toEqual(joinedInstructions('claude', [...first.args, '--append-system-prompt', HARNESS_INSTRUCTIONS]))
     const fork = prepareHarnessLaunch(pkg, ws, 'claude', 'fork', {}, 'original')
     expect(fork.env.HARNESS_CONTEXT_FILE).not.toBe(first.env.HARNESS_CONTEXT_FILE)
     expect(readFileSync(fork.env.HARNESS_CONTEXT_FILE!, 'utf8')).toContain('# Make a drawing')
