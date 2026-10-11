@@ -109,7 +109,8 @@ export function createAgentForker({
       const prepared = await dshLaunch.launch({ dsh: source.dsh, workspace: cwd, engine, key: label,
         account: { privateGrid: gridName() }, forkOf: { agentId: source.agentId, dshRuntime: source.dshRuntime ?? null } })
       if (!current()) return changed
-      if (!prepared.ok) return prepared
+      if (!prepared.ok) return { ok: false, error: prepared.error, detail: prepared.detail,
+        ...(prepared.unavailable ? { unavailable: prepared.unavailable } : {}) }
       dshEnv = prepared.launch.env
       dshArgs = prepared.launch.args
       dshLabel = installed.manifest.name

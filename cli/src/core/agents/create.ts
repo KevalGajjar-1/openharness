@@ -229,7 +229,8 @@ export function createAgentCreator({
       }
       const prepared = await dshLaunch.launch({ dsh, workspace: cwd, engine, key: label, account: dshAccount })
       if (!current()) return stale()
-      if (!prepared.ok) return prepared
+      if (!prepared.ok) return { ok: false, error: prepared.error, detail: prepared.detail,
+        ...(prepared.unavailable ? { unavailable: prepared.unavailable } : {}) }
       dshEnv = prepared.launch.env
       dshArgs = prepared.launch.args
       dshLabel = harness.manifest.name
