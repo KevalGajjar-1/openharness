@@ -328,16 +328,20 @@ MUSE_REST_MS = MUSE_SCENES['rest']['step_ms']
 MUSE_SEND_HOLD = 5        # the sending scene's last step shows this many steps (900 ms asked, 5 x 166 = 830)
 
 
-def muse_frames(folder, alpha_cut=True):
-    """The PNGs of a folder, alpha thresholded at 128 (the dial's alpha is 1 bit; the edge colour is
+def png_frames(pet, folder, alpha_cut=True):
+    """The PNGs of a pet's folder, alpha thresholded at 128 (the dial's alpha is 1 bit; the edge colour is
     composited over black by the quantiser, so no halo)."""
     out = []
-    for path in sorted((MUSE / folder).glob('*.png')):
+    for path in sorted((pet / folder).glob('*.png')):
         im = Image.open(path).convert('RGBA')
         if alpha_cut:
             im.putalpha(im.getchannel('A').point(lambda a: 255 if a >= 128 else 0))
         out.append(im)
     return out
+
+
+def muse_frames(folder, alpha_cut=True):
+    return png_frames(MUSE, folder, alpha_cut)
 
 
 def union_box(frames):
@@ -424,13 +428,18 @@ def clip_to_glass(im, gx, gy):
 
 def generate_muse_scene(prefix, kind):
     """One Muse scene from its PNG frames: Jolly frames + (sending) the plane overlay, in the ht_pet_scene_t layout."""
+    return generate_png_scene(prefix, kind, MUSE, MUSE_SCENES, MUSE_FLY, MUSE_WAVES, MUSE_SEND_HOLD)
+
+
+def generate_png_scene(prefix, kind, pet, scenes, fly_meta, wave_meta, send_hold):
+    """A scene from a pet's PNG frames (Muse's, Fo's): its frames + (sending) the overlay, in the ht_pet_scene_t layout."""
     folder, bias = {'work': ('work', 4), 'listen': ('listen', -6), 'send': ('send/body', 0)}[kind]
-    meta = MUSE_SCENES[{'work': 'work', 'listen': 'listen', 'send': 'send'}[kind]]
-    frames = muse_frames(folder)
+    meta = scenes[{'work': 'work', 'listen': 'listen', 'send': 'send'}[kind]]
+    frames = png_frames(pet, folder)
     seq = list(range(len(frames)))
     levels = LEVELS if kind == 'listen' else 1
     if kind == 'send':
-        seq += [seq[-1]] * (MUSE_SEND_HOLD - 1)
+        seq += [seq[-1]] * (send_hold - 1)
     steps = len(seq)
     box = union_box(frames)
     w, h = box[2] - box[0], box[3] - box[1]
@@ -446,10 +455,10 @@ def generate_muse_scene(prefix, kind):
     out.append(f'_Static_assert(sizeof {prefix}_loop == {steps} * {"HT_PET_SCENE_LEVELS" if levels > 1 else 1}, "{prefix}: steps x levels");\n')
     ov_ref, extra, obytes = 'NULL', 0, 0
     if kind == 'send':
-        fly = muse_frames('send/fly')
-        assert len(MUSE_FLY) == len(frames)
+        fly = png_frames(pet, 'send/fly')
+        assert len(fly_meta) == len(frames)
         pieces, where = [], []
-        for item in MUSE_FLY:
+        for item in fly_meta:
             if item.get('empty'):
                 pieces.append(None)
                 where.append((0, 0))
@@ -483,7 +492,7 @@ def generate_muse_scene(prefix, kind):
     if kind == 'listen':
         # L2: the sound waves are drawn by the dial (ht_pet_waves_t), from assets/pets/muse/listen.json; the body
         # frames carry none, so poses that mirror each other (step t and 6 - t) are one stored picture.
-        wv = MUSE_WAVES
+        wv = wave_meta
         assert 1 <= wv['count'] <= 3        # focus.c: runs 1..6 are the arcs
         out.append(f'static const ht_pet_waves_t {prefix}_waves = {{{round((wv["centre"][0] - box[0]) * 16)},'
                    f'{round((wv["centre"][1] - box[1]) * 16)},{round(wv["r_far"] * 16)},{round(wv["r_near"] * 16)},'
@@ -492,6 +501,40 @@ def generate_muse_scene(prefix, kind):
         waves = f'&{prefix}_waves'
     out.append(f'static const ht_pet_scene_t {prefix} = {{{w},{h},{prefix}_frames,{prefix}_loop,{steps},{meta["step_ms"]},{ov_ref},{dx},{dy},NULL,{waves},NULL,NULL,NULL}};\n')
     return out, n + extra, nbytes + obytes + len(palette) * 2
+
+
+# ---- Fo (Wajo): PNG frames (assets/pets/fo, drawn by scripts/fo_pet.py), laid out as Clawd's ----
+# Fo is Wajo's little ghost (wajo.ai's `fo-character-working-at-computer`), turned out for the black glass and kept
+# as small as Clawd: the small pet is four poses (the hem's two phases, a blink) and the float is each step's dy;
+# each scene is a body of one to three poses at body_at, a nod or a bump the step's dy, and a small props sprite per
+# step: Fo typing at a laptop with Wajo's W on its lid (a tap's spark), looking up with the dial's waves from its
+# head (one picture), riding Wajo's delivery scooter with a parcel (speed lines), and dozing with bubbles drifting up.
+FO = root / 'assets/pets/fo'
+FO_SCENES = json.loads((FO / 'scenes.json').read_text())
+FO_REST_MS = FO_SCENES['rest']['step_ms']
+
+
+def fo_pet_states():
+    """One loop for idle / working / done / asking: rest.json's 24 steps, each a pose and the float as its dy."""
+    frames = png_frames(FO, 'rest2x')
+    box = union_box(frames)
+    ims = []
+    for f in frames:
+        rgb = Image.alpha_composite(Image.new('RGBA', f.size, (0, 0, 0, 255)), f).convert('RGB').convert('RGBA')
+        rgb.putalpha(f.getchannel('A'))
+        ims.append(rgb.crop(box))
+    steps = json.loads((FO / 'rest.json').read_text())['steps']
+    assert len(steps) == STEPS
+    loop = [({'i': pose}, dy) for pose, dy in steps]
+    return (lambda: loop,) * 4, ims
+
+
+FO_STATES, FO_IMAGES = fo_pet_states()
+FO_SIZE = FO_IMAGES[0].size
+
+
+def fo_render(cells):
+    return FO_IMAGES[cells['i']]
 
 
 # ---- Claude Code's Clawd: PNG frames (assets/pets/claude, exported by mockup/clawd_v3.py) ----
@@ -519,9 +562,11 @@ def half(im):
     return rgb
 
 
-def generate_claude_scene(prefix, name, levels, bias):
-    meta = CLAUDE_SCENES[name]
-    bodies, props = claude_frames(f'{name}/body'), claude_frames(f'{name}/props')
+def generate_claude_scene(prefix, name, levels, bias, pet=None, scenes=None):
+    """A body scene (Clawd's; Fo's, laid out the same): poses at body_at, each step's dy, a props sprite per step."""
+    pet, meta = pet or CLAUDE, (scenes or CLAUDE_SCENES)[name]
+    bodies = [im for im in png_frames(pet, f'{name}/body', alpha_cut=pet != CLAUDE)]
+    props = [im for im in png_frames(pet, f'{name}/props', alpha_cut=pet != CLAUDE)]
     w, h = bodies[0].size
     assert w < 256 and h < 256
     steps = meta['steps']
@@ -619,11 +664,12 @@ PETS = (
     ('claude', 'claude', half_size(CLAUDE_IMAGES[0].size), CLAUDE_STATES, claude_render, (CLAUDE_SCENES['rest']['step_ms'],) * 4),
     ('codex', 'codex', half_size(CODEX_IMAGES[0].size), CODEX_STATES, codex_render, CODEX_STEP_MS),
     ('muse', 'muse', half_size(MUSE_SIZE), MUSE_STATES, muse_render, (MUSE_REST_MS,) * 4),
+    ('fo', 'fo', half_size(FO_SIZE), FO_STATES, fo_render, (FO_REST_MS,) * 4),
 )
 # Pets whose small self is palette-indexed cell frames (ht_pet_t.cells) rather than RGB565 + alpha8 (frames).
 # Every small pet is cell frames drawn at TWICE its size (1 px cells of a 2x picture), which focus.c shows at 1x, 1.5x, 1.75x or 2x with ht_cell_sprite_zoom: one good drawing, every
 # size a clean reduction of it (owner, 2026-10-05). The value is the frames' cell; ht_pet_t.w, h are the 1x size.
-CELL_PETS = {'claude': 1, 'codex': 1, 'muse': 1}
+CELL_PETS = {'claude': 1, 'codex': 1, 'muse': 1, 'fo': 1}
 
 
 def generate_pet(prefix, states, draw, size, cells_out=False, cell=1):
@@ -676,6 +722,7 @@ ALERT_BUBBLES = {
     'claude': ((186, 'right'), 168, (246, 242, 238), (246, 242, 238)),
     'codex': ((290, 'left'), 160, CX_FILL, CX_LINE),
     'muse': ((271, 'left'), 150, (246, 244, 240), (205, 200, 192)),
+    'fo': ((262, 'left'), 178, (255, 245, 250), (238, 214, 228)),
 }
 
 
@@ -915,7 +962,8 @@ def generate_codex_relax(prefix):
 
 RELAX = {'claude': ('claude_relax', lambda p: generate_json_relax(p, CLAUDE / 'relax')),
          'codex': ('codex_relax', generate_codex_relax),
-         'muse': ('muse_relax', lambda p: generate_json_relax(p, MUSE / 'relax'))}
+         'muse': ('muse_relax', lambda p: generate_json_relax(p, MUSE / 'relax')),
+         'fo': ('fo_relax', lambda p: generate_json_relax(p, FO / 'relax'))}
 
 
 # engine -> (working scene, listening scene, sending scene): prefix, loop, size in cells, step_ms, steps; levels
@@ -924,6 +972,7 @@ SCENES = {
     'claude': (('claude_work', 'cwork'), ('claude_listen', 'clisten'), ('claude_send', 'csend')),
     'codex': (('codex_work', 'work'), ('codex_listen', 'listen'), ('codex_send', 'send')),
     'muse': (('muse_work', 'mwork'), ('muse_listen', 'mlisten'), ('muse_send', 'msend')),
+    'fo': (('fo_work', 'fwork'), ('fo_listen', 'flisten'), ('fo_send', 'fsend')),
 }
 
 
@@ -956,6 +1005,11 @@ def generate():
             elif spec[1] in ('mwork', 'mlisten', 'msend'):
                 sprefix = spec[0]
                 code, n, nbytes = generate_muse_scene(sprefix, spec[1][1:])
+            elif spec[1] in ('fwork', 'flisten', 'fsend'):
+                sprefix = spec[0]
+                name = spec[1][1:]
+                code, n, nbytes = generate_claude_scene(sprefix, name, LEVELS if name == 'listen' else 1,
+                                                        {'work': 4, 'listen': -6, 'send': 0}[name], FO, FO_SCENES)
             elif spec[1] in ('work', 'listen', 'send'):
                 sprefix = spec[0]
                 code, n, nbytes = generate_pack_scene(sprefix, spec[1])
