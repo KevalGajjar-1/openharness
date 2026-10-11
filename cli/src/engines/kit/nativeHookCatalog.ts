@@ -1,8 +1,8 @@
 /** Fixed reservations shared by the daemon and short-lived hook clients.
  * Allocation is permanent: full or damaged storage holds, never evicts receipts. */
 import { createHash } from 'node:crypto'
-import { lstatSync, type BigIntStats } from 'node:fs'
-import { join } from 'node:path'
+import { lstatSync, opendirSync, type BigIntStats } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import { createNativeHookJournal, inspectNativeHookJournalAuthority, NativeHookJournalHeld,
@@ -27,21 +27,45 @@ const stamp = (info: BigIntStats) => `${identity(info)}:${info.size}:${info.mtim
 function held(detail: string): never { throw new NativeHookJournalHeld(`catalog: ${detail}`) }
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
 const count = (kind: Kind) => kind === 'effects' ? NATIVE_HOOK_STORAGE_LIMITS.processes : NATIVE_HOOK_STORAGE_LIMITS.outboxes
+let activeOperations = 0
 
 /** The caller supplies an already-private data root and its retained local
  * writer proof. This factory neither creates that root nor owns its lifetime. */
-export function createNativeHookCatalog({ root, verifyRoot, pool }: {
-  root: string; verifyRoot(root: string): void; pool: Pool
+export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeoutMs = 4500 }: {
+  root: string; verifyRoot(root: string): void; pool: Pool; operationTimeoutMs?: number
 }) {
+  if (!Number.isFinite(operationTimeoutMs) || operationTimeoutMs <= 0 || operationTimeoutMs > 4500) held('invalid operation deadline')
   const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(root)!, facts = paths.snapshot()
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n
     || typeof process.getuid === 'function' && location.info.uid !== BigInt(process.getuid())) held('the storage root is not private')
   const expectedRoot = identity(location.info), canonical = location.path
   let closed = false
+  const operations = new Set<Promise<unknown>>()
+  const journalOperations = new Set<Promise<unknown>>()
   const checkRoot = () => {
     if (closed) held('the catalog is closed')
     verifyRoot(root); verifyNativePathFacts(facts)
     if (identity(lstatSync(canonical, { bigint: true })) !== expectedRoot) held('the storage root changed')
+  }
+  const run = async <T>(work: (check: () => void) => Promise<T>): Promise<T> => {
+    checkRoot()
+    if (activeOperations >= 16) held('actual catalog operation slots are occupied')
+    activeOperations++
+    const deadline = performance.now() + operationTimeoutMs
+    let expired = false, timer: ReturnType<typeof setTimeout> | undefined
+    const check = () => {
+      checkRoot()
+      if (expired || performance.now() >= deadline) held('the catalog operation expired')
+    }
+    const actual = Promise.resolve().then(() => { check(); return work(check) })
+      .then(value => { check(); return value })
+      .finally(() => { activeOperations--; operations.delete(actual); clearTimeout(timer) })
+    operations.add(actual)
+    return await Promise.race([actual, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true; reject(new NativeHookJournalHeld('catalog: disk confirmation exceeded its deadline'))
+      }, operationTimeoutMs)
+    })])
   }
   const base = (kind: Kind, index: number) => join(canonical, `.native-hook-${kind}-${String(index).padStart(3, '0')}`)
   const history = (kind: Kind, index: number) => `${base(kind, index)}.history`
@@ -52,11 +76,12 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
   }
   const pair = (file: string, verify = checkRoot): Pair | undefined => {
     verify()
+    const route = metadata.routeStamps(canonical)
     // These fixed names are direct children of the already pinned root. Fence
     // that route around the pair, rather than multiplying the same ancestry
     // walk into each leaf's two stamp checks and every enclosing authority.
     const record = metadata.read(`${file}.witness`, () => {}), mirror = metadata.read(file, () => {})
-    verify()
+    route(); verify()
     if (!record) { if (mirror) held('an allocation witness is missing'); return }
     if (mirror && mirror.text !== record.text) held('allocation mirrors disagree')
     const result = { record, mirror, verify: () => { verify(); record.verify(); mirror?.verify(); checkRoot() } }
@@ -65,11 +90,13 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
   }
   const confirm = async (file: string, text: string, verify: () => void, retainedVerify = checkRoot): Promise<Pair> => {
     verify()
-    const outside = metadata.publish(`${file}.witness`, text, verify)
+    metadata.publish(`${file}.witness`, text, verify)
+    const outside = metadata.read(`${file}.witness`, () => {})!
     const fence = () => { verify(); outside.verify() }
     // The outside intent is durable before creating its mirror or a journal.
     await metadata.syncDirectory(canonical, fence)
-    const inside = metadata.publish(file, text, fence)
+    metadata.publish(file, text, fence)
+    const inside = metadata.read(file, () => {})!
     const complete = () => { fence(); inside.verify() }
     await metadata.syncParents(canonical, complete)
     complete()
@@ -86,10 +113,12 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
     }
   }
   const inspectAllocation = (kind: Kind, index: number, verify: () => void): Allocation | undefined => {
+    const route = metadata.routeStamps(canonical)
     const saved = pair(`${base(kind, index)}.allocation`, verify), seal = pair(`${base(kind, index)}.seal`, verify)
     if (!saved) {
       if (seal) held('an allocation seal has no reservation')
       journalAbsent(kind, index)
+      route()
       return
     }
     const value: unknown = JSON.parse(saved.record.text)
@@ -100,6 +129,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
       if (!Array.isArray(value) || value.length !== 3 || value[0] !== 1 || value[1] !== hash(saved.record.text)
         || typeof value[2] !== 'string' || !hashPattern.test(value[2]) || JSON.stringify(value) !== seal.record.text) held('invalid allocation seal')
     }
+    route()
     return { kind, index, key: value[3], pair: saved, seal }
   }
   const scan = async (verify: () => void) => {
@@ -130,33 +160,62 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
     unchanged(); fence()
     return { allocations, verify: () => { fence(); unchanged() }, verifyRecords: fence }
   }
-  const initialize = async () => {
-    checkRoot()
+  const initialize = async (check: () => void) => {
+    check()
     const saved = pair(versionFile)
     if (saved && saved.record.text !== versionText) held('the catalog format or root changed')
+    let verifyEmpty = () => {}
     if (!saved) {
-      if ((await scan(checkRoot)).allocations.length) held('the catalog authority is missing')
+      if ((await scan(check)).allocations.length) held('the catalog authority is missing')
       // Staging may start only after the catalog exists. Losing its independent
       // boundary cannot turn retained writer generations into a fresh pool.
-      for (let lane = 0; lane < 8; lane++) {
-        for (const suffix of ['', '.witnesses', '.bootstrap', '.authority', '.seal', ...Array.from({ length: 8 }, (_, i) => `.init-${i}`)]) {
-          if (exists(join(canonical, `.native-hook-stage-${lane}${suffix}`))) held('the catalog authority is missing before staging')
+      const ancestors = metadata.routeStamps(dirname(canonical))
+      let emptyFrontier: string | undefined
+      verifyEmpty = () => {
+        check()
+        ancestors()
+        const frontier = stamp(lstatSync(canonical, { bigint: true }))
+        if (frontier === emptyFrontier) return
+        const route = metadata.routeStamps(canonical), budget = new NativeEvidenceBudget(250)
+        // A previous draft's hash-named journal is retained evidence too. It
+        // cannot disappear from authority merely because today's fixed-name
+        // allocation scan does not recognize its format.
+        const entries = opendirSync(canonical, { bufferSize: 2 })
+        try {
+          for (let entry = entries.readSync(); entry; entry = entries.readSync()) {
+            budget.step()
+            if (![versionFile, versionFile + '.witness'].includes(join(canonical, entry.name))) held('unallocated storage remains before catalog initialization')
+          }
+        } finally { entries.closeSync() }
+        for (const kind of ['effects', 'outbox'] as const) for (let index = 0; index < count(kind); index++) {
+          budget.step()
+          for (const suffix of ['.allocation', '.allocation.witness', '.seal', '.seal.witness']) {
+            if (exists(base(kind, index) + suffix)) held('the catalog authority is missing')
+          }
+          journalAbsent(kind, index)
         }
+        for (let lane = 0; lane < 8; lane++) {
+          for (const suffix of ['', '.witnesses', '.bootstrap', '.authority', '.seal', ...Array.from({ length: 8 }, (_, i) => `.init-${i}`)]) {
+            if (exists(join(canonical, `.native-hook-stage-${lane}${suffix}`))) held('the catalog authority is missing before staging')
+          }
+        }
+        route(); ancestors(); check(); emptyFrontier = frontier
       }
     }
-    return confirm(versionFile, versionText, checkRoot)
+    return confirm(versionFile, versionText, () => { check(); verifyEmpty() })
   }
   let initializing: ReturnType<typeof initialize> | undefined
-  const version = async () => {
-    const actual = initializing ??= initialize()
-    try { return await actual } finally { if (initializing === actual) initializing = undefined }
+  const version = async (check: () => void) => {
+    const actual = initializing ??= initialize(check)
+    try { const result = await actual; check(); return result } finally { if (initializing === actual) initializing = undefined }
   }
-  const allocate = async (kind: Kind, key: string, fixed?: number): Promise<Allocation> => {
+  const allocate = async (kind: Kind, key: string, check: () => void, fixed?: number): Promise<Allocation> => {
     if (!key || key.length > 512) held('invalid process key')
-    const control = await version(), hashed = hash(key)
+    const control = await version(check), hashed = hash(key)
     const verify = () => { checkRoot(); control.verify() }
+    const current = () => { check(); verify() }
     for (let attempt = 0; attempt < 3; attempt++) {
-      const before = await scan(verify)
+      const before = await scan(current)
       let selected = before.allocations.find(item => item.kind === kind && item.key === hashed)
       if (selected && fixed !== undefined && selected.index !== fixed) held('an outbox changed its fixed allocation')
       if (!selected) {
@@ -172,15 +231,15 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
           // Another process chose this exact slot. Re-read its immutable key
           // before deciding whether this is our reservation or a collision.
-          const winner = inspectAllocation(kind, index, verify)
+          const winner = inspectAllocation(kind, index, current)
           if (!winner) held('the winning allocation disappeared')
           if (winner.key !== hashed) continue
         }
-        selected = inspectAllocation(kind, index, verify)
+        selected = inspectAllocation(kind, index, current)
         if (!selected || selected.key !== hashed) held('the allocation changed before confirmation')
       }
       const saved = await confirm(`${base(kind, selected.index)}.allocation`, selected.pair.record.text, () => {
-        verify(); selected!.pair.verify()
+        current(); selected!.pair.verify()
       }, verify)
       return { ...selected, pair: saved }
     }
@@ -207,33 +266,49 @@ export function createNativeHookCatalog({ root, verifyRoot, pool }: {
     }
     return {
       verify,
-      async authorize(proof, empty) {
-        verify(); proof.verify()
-        const expected = JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])
-        if (!authorized) { await empty(); verify(); proof.verify() }
-        if (authorized && authorized.pair.record.text !== expected) held('the journal seal changed')
-        const prior = authorized
-        const saved = await confirm(file, expected, () => { baseVerify(); prior?.pair.verify(); proof.verify() }, baseVerify)
-        authorized = { pair: saved, authority: proof }
-        verify()
+      authorize(proof, empty, checkOwner) {
+        return run(async check => {
+          checkOwner(); verify(); proof.verify()
+          const expected = JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])
+          let verifyEmpty = () => {}
+          if (!authorized) { verifyEmpty = await empty(); check(); verify(); proof.verify() }
+          if (authorized && authorized.pair.record.text !== expected) held('the journal seal changed')
+          const prior = authorized
+          const saved = await confirm(file, expected, () => { checkOwner(); check(); baseVerify(); prior?.pair.verify(); proof.verify(); verifyEmpty() }, baseVerify)
+          checkOwner(); check(); authorized = { pair: saved, authority: proof }
+          verify()
+        })
       },
-      acquireStage: () => pool.acquire(() => { verify(); return true }),
+      acquireStage: (purpose, current) => pool.acquire(() => { verify(); return current() }, { purpose }),
+      track(actual) {
+        journalOperations.add(actual)
+        void actual.then(() => journalOperations.delete(actual), () => journalOperations.delete(actual))
+      },
     }
   }
   return {
     async effects(processKey: string, current: () => boolean = () => true) {
-      const allocation = await allocate('effects', processKey)
+      const allocation = await run(check => allocate('effects', processKey, () => {
+        check(); if (!current()) held('the original journal owner changed')
+      }))
       return createNativeHookJournal({ directory: history('effects', allocation.index), processKey, current,
         maxBytes: NATIVE_HOOK_STORAGE_LIMITS.effectBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
         boundary: boundary(allocation, current) })
     },
     async outbox(shard: number, current: () => boolean = () => true) {
       if (!Number.isSafeInteger(shard) || shard < 0 || shard >= NATIVE_HOOK_STORAGE_LIMITS.outboxes) held('invalid outbox shard')
-      const allocation = await allocate('outbox', `native-hook-client:v1:shard:${shard}`, shard)
+      const allocation = await run(check => allocate('outbox', `native-hook-client:v1:shard:${shard}`, () => {
+        check(); if (!current()) held('the original journal owner changed')
+      }, shard))
       return createNativeHookOutbox({ directory: history('outbox', shard), shard, current,
         maxBytes: NATIVE_HOOK_STORAGE_LIMITS.outboxBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
         boundary: boundary(allocation, current) })
     },
-    close(): void { closed = true },
+    async close(): Promise<void> {
+      closed = true
+      // Reply timeout cannot release a descriptor or its capacity while fsync
+      // is still using it. Storage composition closes its writer proof after this.
+      await Promise.allSettled([...operations, ...journalOperations])
+    },
   }
 }

@@ -256,8 +256,10 @@ export interface HookPreparationOptions {
   retainConflicts?: boolean
   /** Evidence retained by this launch; never a global success cache. */
   confirmed?(proof: HookPreparationProof): void
+  /** Retain surrounding resource lifetime until actual I/O, not reply timeout. */
+  track?(actual: Promise<unknown>): void
 }
-interface PendingPreparation { identity?: string; keys: string[]; revoke(): void; reply: Promise<unknown>; waiters: number; proof?: HookPreparationProof }
+interface PendingPreparation { identity?: string; keys: string[]; revoke(): void; reply: Promise<unknown>; actual: Promise<unknown>; waiters: number; proof?: HookPreparationProof }
 function preparationProof(files: readonly string[], verifyRoutes: () => void): HookPreparationProof {
   verifyRoutes()
   const confirmed = files.map(file => {
@@ -276,6 +278,7 @@ async function joinPreparation<T>(pending: PendingPreparation, options: HookPrep
   verifyRoutes()
   if (options.current?.() === false) throw new HookPreparationHeld('the joining owner changed')
   if (pending.waiters >= 16) throw new HookPreparationHeld('the preparation waiters are occupied')
+  options.track?.(pending.actual)
   pending.waiters++
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -392,7 +395,7 @@ export async function runHookPreparation<T>(files: readonly string[], work: (att
     flush: fd => flushHookFile(fd, check, cancellations),
   }
   let timer: ReturnType<typeof setTimeout> | undefined
-  const pending: PendingPreparation = { identity: options.identity, keys, revoke, reply: Promise.resolve(), waiters: 0 }
+  const pending: PendingPreparation = { identity: options.identity, keys, revoke, reply: Promise.resolve(), actual: Promise.resolve(), waiters: 0 }
   pendingPreparations.add(pending)
   // Dispatch only after the reservation is visible. A timeout ends the caller's
   // wait; the finally below runs only when the actual work (and its FDs) finishes.
@@ -412,6 +415,8 @@ export async function runHookPreparation<T>(files: readonly string[], work: (att
     pendingPreparations.delete(pending)
     clearTimeout(timer)
   })
+  pending.actual = actual
+  options.track?.(actual)
   pending.reply = Promise.race([actual, new Promise<never>((_, reject) => {
     timer = setTimeout(() => { revoke(); reject(new HookPreparationHeld('disk confirmation exceeded its deadline')) }, options.timeoutMs ?? 5_000)
   })])

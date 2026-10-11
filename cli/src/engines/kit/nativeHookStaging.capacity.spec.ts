@@ -71,7 +71,10 @@ it.each(['native', 'linux-fixture'])('recovers the last available generation wit
   const writer = { boot: scope.boot, namespace: scope.namespace, pid: 8100, birth: process.platform === 'darwin' ? '1791547140:123456' : '12345' }
   // One retained proof belongs to the fixture; all pools and actual I/O settle
   // before afterEach closes it. Only durability latency remains mocked.
-  const makePool = () => createNativeHookStagePool({ root: root!, writer, verifyWriter: scope!.verify, closeWriter: () => {}, dead: async () => false })
+  // Isolate the worst full-lane history cost; composed catalog tests exercise
+  // the production normal/terminal split and its eight-lane cutover proof.
+  const makePool = () => createNativeHookStagePool({ root: root!, writer, verifyWriter: scope!.verify,
+    closeWriter: () => {}, dead: async () => false, terminalGenerations: 0 })
   const first = await makePool().acquire(); await first.close()
   const directory = join(root, '.native-hook-stage-0'), witnesses = directory + '.witnesses'
   const initial = JSON.parse(readlinkSync(join(witnesses, '00000000.claim')))

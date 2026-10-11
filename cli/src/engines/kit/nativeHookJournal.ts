@@ -2,6 +2,7 @@
  * An acknowledged input can be recovered; a claimed effect cannot be guessed at.
  */
 import { createHash, randomUUID } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, type BigIntStats } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -11,6 +12,11 @@ import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import type { NativeHookOwner } from './nativeHookOwner.js'
 import type { NativeHookStageLease } from './nativeHookStaging.js'
+
+let activeOperations = 0
+type OperationPurpose = 'normal' | 'terminal'
+type Operation = { purpose: OperationPurpose; check(): void; preparations: Set<Promise<unknown>>;
+  stage?: Promise<NativeHookStageLease>; stagePurpose?: OperationPurpose }
 
 export class NativeHookJournalHeld extends Error {
   constructor(detail: string) { super(`Native hook delivery is held: ${detail}`); this.name = 'NativeHookJournalHeld' }
@@ -192,8 +198,9 @@ export function inspectNativeHookJournalAuthority(directory: string): NativeHook
 export interface NativeHookJournalBoundary {
   verify(): void
   /** Called before any intake, including recovery of an unfinished bootstrap. */
-  authorize(proof: NativeHookJournalAuthority, empty: () => Promise<void>): Promise<void>
-  acquireStage(): Promise<NativeHookStageLease>
+  authorize(proof: NativeHookJournalAuthority, empty: () => Promise<() => void>, check: () => void): Promise<void>
+  acquireStage(purpose: OperationPurpose, current: () => boolean): Promise<NativeHookStageLease>
+  track(actual: Promise<unknown>): void
 }
 interface JournalOptions {
   directory: string; processKey: string; current?: () => boolean; maxRecords?: number; maxBytes?: number; pendingCapacity?: number
@@ -218,21 +225,67 @@ function createNativeHookLog({ directory, processKey, current = () => true,
   maxRecords = Math.min(MAX_PROCESS_RECORDS, maxRecords)
   let closed = false
   const check = () => { if (closed || !current()) held('the original process owner changed'); boundary?.verify() }
-  const publish = async (file: string, text: string, verify: () => void, exclusive: boolean) => {
+  const operations = new AsyncLocalStorage<Operation>()
+  const operation = async <T>(purpose: OperationPurpose, work: () => Promise<T>): Promise<T> => {
+    const parent = operations.getStore()
+    if (parent) { parent.check(); return work() }
+    if (!boundary) return work()
+    check()
+    if (activeOperations >= 16) held('actual journal operation slots are occupied')
+    activeOperations++
+    const deadline = performance.now() + 4500
+    let expired = false, timer: ReturnType<typeof setTimeout> | undefined
+    const state: Operation = { purpose, preparations: new Set(), check: () => {
+      check()
+      if (expired || performance.now() >= deadline) held('the journal operation expired')
+    } }
+    const actual = operations.run(state, async () => {
+      try { state.check(); const result = await work(); state.check(); return result }
+      finally {
+        expired = true
+        // Closing revokes new stages but retains the generation until actual
+        // file flush, descriptor close and scratch cleanup have all settled.
+        try {
+          await Promise.allSettled([...state.preparations])
+          await (await state.stage)?.close()
+        }
+        finally { activeOperations--; clearTimeout(timer) }
+      }
+    })
+    boundary.track(actual)
+    return Promise.race([actual, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { expired = true; reject(new NativeHookJournalHeld('journal disk confirmation exceeded its deadline')) }, 4500)
+    })])
+  }
+  const publish = async (file: string, text: string, verify: () => void, exclusive: boolean, normalOnly = false) => {
+    const owner = operations.getStore()
     await runHookPreparation([file], async attempt => {
       verify(); check()
       const inspected = inspectHookFile(file, 0o600)
       // Confirming an existing receipt must remain possible with every staging
       // lane occupied. Only a new publication needs scratch capacity.
-      const lease = boundary && inspected.content !== text ? await boundary.acquireStage() : undefined
-      try { await inspected.replace(text, attempt, exclusive, lease?.stage) }
-      finally { await lease?.close() }
+      let lease: NativeHookStageLease | undefined
+      if (boundary && inspected.content !== text) {
+        const state = owner
+        if (!state) held('journal publication has no operation owner')
+        state.check()
+        const purpose = normalOnly ? 'normal' : state.purpose
+        if (purpose === 'normal' && state.stagePurpose === 'terminal') held('terminal capacity cannot initialize a journal')
+        if (!state.stage) {
+          state.stagePurpose = purpose
+          state.stage = boundary.acquireStage(purpose, () => { state.check(); return true })
+        }
+        lease = await state.stage
+        state.check(); lease.verify()
+      }
+      await inspected.replace(text, attempt, exclusive, lease?.stage)
     }, {
       // Recovery and admission can confirm the same immutable bytes at once.
       // Share only that in-flight sync; each waiter still checks its own facts
       // and owner. An exclusive publisher can never join or inherit a claim.
       identity: exclusive ? undefined : `native-hook-confirm:${digest(text)}`,
-      retainConflicts: true, current: () => { check(); verify(); return true },
+      retainConflicts: true, current: () => { owner?.check(); check(); verify(); return true },
+      track: actual => { owner?.preparations.add(actual) },
     })
   }
   const confirm = async (records: readonly Exclude<Read, undefined>[], verify: () => void, owner = verify) => {
@@ -252,7 +305,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     return { history: identity(lstatSync(directory, { bigint: true })), witnesses: identity(lstatSync(witnesses, { bigint: true })) }
   }
   const readAuthority = async () => {
-    check()
+    const checkAttempt = operations.getStore()?.check ?? check
+    checkAttempt()
     let bootstrap = read(bootstrapFile)
     let saved = read(authorityFile)
     let sealed = read(sealFile)
@@ -265,7 +319,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         return routes.snapshot()
       })
       const verifyAbsent = () => { for (const facts of absentPaths) verifyNativePathFacts(facts) }
-      await publish(bootstrapFile, JSON.stringify({ version: 1, ...log, processKey, token: randomUUID(), directory, witnesses }), verifyAbsent, true)
+      await publish(bootstrapFile, JSON.stringify({ version: 1, ...log, processKey, token: randomUUID(), directory, witnesses }), verifyAbsent, true, true)
       bootstrap = read(bootstrapFile)
     }
     if (!bootstrap) held('journal bootstrap could not be confirmed')
@@ -288,13 +342,13 @@ function createNativeHookLog({ directory, processKey, current = () => true,
           exists = true
         } catch (error) { if (!absent(error)) throw error }
         if (exists && (await entries(path, maxRecords, !!boundary)).inspected !== 0) held('unfinished initialization has journal history')
-        verifyBootstrap(); secureStateDirectory(path)
+        checkAttempt(); verifyBootstrap(); secureStateDirectory(path)
       }
       const expected = directories()
       await publish(authorityFile, JSON.stringify({ version: 1, ...log, processKey, bootstrap: bootstrapHash, ...expected }), () => {
         verifyBootstrap()
         if (JSON.stringify(directories()) !== JSON.stringify(expected)) held('journal ownership changed')
-      }, true)
+      }, true, true)
       saved = read(authorityFile)
     }
     if (!saved) held('journal authority could not be confirmed')
@@ -311,7 +365,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const history = await entries(directory, maxRecords, !!boundary), outside = await entries(witnesses, maxRecords, !!boundary)
       if (history.inspected || outside.inspected) held('the journal initialization seal is missing')
       await confirm([bootstrap, saved], verifyAuthority)
-      await publish(sealFile, seal, () => { verifyAuthority(); history.verify(); outside.verify() }, true)
+      await publish(sealFile, seal, () => { verifyAuthority(); history.verify(); outside.verify() }, true, true)
       sealed = read(sealFile)
     }
     if (!sealed || sealed.text !== seal) held('journal initialization seal changed')
@@ -322,8 +376,10 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       await boundary.authorize(proof, async () => {
         const history = await entries(directory, maxRecords, true), outside = await entries(witnesses, maxRecords, true)
         if (history.inspected || outside.inspected) held('unsealed catalog allocation has journal history')
-        verify(); history.verify(); outside.verify()
-      })
+        const verifyEmpty = () => { verify(); history.verify(); outside.verify() }
+        verifyEmpty()
+        return verifyEmpty
+      }, checkAttempt)
       verify(); proof.verify()
     }
     return { verify, records: [bootstrap, saved, sealed] }
@@ -425,7 +481,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       return snapshot(false)
     }
     return { deliveries, active, previous, lastResult, bytes, length: history.names.length, verify, verifyRecords, verifyAuthority,
-      confirm: () => confirm(tail, verify, verifyAuthority) }
+      confirm: () => operation('terminal', () => confirm(tail, verify, verifyAuthority)) }
   }
   const append = async (before: Snapshot, event: Event) => {
     before.verify()
@@ -447,8 +503,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     return () => { before.verifyRecords(); record.verify(); witness.verify() }
   }
   return {
-    snapshot,
-    async retain(input: NativeHookIntake): Promise<NativeHookDelivery> {
+    snapshot: (repairAllowed = true) => operation('terminal', () => snapshot(repairAllowed)),
+    retain: (input: NativeHookIntake): Promise<NativeHookDelivery> => operation('normal', async () => {
       const intake = structuredClone(input)
       if (!valid(intake)) held('invalid native delivery')
       const before = await snapshot(), known = before.deliveries.get(intake.id)
@@ -469,8 +525,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       await before.confirm()
       const verify = await append(before, { kind: 'intake', intake })
       return { intake, verify, ...(kind === 'outbox' ? { acknowledgements: new Set<NativeHookPhase>() } : {}) }
-    },
-    async acknowledge(id: string, fingerprint: string, phase: NativeHookPhase): Promise<void> {
+    }),
+    acknowledge: (id: string, fingerprint: string, phase: NativeHookPhase): Promise<void> => operation('terminal', async () => {
       if (kind !== 'outbox') held('an effect journal cannot acknowledge a client phase')
       const before = await snapshot(), delivery = before.deliveries.get(id)
       if (!delivery || delivery.intake.fingerprint !== fingerprint) held('HOOK_DELIVERY_CONFLICT')
@@ -483,8 +539,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const remaining = [...before.deliveries.values()].reduce((count, item) => count + outstanding(item), 0)
       if (before.length + remaining > maxRecords || before.bytes + remaining * ackBytes > maxBytes) held('journal capacity cannot retain phase acknowledgements')
       await append(before, { kind: 'ack', id, phase })
-    },
-    async claim(id: string, agentId: string, inspected?: { previous: string | null }): Promise<NativeHookClaim> {
+    }),
+    claim: (id: string, agentId: string, inspected?: { previous: string | null }): Promise<NativeHookClaim> => operation('terminal', async () => {
       if (kind !== 'effects') held('a client outbox cannot claim effects')
       const before = await snapshot(), delivery = before.deliveries.get(id)
       if (!delivery || delivery.result || delivery.intake.agentId !== agentId) held('this delivery cannot dispatch')
@@ -503,7 +559,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         if (finished) held('the hook effect already completed')
         if (terminal !== undefined) held('the hook effect is completing')
       }
-      return { id, token, verify, async finish(value) {
+      return { id, token, verify, finish: value => operation('terminal', async () => {
         const captured = structuredClone(value), proposed = JSON.stringify(captured)
         if (!object(captured) || Buffer.byteLength(proposed) > MAX_RESULT_BYTES) held('hook result exceeds its byte limit')
         verifyOwner()
@@ -521,8 +577,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         verifyOwner()
         await append(latest, { kind: 'result', id, token, value: captured })
         finished = true
-      } }
-    },
+      }) }
+    }),
     close(): void { closed = true },
   }
 }

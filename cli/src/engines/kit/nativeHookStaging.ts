@@ -16,6 +16,11 @@ export interface NativeHookStageLease {
   verify(): void
 }
 const LANES = 8, MAX_GENERATIONS = 8_192, MAX_INIT = 8, MAX_METADATA_BYTES = 512
+// Completion cannot depend on scratch capacity consumed by later intake.
+// Another reader may complete each terminal mirror while its live publisher
+// waits for fsync. Reserve both successful operations, plus one existing outside
+// tail for each namespace: (2 * (256 * 25 * 2 + 16 * 64 * 2) + 272) / 8.
+export const NATIVE_HOOK_TERMINAL_GENERATIONS = 3_746
 let activeAcquisitions = 0
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const identity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.mode}:${info.uid}:${info.birthtimeNs}`
@@ -101,7 +106,7 @@ async function syncParents(path: string, verify: () => void) {
 
 // Catalog reservations have the same bounded atomic representation as lane
 // claims. They must not recursively allocate an unbounded temporary file.
-export const nativeHookMetadata = { read: metadata, publish, syncDirectory, syncParents }
+export const nativeHookMetadata = { read: metadata, publish, syncDirectory, syncParents, routeStamps }
 
 function routeStamps(directory: string): () => void {
   const route = new Map<string, string>()
@@ -144,7 +149,9 @@ async function names(directory: string, limit: number, verifyRoute: () => void) 
 
 /** The root must already be private. A catalog owns its lifetime; this factory
  * may create only its eight fixed namespaces, never recreate a lost authority. */
-export function createNativeHookStagePool({ root, writer, verifyWriter, closeWriter, dead, maxGenerations = MAX_GENERATIONS }: {
+export function createNativeHookStagePool({ root, writer, verifyWriter, closeWriter, dead, maxGenerations = MAX_GENERATIONS,
+  terminalGenerations = maxGenerations === MAX_GENERATIONS ? NATIVE_HOOK_TERMINAL_GENERATIONS : 0,
+}: {
   root: string
   writer: NativeHookWriter
   /** Retained local-root proof from captureNativeHookWriter, required on writes too. */
@@ -153,12 +160,15 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
   /** Fresh exact boot/PID/birth evidence. Unknown is an error or false, never dead. */
   dead(writer: NativeHookWriter): Promise<boolean>
   maxGenerations?: number
+  terminalGenerations?: number
 }) {
   writer = structuredClone(writer)
-  if (!validWriter(writer) || !Number.isSafeInteger(maxGenerations) || maxGenerations < 1 || maxGenerations > MAX_GENERATIONS) held('invalid pool configuration')
+  if (!validWriter(writer) || !Number.isSafeInteger(maxGenerations) || maxGenerations < 1 || maxGenerations > MAX_GENERATIONS
+    || !Number.isSafeInteger(terminalGenerations) || terminalGenerations < 0 || terminalGenerations >= maxGenerations) held('invalid pool configuration')
   const paths = new NativePaths(new NativeEvidenceBudget(250)), location = paths.resolveSync(root)!, facts = paths.snapshot()
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n || !owned(location.info)) held('the pool root is not private')
-  const poolKey = hash(location.path), rootIdentity = identity(location.info)
+  const poolKey = hash(JSON.stringify([location.path, maxGenerations, terminalGenerations])), rootIdentity = identity(location.info)
+  const normalGenerations = maxGenerations - terminalGenerations
   const rootVerify = () => {
     verifyWriter(root)
     verifyNativePathFacts(facts)
@@ -324,21 +334,44 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
     inside.verify(); outside.verify()
     return { length: claims.length, last, pending, stages, verify: () => { inside.verify(); outside.verify() } }
   }
-  const refuseOccupied = async (space: Namespace) => {
+  const refuseOccupied = async (space: Namespace, limit: number) => {
     // This bounded search can only refuse a lane. Missing or released metadata
     // never grants permission: every admitted writer still reads the full log.
-    let low = 0, high = maxGenerations, latest: Metadata | undefined
+    let low = 0, high = limit, latest: Metadata | undefined
     while (low < high) {
       const middle = Math.floor((low + high) / 2)
       const found = metadata(join(space.witnesses, `${number(middle)}.claim`), space.verify)
       if (found) { low = middle + 1; latest = found } else high = middle
     }
-    if (low === maxGenerations) held('generation capacity is exhausted')
+    if (low === limit) held('generation capacity is exhausted')
     if (latest && !metadata(latest.file.replace(/\.claim$/, '.release'), space.verify)
       && !await dead(claim(latest).writer)) held('another writer owns this lane')
   }
-  const acquire = async (current: () => boolean): Promise<NativeHookStageLease> => {
+  const terminalBoundary = async (check: () => void) => {
+    const records: Metadata[] = []
+    for (let lane = 0; lane < LANES; lane++) {
+      check()
+      const space = await namespace(lane, check), route = routeStamps(space.directory)
+      const name = `${number(normalGenerations - 1)}.claim`
+      const last = metadata(join(space.witnesses, name), space.verify), mirror = metadata(join(space.directory, name), space.verify)
+      if (!last) held('normal capacity is not proven exhausted')
+      claim(last)
+      if (mirror && mirror.text !== last.text) held('normal capacity claims disagree')
+      route(); check()
+      const verify = () => { check(); last.verify(); mirror?.verify() }
+      // The cutover must survive reboot too. An unflushed prefix claim cannot
+      // authorize suffix use and then disappear to reopen normal capacity.
+      await syncDirectory(space.witnesses, verify)
+      await syncParents(space.directory, verify)
+      verify(); records.push(last, ...(mirror ? [mirror] : []))
+    }
+    const verify = () => { check(); records.forEach(record => record.verify()) }
+    verify(); return verify
+  }
+  const acquire = async (current: () => boolean, purpose: 'normal' | 'terminal', terminal = false): Promise<NativeHookStageLease> => {
       const check = () => { rootVerify(); if (!current()) held('the requesting writer was revoked') }
+      const capacity = terminal ? maxGenerations : normalGenerations
+      const verifyCapacity = terminal ? await terminalBoundary(check) : check
       const start = cursor++ % LANES
       let lastError: unknown
       for (let offset = 0; offset < LANES; offset++) {
@@ -352,11 +385,12 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
             cleanup.release(); retiring.delete(lane)
           }
           const space = await namespace(lane, check)
-          await refuseOccupied(space); check()
+          await refuseOccupied(space, capacity); check()
           const before = await snapshot(space)
-          if (before.length >= maxGenerations) held('generation capacity is exhausted')
+          if (before.length >= capacity) held('generation capacity is exhausted')
+          if (terminal && before.length < normalGenerations) held('normal capacity changed after terminal admission')
           if (before.pending.length && !await dead(before.pending.at(-1)!.claim.writer)) held('another writer owns this lane')
-          check(); before.verify()
+          check(); before.verify(); verifyCapacity()
           const generation = before.length, name = `${number(generation)}.claim`
           let record!: Metadata
           let revoked = false, sequence = 0
@@ -383,6 +417,7 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
             publish(join(space.witnesses, releaseName), text, verifyGeneration)
             publish(join(space.directory, releaseName), text, verifyGeneration)
           }
+          verifyCapacity()
           record = publish(join(space.witnesses, name), claimText(writer), space.verify, true, owned => {
             record = owned; abandon = release
             retiring.set(lane, { busy: true, release })
@@ -464,17 +499,20 @@ export function createNativeHookStagePool({ root, writer, verifyWriter, closeWri
           lastError = error
         }
       }
+      if (!terminal && purpose === 'terminal' && terminalGenerations) return acquire(current, purpose, true)
       throw lastError ?? new HookPreparationHeld('native hook staging lanes are occupied')
   }
   return {
-    async acquire(current: () => boolean = () => true, { timeoutMs = 4_500 }: { timeoutMs?: number } = {}): Promise<NativeHookStageLease> {
+    async acquire(current: () => boolean = () => true, { timeoutMs = 4_500, purpose = 'normal' }: {
+      timeoutMs?: number; purpose?: 'normal' | 'terminal'
+    } = {}): Promise<NativeHookStageLease> {
       if (closed) held('writer pool is closed')
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 5_000) held('invalid acquisition deadline')
       if (activeAcquisitions >= 16) held('acquisition slots are occupied')
       activeAcquisitions++
       const deadline = performance.now() + timeoutMs
       let expired = false, acquiring = true, timer: ReturnType<typeof setTimeout> | undefined
-      const actual = acquire(() => !closed && current() && !expired && (!acquiring || performance.now() < deadline))
+      const actual = acquire(() => !closed && current() && !expired && (!acquiring || performance.now() < deadline), purpose)
         .then(lease => {
           acquiring = false
           const tracked: NativeHookStageLease = { ...lease, async close() { await lease.close(); leases.delete(tracked) } }

@@ -186,6 +186,41 @@ it('keeps a lane held when its bounded generation history is exhausted', async (
   expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
 })
 
+it('does not treat busy normal writers as exhaustion that unlocks terminal capacity', async () => {
+  const client = pool({ maxGenerations: 3, terminalGenerations: 1 }), leases = []
+  for (let lane = 0; lane < 8; lane++) leases.push(await client.acquire())
+  await expect(client.acquire(() => true, { purpose: 'terminal' })).rejects.toThrow('not proven exhausted')
+  expect(readdirSync(root, { recursive: true }).map(String).some(name => name.endsWith('00000002.claim'))).toBe(false)
+  await Promise.all(leases.map(lease => lease.close()))
+})
+
+it('confirms every exhausted prefix before publishing the first terminal reservation', async () => {
+  const client = pool({ maxGenerations: 2, terminalGenerations: 1 })
+  for (let index = 0; index < 8; index++) { const lease = await client.acquire(); await lease.close() }
+  let release!: () => void, paused = false
+  fault.defer = (fd, done) => {
+    if (paused || !fstatSync(fd).isDirectory()) return false
+    paused = true; release = () => done(null); return true
+  }
+  const pending = client.acquire(() => true, { purpose: 'terminal' })
+  await vi.waitFor(() => expect(paused).toBe(true))
+  expect(readdirSync(root, { recursive: true }).map(String).some(name => name.endsWith('00000001.claim'))).toBe(false)
+  release()
+  const lease = await pending; await lease.close()
+  await expect(client.acquire()).rejects.toThrow('generation capacity')
+})
+
+it('retains a terminal capacity hold after repeated completion attempts consume its finite reserve', async () => {
+  const client = pool({ maxGenerations: 2, terminalGenerations: 1 })
+  for (let index = 0; index < 8; index++) { const lease = await client.acquire(); await lease.close() }
+  for (let index = 0; index < 8; index++) {
+    const lease = await client.acquire(() => true, { purpose: 'terminal' }); await lease.close()
+  }
+  const before = readdirSync(root, { recursive: true }).map(String).sort()
+  await expect(client.acquire(() => true, { purpose: 'terminal' })).rejects.toThrow('generation capacity')
+  expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
+})
+
 it('serializes sequential stages and drains cleanup before allowing another', async () => {
   const lease = await pool().acquire(), first = lease.stage(join(root, 'first'))
   expect(() => lease.stage(join(root, 'second'))).toThrow('already has a stage')

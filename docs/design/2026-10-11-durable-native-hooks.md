@@ -295,6 +295,47 @@ rejects all thirteen existing staging mutations by assertion after these changes
 allocation, complete quota enforcement and client/server recovery integration
 remain required.
 
+The catalog now reserves fixed effect/outbox namespaces before journal intake.
+Independent review of `e1645fd07` found three remaining gaps: initialization lost
+its empty-history proof across awaits, fixed-name reads did not fence ancestor
+content changes, and record/byte reservations did not reserve staging capacity.
+The first two proofs now remain live through durable publication. An unrecognized
+legacy journal also holds first initialization; its receipts are never silently
+treated as a new catalog. Confirmation proofs stay flat, and catalog replies are
+bounded while their actual disk operations retain their slots and descriptors.
+
+Each public journal operation now reuses one staging lease for bootstrap, repairs
+and both record copies. Each lane has 4,446 normal generations and 3,746 terminal
+generations. Terminal work tries normal capacity first. The reserved suffix opens
+only after all eight normal prefix-end witnesses are positively validated and
+durably confirmed; busy or unreadable lanes cannot establish exhaustion. Pool
+authority pins both limits. Bootstrap and intake cannot use terminal capacity.
+The reserve covers at most 25 pending effects in each 1 MiB namespace, 64 pending
+two-phase client deliveries in each outbox, and independent successful repairs:
+`2 × (256 × 25 × 2 + 16 × 64 × 2) + 272 = 29,968` generations. The last 272 cover
+one already incomplete outside tail per namespace. Repeated additional failures
+can exhaust finite reserved capacity and then hold; no unlimited-crash guarantee
+or receipt pruning is claimed.
+
+Journal scopes retain actual preparation promises, including joined and
+stage-free confirmations, after both the journal and preparation reply deadlines.
+Catalog shutdown waits for those scopes before its enclosing storage may close
+the retained writer proof. This closes a separate lifetime gap found while
+implementing operation-scoped leases.
+
+Receipt `20261011T175858.918998Z-64648` passed types and six catalog race/deadline
+regressions. The first reserve run, `20261011T180519.370389Z-93207`, passed 153
+cases but failed its new independent-repair fixture because it shared in-process
+preparation locks; two unchanged outbox cases also encountered ancestor directory
+churn. It is not passing evidence. The isolated repair fixture and those outbox
+cases pass in `20261011T180905.806648Z-8599`. Final focused receipt
+`20261011T181300.279242Z-24739` passes types (22.0 seconds) and the reserve,
+initialization, legacy-storage and actual-I/O lifetime cases (55.7 seconds),
+including completion of every retained phase ACK after normal staging exhaustion.
+Implementation, review and validation overlapped from approximately 17:57 to
+18:15 UTC. Exact-head independent review, process/mutation/capacity gates and
+production wiring remain required. No merge or publication occurred.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

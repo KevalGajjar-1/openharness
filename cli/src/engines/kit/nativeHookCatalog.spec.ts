@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
-import { fstatSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createNativeHookCatalog, NATIVE_HOOK_STORAGE_LIMITS } from './nativeHookCatalog.js'
-import { createNativeHookStagePool } from './nativeHookStaging.js'
+import { createNativeHookStagePool, nativeHookMetadata } from './nativeHookStaging.js'
 import { nativeHookOutboxShard, type NativeHookClientInput } from './nativeHookOutbox.js'
 import type { NativeHookIntake } from './nativeHookJournal.js'
 
@@ -12,6 +12,7 @@ const fault = vi.hoisted(() => ({ fail: false,
   beforePublish: undefined as ((text: string, path: string, publish: (text: string, path: string) => void) => void) | undefined,
   afterPublish: undefined as ((text: string, path: string) => void) | undefined,
   sync: undefined as ((fd: number, done: (error: Error | null) => void) => boolean) | undefined,
+  stat: undefined as ((path: string, read: () => unknown) => unknown) | undefined,
 }))
 vi.mock('node:fs', async original => { const fs = await original<typeof import('node:fs')>(); return { ...fs,
   fsync: (fd: number, done: (error: Error | null) => void) => {
@@ -21,14 +22,15 @@ vi.mock('node:fs', async original => { const fs = await original<typeof import('
   symlinkSync: (text: string, path: string) => {
     fault.beforePublish?.(text, path, fs.symlinkSync); fs.symlinkSync(text, path); fault.afterPublish?.(text, path)
   },
+  lstatSync: (path: string, options: Parameters<typeof fs.lstatSync>[1]) => fault.stat?.(path, () => fs.lstatSync(path, options)) ?? fs.lstatSync(path, options),
 } })
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const existsSync = (file: string) => { try { lstatSync(file); return true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return false } }
 let root: string, local: boolean, rootChecks: number, pool: ReturnType<typeof createNativeHookStagePool>
 let catalogs: ReturnType<typeof createNativeHookCatalog>[]
 const verifyRoot = () => { rootChecks++; if (!local) throw Error('fixture storage is unavailable') }
-const catalog = () => {
-  const value = createNativeHookCatalog({ root, verifyRoot, pool }); catalogs.push(value); return value
+const catalog = (operationTimeoutMs?: number) => {
+  const value = createNativeHookCatalog({ root, verifyRoot, pool, operationTimeoutMs }); catalogs.push(value); return value
 }
 const processKey = 'linux:fixture-boot\u0000codex\u00005100\u0000t:1234'
 const intake = (id = 'fixture-delivery-0001', size = 20): NativeHookIntake => ({
@@ -42,16 +44,20 @@ const allocated = (key = processKey) => {
 const put = (file: string, value: unknown) => {
   const text = JSON.stringify(value); symlinkSync(text, file + '.witness'); symlinkSync(text, file)
 }
-const reset = () => { fault.fail = false; fault.beforePublish = undefined; fault.afterPublish = undefined; fault.sync = undefined }
+const reset = () => { fault.fail = false; fault.beforePublish = undefined; fault.afterPublish = undefined; fault.sync = undefined; fault.stat = undefined }
+const stagingPool = (options: { maxGenerations?: number; terminalGenerations?: number } = {}) => createNativeHookStagePool({
+  root, writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: 8100, birth: '12345' },
+  verifyWriter: verifyRoot, closeWriter: () => {}, dead: async () => false, ...options,
+})
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'native-hook-catalog-'))); local = true; rootChecks = 0; catalogs = []; reset()
-  pool = createNativeHookStagePool({ root, writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: 8100, birth: '12345' },
-    verifyWriter: verifyRoot, closeWriter: () => {}, dead: async () => false })
+  root = join(realpathSync(mkdtempSync(join(tmpdir(), 'native-hook-catalog-'))), 'data'); mkdirSync(root, { mode: 0o700 })
+  local = true; rootChecks = 0; catalogs = []; reset()
+  pool = stagingPool()
 })
 afterEach(async () => {
-  reset(); local = true; catalogs.forEach(value => value.close())
+  reset(); vi.restoreAllMocks(); local = true; await Promise.all(catalogs.map(value => value.close()))
   await pool.close().catch(() => {})
-  rmSync(root, { recursive: true, force: true })
+  rmSync(dirname(root), { recursive: true, force: true })
 })
 
 it('durably allocates before initialization and retains one process namespace across reconstructed catalogs', async () => {
@@ -70,7 +76,56 @@ it('durably allocates before initialization and retains one process namespace ac
   const names = readdirSync(root, { recursive: true }).map(String)
   expect(names.some(name => name.includes('.harness-hook-'))).toBe(false)
   expect(names.some(name => name.includes('.claim'))).toBe(true)
+  expect(names.filter(name => /^\.native-hook-stage-\d\/\d{8}\.claim$/.test(name))).toHaveLength(3)
 })
+
+it('holds new intake at normal exhaustion while every previously accepted effect can finish', async () => {
+  await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
+  const journal = await catalog().effects(processKey), bodies = [intake(), intake('fixture-delivery-0002')]
+  for (const body of bodies) await journal.retain(body)
+  // Each intake, including initial bootstrap and both mirrors, uses one lease.
+  for (let index = bodies.length; index < 8; index++) { const lease = await pool.acquire(); await lease.close() }
+  await expect(journal.retain(intake('fixture-delivery-0003'))).rejects.toThrow('generation capacity')
+  for (const body of bodies) {
+    const claimed = journal.claim(body.id, body.agentId)
+    await expect(claimed).resolves.toMatchObject({ id: body.id })
+    await expect((await claimed).finish({ status: 200 })).resolves.toBeUndefined()
+  }
+  const recovered = await (await catalog().effects(processKey)).snapshot()
+  expect([...recovered.deliveries.values()].map(delivery => delivery.result?.status)).toEqual([200, 200])
+  await expect(journal.retain(intake('fixture-delivery-0003'))).rejects.toThrow('generation capacity')
+  expect(readdirSync(root, { recursive: true }).map(String).filter(name => name.endsWith('.tmp'))).toEqual([])
+}, 30_000)
+
+it('reserves a separate successful mirror repair while a terminal publisher is alive at cutover', async () => {
+  await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
+  const journal = await catalog().effects(processKey), body = intake()
+  await journal.retain(body)
+  // Independent module state models a second writer's preparation reservations;
+  // the process suite separately covers this boundary with real OS children.
+  vi.resetModules()
+  const independent = await import('./nativeHookCatalog.js')
+  const observing = independent.createNativeHookCatalog({ root, verifyRoot, pool }); catalogs.push(observing)
+  const observer = await observing.effects(processKey)
+  for (let index = 1; index < 8; index++) { const lease = await pool.acquire(); await lease.close() }
+  const directory = allocated() + '.history'
+  let paused = false, resume!: () => void
+  fault.sync = (fd, done) => {
+    if (paused || !fstatSync(fd).isDirectory() || !existsSync(join(directory + '.witnesses', '00000001.json'))
+      || existsSync(join(directory, '00000001.json'))) return false
+    paused = true; resume = () => done(null); return true
+  }
+  const pending = journal.claim(body.id, body.agentId)
+  try {
+    await vi.waitFor(() => expect(paused).toBe(true))
+    expect((await observer.snapshot()).active?.id).toBe(body.id)
+  } finally { resume?.(); await pending.catch(() => {}) }
+  const claim = await pending
+  const claims = readdirSync(root, { recursive: true }).map(String).filter(name => /^\.native-hook-stage-\d\/\d{8}\.claim$/.test(name))
+  expect(claims).toHaveLength(10)
+  await claim.finish({ status: 200 })
+  expect((await observer.snapshot()).deliveries.get(body.id)?.result?.status).toBe(200)
+}, 30_000)
 
 it('holds intake until the catalog seal has actually been confirmed', async () => {
   const journal = await catalog().effects(processKey)
@@ -88,6 +143,36 @@ it('holds intake until the catalog seal has actually been confirmed', async () =
   await expect(pending).resolves.toMatchObject({ intake: { id: intake().id } })
 })
 
+it('retains the empty journal frontier until its first catalog seal is published', async () => {
+  const journal = await catalog().effects(processKey), selected = allocated()
+  const publish = nativeHookMetadata.publish
+  let injected = false
+  vi.spyOn(nativeHookMetadata, 'publish').mockImplementation((file, text, verify, exclusive, created) => {
+    if (!injected && file === selected + '.seal.witness') {
+      injected = true
+      const record = JSON.stringify({ version: 1, processKey, index: 0, previous: null, event: { kind: 'intake', intake: intake() } })
+      for (const directory of [selected + '.history', selected + '.history.witnesses']) writeFileSync(join(directory, '00000000.json'), record, { mode: 0o600 })
+    }
+    return publish(file, text, verify, exclusive, created)
+  })
+  await expect(journal.snapshot()).rejects.toThrow('changed during recovery')
+  expect(existsSync(selected + '.seal.witness')).toBe(false)
+})
+
+it('retains initial catalog absence until its own authority is published', async () => {
+  const publish = nativeHookMetadata.publish
+  let injected = false
+  vi.spyOn(nativeHookMetadata, 'publish').mockImplementation((file, text, verify, exclusive, created) => {
+    if (!injected && file === join(root, '.native-hook-catalog.witness')) {
+      injected = true
+      put(join(root, '.native-hook-effects-000.allocation'), [1, 'effects', 0, hash('fixture-late-reservation')])
+    }
+    return publish(file, text, verify, exclusive, created)
+  })
+  await expect(catalog().effects(processKey)).rejects.toThrow('before catalog initialization')
+  expect(existsSync(join(root, '.native-hook-catalog.witness'))).toBe(false)
+})
+
 it('recovers the exact reservation after its outside publication was interrupted', async () => {
   fault.afterPublish = (_text, path) => { if (path.endsWith('.allocation.witness')) throw Error('fixture crash after exclusive allocation') }
   await expect(catalog().effects(processKey)).rejects.toThrow('fixture crash')
@@ -100,6 +185,39 @@ it('recovers the exact reservation after its outside publication was interrupted
   expect(allocated()).toBe(reserved)
   expect(readlinkSync(reserved + '.allocation')).toBe(readlinkSync(reserved + '.allocation.witness'))
 })
+
+it('holds retained legacy journals instead of treating an unrecognized root as new authority', async () => {
+  const legacy = join(root, hash(processKey)); mkdirSync(legacy, { mode: 0o700 })
+  writeFileSync(join(legacy, 'receipt'), 'retained fixture evidence', { mode: 0o600 })
+  await expect(catalog().effects(processKey)).rejects.toThrow('unallocated storage remains')
+  expect(readFileSync(join(legacy, 'receipt'), 'utf8')).toBe('retained fixture evidence')
+  expect(existsSync(join(root, '.native-hook-catalog.witness'))).toBe(false)
+})
+
+it('keeps stage-free confirmation I/O alive beyond both reply deadlines and catalog close', async () => {
+  const store = catalog(), journal = await store.effects(processKey), body = intake()
+  await journal.retain(body)
+  let paused: { fd: number; done(error: Error | null): void } | undefined
+  fault.sync = (fd, done) => {
+    if (paused || !fstatSync(fd).isFile()) return false
+    paused = { fd, done }; return true
+  }
+  const outcome = journal.retain(body).then(() => ({ ok: true, error: '' }), error => ({ ok: false, error: String(error) }))
+  await vi.waitFor(() => expect(paused).toBeTruthy())
+  expect(await outcome).toMatchObject({ ok: false, error: expect.stringMatching(/deadline|expired/) })
+  // The inner preparation's five-second reply also expires, but its syscall
+  // remains live. Neither layer may release the surrounding storage lifetime.
+  await new Promise<void>(done => setTimeout(done, 650))
+  let closed = false
+  const closing = store.close().then(() => { closed = true })
+  await new Promise<void>(done => setImmediate(done))
+  try {
+    expect(closed).toBe(false)
+    expect(fstatSync(paused!.fd).isFile()).toBe(true)
+  } finally { fault.sync = undefined; paused!.done(null); await closing }
+  expect(() => fstatSync(paused!.fd)).toThrow()
+  expect((await (await catalog().effects(processKey)).retain(body)).intake.id).toBe(body.id)
+}, 15_000)
 
 it('rereads an EEXIST winner and retries a collision without borrowing its quota', async () => {
   const otherKey = 'fixture-colliding-process'
@@ -127,6 +245,28 @@ it('finds an existing key beyond an empty probe slot instead of allocating it ag
   await (await catalog().effects(processKey)).retain(intake())
   expect(allocationFiles()).toHaveLength(2)
   expect(allocated()).toBe(selected)
+})
+
+it('rejects an ancestor redirection that hides both copies of an existing allocation', async () => {
+  await catalog().effects('fixture-seed')
+  const start = Number.parseInt(hash(processKey).slice(0, 8), 16) % 256
+  let index = (start + 3) % 256
+  while (existsSync(join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation.witness`))) index = (index + 1) % 256
+  const selected = join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation`)
+  put(selected, [1, 'effects', index, hash(processKey)])
+  let redirected = false, hideMirror = false
+  fault.stat = (path, read) => {
+    if (!redirected && path === selected + '.witness') {
+      redirected = true; hideMirror = true
+      const parent = dirname(root), saved = parent + '.moved'
+      renameSync(parent, saved); mkdirSync(parent, { mode: 0o700 }); mkdirSync(root, { mode: 0o700 })
+      try { return read() } finally { rmSync(parent, { recursive: true }); renameSync(saved, parent) }
+    }
+    if (hideMirror && path === selected) { hideMirror = false; throw Object.assign(Error('fixture redirected absence'), { code: 'ENOENT' }) }
+    return read()
+  }
+  await expect(catalog().effects(processKey)).rejects.toThrow('directory route changed')
+  expect(allocationFiles()).toHaveLength(2)
 })
 
 it('holds a changing allocation frontier without invalidating a separately retained journal', async () => {
@@ -159,6 +299,29 @@ it('keeps repeated authority reads flat instead of retaining recursive confirmat
   // Every iteration reads the same bytes. Old confirmation closures must not
   // multiply work even though each new observation still rechecks authority.
   expect(Math.max(...costs)).toBeLessThanOrEqual(2 * Math.min(...costs))
+})
+
+it('bounds stalled replies while retaining actual operation slots and descriptors until cleanup', async () => {
+  await catalog().effects('fixture-seed')
+  const pending: { fd: number; done(error: Error | null): void }[] = []
+  fault.sync = (fd, done) => { pending.push({ fd, done }); return true }
+  const stalled = Array.from({ length: 16 }, () => catalog(200))
+  const outcomes = await Promise.allSettled(stalled.map((value, index) => value.effects(`fixture-stalled-${index}`)))
+  expect(outcomes.every(value => value.status === 'rejected')).toBe(true)
+  expect(pending).toHaveLength(2)
+  for (const operation of pending) expect(fstatSync(operation.fd).isDirectory()).toBe(true)
+  await expect(catalog().effects('fixture-capacity-too-many')).rejects.toThrow('actual catalog operation slots are occupied')
+  let closed = false
+  const closing = Promise.all(stalled.map(value => value.close())).then(() => { closed = true })
+  await new Promise<void>(done => setImmediate(done))
+  expect(closed).toBe(false)
+  const files = allocationFiles()
+  fault.sync = undefined
+  for (const operation of pending) operation.done(null)
+  await closing
+  for (const operation of pending) expect(() => fstatSync(operation.fd)).toThrow()
+  expect(allocationFiles()).toEqual(files)
+  await expect(catalog().effects('fixture-after-recovery')).resolves.toHaveProperty('retain')
 })
 
 it('holds a full catalog across restart while retaining recovery in an allocated namespace', async () => {
@@ -269,6 +432,7 @@ it.each(['close', 'storage', 'owner'] as const)('revokes retained journal author
 })
 
 it('reserves fixed outbox shards, including every remaining phase ACK under pressure', async () => {
+  await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
   const origin = { version: 1, boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', callerPid: 43,
     ancestry: [{ pid: 43, parentPid: 42, birth: '12346', identityV1: hash('caller') }] }
   const make = (id: string): NativeHookClientInput => ({ id, firedAt: 1791590400123, port: 19400,
@@ -284,11 +448,14 @@ it('reserves fixed outbox shards, including every remaining phase ACK under pres
   const outbox = await catalog().outbox(shard), deliveries = []
   for (const id of ids.slice(0, 6)) deliveries.push(await outbox.retain(make(id)))
   await expect(outbox.retain(make(ids[6]))).rejects.toThrow('byte capacity')
+  for (let index = 6; index < 8; index++) { const lease = await pool.acquire(); await lease.close() }
+  await expect(pool.acquire()).rejects.toThrow('generation capacity')
   for (const delivery of deliveries) {
-    await outbox.acknowledge(delivery, 'registration'); await outbox.acknowledge(delivery, 'stop')
+    await expect(outbox.acknowledge(delivery, 'registration')).resolves.toBeUndefined()
+    await expect(outbox.acknowledge(delivery, 'stop')).resolves.toBeUndefined()
   }
   const recovered = await (await catalog().outbox(shard)).snapshot()
   expect(recovered.deliveries.size).toBe(6)
   expect([...recovered.deliveries.values()].every(value => value.phases.every(phase => phase.acknowledged))).toBe(true)
   expect(allocationFiles()).toHaveLength(1)
-}, 30_000)
+}, 45_000)
