@@ -139,7 +139,7 @@ async function installIn(rule: NativeYamlHooks, cmd: string, home: string, optio
     // first settings file. A background catalog scan never creates a profile.
     const config = observed.content ?? ''
 
-    const budget = new NativeEvidenceBudget(250)
+    const budget = new NativeEvidenceBudget()
     let tokens = 0
     for (const _token of new Lexer().lex(config)) {
       budget.step()

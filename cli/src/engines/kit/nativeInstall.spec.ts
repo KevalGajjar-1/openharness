@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { EngineInstallRecipe } from '../../lib/engineInstall.js'
+import { ENUMERATION_ATTEMPTS } from './nativeFiles.js'
 import { createNativeInstallations, NATIVE_INSTALL_WORKER } from './nativeInstall.js'
 
 const fixture = vi.hoisted(() => ({ failSync: false, argv: [] as string[], onSync: undefined as undefined | (() => number | void), onDirectoryOpen: undefined as undefined | (() => void) }))
@@ -36,11 +37,27 @@ beforeEach(() => {
   fixture.argv = [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(join(root, 'installed'))}, 'one\\n')`]
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks() })
+/** An ancestor of the claims that changes during every listing attempt (`ENUMERATION_ATTEMPTS`), then stops. */
+function keepChanging(times = ENUMERATION_ATTEMPTS): () => void {
+  return () => {
+    if (--times === 0) fixture.onDirectoryOpen = undefined
+    writeFileSync(join(root, `sibling-${times}`), 'changed during enumeration')
+  }
+}
 const controller = (dispatch = vi.fn()) => ({ dispatch, ...createNativeInstallations({ directory, node: () => process.execPath, dispatch }) })
 function complete(file = join(directory, '00000000.json'), code = 0): void {
   const text = readFileSync(file, 'utf8'), claim = JSON.parse(text)
   writeFileSync(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash(text), code, signal: null }), { mode: 0o600 })
 }
+
+it('looks again when an ancestor changes once during a listing, as a busy temporary folder does', async () => {
+  const install = controller()
+  fixture.onDirectoryOpen = keepChanging(1)
+  expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ complete: false })
+  expect(fixture.onDirectoryOpen).toBeUndefined()
+  expect(install.dispatch).toHaveBeenCalledTimes(1)
+  expect(existsSync(join(directory, '00000000.json'))).toBe(true)
+})
 
 it('does not reserve or dispatch after cancellation', async () => {
   const install = controller()
@@ -151,12 +168,9 @@ it('settles a durable non-dispatch cancellation through the ready-executable sta
   const witness = `${directory}.00000000.dispatch`
   fixture.onSync = () => { if (existsSync(witness)) fixture.failSync = true }
   const other = controller()
-  // Linux CI's parallel fixtures can change an ancestor during enumeration.
-  // That is a real hold; keep each disk fault armed until its stage is reached.
-  fixture.onDirectoryOpen = () => {
-    fixture.onDirectoryOpen = undefined
-    writeFileSync(join(root, 'sibling'), 'changed during inspection')
-  }
+  // An ancestor that changes during every look is a real hold; keep each disk fault armed until its
+  // stage is reached.
+  fixture.onDirectoryOpen = keepChanging()
   expect(await other.ensure('codex', recipe, environment, 'other', () => true)).toMatchObject({ complete: false })
   expect(fixture.onDirectoryOpen).toBeUndefined()
   expect(existsSync(witness)).toBe(false)
@@ -194,10 +208,7 @@ it('does not replay a dispatch whose reply was lost', async () => {
 
 it.each(['changed owner', 'foreign result', 'failed installer', 'unsafe result', 'orphan result', 'malformed result', 'contradictory result'])('holds %s without dispatch or a false completion', async kind => {
   const install = controller()
-  if (kind === 'failed installer') fixture.onDirectoryOpen = () => {
-    fixture.onDirectoryOpen = undefined
-    writeFileSync(join(root, 'sibling'), 'changed during enumeration')
-  }
+  if (kind === 'failed installer') fixture.onDirectoryOpen = keepChanging()
   if (kind === 'failed installer') {
     expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({
       complete: false, detail: 'Waiting to confirm durable engine installation ownership.',
