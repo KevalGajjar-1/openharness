@@ -228,7 +228,12 @@ setInterval(() => {}, 1000)
   })
 
 
-  it.each(['running', 'paused'] as const)('completes a Cursor Stop from the shipped client with the core %s', async state => {
+  it.each([
+    { state: 'running', source: 'unmarked' },
+    { state: 'paused', source: 'unmarked' },
+    { state: 'running', source: 'native completion' },
+    { state: 'paused', source: 'native completion' },
+  ] as const)('completes a Cursor Stop from the shipped client with the core $state ($source)', async ({ state, source }) => {
     const d = daemon = await IsolatedDaemon.create()
     onTestFailed(() => console.log(d.log()))
     const home = join(d.root, 'cursor'), binary = join(d.root, 'bin', 'cursor-agent')
@@ -254,7 +259,13 @@ http.request = function(options, ...args) {
 };\n`)
     const notify = resolve('hook/notify.mjs')
     const args = ['--import', observer, notify, '--port', String(d.port), '--data-dir', d.dataDir, '--cursor-home', home, '--engine', 'cursor']
-    const input = { hook_event_name: 'stop', session_id: sessionId, transcript_path: transcriptPath, status: 'completed', workspace_roots: [cwd] }
+    const nativeCompletion = source === 'native completion'
+    const input = { hook_event_name: 'stop', session_id: sessionId, transcript_path: transcriptPath, status: 'completed', workspace_roots: [cwd],
+      ...(nativeCompletion ? { generation_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', cursor_version: '2026.10.01-e373342' } : {}) }
+    // Current Cursor awaits the Stop command before writing its terminal JSONL
+    // record. Keep the unmarked regression too: that record is not guaranteed
+    // after a crash, and it does not carry a generation ID. This single-turn
+    // fixture makes no claim about source ordering across concurrent prompts.
     Object.assign(d.env, { CURSOR_HOME: home, CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: home, CURSOR_PATH: binary })
     writeFileSync(binary, `#!${process.execPath}
 if (process.argv.includes('--version')) { console.log('2026.10.10'); process.exit(0) }
@@ -272,7 +283,10 @@ setInterval(() => {
   const child = spawn(process.execPath, ${JSON.stringify(args)}, { env: process.env, stdio: ['pipe', 'ignore', 'pipe'] });
   let error = ''; child.stderr.on('data', chunk => { error += chunk });
   child.stdin.end(${JSON.stringify(JSON.stringify(input))});
-  child.once('close', code => fs.writeFileSync(${JSON.stringify(completed)}, JSON.stringify({ code, error })));
+  child.once('close', code => {
+    if (${nativeCompletion}) fs.appendFileSync(${JSON.stringify(transcriptPath)}, JSON.stringify({ type: 'turn_ended', status: 'success' }) + '\\n');
+    fs.writeFileSync(${JSON.stringify(completed)}, JSON.stringify({ code, error }));
+  });
 }, 25);
 `, { mode: 0o755 })
     await d.start()
@@ -328,6 +342,11 @@ setInterval(() => {
         try { return JSON.parse(readFileSync(completed, 'utf8')) } catch { return null }
       }, 15_000)
       expect(result.code, result.error).toBe(0)
+      // A native marker can finish before durable registration catches up.
+      // Observe admission too, so a later unmatched-Stop hold cannot turn an
+      // early completion into a false passing result.
+      await until('the Stop registration to reach its core notification', () =>
+        d.log().includes(`[hooks] ${sessionId.slice(0, 8)} stop · engine=cursor`), 20_000)
       const completion = await ended
       expect(completion, JSON.stringify({ completion, requests: readRequests(), row: await row(client, agentId) })).toHaveProperty('value')
       if ('value' in completion) {

@@ -67,6 +67,32 @@ an existing failure. The server slice cannot land independently of the required
 client/Stop fix. The regression remains enabled. Scoped storage/replay reviews
 are not final PR approval, and no merge or release occurred.
 
+The October 11, 23:49 UTC source check strengthens this acceptance case. Static
+inspection of the official [Cursor 2026.10.01-e373342 package](https://downloads.cursor.com/lab/2026.10.01-e373342/darwin/x64/agent-cli-package.tar.gz)
+found that its successful path awaits Stop hooks, then writes a `turn_ended`
+record. The error path writes the record before invoking Stop. JSONL strips the
+native generation and message identities. Its serialized writer resets to a full
+rewrite on the next turn, removing the former terminal marker. The package was
+neither installed nor executed.
+
+That source does not establish generation ordering: the running-turn reference
+is cleared before the awaited successful Stop, so a direct new prompt can start
+before the old completion writes from the then-current conversation state.
+Independent review confirmed that caveat. The native database has an optional
+request ID, but its relationship to retries and the JSONL has not been proved.
+Neither marker presence nor a parser captured at HTTP entry grants permission to
+close a later turn or delete its tasks.
+
+The private acceptance now keeps the original unmarked cases and adds the
+current success sequence, including generation input and a marker written only
+after the actual client exits. Receipt `20261011T234635.588126Z-42811` passed the
+two additional cases, but only observed the early completion. Waiting for Stop
+registration to reach its core notification exposes the late hold: receipt
+`20261011T234802.221548Z-50820` fails both running and paused cases by assertion.
+The transcript closes the turn, then durable admission creates an unmatched-Stop
+hold. The earlier pass is not evidence that admission settled safely. These
+stronger cases remain enabled; the blocker is not limited to a missing marker.
+
 The [Cursor hook schema](https://cursor.com/docs/hooks) supplies `generation_id`
 per user message. The current client drops it, and the transcript normalizer has
 no matching generation authority. It cannot safely close a reconstructed turn
