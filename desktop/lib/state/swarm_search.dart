@@ -1626,9 +1626,15 @@ class SwarmSearchController extends ChangeNotifier {
 
   MachineDevices? _ensureMachineDevices() {
     if (_disposed || history != null) return _machineDevices;
-    return _machineDevices ??= MachineDevices(app)
-      ..addListener(_machineDevicesChanged)
-      ..start();
+    if (_machineDevices case final devices?) return devices;
+    final devices = _machineDevices = MachineDevices(app)
+      ..addListener(_machineDevicesChanged);
+    // Read after this filter: an answer that is already there would otherwise filter again from
+    // inside it.
+    scheduleMicrotask(() {
+      if (!_disposed && identical(_machineDevices, devices)) devices.start();
+    });
+    return devices;
   }
 
   void _machineDevicesChanged() {

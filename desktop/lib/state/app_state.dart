@@ -8188,6 +8188,11 @@ class AppNotifier extends ChangeNotifier {
     await services.keys.forgetIdentity();
   }
 
+  /// Whether the account's device list can be read from here: through this app's own copy of the
+  /// log (a viewer build), or through this computer's daemon once the app is connected to it. Not
+  /// before — and never from a test, which has neither and must not dial for one.
+  bool get accountDevicesReadable => _deviceLog != null || _pool != null;
+
   /// The account's devices, from whichever end verified the log. Null when it cannot be read.
   ///
   /// [onListed] hears the banner's devices the moment the listing is read — before the last-seen

@@ -86,8 +86,10 @@ class MachineDevices extends ChangeNotifier {
     AccountDevices? next;
     var read = false;
     try {
-      next = await app.loadDevices(onListed: (b) => banner = b);
-      read = true;
+      if (app.accountDevicesReadable) {
+        next = await app.loadDevices(onListed: (b) => banner = b);
+        read = true;
+      }
     } catch (_) {
       next = null;
     }
