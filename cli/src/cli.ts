@@ -2565,7 +2565,7 @@ switch (cmd) {
     else if (args[0] === 'setup') {
       gridSetupCommand({
         port: daemonPort(),
-        localMachineId: readAuthSession()?.machineId ?? null,
+        localMachineId: wantedDaemonIdentity(),
         daemonRunning: isDaemonRunning,
         connect: (url) => new NewCommandSocket(url),
         output: (line) => console.log(line),
@@ -2599,7 +2599,7 @@ switch (cmd) {
       cwd: process.cwd(),
       home: homedir(),
       port: daemonPort(),
-      localMachineId: readAuthSession()?.machineId ?? null,
+      localMachineId: wantedDaemonIdentity(),
       daemonRunning: isDaemonRunning,
       listMachines: async () => {
         const { session, headers } = await controlPlaneAuth()
@@ -2625,7 +2625,7 @@ switch (cmd) {
   case 'remote':
     remoteCommand({
       tmuxPane: process.env.TMUX_PANE,
-      localMachineId: readAuthSession()?.machineId ?? null,
+      localMachineId: wantedDaemonIdentity(),
       port: daemonPort(),
       daemonRunning: isDaemonRunning,
       listMachines: async () => {

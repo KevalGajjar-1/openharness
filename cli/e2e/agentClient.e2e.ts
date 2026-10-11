@@ -118,4 +118,29 @@ describe('Harness for agents, end to end', () => {
     expect(JSON.parse(after.out).harnesses).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'kid', state: 'stopped', startedBy: 'you' })]))
     client.close()
   })
+
+  it('signed out, the person starts, waits for, reads and closes a harness from a terminal', async () => {
+    // Never signed in: the daemon runs as this computer (core/main.ts), and the app made harnesses while `harness new`
+    // refused with "This computer is not signed in to Harness".
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    await d.start()
+    const dir = join(d.projectsDir, 'solo')
+    mkdirSync(dir, { recursive: true })
+    const run = (...args: string[]) => harness(d, '', args)
+
+    const started = await run('new', 'claude', dir, '--name', 'solo', '--', 'hello solo')
+    expect(started.code, started.out + started.err).toBe(0)
+    expect(started.out).toContain('Created solo on this computer')
+    const waited = await run('wait', 'solo', '--timeout', '2m')
+    expect(waited.code, waited.out + waited.err).toBe(0)
+    const shown = await run('show', 'solo')
+    expect(shown.code, shown.err).toBe(0)
+    expect(shown.out).toContain('hello solo')
+    // The person's task, as they typed it: no header.
+    expect(shown.out).not.toContain('[from')
+    const closed = await run('close', 'solo')
+    expect(closed.code, closed.err).toBe(0)
+  })
 })

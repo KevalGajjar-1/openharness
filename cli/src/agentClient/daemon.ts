@@ -6,10 +6,11 @@
  * the paired relay (`machine_select` naming it).
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { WebSocket } from 'ws'
 import { env } from '../config/env.js'
 import { readAuthSession } from '../lib/authSession.js'
+import { computerId } from '../lib/daemonState.js'
 import { localSocketPath } from '../lib/localSocket.js'
 import { paneOwner } from '../messages/command.js'
 
@@ -48,8 +49,9 @@ export type Connect = (where: Where) => ClientSocket
 /** The daemon that made [pane], else the one this CLI's settings name. */
 export function whereFor(pane: string | undefined, owner: typeof paneOwner = paneOwner): Where {
   const found = pane ? owner(pane) : null
-  let machineId = readAuthSession()?.machineId ?? env.ADAPTER_COMPUTER_ID ?? ''
-  if (!machineId) try { machineId = readFileSync(env.ADAPTER_COMPUTER_ID_FILE, 'utf8').trim() } catch { /* refused below */ }
+  // What the daemon runs as (`wantedDaemonIdentity` in cli.ts): signed out, this computer's id. Signed out, the app made
+  // harnesses and `harness new` refused to.
+  const machineId = readAuthSession()?.machineId || computerId()
   return { port: found?.port ?? env.PORT, dataDir: found?.dataDir ?? env.ADAPTER_DATA_DIR, machineId, harnessPane: !!found }
 }
 
