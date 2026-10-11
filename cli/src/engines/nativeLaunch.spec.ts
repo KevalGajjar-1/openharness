@@ -163,8 +163,12 @@ it('answers an expired probe while retaining its slot until the actual child set
     await vi.waitFor(() => expect(fixture.pending).toHaveLength(8))
     await vi.advanceTimersByTimeAsync(5_251)
     expect((await Promise.all(running)).every(answer => !answer.ok)).toBe(true)
-    expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: false, unavailable: 'native' })
+    const overflow = inspectNativeLaunch('opencode')
+    await vi.advanceTimersByTimeAsync(0)
+    // Inspect admission before awaiting: incorrectly released capacity must fail
+    // this assertion, rather than hanging on the unplanned ninth fake child.
     expect(fixture.calls).toHaveLength(8)
+    expect(await overflow).toMatchObject({ ok: false, unavailable: 'native' })
     for (const settle of fixture.pending.splice(0)) settle()
     fixture.stalled = false
     expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: true })

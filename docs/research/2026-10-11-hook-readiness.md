@@ -88,6 +88,10 @@ Private real-process tests cover both the pause and inherited pipes, and a held
 child test covers reply/slot separation. Types and 56 affected checks passed in
 `20261011T070638.819101Z-12098`; final PR evidence includes the preserved SIGKILL
 setting for output-limit kills. The original stall e2e assertions are unchanged.
+The final mutation pass caught ten of eleven defects by assertions; the deliberately
+released probe slot instead hung its fake ninth child. The capacity test now checks
+child admission before awaiting that reply, so this defect must fail an explicit
+assertion as required. No production code changed in that correction.
 
 Linux unit CI also exposed an installer fixture assumption: ancestor churn can
 legitimately hold enumeration before the intended fsync fault is reached. A
