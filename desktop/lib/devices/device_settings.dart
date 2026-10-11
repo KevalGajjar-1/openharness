@@ -8,6 +8,11 @@ import '../widgets/desktop_chrome.dart';
 import 'devices_controller.dart';
 import 'pet_settings.dart';
 
+/// Whether the robot offers to follow the desktop companion. Off while the companion skins are
+/// unfinished (owner, 2026-09-30): the firmware wears Focus whatever it is asked, so the switch would
+/// be a control that does nothing. Flip it with HABITAT_FOCUS_ONLY.
+const kDeviceCompanionSkins = false;
+
 /// Face ids belong to the firmware (character.h), not screen dimensions.
 /// Add future faces here only when production firmware can actually select them.
 const deviceFaces = [
@@ -24,9 +29,13 @@ class DeviceSettingsPanel extends StatefulWidget {
     this.petKey,
     this.petGap = 0,
     this.pickPetFile,
+    this.showCompanion = false,
   });
   final HarnessDevice device;
   final DevicesController controller;
+
+  /// Whether the desktop companion is on (Experimental): only then can a robot follow it.
+  final bool showCompanion;
 
   /// The dial's pet edit, when the screen shares it with a viewer of its own.
   final PetEditor? petEditor;
@@ -128,6 +137,40 @@ class _DeviceSettingsPanelState extends State<DeviceSettingsPanel> {
           ),
         ),
         const SizedBox(height: 10),
+        // A Pro has no companion artwork, so nothing here for it to still or follow.
+        if (!device.status.isPro &&
+            kDeviceCompanionSkins &&
+            widget.showCompanion &&
+            settings.followCompanion != null) ...[
+          SettingRow(
+            title: 'Follow desktop companion',
+            detail: settings.companion == null
+                ? 'Show the companion paired in your Zoo.'
+                : 'Showing ${settings.companion == 'gnu' ? 'GNU' : settings.companion!} from your Zoo.',
+            controlSemanticLabel: 'Follow desktop companion',
+            control: Switch(
+              key: ValueKey('devices-follow-companion-${device.key}'),
+              value: settings.followCompanion!,
+              onChanged: enabled
+                  ? (value) => change({'followCompanion': value})
+                  : null,
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (!device.status.isPro) ...[
+          SettingRow(
+            title: 'Still companion',
+            detail: 'Stops the artwork animating. Nothing else changes.',
+            controlSemanticLabel: 'Still companion',
+            control: Switch(
+              key: ValueKey('devices-quiet-${device.key}'),
+              value: settings.quiet,
+              onChanged: enabled ? (value) => change({'quiet': value}) : null,
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
         SettingRow(
           title: 'Sound',
           detail: 'A quiet chime when your attention is needed.',
