@@ -171,7 +171,10 @@ class _SettingsNavState extends State<SettingsNav> {
       padding: const EdgeInsets.only(bottom: 10),
       children: [
         for (final group in visible) ...[
-          RailSectionHeader(label: group.title),
+          if (group.title.isNotEmpty)
+            RailSectionHeader(label: group.title)
+          else if (group != visible.first)
+            const SizedBox(height: 8),
           for (final target in group.sections)
             SidebarItem(
               icon: target.icon,

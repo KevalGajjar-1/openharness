@@ -4,6 +4,7 @@ import { dshLaunch, harnessEnvToClear, DSH_SESSION_ENV } from './launch.js'
 import { buildLaunchOverrides, type LaunchOverridesDeps } from '../lib/launchOverrides.js'
 import { dshFromEnv } from './probe.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
+import { HARNESS_INSTRUCTIONS } from '../lib/agentAttribution.js'
 
 const installed: InstalledDsh = {
   id: 'autonomous/circuit', dir: '/home/u/.harness/dsh/autonomous/circuit', realDir: '/src/circuit',
@@ -57,7 +58,8 @@ describe('buildLaunchOverrides with a DSH', () => {
     if (!built.ok) return
     expect(built.overrides.env.HARNESS_DSH).toBe('autonomous/circuit')
     expect(built.overrides.env.CIRCUIT_TOOLCHAIN).toBe('/src/circuit/toolchain')
-    expect(built.overrides.extraArgs).toEqual(['--add-dir', '/ws/inputs'])
+    // Its own argv, then what every harness is told (lib/agentAttribution.ts).
+    expect(built.overrides.extraArgs).toEqual(['--add-dir', '/ws/inputs', '--append-system-prompt', HARNESS_INSTRUCTIONS])
   })
 
   it('layers it over a Codex profile too, keeping CODEX_HOME', async () => {

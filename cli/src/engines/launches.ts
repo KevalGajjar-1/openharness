@@ -1,9 +1,9 @@
-import type { EngineLaunch } from './facets/launch.js'
+import type { AttributionContract, EngineLaunch } from './facets/launch.js'
 import type { AgentEngine } from './types.js'
 import { launch as claude } from './claude/launch.js'
 import { launch as codex } from './codex/launch.js'
-import { attributionArgsIn } from './kit/attribution.js'
-import { contextArgsOf, envArgsOf, ownProviderArgs, readConfig } from './kit/launchArgs.js'
+import { attributionArgsIn, attributionInstruction, instructionsArgsIn, type Instruction } from './kit/attribution.js'
+import { contextArgsOf, envArgsOf, fill, ownProviderArgs, readConfig } from './kit/launchArgs.js'
 import { launchHome, launchHomeOf, launchPersonalHome } from '../lib/engineHomes.js'
 
 /**
@@ -73,8 +73,34 @@ export interface AttributionPlace {
  */
 export function attributionArgs(engine: AgentEngine | string, line: string, place: AttributionPlace): string[] {
   const contract = launchContract(engine)?.attribution
-  return contract ? attributionArgsIn(contract, line, {
-    home: launchHomeOf(contract.home, place.profile, place.environment), personal: launchPersonalHome(place.environment),
-    cwd: place.cwd, read: place.read ?? readConfig,
-  }) : []
+  return contract ? attributionArgsIn(contract, line, attributionFiles(contract, place)) : []
+}
+
+const attributionFiles = (contract: AttributionContract, place: AttributionPlace) => ({
+  home: launchHomeOf(contract.home, place.profile, place.environment), personal: launchPersonalHome(place.environment),
+  cwd: place.cwd, read: place.read ?? readConfig,
+})
+
+/**
+ * The argv that tells `engine` Harness's own instructions ([instructions], `EngineLaunch.harnessInstructions`) and, with
+ * [prLine], has it add that line to its pull requests (`attributionArgs`): for an engine that keeps both in one config
+ * value (Codex), in one argument, as two of the same `-c` would leave only the last. Nothing for what the engine declares
+ * no way to take, or where the person's settings say not to.
+ */
+export function agentInstructionArgs(engine: AgentEngine | string, said: { instructions: string | null; prLine: string | null }, place: AttributionPlace): string[] {
+  const launch = launchContract(engine)
+  const attribution = launch?.attribution
+  const told = launch?.harnessInstructions
+  if (!attribution && !told) return []
+  if (attribution?.kind === 'instruction') {
+    const instructions: Instruction[] = [
+      ...(said.instructions && told?.kind === 'attribution' ? [{ text: said.instructions, mark: said.instructions }] : []),
+      ...(said.prLine ? [attributionInstruction(attribution, said.prLine)] : []),
+    ]
+    return instructionsArgsIn(attribution, instructions, attributionFiles(attribution, place))
+  }
+  return [
+    ...(said.prLine && attribution ? attributionArgsIn(attribution, said.prLine, attributionFiles(attribution, place)) : []),
+    ...(said.instructions && told?.kind === 'append' ? told.args.map((arg) => fill(arg, 'text', said.instructions!)) : []),
+  ]
 }

@@ -62,7 +62,20 @@ The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](
 when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code
 and Codex plugin from this repository (`claude plugin install harness@openharness`, `codex plugin add
 harness@openharness`, after adding the marketplace; see [harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)).
-How it reaches the harnesses Harness starts (installed with the CLI, or a startup note) is not decided yet.
+Every Claude Code and Codex harness Harness starts is told, as it starts (owner, October 11):
+
+```
+You are running in Harness, and the person can watch you. You can hand work to other agents (Claude Code, Codex)
+that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` (see `harness
+--help`). Only use or close harnesses you started.
+```
+
+Claude Code gets it with `--append-system-prompt`, joined into one with a grid's or a store harness's own (an engine may
+keep only the last of a repeated flag), and records it with the rest of the system prompt on the first request
+(`--system-prompt-snapshot`). Codex gets it in `developer_instructions`, after the person's own value and before the
+pull request instruction, in one `-c` (a second would replace the first); not at all where a folder's
+`.codex/config.toml` sets that key. Turning agents starting agents off (Settings ▸ Agents) leaves it out of every launch
+after. `lib/agentAttribution.ts` `HARNESS_INSTRUCTIONS`, `EngineLaunch.harnessInstructions`.
 
 ### ⌘N or ⌘P: new harness or an existing one
 

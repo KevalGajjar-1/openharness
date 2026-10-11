@@ -248,7 +248,7 @@ class AddPhoneDialog extends StatefulWidget {
   final PhoneSignInCodeCall signInCode;
   final VoidCallback? onConnectMachine;
 
-  /// Opens Settings ▸ Your devices — where the account's devices are listed and
+  /// Opens Machines — where the account's computers, phones and apps are listed and
   /// removed, on every device at once. Null shows no link.
   final VoidCallback? onManageDevices;
 

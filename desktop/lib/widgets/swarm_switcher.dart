@@ -560,7 +560,49 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
 
   /// The model list as drawn: each section's heading, then its rows. [key] is the section's own
   /// label, which stays put while a heading such as `Get for this Mac · 64 GB` follows its machine.
+  /// The Machines picker as drawn once it lists signed-in devices beside the machines: Computers,
+  /// then Phones & apps, each under its heading, and Add machine after them. Empty — rows drawn as a
+  /// plain list — while there are only machines.
+  List<({int? index, String? heading, String? key})> get _machineRows {
+    if (!search.isMachineMode ||
+        !search.rows.any((row) => row.isAccountDevice)) {
+      return const [];
+    }
+    final items = <({int? index, String? heading, String? key})>[];
+    for (final section in MachineSearchSection.values) {
+      final indices = [
+        for (final (index, row) in search.rows.indexed)
+          if (!row.isCreate && search.machineSection(row) == section) index,
+      ];
+      if (indices.isEmpty) continue;
+      if (items.isNotEmpty) items.add((index: null, heading: null, key: null));
+      items.add((
+        index: null,
+        heading: section.label,
+        key: 'machine-section:${section.name}',
+      ));
+      items.addAll(
+        indices.map((index) => (index: index, heading: null, key: null)),
+      );
+    }
+    final create = [
+      for (final (index, row) in search.rows.indexed)
+        if (row.isCreate) index,
+    ];
+    if (create.isNotEmpty && items.isNotEmpty) {
+      items.add((index: null, heading: null, key: null));
+    }
+    items.addAll(
+      create.map((index) => (index: index, heading: null, key: null)),
+    );
+    return items;
+  }
+
+  /// The list is drawn in titled runs rather than as one list of rows.
+  bool get _sectioned => search.isModelMode || _machineRows.isNotEmpty;
+
   List<({int? index, String? heading, String? key})> get _modelRows {
+    if (search.isMachineMode) return _machineRows;
     if (!search.isModelMode) return const [];
     final items = <({int? index, String? heading, String? key})>[];
     for (final section in ModelSearchSection.values) {
@@ -582,7 +624,7 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
       items.add((
         index: null,
         heading: search.modelSectionLabel(section),
-        key: section.label,
+        key: 'model-section:${section.label}',
       ));
       items.addAll(
         indices.map((index) => (index: index, heading: null, key: null)),
@@ -752,18 +794,18 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
   void _scrollToSelection() {
     if (!_scroll.hasClients || search.rows.isEmpty) return;
     final modelRows = _modelRows;
-    final index = search.isModelMode
+    final sectioned = _sectioned;
+    final index = sectioned
         ? modelRows.indexWhere((item) => item.index == search.cursor)
         : search.cursor - (_createPinned ? 1 : 0);
     if (index < 0) return;
-    final top = search.isModelMode
+    final top = sectioned
         ? modelRows
               .take(index)
               .fold(0.0, (height, item) => height + _modelItemHeight(item))
         : index * _rowHeight;
     final bottom =
-        top +
-        (search.isModelMode ? _modelItemHeight(modelRows[index]) : _rowHeight);
+        top + (sectioned ? _modelItemHeight(modelRows[index]) : _rowHeight);
     final position = _scroll.position;
     final offset = top < position.pixels
         ? top
@@ -894,6 +936,7 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
         final pinCreate = _createPinned =
             _pinsCreate && constraints.maxHeight >= _rowHeight + 16;
         final modelRows = _modelRows;
+        final sectioned = _sectioned;
         Widget buildRow(BuildContext context, int index) {
           final row = search.rows[index];
           final selected = index == search.cursor;
@@ -1035,8 +1078,10 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
                             : Icon(
                                 row.isProject
                                     ? AppIcons.folder
-                                    : row.isMachine
+                                    : row.isMachine || row.deviceIsComputer
                                     ? AppIcons.laptop
+                                    : row.isAccountDevice
+                                    ? AppIcons.smartphone
                                     : row.isModel
                                     ? AppIcons.sparkles
                                     : row.isCreate
@@ -1285,18 +1330,18 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
                                 _rowHeight,
                               ),
                               reverse: search.resultsFromBottom,
-                              itemCount: search.isModelMode
+                              itemCount: sectioned
                                   ? modelRows.length
                                   : search.rows.length - (pinCreate ? 1 : 0),
-                              itemExtent: desktop && search.isModelMode
+                              itemExtent: desktop && sectioned
                                   ? null
                                   : _rowHeight,
-                              itemExtentBuilder: desktop && search.isModelMode
+                              itemExtentBuilder: desktop && sectioned
                                   ? (index, _) =>
                                         _modelItemHeight(modelRows[index])
                                   : null,
                               itemBuilder: (context, index) {
-                                if (!search.isModelMode) {
+                                if (!sectioned) {
                                   return buildRow(
                                     context,
                                     index + (pinCreate ? 1 : 0),
@@ -1312,7 +1357,7 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
                                 return Semantics(
                                   header: true,
                                   child: Padding(
-                                    key: ValueKey('model-section:${item.key}'),
+                                    key: ValueKey<String>(item.key!),
                                     padding: EdgeInsets.symmetric(
                                       horizontal: widget.bios
                                           ? cell.width * 3
@@ -1439,7 +1484,7 @@ class _SwarmSearchResultsState extends State<SwarmSearchResults> {
                       height * .45,
                       16 +
                           _rowHeight *
-                              (search.isModelMode
+                              (sectioned
                                       ? modelRows.length
                                       : search.rows.length)
                                   .clamp(1, 4),

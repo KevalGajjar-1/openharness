@@ -215,4 +215,14 @@ export interface EngineLaunch {
   trust?: TrustContract
   resumeRepair?: ResumeRepairContract
   attribution?: AttributionContract
+  /** How the engine is told, as it starts, that it runs in Harness and how to use it (lib/agentAttribution.ts). */
+  harnessInstructions?: HarnessInstructionsContract
 }
+
+/**
+ * Where an engine takes a few lines of instructions on its command line: appended to its system prompt (`append`,
+ * Claude Code's `--append-system-prompt`; `{text}` is the text), or beside its attribution instruction, in the one
+ * config value both live in (`attribution`, Codex's `developer_instructions`: a second `-c` of the same key would
+ * replace the first, and the person's own value).
+ */
+export type HarnessInstructionsContract = { kind: 'append'; args: readonly string[] } | { kind: 'attribution' }

@@ -109,7 +109,8 @@ it), a path looks like a path, the first other word is the agent and a second na
 Signing in is what makes a device trusted: every computer and app signed in to the account adds its
 key to the account's device key log, and the others trust it with no password. Nothing asks you to
 confirm a device; instead every device shows you each one it did not know before.
-`harness devices` is this machine's view, the same one Settings ▸ Your devices shows in the app.
+`harness devices` is this machine's view, the same one Machines shows in the app (Computers, and
+Phones & apps).
 
 - **New.** A device added after this machine joined the account is flagged `new` (an OS notification
   in the apps) and stays flagged across restarts until you confirm it on one of your trusted devices,

@@ -26,7 +26,7 @@ import { installOpencodePlugin } from '../../engines/nativeHooks.js'
 import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 import { projectsRoot } from '../../lib/projectFolder.js'
 import { NativeFiles } from '../../engines/kit/nativeFiles.js'
-import { startedByAgentArgs } from '../../lib/agentAttribution.js'
+import { agentLaunchArgs } from '../../lib/agentAttribution.js'
 
 vi.mock('../../lib/projectFolder.js', async real => {
   const actual = await real<typeof import('../../lib/projectFolder.js')>()
@@ -75,7 +75,8 @@ vi.mock('../../engines/launchPrep.js', () => ({ folderTrust: (engine: string, pr
 vi.mock('../../lib/createAgentPane.js', () => ({ createAndRegisterPane: vi.fn() }))
 // The pull request line (lib/agentAttribution.ts) reads the person's engine settings: never this machine's here.
 vi.mock('../../lib/agentAttribution.js', () => ({
-  startedByAgentArgs: vi.fn((_engine: string, startedBy: string | null | undefined) => startedBy === 'agent' ? ['--settings', '{"attribution":{}}'] : []),
+  agentLaunchArgs: vi.fn((_engine: string, startedBy: string | null | undefined) => startedBy === 'agent' ? ['--settings', '{"attribution":{}}'] : []),
+  joinedInstructions: vi.fn((_engine: string, args: string[]) => args),
 }))
 vi.mock('../../lib/engineBin.js', async (real) => ({ ...await real<object>(), enginePathOverride: vi.fn(() => null) }))
 vi.mock('../../lib/engineInstall.js', async (real) => ({ ...await real<object>(), engineInstallRecipe: vi.fn(() => ({ install: 'recipe' })) }))
@@ -634,7 +635,7 @@ describe('creating an agent', () => {
       const { create } = setup()
       const cwd = folder()
       await create(request({ cwd, agent: 'reviewer', startedBy: 'agent' }))
-      expect(vi.mocked(startedByAgentArgs)).toHaveBeenCalledWith('claude', 'agent', { cwd, profile: null, environment: undefined })
+      expect(vi.mocked(agentLaunchArgs)).toHaveBeenCalledWith('claude', 'agent', { cwd, profile: null, environment: undefined })
       expect((vi.mocked(buildEngineLaunchArgv).mock.calls[0][1] as Record<string, unknown>).extraArgs).toEqual(['--agent', 'reviewer', '--settings', '{"attribution":{}}'])
       expect(vi.mocked(createAndRegisterPane).mock.calls[0][0]).toMatchObject({ startedBy: 'agent' })
       // The person's: no line, and nothing recorded.

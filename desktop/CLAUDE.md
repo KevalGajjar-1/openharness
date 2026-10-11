@@ -664,6 +664,18 @@ add a kind there, not at the call site.
   right. Appearance and Terminal both use it; a pane that invents its own row shape is the bug.
   Controls come from `shared/widgets/` too (`AppSelectField`, `AppIconButton`) — raw Material
   `DropdownButton`/`IconButton` do not match anything else in the app.
+  **Settings holds settings only** (owner, 2026-10-11): Account alone at the top, then General
+  (Appearance — the `customize` row, which opens Customize Harness over the workspace —
+  Notifications, Keyboard shortcuts), Agents (Agents, Connectors, Usage), Labs (Experimental) and
+  Help (About, Debug in dev builds). A thing is managed where it lives: the Autonomous robots —
+  Wi-Fi code pairing, Revoke, Still companion — in the Devices tab (`devices/wifi_robots.dart`);
+  the account's computers, phones and apps, each device's code, Remove (a computer: sign out AND
+  delete its machine record), History… and Show in this window in the Machines picker
+  (`state/machine_devices.dart`, `widgets/machine_picker_extras.dart`). A way in from outside the
+  workspace asks for Machines with `AppNotifier.requestMachines` (`openMachines` in
+  `widgets/new_device_notice.dart`). Settings ▸ Agents reads and writes this computer's daemon
+  (`/api/agent-settings`, bare JSON, not `{success, data}`); a setting the daemon's answer does
+  not name is not shown.
 - **The log is written to files, and Settings ▸ Debug reads them back** (`lib/logging/`,
   `settings/sections/debug_*.dart`). `appLog` (`app-YYYYMMDD.log`) is the narrative — `app`, `ws`,
   `api`, `flutter` — and `cliLog` (`cli-YYYYMMDD.log`) is a transcript of every child process, both

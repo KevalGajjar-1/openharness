@@ -1082,8 +1082,8 @@ void main() {
     await tester.pumpAndSettle();
     await chord(tester, LogicalKeyboardKey.comma);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Account'));
-    await tester.pumpAndSettle();
+    // Settings opens on Account: its row in the rail and its pane.
+    expect(find.text('Account'), findsNWidgets(2));
     expect(find.text('Sam'), findsOneWidget);
     expect(find.text('sam@example.com'), findsOneWidget);
     await tester.tap(find.byKey(const Key('settings-sign-out-button')));

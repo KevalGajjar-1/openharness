@@ -470,7 +470,8 @@ void main() {
           await chord(tester, LogicalKeyboardKey.comma);
           await tester.pumpAndSettle();
           expect(find.byType(SettingsScreen), findsOneWidget);
-          await tester.tap(find.text('Customize'));
+          // The rail's Appearance row (was Customize) opens the same panel.
+          await tester.tap(find.text('Appearance'));
         } else {
           await chord(tester, LogicalKeyboardKey.keyP, shift: true);
           await tester.enterText(

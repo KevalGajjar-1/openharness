@@ -18,6 +18,7 @@ import { FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
 
 /** The line (lib/agentAttribution.ts), as a reader of the pull request sees it. */
 const AGENT_ATTRIBUTION_LINE = '🤝 Started by another agent in [Harness](https://harness.autonomous.ai) — agents that run agents.'
+const HARNESS_INSTRUCTIONS = 'You are running in Harness, and the person can watch you. You can hand work to other agents (Claude Code, Codex) that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` (see `harness --help`). Only use or close harnesses you started.'
 const ME: FakeMachine = { machineId: 'b8'.repeat(16), computerId: 'e2e-computer-0000-0000-0000000000b8', name: 'studio', token: 'e2e-token-agent-client' }
 const signIn = (d: IsolatedDaemon) => writeFileSync(join(d.root, 'auth', 'session.json'), JSON.stringify({
   version: 1, accessToken: ME.token, autonomousEnv: 'prod', computerId: ME.computerId,
@@ -304,6 +305,8 @@ describe('Harness for agents, end to end', () => {
     expect(made.error, JSON.stringify(made)).toBeUndefined()
     const lead = await live('lead')
     expect(await commandsIn(d, String(lead.tmuxPane))).not.toContain('--settings')
+    // Every harness is told how to use Harness, the person's too.
+    expect(await commandsIn(d, String(lead.tmuxPane))).toContain(`--append-system-prompt ${HARNESS_INSTRUCTIONS}`)
     const run = (...args: string[]) => harness(d, String(lead.tmuxPane), args)
 
     // Claude Code, started by it: Claude Code's own pull request line kept, and Harness's after it.
@@ -315,7 +318,8 @@ describe('Harness for agents, end to end', () => {
     // Codex, started by it: told as Codex is told its own attribution.
     expect((await run('new', 'codex', folder('kidx'), '--name', 'kidx', '--', 'hello kidx')).code).toBe(0)
     const kidx = await live('kidx')
-    expect(await commandsIn(d, String(kidx.tmuxPane))).toMatch(new RegExp(`-c developer_instructions="When you create or update a pull request, .*\`${ascii(AGENT_ATTRIBUTION_LINE)}\``))
+    // Codex, started by it: told how to use Harness, then told as Codex is told its own attribution, in one value.
+    expect(await commandsIn(d, String(kidx.tmuxPane))).toMatch(new RegExp(`-c developer_instructions="${ascii(HARNESS_INSTRUCTIONS)}.*When you create or update a pull request, .*\`${ascii(AGENT_ATTRIBUTION_LINE)}\``))
 
     // A restart launches it again from its row: the line comes back with it.
     const restarted = await client.request('agent_restart', { agentId: kid.id }, 90_000)
@@ -334,6 +338,13 @@ describe('Harness for agents, end to end', () => {
     const command = await commandsIn(d, String(quiet.tmuxPane))
     expect(command).toContain('hello quiet')
     expect(command).not.toContain('--settings')
+
+    // Agents starting agents turned off: a harness is no longer told how.
+    expect((await harness(d, '', ['settings', 'agents-start-agents', 'off'])).code).toBe(0)
+    const alone = await client.request('agent_create', { engine: 'claude', cwd: folder('alone'), bypassPermission: true, name: 'alone' }, 90_000)
+    expect(alone.error, JSON.stringify(alone)).toBeUndefined()
+    const aloneRow = await live('alone')
+    expect(await commandsIn(d, String(aloneRow.tmuxPane))).not.toContain('You are running in Harness')
     client.close()
   })
 })

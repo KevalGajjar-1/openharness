@@ -40,4 +40,7 @@ export const launch: EngineLaunch = {
     own: '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
     args: ['--settings', '{settings}'],
   },
+  // Recorded with the rest of the system prompt on the conversation's first request and kept on every resume
+  // (`--system-prompt-snapshot`, on by default), so it is given at each launch and read once.
+  harnessInstructions: { kind: 'append', args: ['--append-system-prompt', '{text}'] },
 }

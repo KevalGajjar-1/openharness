@@ -32,7 +32,7 @@ import '../widgets/resting_section.dart'
     show confirmStopInUse, confirmSwitchAnyway;
 import '../widgets/session_close_dialog.dart';
 import '../notify/system_notifications.dart';
-import '../settings/sections/account_device_detail.dart';
+import '../widgets/account_device_detail.dart';
 import '../settings/settings_screen.dart';
 import '../settings/settings_section.dart';
 import 'login_screen.dart' show showSignInSheet;
@@ -114,7 +114,9 @@ import '../widgets/new_agent_dialog.dart';
 import '../widgets/box_chrome.dart';
 import '../widgets/new_harness_form.dart';
 import '../widgets/desktop_chrome.dart';
+import '../widgets/account_device_history.dart';
 import '../widgets/desktop_search_panel.dart';
+import '../widgets/machine_picker_extras.dart';
 import '../widgets/desktop_workspace_tab.dart';
 import '../widgets/open_harness_intent.dart';
 import '../widgets/pane_grid.dart';
@@ -769,6 +771,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       return;
     }
     _routeIsCurrent = current;
+    if (current) _maybeOpenMachinesRequest();
     if (!current &&
         (_search != null ||
             _daemonOverlay != null ||
@@ -2590,6 +2593,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       await action();
     } finally {
       _dialogOpen = false;
+      _maybeOpenMachinesRequest();
       if (mounted) {
         _canvasFocus.descendantsAreFocusable = _search == null;
         if (_search == null &&
@@ -3037,8 +3041,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
     // (its "Sign in…") must not bring the card back once it closes, so the
     // offer is dropped on the way out too.
     app.dropPhoneOffer();
-    // "Manage devices…" pops the dialog and asks for Settings, but this
-    // [_dialog] is still open until the pop lands — a [_settings] made from
+    // "Manage devices…" pops the dialog and asks for Machines, but this
+    // [_dialog] is still open until the pop lands — a picker opened from
     // the callback would be refused. So it is remembered, and opened after.
     var manageDevices = false;
     try {
@@ -3055,7 +3059,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       app.dropPhoneOffer();
     }
     if (manageDevices && mounted) {
-      await _settings(SettingsSection.accountDevices);
+      await _openMachines(phones: true, toggle: false);
     }
   }
 
@@ -3076,17 +3080,130 @@ class _SwarmScreenState extends State<SwarmScreen> {
     }
   }
 
-  Future<void> _openMachines({String? initialMachineId}) async {
+  /// Machines: the account's computers, and its phones and apps.
+  ///
+  /// [devicePub] selects that device once the account's list has been read, [phones] the first
+  /// phone or app. [review] false is the picker opening on its own (a machine asking to be linked):
+  /// nobody chose to look at the list, so it marks no new device seen. [toggle] false keeps a
+  /// Machines picker that is already open rather than closing it, as a deep link wants.
+  Future<void> _openMachines({
+    String? initialMachineId,
+    String? devicePub,
+    bool phones = false,
+    bool review = true,
+    bool toggle = true,
+  }) async {
     _browserMachineSetupHandled = true;
     _onboarding.acknowledge(OnboardingStep.machines);
-    _openResourcePicker('@');
-    if (initialMachineId != null && _search?.isMachineMode == true) {
-      final index = _search!.rows.indexWhere(
+    if (toggle || _search?.isMachineMode != true) _openResourcePicker('@');
+    final search = _search;
+    if (search == null || !search.isMachineMode) return;
+    if (!review) search.machineDevices?.markSeen = false;
+    if (initialMachineId != null) {
+      final index = search.rows.indexWhere(
         (row) => row.machineId == initialMachineId,
       );
-      if (index >= 0) _search!.move(index - _search!.cursor);
+      if (index >= 0) search.move(index - search.cursor);
+    }
+    if (devicePub != null || phones) {
+      _selectDeviceWhenListed(search, pub: devicePub, phones: phones);
     }
   }
+
+  /// Selects a device in Machines as soon as the account's list has it: the list is read when
+  /// the picker opens, so a deep link usually arrives before its row does.
+  void _selectDeviceWhenListed(
+    SwarmSearchController search, {
+    String? pub,
+    bool phones = false,
+  }) {
+    var done = false, selecting = false;
+    bool attempt() {
+      // Selecting notifies this same listener: the second call is that, not news.
+      selecting = true;
+      try {
+        return pub != null
+            ? search.selectDevice(pub)
+            : search.selectFirstPhone();
+      } finally {
+        selecting = false;
+      }
+    }
+
+    if (attempt()) return;
+    late final VoidCallback listener;
+    listener = () {
+      if (done || selecting) return;
+      if (_search != search || !search.isMachineMode) {
+        done = true;
+      } else if (attempt() || search.machineDevices?.loaded == true) {
+        done = true;
+      }
+      if (done) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_search == search) search.removeListener(listener);
+        });
+      }
+    };
+    search.addListener(listener);
+  }
+
+  /// A way in from outside the workspace (a device band, a review line under a password prompt)
+  /// asked for Machines ([AppNotifier.requestMachines]): opened once nothing else holds the window.
+  void _maybeOpenMachinesRequest() {
+    if (app.machinesRequest == null ||
+        !mounted ||
+        _dialogOpen ||
+        _spokenPaletteOpen ||
+        !_routeIsCurrent) {
+      return;
+    }
+    final request = app.takeMachinesRequest()!;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        _openMachines(
+          devicePub: request.devicePub,
+          phones: request.phones,
+          toggle: false,
+        ),
+      );
+    });
+  }
+
+  /// What the Machines picker needs from the workspace for its dialogs and Add Phone.
+  MachinePickerHooks get _machinePickerHooks => MachinePickerHooks(
+    confirm: (title, detail, action) async {
+      _pickerModalChanged(true);
+      try {
+        return await confirmDeviceAction(
+          context,
+          title,
+          detail,
+          action,
+          destructive: true,
+        );
+      } finally {
+        _pickerModalChanged(false);
+        if (mounted && _search != null) _focusSearch();
+      }
+    },
+    onHistory: () async {
+      _pickerModalChanged(true);
+      try {
+        await showAccountDeviceHistory(context, app);
+      } finally {
+        _pickerModalChanged(false);
+        if (mounted && _search != null) _focusSearch();
+      }
+    },
+    onAddPhone: kIsWeb
+        ? null
+        : () {
+            _closeSearch(restoreFocus: false);
+            unawaited(_addPhone());
+          },
+  );
 
   void _openResourcePicker(String prefix) {
     dismissTransientMenus();
@@ -5974,7 +6091,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
       return;
     }
     if (choice.destination.isModel) return;
-    if (_search!.setupLayout && choice.destination.isMachine) {
+    if (_search!.setupLayout &&
+        (choice.destination.isMachine || choice.destination.isAccountDevice)) {
       final index = _search!.rows.indexWhere(
         (row) => row.id == choice.destination.id,
       );
@@ -6098,6 +6216,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       onRefocus: _focusSearch,
       previewBuilder: preview,
       showsBack: widget.chrome?.pickerShowsBack ?? false,
+      machineHooks: _machinePickerHooks,
     );
     final scoped = Semantics(
       scopesRoute: true,
@@ -6510,7 +6629,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (mounted) {
         app.acknowledgeMachineLinkRequest(machine.machine.machineId);
-        await _openMachines(initialMachineId: machine.machine.machineId);
+        await _openMachines(
+          initialMachineId: machine.machine.machineId,
+          review: false,
+        );
       }
       // Keep the prompt's identity until the picker closes. Otherwise Escape
       // would immediately reopen it on the next workspace update.
@@ -6625,6 +6747,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
           initialMachineId: selected?.needsLink == true
               ? selected!.machine.machineId
               : null,
+          review: false,
         ),
       );
     });
@@ -7044,6 +7167,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     builder: (context, _) {
       grid.AppTheme.watch(context);
       _maybeLink();
+      _maybeOpenMachinesRequest();
       _scheduleWelcomeComposer();
       if (app.panes.isEmpty) {
         WidgetsBinding.instance.addPostFrameCallback(

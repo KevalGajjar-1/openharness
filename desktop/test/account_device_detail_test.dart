@@ -1,10 +1,10 @@
-// One device in full (Settings ▸ Your devices ▸ a row, the banner's Review, a notification click):
+// One device in full (a row in Machines, the banner's Review, a notification click):
 // its facts, its whole key code, how to compare it, and what can be done about it.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:harness/settings/sections/account_device_detail.dart';
+import 'package:harness/widgets/account_device_detail.dart';
 import 'package:harness/shared/widgets/fingerprint_text.dart';
 import 'package:harness/state/account_devices.dart';
 import 'package:harness/theme/app_theme.dart' show AppColors;

@@ -159,6 +159,47 @@ class ApiClient {
     return Map<String, dynamic>.from(unwrapApiResponse(res) as Map);
   }
 
+  // -- what agents may do on this computer (Settings ▸ Agents), kept by this computer's daemon --
+
+  /// `{agentsStartAgents, pullRequestLine?}` as this computer's daemon keeps them
+  /// (cli/src/lib/agentSettings.ts). A key a daemon predates is absent. Null when the daemon predates
+  /// the route altogether (404). The daemon answers the settings bare, not in `{success, data}`.
+  Future<Map<String, dynamic>?> agentSettings() async {
+    final res = await _dio.get('/api/agent-settings');
+    if (res.statusCode == 404) return null;
+    return _agentSettingsAnswer(res);
+  }
+
+  /// Changes one setting ([key] to [value]) and answers the settings as they are afterwards. A local
+  /// write to the daemon, like [deskOps].
+  Future<Map<String, dynamic>> setAgentSetting(String key, bool value) async {
+    final res = await _dio.patch(
+      '/api/agent-settings',
+      data: {key: value},
+      options: Options(headers: {'x-adapter-local': '1'}),
+    );
+    return _agentSettingsAnswer(res);
+  }
+
+  Map<String, dynamic> _agentSettingsAnswer(Response res) {
+    final body = res.data;
+    if (body is Map && body.containsKey('success')) {
+      return Map<String, dynamic>.from(unwrapApiResponse(res) as Map);
+    }
+    final status = res.statusCode ?? 0;
+    if (status >= 200 && status < 300 && body is Map) {
+      return Map<String, dynamic>.from(body);
+    }
+    final error = body is Map ? body['error'] : null;
+    final message = error is Map ? error['message'] : null;
+    throw ApiException(
+      message is String && message.isNotEmpty
+          ? message
+          : 'Request failed ($status)',
+      status: res.statusCode,
+    );
+  }
+
   // -- account-wide Experimental preferences --
   Future<Map<String, dynamic>> experimentalSettings() async {
     final res = await _dio.get('/api/experimental-settings');

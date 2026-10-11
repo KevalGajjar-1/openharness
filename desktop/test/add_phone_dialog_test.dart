@@ -16,6 +16,8 @@ import 'package:harness/shared/widgets/qr_code_view.dart';
 import 'package:harness/state/app_state.dart';
 import 'package:harness/widgets/add_phone_dialog.dart';
 
+import 'support/resource_picker.dart' show resourceScope;
+
 import 'swarm_interactions_test.dart' show chord;
 import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp, MemoryStore;
@@ -319,7 +321,7 @@ void main() {
 
   group('the account\'s devices', () {
     testWidgets(
-      'are one link away — Settings ▸ Your devices — not a list in here',
+      'are one link away — Machines — not a list in here',
       (tester) async {
         final app = _signedInApp();
         addTearDown(app.dispose);
@@ -336,7 +338,7 @@ void main() {
         expect(find.text('Manage devices…'), findsOneWidget);
         await tester.tap(link);
         await tester.pump();
-        // The dialog makes way for Settings: one is open at a time.
+        // The dialog makes way for Machines: one is open at a time.
         expect(opened, 1);
         expect(find.byType(AddPhoneDialog), findsNothing);
         await tester.pump(const Duration(seconds: 10));
@@ -683,10 +685,10 @@ void main() {
     });
 
     testWidgets(
-      'Manage devices… makes way for Settings ▸ Your devices, which opens',
+      'Manage devices… makes way for Machines, which opens',
       (tester) async {
         // The dialog is still this screen's open dialog while it pops, so a
-        // Settings asked for from the link itself was silently refused.
+        // picker asked for from the link itself was silently refused.
         final app = _signedInApp();
         addTearDown(app.dispose);
         await mount(tester, app);
@@ -706,7 +708,8 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
         expect(find.byType(AddPhoneDialog), findsNothing);
-        expect(find.text('Your devices'), findsWidgets);
+        // Machines, where the account's phones and apps are listed now.
+        expect(resourceScope('@'), findsOneWidget);
         await tester.pumpWidget(const SizedBox());
         await tester.pump(const Duration(seconds: 10));
       },
