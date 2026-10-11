@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/core/dsh_catalog.dart';
+import 'package:harness/core/models.dart';
 import 'package:harness/state/essential_harness_controller.dart';
 import 'package:harness/state/harness_monitor_controller.dart';
 
@@ -37,6 +38,9 @@ class _Connection extends MonitorConnection {
 class _App extends MonitorTestApp {
   _App(super.connection);
 
+  /// What the machine's catalog says the package runs on: an older CLI says Claude Code for Memories.
+  String listedEngine = 'opencode';
+
   @override
   Future<void> probeDsh(String machineId, {bool force = false}) async {
     stateOf(machineId)!.dsh.replace([
@@ -44,7 +48,7 @@ class _App extends MonitorTestApp {
         DshEntry(
           id: essential.id,
           name: essential.name,
-          engine: 'opencode',
+          engine: listedEngine,
           category: 'Essentials',
           description: '',
           installed: installed,
@@ -114,4 +118,33 @@ void main() {
       expect(app.essential(memoriesEssential.id)!.exists, isFalse);
     },
   );
+
+  test('a CLI older than the Essentials keeps Memories on the engine it lists, and nothing is asked on it', () async {
+    app.listedEngine = 'claude';
+    expect(await app.essential(memoriesEssential.id)!.open(), isNull);
+    expect(connection.creations.single['engine'], 'claude');
+    expect(connection.creations.single['prompt'], isNull);
+  });
+
+  test('Open means a click opens: one on another machine, in no tab, is not the one a click would reach', () {
+    final memories = app.essential(memoriesEssential.id)!;
+    app.stateOf('other')!.agents = [
+      Agent(
+        id: 'elsewhere',
+        name: 'Memories',
+        engine: 'opencode',
+        dsh: memoriesEssential.id,
+      ),
+    ];
+    expect(memories.exists, isFalse);
+    app.stateOf('m')!.agents = [
+      Agent(
+        id: 'here',
+        name: 'Memories',
+        engine: 'opencode',
+        dsh: memoriesEssential.id,
+      ),
+    ];
+    expect(memories.exists, isTrue);
+  });
 }

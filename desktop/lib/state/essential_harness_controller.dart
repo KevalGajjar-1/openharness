@@ -58,11 +58,32 @@ class EssentialHarnessController {
   bool _disposed = false;
   bool get opening => _opening != null;
 
-  /// Whether one already exists on a machine this window knows, stopped ones included: the Store's
-  /// button then opens it instead of creating another.
-  bool get exists => app.machineStates.values.any(
-    (machine) => machine.agents.any((agent) => agent.dsh == essential.id),
-  );
+  /// Whether a click would open one rather than create one: one in a tab on any machine, or one on
+  /// the machine a new one would be made on (stopped ones included), exactly as [open] looks.
+  bool get exists =>
+      _inTab() != null ||
+      (app.ownedActionMachine?.agents.any((a) => a.dsh == essential.id) ??
+          false);
+
+  /// The first tab showing this harness, with its machine and agent.
+  ({String tab, MachineState machine, Agent agent})? _inTab() {
+    for (final tab in app.swarms) {
+      for (final pane in tab.panes) {
+        final machine = app.stateOf(pane.machineId);
+        final agent = machine?.agents
+            .where(
+              (a) =>
+                  a.dsh == essential.id &&
+                  (a.id == pane.agentId || a.id == pane.ownerAgentId),
+            )
+            .firstOrNull;
+        if (agent != null) {
+          return (tab: tab.id, machine: machine!, agent: agent);
+        }
+      }
+    }
+    return null;
+  }
 
   Future<String?> open() =>
       _opening ??= _open().whenComplete(() => _opening = null);
@@ -74,37 +95,25 @@ class EssentialHarnessController {
     final id = essential.id, name = essential.name;
     // Reuse the tab even after focus moves to a different machine, including an offline harness that
     // is still open.
-    for (final tab in app.swarms) {
-      for (final pane in tab.panes) {
-        final machine = app.stateOf(pane.machineId);
-        final agent = machine?.agents
-            .where(
-              (a) =>
-                  a.dsh == id &&
-                  (a.id == pane.agentId || a.id == pane.ownerAgentId),
-            )
-            .firstOrNull;
-        if (agent == null) continue;
-        app.selectSwarm(tab.id);
-        final owner = machine!;
-        final machineId = owner.machine.machineId;
-        try {
-          if (agent.isStopped &&
-              owner.connectionStatus == ConnectionStatus.connected) {
-            final result = await app.resumeAgent(machineId, agent.id);
-            if (!_current(owner)) return null;
-            if (result.error != null) return result.error;
-          }
-          if (!app.viewerPaneShown(machineId, agent.id)) {
-            await app.toggleViewerPane(machineId, agent.id);
-            if (!_current(owner)) return null;
-          }
-          app.showHarnessViewer(machineId, agent.id);
-        } catch (_) {
-          return _current(owner) ? 'Could not open $name. Try again.' : null;
+    if (_inTab() case (:final tab, machine: final owner, :final agent)) {
+      app.selectSwarm(tab);
+      final machineId = owner.machine.machineId;
+      try {
+        if (agent.isStopped &&
+            owner.connectionStatus == ConnectionStatus.connected) {
+          final result = await app.resumeAgent(machineId, agent.id);
+          if (!_current(owner)) return null;
+          if (result.error != null) return result.error;
         }
-        return null;
+        if (!app.viewerPaneShown(machineId, agent.id)) {
+          await app.toggleViewerPane(machineId, agent.id);
+          if (!_current(owner)) return null;
+        }
+        app.showHarnessViewer(machineId, agent.id);
+      } catch (_) {
+        return _current(owner) ? 'Could not open $name. Try again.' : null;
       }
+      return null;
     }
     final owner = app.ownedActionMachine;
     if (owner == null) return 'Connect a machine to open $name.';
@@ -139,14 +148,23 @@ class EssentialHarnessController {
           );
           await app.agentPreference.load();
           if (!_current(owner)) return null;
+          // The machine's own catalog names the package's engine: a CLI older than the Essentials still
+          // says Claude Code for Memories, and its OpenCode would run the training default instead of
+          // the package's model.
+          final listed = owner.dsh[id]?.engine ?? '';
+          final engine =
+              app.agentPreference.engineFor(id) ??
+              (listed.isNotEmpty ? listed : defaultHarnessEngine);
           final error = await app.createAgent(
             machineId,
-            engine: app.agentPreference.engineFor(id) ?? defaultHarnessEngine,
+            engine: engine,
             folder: null,
             projectFolder: _folder,
             dsh: id,
             name: name,
-            prompt: essential.firstTask,
+            // Asked at once only on the free engine it was made for: on another engine the person's
+            // own tokens pay for it, and some engines take no first message at all.
+            prompt: engine == defaultHarnessEngine ? essential.firstTask : null,
             attempt: _creation,
           );
           if (!_current(owner)) return null;
