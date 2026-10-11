@@ -14,6 +14,7 @@ import 'package:harness/state/machine_devices.dart';
 import 'package:harness/state/swarm_search.dart' show MachineSearchSection;
 import 'package:harness/viewer/device_history.dart';
 import 'package:harness/widgets/desktop_chrome.dart';
+import 'package:harness/widgets/machine_picker_extras.dart';
 import 'package:harness/widgets/new_device_notice.dart' show openMachines;
 
 import 'support/devices_app.dart';
@@ -297,6 +298,54 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.machineProfileId, isNull);
   });
+
+  testWidgets(
+    'a computer that is not connected or is offline cannot be chosen; one chosen stays',
+    (tester) async {
+      app.machineStates[_remoteId]!.connectionStatus =
+          ConnectionStatus.disconnected;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: app,
+              builder: (context, _) => MachineWindowChoice(app: app),
+            ),
+          ),
+        ),
+      );
+      List<String> offered() => tester
+          .widget<AppSelectField<String?>>(
+            find.byKey(const Key('machine-window-choice-field')),
+          )
+          .options
+          .map((o) => o.label)
+          .toList();
+      expect(offered(), ['All machines', 'Studio Mac']);
+      app.machineStates[_remoteId]!
+        ..connectionStatus = ConnectionStatus.connected
+        ..nodeOnline = false;
+      app.notifyListeners();
+      await tester.pump();
+      expect(offered(), ['All machines', 'Studio Mac']);
+      app.machineStates[_remoteId]!.nodeOnline = true;
+      app.notifyListeners();
+      await tester.pump();
+      expect(offered(), ['All machines', 'Studio Mac', 'Build box']);
+      app.setMachineProfile(_remoteId);
+      app.machineStates[_remoteId]!.nodeOnline = false;
+      app.notifyListeners();
+      await tester.pump();
+      final field = tester.widget<AppSelectField<String?>>(
+        find.byKey(const Key('machine-window-choice-field')),
+      );
+      expect(field.value, _remoteId);
+      expect(
+        field.options.firstWhere((o) => o.value == _remoteId).note,
+        contains('Offline'),
+      );
+    },
+  );
 
   testWidgets('apps unused for 90 days are offered for removal together', (
     tester,
