@@ -107,7 +107,7 @@ describe('buildLaunchOverrides — a relaunch comes back where the agent was', (
       gridLaunchRecord: { override: { apiKey: GRID.apiKey } },
     } })
     expect(calls).toEqual(['writeConfig:agent-1'])
-    expect(machine).toHaveBeenCalledExactlyOnceWith('opencode')
+    expect(machine).toHaveBeenCalledExactlyOnceWith('opencode', undefined)
     expect(await prepared.commit()).toMatchObject({ error: 'LAUNCH_PREPARATION_USED' })
     expect(calls).toHaveLength(1)
   })
@@ -193,7 +193,7 @@ describe('buildLaunchOverrides — a relaunch comes back where the agent was', (
     await buildLaunchOverrides(deps({ machine }).d, 'claude', { gridLaunch: GRID, subscriptionModel: 'opus' }, 'agent-1')
     expect(machine.mock.calls.every(([engine]) => engine === 'claude')).toBe(true)
     await buildLaunchOverrides(deps({ machine }).d, 'opencode', { agent: 'reviewer' }, 'agent-1')
-    expect(machine).toHaveBeenLastCalledWith('opencode')
+    expect(machine).toHaveBeenLastCalledWith('opencode', undefined)
     expect(loadEngine).not.toHaveBeenCalled()
   })
 

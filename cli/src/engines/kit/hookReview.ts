@@ -50,15 +50,17 @@ export function reviewRecords(record: HookReviewRecord, settingsFile: string, se
   for (const [event, label] of Object.entries(record.events)) {
     const blocks = settings.hooks?.[event]
     if (!Array.isArray(blocks)) continue
-    const blockIndex = blocks.findIndex(harnessOwn)
-    if (blockIndex < 0) continue
-    const block = blocks[blockIndex]
-    const hookIndex = block.hooks.findIndex((hook) => harnessOwn({ hooks: [hook] }))
-    const hook = block.hooks[hookIndex]
-    if (hook.type !== 'command' || typeof hook.command !== 'string') continue
-    // A hook edited into a shape Harness does not write is one the engine reads its own way: it asks.
-    if ((hook.timeout !== undefined && typeof hook.timeout !== 'number') || (block.matcher !== undefined && typeof block.matcher !== 'string')) continue
-    records.set(`${settingsFile}:${label}:${blockIndex}:${hookIndex}`, reviewHash(record, event, block.matcher, hook))
+    // An optional Messages block can precede a required notify block. Approving
+    // only the first would report a prepared launch with SessionStart disabled.
+    for (const [blockIndex, block] of blocks.entries()) {
+      if (!harnessOwn(block)) continue
+      for (const [hookIndex, hook] of block.hooks.entries()) {
+        if (!harnessOwn({ hooks: [hook] }) || hook.type !== 'command' || typeof hook.command !== 'string') continue
+        // A hook edited into a shape Harness does not write is one the engine reads its own way: it asks.
+        if ((hook.timeout !== undefined && typeof hook.timeout !== 'number') || (block.matcher !== undefined && typeof block.matcher !== 'string')) continue
+        records.set(`${settingsFile}:${label}:${blockIndex}:${hookIndex}`, reviewHash(record, event, block.matcher, hook))
+      }
+    }
   }
   return records
 }

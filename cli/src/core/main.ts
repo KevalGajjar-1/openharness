@@ -7,6 +7,11 @@ import { createScreens } from './engines/screens.js'
 import { createScreenTransport } from './engines/screenTransport.js'
 import { inProcessScreen, preloadEngine } from '../engines/inProcess.js'
 import { opencodeMajorVersion } from '../engines/launchControl.js'
+import { inspectNativeLaunch, type NativeLaunch } from '../engines/nativeLaunch.js'
+import { nativeHookLocations } from '../engines/kit/nativeLocations.js'
+import { createNativeLaunchPreparer } from '../engines/prepareNativeLaunch.js'
+import { createNativeInstallations } from '../engines/kit/nativeInstall.js'
+import { publishGridConfigDir } from '../lib/publishedGridConfig.js'
 import { masterRunsEngineScreen } from '../harnessd/services.js'
 import { createSubmissions } from './engines/submissions.js'
 import { createNativeControls } from './engines/nativeControls.js'
@@ -84,7 +89,8 @@ import { ApiConnectionMetadata } from '../lib/apiConnectionMetadata.js'
 import { prepareApiInstructions } from '../lib/apiInstructions.js'
 import type { AgentDshContext } from '../lib/agentFrame.js'
 import type { AgentGridTarget, GridAnnotation } from '../lib/gridAnnotation.js'
-import { sessionCodexHome } from '../lib/engineHomes.js'
+import { confirmHomes, sessionCodexHome } from '../lib/engineHomes.js'
+import { sessionStoreContracts } from '../engines/sessionStoreContracts.js'
 import { argvTokens, clearPaneRemainOnExit, lookupPaneEngineProcess, processRows, resolvePaneEngineProcess, tmuxPaneInfo, tmuxPaneState } from '../lib/tmux.js'
 import { ALL_TERMINAL_BACKENDS } from '../config/terminalConfig.js'
 import { TerminalBackendCoordinator } from '../lib/terminalBackendCoordinator.js'
@@ -428,10 +434,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   let searchGeneration = 0
   let restoreCancelled = (_agentId: string): boolean => false
   let launchCancelled = (_agentId: string): boolean => false
-  let restoreOnly: ((only: ReadonlySet<string>) => Promise<RestoreSummary>) | null = null
+  let restoreOnly: ((only: ReadonlySet<string>, current: () => boolean) => Promise<RestoreSummary>) | null = null
   const heldLaunches = createHeldLaunches({
     registry,
-    restore: (only) => restoreOnly?.(only) ?? Promise.resolve({ restored: [], skipped: [], failed: [], held: [], unsurveyed: [] }),
+    restore: (only, current) => restoreOnly?.(only, current) ?? Promise.resolve({ restored: [], skipped: [], failed: [], held: [], unsurveyed: [] }),
     log: (line) => console.log(line),
   })
   wakeGateway({ outOfProcess: servicesTheMasterRuns(process.env, KNOWN_SERVICES), signedIn: !!session, dataDir: env.ADAPTER_DATA_DIR, want: (service) => coreLink.want(service) })
@@ -1966,9 +1972,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
    * OpenCode launch alone, by OpenCode's own code: every launch of OpenCode loads it before asking, and is refused
    * without it (core/agents/create.ts, lib/launchOverrides.ts).
    */
-  const gridLaunchMachine = async (engine: AgentEngine): Promise<GridLaunchMachine> => ({
+  const gridLaunchMachine = async (engine: AgentEngine, native?: NativeLaunch): Promise<GridLaunchMachine> => ({
     hermesSystemManaged: existsSync(HERMES_SYSTEM_MANAGED_DIR),
-    opencodeMajor: engine === 'opencode' ? await opencodeMajorVersion() : null,
+    opencodeMajor: native ? native.opencodeMajor : engine === 'opencode' ? await opencodeMajorVersion() : null,
+    ...(native?.environment.HOME ? {
+      grokHome: nativeHookLocations(native.environment).GROK_HOME,
+      piSkillsDir: join(nativeHookLocations(native.environment).PI_AGENT_DIR, 'skills'),
+    } : {}),
   })
 
   /**
@@ -1982,8 +1992,17 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const gridLaunch = gridLaunchThrough(() => ports.models ?? MODELS_OFF)
   const dshLaunch = dshThrough({ store: () => ports.store ?? STORE_OFF,
     nameOf: id => installedDsh(id)?.manifest.name, account: () => ({ privateGrid: backend.gridName() }) })
+  const prepareNativeLaunch = createNativeLaunchPreparer({
+    installations: createNativeInstallations({ directory: join(env.ADAPTER_DATA_DIR, 'native-installations') }),
+    inspect: (engine, source) => inspectNativeLaunch(engine, source, {
+      confirmHome: (engine, home) => { confirmHomes({ [sessionStoreContracts[engine].sessions.moved.variable]: home }) },
+    }),
+  })
   const launchOverridesDeps: LaunchOverridesDeps = {
+    publishConfig: publishGridConfigDir,
     machine: gridLaunchMachine,
+    native: prepareNativeLaunch,
+    prepareNative: (native, current, environment, clear) => native.prepareHooks(env.DISABLE_HOOK_INSTALL ? 0 : hookPort, current, environment, clear),
     gridLaunch,
     writeGridConfigDir,
     tmuxSupportsSessionEnv,
@@ -1992,8 +2011,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   }
   // What a relaunch needs to bring a pane back (core/agents/launch.ts). Declared before the restore
   // pass below, which calls these for every pane it rebuilds.
+  const launchAuthority = createLaunchAuthority({ byAgent: id => registry.byAgent(id), revision: restoreRevision, cancelled: id => launchCancelled(id) })
   const launchHelpers = createLaunchHelpers({
-    authority: createLaunchAuthority({ byAgent: id => registry.byAgent(id), revision: restoreRevision, cancelled: id => launchCancelled(id) }),
+    authority: launchAuthority,
     prepareApiTools,
     launchOverridesDeps,
     setGridLaunch: (agentId, launch) => registry.setGridLaunch(agentId, launch),
@@ -2035,7 +2055,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     if (saved && !isTerminalEngine(saved.engine)) retainExitedSession(entry, true)
   }
   // Later passes over held agents (core/agents/heldLaunches.ts) wait for this one.
-  await heldLaunches.boot(async () => {
+  await heldLaunches.boot(async (current) => {
   if (tmuxBackend) {
    // Best effort, like the cwd repair above it: panes that cannot be rebuilt cost this boot its
    // tiles, not the daemon. `restoreDegraded` then stops discovery retiring the rows whose panes
@@ -2043,7 +2063,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
    try {
     const backend = tmuxBackend
     const restoreDeps: RestoreAgentsDeps = {
-      cancelled: (agentId) => restoreCancelled(agentId),
+      cancelled: (agentId) => !current() || restoreCancelled(agentId),
       revision: (agentId) => restoreRevision(agentId),
       paneOperation: restorePanes.run,
       paneAllocations: restorePanes.runMany,
@@ -2061,11 +2081,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       liveProcess: (entry, runtime) => tmuxSurvey(() => listTmuxPanes(), lookupPaneEngineProcess).liveProcess(entry, runtime),
       buildLaunch: createRestoreLaunch({
         workspaceMissing, relaunchOverrides, prepareSessionResume, refreshGridWebSearch,
-        downgradedPermission: (entry) => downgradedPermission(entry, entry.bypassPermission === true, 'restore'),
+        downgradedPermission: (entry, native) => downgradedPermission(entry, entry.bypassPermission === true, 'restore', native),
         launch: (entry, opts, overrides, permission) => {
           const { env: launchEnv, extraArgs, clearEnv } = overrides
           const argv = buildEngineLaunchArgv(entry.engine, {
             ...opts,
+            ...(overrides.native ? { native: overrides.native } : {}),
             ...(entry.externalResume?.continue && entry.externalResume.signal === 'sent' && !entry.externalResume.dispatched && supportsFirstPrompt(entry.engine) ? { firstPrompt: 'continue' } : {}),
             bypassPermission: permission.bypassPermission === true,
             ...(permission.permissionMode ? { permissionMode: permission.permissionMode } : {}),
@@ -2075,7 +2096,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
             ...(clearEnv.length ? { clearEnv } : {}),
             ...(launchEnv.HARNESS_DSH ? { harnessNode: true } : {}),
           })
-          return { argv, ...(Object.keys(launchEnv).length ? { env: launchEnv } : {}) }
+          return { argv, ...(overrides.native ? { nativeToken: overrides.native.token, current: overrides.native.current } : {}), ...(Object.keys(launchEnv).length ? { env: launchEnv } : {}) }
         },
       }),
       createPane: async (entry, launch, control) => {
@@ -2107,12 +2128,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       triggerHint: async (runtime, engine) => { await agentReconciler.triggerHint(runtime, engine) },
       log: (message) => console.log(message),
       // A grid's or a saved API's launch asks models: not before the core is ready (core/agents/heldLaunches.ts).
-      needs: (entry) => [...(externalResumePending(entry.externalResume) ? ['search'] : []), ...(entry.gridLaunch ? ['models'] : []), ...(entry.dsh ? ['store'] : [])],
-      waitingLaunch: (entry, held) => ({ argv: heldPaneArgv(held.detail, entry.externalResume?.token) }),
+      needs: (entry) => [...(externalResumePending(entry.externalResume) ? ['search'] : []), ...(entry.gridLaunch ? ['models'] : []), ...(entry.dsh ? ['store'] : []), ...(!isTerminalEngine(entry.engine) ? ['native'] : [])],
+      waitingLaunch: (entry, held) => ({ argv: heldPaneArgv(held.detail, entry.externalResume?.token ?? held.nativeToken) }),
       killPane: async (runtime) => { await backend.kill(runtime) },
     }
     // Later passes launch the held agents, into the panes they wait in, outside this pass's transaction.
-    restoreOnly = (only) => restoreAgents({ ...restoreDeps, only })
+    restoreOnly = (only, current) => restoreAgents({ ...restoreDeps, only, cancelled: id => !current() || restoreCancelled(id) })
     const summary = await restoreAgents({ ...restoreDeps, defer: true })
     // A row restore could not look at keeps its pane for discovery to judge, but not to retire this boot.
     for (const agentId of summary.unsurveyed) restoreUnsurveyed.add(agentId)
@@ -2254,6 +2275,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Watching a pane create or fork just opened until its engine is up, or why not (core/agents/newPane.ts).
   const watchNewPane = createPaneWatcher({
+    waitingPane: (runtime, token) => tmuxBackend?.isHeld(runtime, token) ?? Promise.resolve('unknown'),
     registry,
     announceSession,
     triggerHint: async (runtime, engine) => { await agentReconciler.triggerHint(runtime, engine) },
@@ -2268,13 +2290,15 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     waiting: row => tmuxBackend?.isHeld({ backend: 'tmux', paneId: row.tmuxPane }, row.externalResume!.token).then(value => value === true) ?? Promise.resolve(false),
     inspect: request => ports.search?.inspect(request) ?? Promise.resolve(externalUnavailable()),
     preflight: createExternalPreflight({ blocksFolder: cwd => backend.purgeAgentService?.blocksFolder(cwd),
-      hookPort, hooksDisabled: env.DISABLE_HOOK_INSTALL, installOpencodePlugin: installOpencodePluginBeforeSpawn }),
+      native: prepareNativeLaunch, hookPort, hooksDisabled: env.DISABLE_HOOK_INSTALL, installOpencodePlugin: installOpencodePluginBeforeSpawn }),
     announce: announceSession, launch: () => { void heldLaunches.restoreHeld('search') },
     forget: id => forgetSession(id, { force: true }),
   })
 
   // Creating an agent (core/agents/create.ts).
-  backend.onCreateAgent = createAgentCreator({
+  const creator = createAgentCreator({
+    publishConfig: publishGridConfigDir,
+    native: prepareNativeLaunch,
     dshLaunch,
     tmuxBackend,
     registry,
@@ -2297,9 +2321,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The backend's word, else what the models service works out (services/models.ts).
     privateGridName: async () => backend.gridName() ?? await (ports.models ?? MODELS_OFF).privateGridName(),
   })
+  backend.onCreateAgent = creator
 
   // Forking an agent (core/agents/fork.ts).
   backend.onForkAgent = createAgentForker({
+    native: prepareNativeLaunch,
+    prepareNative: launchOverridesDeps.prepareNative,
+    authority: launchAuthority,
     dshLaunch,
     tmuxBackend,
     registry,
@@ -2406,6 +2434,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Restarting an agent in its own pane (core/agents/restart.ts).
   const restartAgent = createAgentRestarter({
+    native: prepareNativeLaunch,
     restartJobs,
     registry,
     purgeBusy: (agentId) => restorePanes.busy(agentId) || backend.purgeAgentService?.busy(agentId),
@@ -2429,6 +2458,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const launches = createLaunchRequests({
     receipts: new AgentCreationReceipts(join(env.ADAPTER_DATA_DIR, 'agent-creations')),
     createAgent: () => backend.onCreateAgent, forkAgent: () => backend.onForkAgent,
+    prepareCreate: creator.prepare,
     resumeAgent: () => lifecycle.resumeAgent, restartAgent: () => restartAgent,
     byAgent: (id) => registry.byAgent(id), toProject: (s) => backend.toProject(s),
     modelTarget: (selection) => (ports.models ?? MODELS_OFF).launchTarget(selection),
@@ -2469,7 +2499,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // stops being `bootHandoff` HERE, and not a line earlier: everything the teardown releases exists by now.
   // A straight-line assignment, never a wait: if the body never reaches this line the handler stays
   // `bootHandoff`, and the fix still lands.
-  const updateTeardown = (): TeardownStep[] => { installedHooks?.close(); externalResumes?.stop(); launches.stop(); return [
+  const updateTeardown = (): TeardownStep[] => { heldLaunches.close(); installedHooks?.close(); externalResumes?.stop(); launches.stop(); return [
     ['the registry', () => registry.flush({ exiting: true })], ['the updater', () => daemonBoot.updaterBeside?.()],
     ['the reconciler', () => agentReconciler.stop()],
     ['the timers', () => { clearInterval(logTrimTimer); clearInterval(runtimeReconcileTimer); clearInterval(paneTitleSyncTimer) }],
@@ -2506,6 +2536,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
    *  which restarts any other exit (harnessd/protocol.ts). */
   const forGood = (reason: string): boolean => reason === 'revoked' || reason === 'busy'
   const shutdown = async (signal: string): Promise<void> => {
+    heldLaunches.close()
     installedHooks?.close()
     externalResumes?.stop()
     launches.stop()

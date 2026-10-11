@@ -6,6 +6,7 @@ import { env } from '../../config/env.js'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
 import { HookPreparationHeld } from './nativeHookFiles.js'
 import { cursorDataDir } from '../cursor/contract.js'
+import { nativeHookLocations } from './nativeLocations.js'
 
 // notify.mjs location depends on the layout (import.meta.url is the REAL executing file at runtime):
 //  - packaged/bundled: cli.js at ~/.harness/cli/cli.js → notify.mjs is a SIBLING (dist/ bundle too).
@@ -43,7 +44,9 @@ export function command(
   // config.yaml, and the block in it carried the DEFAULT home — so the hook looked the session up in
   // a store it was not in (openharness#191). See installHermesHooks.
   hermesHome: string = env.HERMES_HOME,
+  environment?: Readonly<Record<string, string>>,
 ): string {
+  const homes = environment ? nativeHookLocations(environment) : { ...env, CURSOR_HOME: cursorDataDir() }
   return [
     // Absolute, never the bare word `node`. This string is executed later by the ENGINE, in a shell
     // whose PATH is none of our business — and since the product ships its own Node, a computer with
@@ -53,15 +56,15 @@ export function command(
     shellQuote(HOOK_SCRIPT),
     '--port', String(port),
     '--data-dir', shellQuote(env.ADAPTER_DATA_DIR),
-    '--claude-projects-dir', shellQuote(env.CLAUDE_PROJECTS_DIR),
-    '--codex-home', shellQuote(codexHome),
-    '--grok-home', shellQuote(env.GROK_HOME),
-    '--cursor-home', shellQuote(cursorDataDir()),
-    '--hermes-home', shellQuote(hermesHome),
-    '--commandcode-home', shellQuote(env.COMMANDCODE_HOME),
-    '--devin-home', shellQuote(env.DEVIN_HOME),
-    '--agy-home', shellQuote(env.AGY_HOME),
-    '--copilot-home', shellQuote(env.COPILOT_HOME),
+    '--claude-projects-dir', shellQuote(homes.CLAUDE_PROJECTS_DIR),
+    '--codex-home', shellQuote(environment ? homes.CODEX_HOME : codexHome),
+    '--grok-home', shellQuote(homes.GROK_HOME),
+    '--cursor-home', shellQuote(homes.CURSOR_HOME),
+    '--hermes-home', shellQuote(environment ? homes.HERMES_HOME : hermesHome),
+    '--commandcode-home', shellQuote(homes.COMMANDCODE_HOME),
+    '--devin-home', shellQuote(homes.DEVIN_HOME),
+    '--agy-home', shellQuote(homes.AGY_HOME),
+    '--copilot-home', shellQuote(homes.COPILOT_HOME),
     ...(engine !== 'claude' ? ['--engine', engine] : []),
   ].join(' ')
 }
@@ -112,7 +115,7 @@ export function isOurs(block: HookBlock): boolean {
 
 /** A managed command can share a block with somebody else's command. Updating
  * ours must keep those siblings and the block's matcher and other fields. */
-export function foreignHookBlocks(blocks: HookBlock[]): HookBlock[] {
+export function foreignHookBlocks(blocks: HookBlock[], owns: (block: HookBlock) => boolean = isOurs): HookBlock[] {
   for (const block of blocks) {
     if (!block || typeof block !== 'object' || !Array.isArray(block.hooks) || block.hooks.some(hook =>
       !hook || typeof hook !== 'object' || (hook.command !== undefined && typeof hook.command !== 'string'))) {
@@ -120,8 +123,8 @@ export function foreignHookBlocks(blocks: HookBlock[]): HookBlock[] {
     }
   }
   return blocks.flatMap(block => {
-    if (!isOurs(block)) return [block]
-    const hooks = block.hooks.filter(hook => !isOurs({ hooks: [hook] }))
+    if (!owns(block)) return [block]
+    const hooks = block.hooks.filter(hook => !owns({ hooks: [hook] }))
     return hooks.length ? [{ ...block, hooks }] : []
   })
 }

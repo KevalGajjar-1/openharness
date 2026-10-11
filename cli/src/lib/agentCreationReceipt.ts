@@ -15,6 +15,13 @@ export type AgentCreationStatus = AgentCreationOutcome
 
 export interface CreationHold { service: string; detail: string }
 export interface PendingCreationIntent { id: string; fingerprint: string; request: Record<string, unknown>; held: CreationHold }
+export interface CreationAuthority {
+  readonly id: string
+  /** The original durable intent still owns preparation, or this callback's exact dispatch claim. */
+  current(): boolean
+  /** Status only; a hold is never permission to repeat an effect. */
+  hold(reason: CreationHold): void
+}
 
 /** An undispatched request can be recovered. A claimed request cannot: even a
  * dead owner may have left a live child, or changed a project before it died. */
@@ -140,11 +147,11 @@ export class AgentCreationReceipts {
   }
 
   /** Persist the complete private request before looking up its dependencies.
-   * `prepare` may repeat service-owned credential refreshes, but MUST NOT prepare
-   * projects, write launch configuration, signal or dispatch a process. It hands
-   * back the effect callback only when its dependencies are ready. */
+   * `prepare` may repeat service-owned credential refreshes and independently
+   * journalled preparation. It MUST NOT signal or dispatch the agent process.
+   * It hands back that effect only when all dependencies are ready. */
   runIntent(id: string, fingerprint: string, request: Record<string, unknown>, held: CreationHold,
-    prepare: (request: Record<string, unknown>) => Promise<(() => Promise<AgentCreationOutcome>) | null>,
+    prepare: (request: Record<string, unknown>, authority: CreationAuthority) => Promise<(() => Promise<AgentCreationOutcome>) | null>,
   ): Promise<AgentCreationStatus> {
     const running = this.inFlight.get(id)
     if (running) {
@@ -175,9 +182,33 @@ export class AgentCreationReceipts {
       }
       return current
     }
+    let dispatchToken: string | undefined
+    let alive = true
+    const authority: CreationAuthority = {
+      id,
+      current: () => {
+        if (!alive) return false
+        try {
+          if ('cancelled' in currentReceipt()) return false
+          const claim = this.claim(id)
+          if (!claim) return !dispatchToken && this.intentStatus(id, saved, false).state === 'pending'
+          const status = this.intentStatus(id, saved, false)
+          return !!dispatchToken && status.state === 'unconfirmed' && !this.intentResults.has(id)
+            && !this.readIntentPart(this.intentFile(id, 'result'))
+            && claim.kind === 'dispatch' && claim.fingerprint === fingerprint && claim.token === dispatchToken
+        } catch { return false }
+      },
+      hold: reason => {
+        if (!authority.current() || dispatchToken) return
+        if (!reason.service || reason.service.length > 128 || !reason.detail || reason.detail.length > 2000) return
+        // This replaceable sidecar is presentation only. The immutable intent,
+        // exclusive claim and exact result remain the entire dispatch authority.
+        this.writeHold(id, { checksum: saved.checksum, held: { ...reason } })
+      },
+    }
     const result = Promise.resolve().then(async (): Promise<AgentCreationStatus> => {
       let effect: (() => Promise<AgentCreationOutcome>) | null
-      try { effect = await prepare(saved.request) }
+      try { effect = await prepare(saved.request, authority) }
       catch { effect = null }
       const current = this.intentStatus(id, currentReceipt(), false)
       if (!effect || current.state !== 'pending') return current
@@ -185,6 +216,7 @@ export class AgentCreationReceipts {
       // Exactly the successful publisher executes. In particular, seeing our
       // own claim after a failed directory fsync never grants a second attempt.
       if (!this.publish(this.intentFile(id, 'claim'), claim, true)) return this.intentStatus(id, saved, false)
+      dispatchToken = claim.token
       // A directory or primary intent replaced during service preparation must
       // not inherit this callback's authority, even if a later cancel created a
       // fresh tombstone at the same pathname. The open descriptor pins identity.
@@ -203,7 +235,7 @@ export class AgentCreationReceipts {
         return this.intentStatus(id, currentReceipt(), false)
       }
       return outcome
-    }).finally(() => { directory.close(); clearTimeout(replyTimer); this.inFlight.delete(id) })
+    }).finally(() => { alive = false; directory.close(); clearTimeout(replyTimer); this.inFlight.delete(id) })
     // The client gets its held receipt promptly while the SAME preparation
     // continues. A slow successful service answer can still win dispatch;
     // reconnects must not start several preparations for that one request.
@@ -295,7 +327,7 @@ export class AgentCreationReceipts {
     }
     if (!claim) {
       if (result) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
-      return { state: 'pending', held: receipt.held }
+      return { state: 'pending', held: this.readHold(id, receipt) }
     }
     if (claim.fingerprint !== receipt.fingerprint) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     if (claim.kind === 'cancel') {
@@ -333,6 +365,28 @@ export class AgentCreationReceipts {
       return true
     } catch { throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED') }
     finally { if (opened) rmSync(temporary, { force: true }) }
+  }
+
+  private readHold(id: string, receipt: Extract<IntentReceipt, { checksum: string }>): CreationHold {
+    try {
+      const value = JSON.parse(readPrivateStateFile(join(this.directory, `${id}.hold`), 16_384))
+      if (value.checksum === receipt.checksum && typeof value.held?.service === 'string' && value.held.service.length <= 128
+        && typeof value.held.detail === 'string' && value.held.detail.length <= 2000) return value.held
+    } catch { /* Missing or damaged status cannot grant or revoke dispatch. */ }
+    return receipt.held
+  }
+
+  private writeHold(id: string, value: { checksum: string; held: CreationHold }): void {
+    const target = join(this.directory, `${id}.hold`), temporary = `${target}.${randomUUID()}.tmp`
+    let fd: number | undefined
+    try {
+      secureStateDirectory(this.directory, false)
+      fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+      writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd)
+      renameSync(temporary, target); this.syncDirectory()
+    } finally {
+      if (fd !== undefined) { closeSync(fd); rmSync(temporary, { force: true }) }
+    }
   }
 
   private syncDirectory(path = this.directory, ancestor = false): void {

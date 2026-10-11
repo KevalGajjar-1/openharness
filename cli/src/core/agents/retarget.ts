@@ -32,6 +32,7 @@ import { workspaceMissing } from '../../lib/workspaceCheck.js'
 import type { createLaunchHelpers } from './launch.js'
 import type { PaneSwap } from './swap.js'
 import { createLaunchAuthority } from './launchAuthority.js'
+import { nativeOpencodeStore } from '../../engines/kit/nativeLocations.js'
 
 type LaunchHelpers = ReturnType<typeof createLaunchHelpers>
 
@@ -135,7 +136,11 @@ export function createAgentRetargeter({
       codexHome: session.codexHome,
       ...(grid ? {} : { subscriptionModel: remembered }),
     }
-    const valid = await validateLaunchOverrides(launchOverridesDeps, session.engine, target)
+    const inspected = await launchOverridesDeps.native?.(session.engine, session, { id: session.agentId, current })
+    if (!current()) return changed()
+    if (inspected && !inspected.ok) return inspected
+    const native = inspected?.ok ? inspected.launch : undefined
+    const valid = await validateLaunchOverrides(launchOverridesDeps, session.engine, target, native)
     if (!current()) return changed()
     if (!valid.ok) return { ok: false, error: valid.error, detail: valid.detail }
     // A resumed opencode session takes its model from its own rows in opencode.db, not from `-m`
@@ -149,7 +154,7 @@ export function createAgentRetargeter({
     const rewritesOpencodeSession = session.engine === 'opencode' && !!session.sessionId
       && (!!grid || !!remembered?.includes('/'))
     const opencode = session.engine === 'opencode' ? opencodeLaunch : null
-    const opencodeMajor = opencode ? await opencode.opencodeMajorVersion() : null
+    const opencodeMajor = native ? native.opencodeMajor : opencode ? await opencode.opencodeMajorVersion() : null
     if (!current()) return changed()
     if (rewritesOpencodeSession && opencode && !opencode.isOpencodeV2(opencodeMajor) && !binaryOnPath('sqlite3')) {
       return {
@@ -187,9 +192,13 @@ export function createAgentRetargeter({
       // (clearing uses set-environment, which every supported tmux has). Built from the override the
       // desktop just sent, never from the row: the row is what this call REPLACES. After the refusal
       // guards, so a refused move leaves the live process's own configuration untouched.
-      const built = await relaunchOverrides(session, target, current)
+      const built = await relaunchOverrides(session, target, current, native)
       if (!current()) return changed()
       if (!built.ok) return { ok: false, error: built.error, detail: built.detail }
+      const dispatchCurrent = () => current() && native?.current() !== false && built.overrides.native?.current() !== false
+      const preparationChanged = () => current()
+        ? failed('NATIVE_LAUNCH_HELD', 'Waiting for fresh executable and hook evidence.') : changed()
+      if (!dispatchCurrent()) return preparationChanged()
 
       // ⚠️ THE AGENT MUST ADOPT THE NEW PROCESS, OR IT STOPS BEING THE SAME AGENT.
       //
@@ -233,13 +242,13 @@ export function createAgentRetargeter({
         if (model) {
           nativeEffect = 'uncertain'
           const written = await opencode.applyOpencodeSessionModel({
-            opencodeMajor, dbPath: opencodeDb, sessionId: session.sessionId, model, cwd: session.cwd ?? undefined,
+            opencodeMajor, dbPath: native ? nativeOpencodeStore(native.environment) : opencodeDb, sessionId: session.sessionId, model, cwd: session.cwd ?? undefined,
             // (A model of opencode's own is looked for in its catalogue; a grid's provider lives in
             // the pane's own config, which the service never reads.)
             checkCatalog: !grid,
-          }, { current })
+          }, { current: dispatchCurrent, ...(native?.executable ? { executable: native.executable, environment: { ...built.overrides.env, ...native.environment } } : {}) })
           nativeEffect = written.ok ? 'applied' : (written.effect ?? 'none')
-          if (!current()) return changed()
+          if (!dispatchCurrent()) return preparationChanged()
           if (!written.ok) {
             console.warn(`[grid] retarget ${sid(session.agentId)} refused · ${written.code} · ${written.detail}`)
             return { ok: false, error: written.code, detail: written.detail }
@@ -247,20 +256,21 @@ export function createAgentRetargeter({
         }
       }
       if (!grid) {
-        const cleared = await tmuxBackend.clearEnv(pane, gridEnvVarNames(session.engine), current)
-        if (!current()) return changed()
+        const cleared = await tmuxBackend.clearEnv(pane, gridEnvVarNames(session.engine), dispatchCurrent)
+        if (!dispatchCurrent()) return preparationChanged()
         if (cleared.state !== 'succeeded') {
           return failed('GRID_CLEAR_FAILED', 'reason' in cleared ? cleared.reason : 'tmux would not clear the pane environment')
         }
       }
       const bypassPermission = await bypassPermissionFor(session, () => liveBypassPermission(session))
       if (!current()) return changed()
-      const retargetPermission = await downgradedPermission(session, bypassPermission, 'retarget')
+      const retargetPermission = await downgradedPermission(session, bypassPermission, 'retarget', native)
+      if (retargetPermission.nativeHold || native?.current() === false) return failed('NATIVE_LAUNCH_HELD', retargetPermission.nativeHold ?? 'Waiting for fresh executable and hook evidence.')
       if (!current()) return changed()
       const outcome = await restartAgent(
         { engine: session.engine, sessionId: session.sessionId, ...(session.resumeOnly ? { resumeOnly: true as const } : {}) },
         retargetPermission.bypassPermission === true,
-        { ...paneSwapDeps(session, pane, built.overrides, retargetPermission.permissionMode ?? null, current), isCurrent: current },
+        { ...paneSwapDeps(session, pane, built.overrides, retargetPermission.permissionMode ?? null, dispatchCurrent), isCurrent: dispatchCurrent },
       )
       replacementStarted = outcome.ok
       if (!current()) return changed()

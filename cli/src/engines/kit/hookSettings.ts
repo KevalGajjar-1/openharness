@@ -12,7 +12,8 @@ import type { HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
 import { isMessagesBlock, messagesCommand, writeMessagesHook } from './messagesHook.js'
 import { command, HOOK_SCRIPT, isOurs, foreignHookBlocks, type Settings } from './notifyHooks.js'
-import { HookPreparationHeld, inspectHookFile, runHookPreparation, type HookPreparationOptions } from './nativeHookFiles.js'
+import { HookPreparationHeld, inspectHookFile, runHookPreparation, type HookPreparationProof } from './nativeHookFiles.js'
+import type { NativeHookOptions } from './nativeLocations.js'
 
 /** The engines whose hooks run the notify.mjs command. */
 export type HookEngine = Parameters<typeof command>[1]
@@ -22,12 +23,18 @@ export function defaultHookHome(settings: HookSettings): string {
   return 'setting' in settings.home ? env[settings.home.setting] : join(homedir(), settings.home.inHome)
 }
 
-export async function installHookSettings(engine: HookEngine, settings: HookSettings, port: number, home: string = defaultHookHome(settings), options: HookPreparationOptions = {}): Promise<boolean> {
-  const ready = await installNotifyHooks(engine, settings, port, home, options)
+export async function installHookSettings(engine: HookEngine, settings: HookSettings, port: number, home: string = defaultHookHome(settings), options: NativeHookOptions = {}): Promise<boolean> {
+  // Both blocks share the same settings file. Publish only its final proof; the
+  // earlier notify-only bytes cannot authorize a child after the inbox block is added.
+  let proof: HookPreparationProof | undefined
+  const preparation = { ...options, confirmed: (value: HookPreparationProof) => { proof = value } }
+  const ready = await installNotifyHooks(engine, settings, port, home, preparation)
   // Agent Messages' block after Harness's own, and never in its way: whatever becomes of it, the answer is the
   // notify hooks' (a Codex agent's create waits on it, core/agents/create.ts).
-  if (ready && settings.inbox) await installMessagesBlock(settings, home, options)
-  return ready
+  if (ready && proof && settings.inbox) await installMessagesBlock(settings, home, preparation, proof)
+  if (!ready || !proof || !proof.current()) return false
+  options.confirmed?.(proof)
+  return true
 }
 
 /**
@@ -37,13 +44,16 @@ export async function installHookSettings(engine: HookEngine, settings: HookSett
  * cannot write (read-only, held) costs only Agent Messages' delivery at a tool call: a message still reaches
  * an idle agent, typed. Says nothing unless it fails.
  */
-async function installMessagesBlock(settings: HookSettings, home: string, options: HookPreparationOptions): Promise<void> {
+async function installMessagesBlock(settings: HookSettings, home: string, options: NativeHookOptions, required: HookPreparationProof): Promise<void> {
   const file = join(home, settings.file)
   const root = env.HARNESS_AGENT_MESSAGES_DIR
   const inboxCommand = messagesCommand(root)
   const event = settings.inbox!.event
   try {
     await runHookPreparation([file, ...(settings.reviewed ? [join(home, settings.reviewed.file)] : [])], async attempt => {
+      // The optional block may extend only the required hooks we just installed. A peer's edit
+      // in the gap between reservations is not a new native launch authority.
+      if (!required.current()) throw new HookPreparationHeld('the required native hooks changed before the inbox update')
       const observed = inspectHookFile(file)
       const current = (observed.content === null ? {} : JSON.parse(observed.content)) as Settings
       if (!current || typeof current !== 'object' || Array.isArray(current) || !current.hooks || typeof current.hooks !== 'object'
@@ -54,7 +64,7 @@ async function installMessagesBlock(settings: HookSettings, home: string, option
       const ours = blocks.filter(isMessagesBlock)
       const changed = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
         || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
-      current.hooks[event] = [...blocks.filter((b) => !isMessagesBlock(b)), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
+      current.hooks[event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
       const next = changed ? JSON.stringify(current, null, 2) + '\n' : observed.content!
       const reviewed = settings.reviewed ? prepareReviewed(settings.reviewed, home, file, JSON.parse(next) as Settings) : null
       reviewed?.verify()
@@ -63,15 +73,15 @@ async function installMessagesBlock(settings: HookSettings, home: string, option
       published.verify(); approval?.verify()
       writeMessagesHook(root)
       return true
-    }, { ...options, identity: JSON.stringify(['agent-messages', settings, home, inboxCommand]) })
+    }, { ...options, identity: JSON.stringify(['agent-messages', settings, home, inboxCommand, required.files]) })
   } catch (err) {
     console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, err instanceof Error ? err.message : err)
   }
 }
 
-async function installNotifyHooks(engine: HookEngine, settings: HookSettings, port: number, home: string, options: HookPreparationOptions): Promise<boolean> {
+async function installNotifyHooks(engine: HookEngine, settings: HookSettings, port: number, home: string, options: NativeHookOptions): Promise<boolean> {
   const file = join(home, settings.file)
-  const cmd = command(port, engine, settings.commandNamesHome ? home : undefined)
+  const cmd = command(port, engine, settings.commandNamesHome ? home : undefined, undefined, options.environment)
   const say = (line: string): string => line.replace(/\{(file|script|port)\}/g, (_, name: string) =>
     name === 'file' ? file : name === 'script' ? HOOK_SCRIPT : String(port))
   const { messages } = settings

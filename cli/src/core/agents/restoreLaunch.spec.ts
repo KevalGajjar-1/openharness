@@ -4,6 +4,7 @@ import type { LaunchOverridesResult } from '../../lib/launchOverrides.js'
 import { createRestoreLaunch } from './restoreLaunch.js'
 import { createLaunchHelpers } from './launch.js'
 import { createLaunchAuthority } from './launchAuthority.js'
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 
 const entry = { agentId: 'agent', sessionId: 'conversation', cwd: '/workspace' } as RegisteredSession
 const built: Extract<LaunchOverridesResult, { ok: true }> = { ok: true, overrides: { env: {}, extraArgs: [], clearEnv: [] } }
@@ -19,6 +20,21 @@ const setup = () => {
 }
 
 describe('restore preparation keeps session authority in core', () => {
+  it.each(['unknown flags', 'changed executable', 'ready'] as const)('preserves native preparation evidence through restore: %s', async stage => {
+    const { deps, build } = setup()
+    const native = { current: () => stage !== 'changed executable' } as NativeLaunch
+    deps.relaunchOverrides.mockResolvedValue({ ok: true, overrides: { ...built.overrides, native } })
+    if (stage === 'unknown flags') deps.downgradedPermission.mockResolvedValue({ bypassPermission: false, nativeHold: 'Waiting for executable help.' } as never)
+    const result = await build(entry, { current: () => true })
+    expect(deps.downgradedPermission).toHaveBeenCalledWith(entry, native)
+    if (stage === 'ready') expect(result).toEqual({ argv: ['engine'] })
+    else {
+      expect(result).toMatchObject({ held: 'native' })
+      expect(deps.launch).not.toHaveBeenCalled()
+      expect(deps.refreshGridWebSearch).not.toHaveBeenCalled()
+    }
+  })
+
   it.each(['dead process', 'terminal fallback', 'fresh fallback'] as const)('composes preparation for a legitimate %s projection', async projection => {
     const live = { ...entry, engine: 'claude', active: true, launch: { state: 'ready' },
       processIdentity: { pid: 42, startMarker: 'old' }, runtimes: [{ backend: 'tmux', paneId: '%7' }],

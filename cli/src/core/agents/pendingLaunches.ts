@@ -1,4 +1,4 @@
-import type { AgentCreationOutcome, AgentCreationReceipts, CreationHold, PendingCreationIntent } from '../../lib/agentCreationReceipt.js'
+import type { AgentCreationOutcome, AgentCreationReceipts, CreationAuthority, CreationHold, PendingCreationIntent } from '../../lib/agentCreationReceipt.js'
 
 export type PreparedCreation = (() => Promise<AgentCreationOutcome>) | null
 export type IntentReceipts = Pick<AgentCreationReceipts, 'runIntent' | 'pendingIntents' | 'pendingIntent' | 'cancelIntent'>
@@ -7,7 +7,7 @@ export type IntentReceipts = Pick<AgentCreationReceipts, 'runIntent' | 'pendingI
  * service calls and never replays an effect whose durable claim already exists. */
 export function createPendingLaunches({ receipts, prepare }: {
   receipts: IntentReceipts
-  prepare: (request: Record<string, unknown>) => Promise<PreparedCreation>
+  prepare: (request: Record<string, unknown>, authority: CreationAuthority) => Promise<PreparedCreation>
 }) {
   let stopped = false
   let opened = false
@@ -30,32 +30,35 @@ export function createPendingLaunches({ receipts, prepare }: {
     else crowded = true // The complete request is already durable on disk.
   }
 
-  const prepareOne = async (id: string, request: Record<string, unknown>): Promise<PreparedCreation> => {
+  const prepareOne = async (id: string, request: Record<string, unknown>, authority: CreationAuthority): Promise<PreparedCreation> => {
     active++
+    let expired = false
+    const current = () => !stopped && !expired && authority.current()
+    const boundedAuthority: CreationAuthority = { id, current, hold: reason => { if (current()) authority.hold(reason) } }
     let deadline: ReturnType<typeof setTimeout> | undefined
     try {
       const ready = await Promise.race([
         // Retain a timed-out service's slot until its promise settles instead
         // of accumulating unlimited abandoned preparations during an outage.
-        Promise.resolve().then(() => prepare(request)).catch(() => null).finally(() => { active--; preparing.delete(id) }),
+        Promise.resolve().then(() => prepare(request, boundedAuthority)).catch(() => null).finally(() => { active--; preparing.delete(id) }),
         // launchTarget permits three minutes for credential preparation. The
         // receipt answers pending after five seconds without ending this work.
-        new Promise<null>(resolve => { deadline = setTimeout(() => resolve(null), 185_000); deadline.unref?.() }),
+        new Promise<null>(resolve => { deadline = setTimeout(() => { expired = true; resolve(null) }, 185_000); deadline.unref?.() }),
       ])
-      return stopped || !ready ? null : () => stopped ? Promise.resolve({ state: 'unconfirmed' }) : ready()
+      return !current() || !ready ? null : () => !current() ? Promise.resolve({ state: 'unconfirmed' }) : ready()
     } finally { clearTimeout(deadline) }
   }
-  const bounded = (id: string, request: Record<string, unknown>): Promise<PreparedCreation> => {
+  const bounded = (id: string, request: Record<string, unknown>, authority: CreationAuthority): Promise<PreparedCreation> => {
     if (stopped) return Promise.resolve(null)
     const existing = preparing.get(id)
     if (existing) return existing
     if (active >= 4) return Promise.resolve(null)
-    const result = prepareOne(id, request)
+    const result = prepareOne(id, request, authority)
     preparing.set(id, result)
     return result
   }
   const start = (id: string, fingerprint: string, request: Record<string, unknown>, held: CreationHold) => {
-    const result = receipts.runIntent(id, fingerprint, request, held, saved => bounded(id, saved))
+    const result = receipts.runIntent(id, fingerprint, request, held, (saved, authority) => bounded(id, saved, authority))
     remember(id, Date.now() + 2_000)
     // Under backlog pressure, a settled hold gives its window slot to the next
     // disk entry. The cursor finishes that pass before revisiting earlier IDs;

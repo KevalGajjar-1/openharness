@@ -7,6 +7,7 @@ import { processRows } from '../../lib/terminalAgentDiscovery.js'
 import { bypassPermissionActive, resolvePaneEngineProcess } from '../../lib/tmux.js'
 import { AgentRestartCoordinator } from '../../lib/restartAgent.js'
 import { createPaneSwap, SWAP_SETTLE_MS, type PaneSwapDeps } from './swap.js'
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 
 vi.mock('../../lib/deleteAgentFallback.js', async (real) => ({ ...await real<object>(), terminateDeletedAgent: vi.fn(async () => ({ ok: true })) }))
 vi.mock('../../lib/engineLaunch.js', async (real) => ({ ...await real<object>(), buildEngineLaunchArgv: vi.fn(() => ['zsh', '-lc', 'claude']) }))
@@ -37,6 +38,12 @@ function setup(row: RegisteredSession | null = session()) {
 }
 
 describe('the pane-process swap', () => {
+  it('passes the prepared native snapshot into the final argv builder', () => {
+    const native = { token: 'prepared-native' } as NativeLaunch
+    const prepared = setup().swap.paneSwapDeps(session(), runtime, { native })
+    prepared.buildArgv({ resumeSessionId: 's1', bypassPermission: false })
+    expect(buildEngineLaunchArgv).toHaveBeenCalledWith('claude', expect.objectContaining({ native, resumeSessionId: 's1' }))
+  })
   beforeEach(() => {
     vi.mocked(terminateDeletedAgent).mockClear()
     vi.mocked(resolvePaneEngineProcess).mockReset().mockResolvedValue(null)

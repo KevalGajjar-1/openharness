@@ -24,7 +24,7 @@ export function parseMajor(rule: VersionRule, output: string): number | null {
   return match ? Number(match[1]) : null
 }
 
-export function nativeVersionProbe(rule: VersionRule, binary: () => string): NativeVersionProbe {
+export function nativeVersionProbe(rule: VersionRule, binary: () => string, environment?: NodeJS.ProcessEnv): NativeVersionProbe {
   // One attempt resolves one command. Previously identity() and read() resolved
   // independently, so a PATH/config change could cache B's answer under A's key.
   let selected: string | null | undefined
@@ -50,7 +50,7 @@ export function nativeVersionProbe(rule: VersionRule, binary: () => string): Nat
       const file = path()
       if (!file) { failed(new Error('Native executable is unavailable')); return }
       const child = execFile(file, [...rule.args], {
-        encoding: 'utf8', timeout: rule.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
+        env: environment, encoding: 'utf8', timeout: rule.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
       }, (error, stdout) => { if (error) failed(error); else done(stdout) })
       child.stdin?.end()
     }),

@@ -29,6 +29,8 @@ import { parseNewAgentModel, type NewAgentModel } from '../../lib/newAgentModel.
 import { parseProjectFolder, prepareProjectFolder, projectsRoot, ProjectFolderError, type ProjectFolder } from '../../lib/projectFolder.js'
 import type { ScmLaunchRecord } from '../../scm/types.js'
 import type { RegisteredSession } from '../../lib/registry.js'
+import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
+import type { LaunchAuthority, LaunchPreparation } from '../../lib/launchPreparation.js'
 import { createPendingLaunches } from './pendingLaunches.js'
 
 /** Creates an agent (core/agents/create.ts). The orchestrator creates through the same one. */
@@ -52,6 +54,7 @@ export interface LaunchRequestDeps {
   receipts: Pick<AgentCreationReceipts, 'run' | 'status' | 'has' | 'runIntent' | 'pendingIntents' | 'pendingIntent' | 'cancelIntent'>
   /** Each launch, read when a request comes in: null on a machine that cannot launch agents. */
   createAgent: () => CreateAgent | null
+  prepareCreate?: (input: Parameters<CreateAgent>[0], authority: LaunchAuthority, context?: { local: boolean }) => Promise<LaunchPreparation<Awaited<ReturnType<CreateAgent>>>>
   forkAgent: () => ForkAgent | null
   resumeAgent: () => ResumeAgent | null
   restartAgent: () => RestartAgent | null
@@ -66,7 +69,7 @@ export interface LaunchRequestDeps {
 
 type Reply = (result: Record<string, unknown>) => void
 
-export function createLaunchRequests({ receipts, createAgent, forkAgent, resumeAgent, restartAgent, byAgent, toProject, modelTarget }: LaunchRequestDeps) {
+export function createLaunchRequests({ receipts, createAgent, prepareCreate, forkAgent, resumeAgent, restartAgent, byAgent, toProject, modelTarget }: LaunchRequestDeps) {
   type CreateInput = Parameters<CreateAgent>[0]
   const validateInstalled = async (input: CreateInput, known?: ReturnType<typeof installedDsh>): Promise<{ error: string; detail: string } | null> => {
     if (input.dsh) {
@@ -139,7 +142,36 @@ export function createLaunchRequests({ receipts, createAgent, forkAgent, resumeA
   }
 
   const modelHold = { service: 'models', detail: 'Waiting for the selected model. This request is saved and will continue when it is available.' }
-  const pending = createPendingLaunches({ receipts, prepare: async saved => {
+  const launchHold = { service: 'launch', detail: 'Waiting for launch preparation. This request is saved and will continue when its dependencies are available.' }
+  const pending = createPendingLaunches({ receipts, prepare: async (saved, authority) => {
+    if (saved.kind === 'native-create-v1') {
+      if (!prepareCreate || typeof saved.local !== 'boolean' || !saved.input || typeof saved.input !== 'object'
+        || typeof saved.label !== 'string' || !/^harness-[a-z0-9-]+$/.test(saved.label)) return null
+      const input = structuredClone(saved.input) as CreateInput
+      if (!ENGINES.includes(input.engine) || typeof input.cwd !== 'string' || input.resumeSessionId) return null
+      if (saved.selection) {
+        const target = await modelTarget(saved.selection as NewAgentModel)
+        if (!authority.current()) return null
+        if (!target) { authority.hold(modelHold); return null }
+        input.grid = target
+      }
+      const ready = await prepareCreate(input, { ...authority, label: saved.label }, { local: saved.local })
+      if (!authority.current()) return null
+      if (!ready.ok) {
+        if (ready.unavailable) { authority.hold({ service: ready.unavailable, detail: ready.detail ?? 'Waiting for launch preparation.' }); return null }
+        return async () => ({ state: 'failed', error: ready.error, ...(ready.detail ? { detail: ready.detail.slice(0, 2000) } : {}) })
+      }
+      return async () => {
+        if (!authority.current()) return { state: 'unconfirmed' }
+        // All preparation, including local workspace trust, precedes the claim.
+        // A trust write here would invalidate Codex's final config proof.
+        const result = await ready.dispatch()
+        if (result.ok) return { state: 'created', agentId: result.session.agentId }
+        // Dispatch's outcome is uncertain once its exclusive claim is durable.
+        // In particular, a stale guard must never reopen that claim for replay.
+        return { state: 'unconfirmed' }
+      }
+    }
     // A future intent kind cannot be interpreted as this one. Keep unknown or
     // damaged requests held instead of guessing at their launch choices.
     if (saved.kind !== 'model-create-v1' || typeof saved.local !== 'boolean'
@@ -325,11 +357,15 @@ export function createLaunchRequests({ receipts, createAgent, forkAgent, resumeA
       const create = onCreateAgent
       try {
         const fingerprint = creationFingerprint(projectFolder ? { ...fingerprintInput, projectFolder } : fingerprintInput)
-        if (model.state !== 'ok' && !receipts.has(creationId, fingerprint)) {
+        const durableNative = !!prepareCreate && !projectFolder && !resumeSessionId
+        if (!durableNative && model.state !== 'ok' && !receipts.has(creationId, fingerprint)) {
           const refusal = await validateInstalled(input, installed)
           if (refusal) { reply(refusal); return }
         }
-        const operation = model.state === 'ok'
+        const operation = durableNative
+          ? pending.start(creationId, fingerprint, { kind: 'native-create-v1', input,
+            selection: model.state === 'ok' ? model.selection : null, label: buildHarnessSessionLabel(engine), local: asker.local }, launchHold)
+          : model.state === 'ok'
           ? pending.start(creationId, fingerprint, { kind: 'model-create-v1', input, selection: model.selection, projectFolder, local: asker.local }, modelHold)
           : receipts.run(creationId, fingerprint, () => executeCreate(input, projectFolder, asker.local, create, true))
         void operation.then(async (status) => {

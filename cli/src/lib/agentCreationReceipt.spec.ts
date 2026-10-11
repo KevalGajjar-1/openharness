@@ -133,6 +133,53 @@ describe('recoverable undispatched creation intents', () => {
   const held = { service: 'models', detail: 'Waiting for the selected model.' }
   const created = { state: 'created' as const, agentId: 'fixture-agent' }
 
+  it('persists the current hold reason independently of dispatch authority', async () => {
+    const { directory, receipts } = fixture()
+    const nativeHold = { service: 'native', detail: 'Waiting for the engine installation.' }
+    await receipts.runIntent(id, fingerprint, request, held, async (_request, authority) => {
+      expect(authority.id).toBe(id)
+      expect(authority.current()).toBe(true)
+      authority.hold(nativeHold)
+      return null
+    })
+    expect(new AgentCreationReceipts(directory).status(id)).toEqual({ state: 'pending', held: nativeHold })
+    writeFileSync(join(directory, `${id}.hold`), 'corrupt status')
+    expect(receipts.status(id)).toEqual({ state: 'pending', held })
+    let current!: () => boolean
+    expect(await receipts.runIntent(id, fingerprint, request, held, async (_request, authority) => {
+      current = authority.current
+      return async () => { expect(current()).toBe(true); return created }
+    })).toEqual(created)
+    expect(current()).toBe(false)
+  })
+
+  it('revokes preparation authority immediately when cancellation wins', async () => {
+    const { directory, receipts } = fixture()
+    await receipts.runIntent(id, fingerprint, request, held, async (_request, authority) => {
+      expect(authority.current()).toBe(true)
+      new AgentCreationReceipts(directory).cancelIntent(id)
+      expect(authority.current()).toBe(false)
+      authority.hold({ service: 'native', detail: 'This stale status must not be published.' })
+      expect(fs.existsSync(join(directory, `${id}.hold`))).toBe(false)
+      return async () => { throw Error('Must never dispatch') }
+    })
+    expect(receipts.status(id)).toEqual({ state: 'cancelled' })
+  })
+
+  it.each(['matching', 'conflicting', 'corrupt'])('revokes dispatch authority when a %s result appears during an effect', async kind => {
+    const { directory, receipts } = fixture()
+    let wasCurrent = true
+    await expect(receipts.runIntent(id, fingerprint, request, held, async (_request, authority) => async () => {
+      expect(authority.current()).toBe(true)
+      const claim = JSON.parse(readFileSync(join(directory, `${id}.json.claim`), 'utf8'))
+      const result = { fingerprint, token: kind === 'matching' ? claim.token : 'different-token', outcome: created }
+      writeFileSync(join(directory, `${id}.json.result`), kind === 'corrupt' ? '{' : JSON.stringify(result), { mode: 0o600 })
+      wasCurrent = authority.current()
+      return { state: 'unconfirmed' }
+    })).rejects.toThrow('CREATION_STORAGE_FAILED')
+    expect(wasCurrent).toBe(false)
+  })
+
   it('persists a held request, resumes it in another core and dispatches once across two cores', async () => {
     const { directory, receipts } = fixture()
     const offline = vi.fn(async () => null)

@@ -26,6 +26,26 @@ function setup(prepare = vi.fn<Parameters<typeof createPendingLaunches>[0]['prep
   return { pending, store, prepare }
 }
 
+it('cannot replace a saved hold after the core has revoked its preparation', async () => {
+  let finish!: (value: PreparedCreation) => void
+  let authority!: Parameters<Parameters<typeof createPendingLaunches>[0]['prepare']>[1]
+  const prepare = vi.fn<Parameters<typeof createPendingLaunches>[0]['prepare']>((_request, current) => {
+    authority = current
+    return new Promise(resolve => { finish = resolve })
+  })
+  const { pending, store } = setup(prepare)
+  const running = pending.start(id(0), fingerprint, request, held)
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce())
+  const nativeHold = { service: 'native', detail: 'Waiting for the original executable.' }
+  authority.hold(nativeHold)
+  expect(store.status(id(0))).toEqual({ state: 'pending', held: nativeHold })
+  pending.stop()
+  authority.hold({ service: 'obsolete', detail: 'A late answer' })
+  finish(null)
+  await running
+  expect(store.status(id(0))).toEqual({ state: 'pending', held: nativeHold })
+})
+
 it('opens recovery after readiness, preserves pending intent and completes it once', async () => {
   const effect = vi.fn(async () => created)
   const prepare = vi.fn(async () => effect)
@@ -128,7 +148,7 @@ it('does not claim work yielded after shutdown or execute work stopped just afte
 
   const effect = vi.fn(async () => created)
   const second = setup(vi.fn(async () => effect), { ...receipts, runIntent: async (_id, _fingerprint, request, _held, prepare) => {
-    const ready = await prepare(request)
+    const ready = await prepare(request, { id: _id, current: () => true, hold: () => {} })
     second.pending.stop()
     return ready!()
   } })
