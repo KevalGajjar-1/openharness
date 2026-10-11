@@ -51,6 +51,7 @@ it.each(['linux', 'darwin'])('preserves precise native control and immutable hel
     vi.stubEnv('TZ', 'UTC'); vi.stubEnv('TMPDIR', '/tmp')
     vi.stubGlobal('__DARWIN_PROCESS_IMAGES__', JSON.stringify(artifact))
     const helper = await prepareProcessImageHelper(artifact, host.runtime)
+    expect(helper).toEqual(expect.any(String))
     check('helper', { path: helper, hash: createHash('sha256').update(readFileSync(helper!)).digest('hex'),
       mode: lstatSync(helper!).mode & 0o777, files: readdirSync(dirname(helper!)),
       repeated: await prepareProcessImageHelper(artifact, host.runtime) })
@@ -72,7 +73,9 @@ it.each(['linux', 'darwin'])('preserves precise native control and immutable hel
       symlinkSync('/fixture/codex', join(directory, 'exe'))
     }
     for (const descriptors of [false, true]) {
-      const snapshot = await nativeProcessControl([42, 43], 42, new NativeEvidenceBudget(), descriptors)
+      const reading = nativeProcessControl([42, 43], 42, new NativeEvidenceBudget(), descriptors)
+      await expect(reading).resolves.toHaveProperty('rows')
+      const snapshot = await reading
       check(descriptors ? 'control' : 'identity', { parent: snapshot.parent, children: snapshot.children,
         rows: [...snapshot.rows.values()].map(row => ({ ...row, identity: controlIdentity(row) })) })
     }

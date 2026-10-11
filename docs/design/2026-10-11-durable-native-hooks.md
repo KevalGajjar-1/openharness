@@ -125,6 +125,34 @@ claim/order/completion/immutability fences with assertion failures. Independent
 review approved the corrected process tests. This proves journal mechanics across
 processes; final HTTP/native-client crash acceptance remains open.
 
+The shared native control probe now takes an explicit helper provider; immutable
+helper preparation and the kernel boot reader have no daemon configuration or
+migration imports. Golden-only commits `742697a59` and `d24d78bdb` preceded these
+extractions. Their Linux/macOS artifacts remain unchanged. Receipt
+`20261011T143337.167967Z-16980` passed TypeScript, 35 caller/probe/architecture cases,
+all 48 journal cases, all seven OS-process cases and five assertion-failing journal
+mutations. Receipt `20261011T143607.014866Z-28081` caught all eight helper, precise
+birth, kernel boot and Registry executable mutations by assertion. The preceding
+recording run passed each check but reports `source_changed` because recording
+created the new golden; only the later stable run is aggregate passing evidence.
+
+Private acceptance exposed another race between confirmation of identical
+immutable records. Nonexclusive confirmations may now join an in-flight sync;
+each waiter retains its own record, route and owner fences. Exclusive publication
+never joins, and confirmation cannot inherit dispatch permission. Three regression
+assertions failed before correction in `20261011T142328.934198Z-67294`. Independent
+review approved the probe extraction, confirmation fix and subsequent verbatim
+boot extraction over `d24d78bdb`. Its requested producer-revocation test confirms
+that a surviving observer can retry confirmation but cannot inherit a claim.
+
+Receipt `20261011T142435.161799Z-72981` passed types, journal/preparation/delivery
+goldens and the private Cursor Cancel case; the native Codex prompt case failed
+waiting for its first acknowledgement. Earlier receipt
+`20261011T142014.809689Z-49892` failed both private cases. Neither is full passing
+acceptance. The remaining client has no durable retry after a pre-intake refusal
+or an uncertain response; migration and a new private acceptance run are required.
+No release or merge occurred during this checkpoint.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

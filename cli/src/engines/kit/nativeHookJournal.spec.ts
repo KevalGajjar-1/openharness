@@ -95,6 +95,90 @@ it('shares in-flight namespace initialization between background recovery and ad
   await expect(active.snapshot()).rejects.toThrow()
 })
 
+it.each([false, true])('joins identical immutable confirmations during admission and recovery (separate journal=%s)', async separate => {
+  const first = journal(), second = separate ? journal() : first
+  await first.retain(intake())
+  const inspected = await first.snapshot()
+  let delayed = false, release!: () => void
+  fault.deferSync = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const confirming = inspected.confirm()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const recovering = second.snapshot()
+  const duplicate = inspected.confirm()
+  const completed = Promise.allSettled([confirming, recovering, duplicate])
+  release()
+  const outcomes = await completed
+  expect(outcomes.map(outcome => outcome.status)).toEqual(['fulfilled', 'fulfilled', 'fulfilled'])
+  inspected.verify()
+  const snapshot = await second.snapshot()
+  expect(snapshot.deliveries.size).toBe(1)
+  expect(snapshot.active).toBeUndefined()
+})
+
+it('revokes a joining confirmation without revoking the original journal owner', async () => {
+  const first = journal(), joining = journal()
+  await first.retain(intake())
+  const original = await first.snapshot(), joined = await joining.snapshot()
+  let delayed = false, release!: () => void
+  fault.deferSync = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const firstConfirmation = original.confirm()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const joinedConfirmation = joined.confirm(), completed = Promise.allSettled([firstConfirmation, joinedConfirmation])
+  joining.close(); release()
+  const outcomes = await completed
+  expect(outcomes[0].status).toBe('fulfilled')
+  expect(outcomes[1]).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('owner changed') }) })
+  original.verify()
+})
+
+it('rejects every joined confirmation when the inspected immutable record changes', async () => {
+  const owner = journal()
+  await owner.retain(intake())
+  const before = await owner.snapshot()
+  let delayed = false, release!: () => void
+  fault.deferSync = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const first = before.confirm()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const second = before.confirm(), completed = Promise.allSettled([first, second])
+  writeFileSync(`${directory}.bootstrap`, 'changed fixture record', { mode: 0o600 })
+  release()
+  expect((await completed).map(outcome => outcome.status)).toEqual(['rejected', 'rejected'])
+  expect(() => before.verify()).toThrow()
+})
+
+it('revokes shared confirmation when its producer closes and lets a surviving observer retry', async () => {
+  const first = journal(), surviving = journal()
+  const body = intake()
+  await first.retain(body)
+  const claim = await first.claim(body.id, body.agentId)
+  const original = await first.snapshot(), joined = await surviving.snapshot()
+  let delayed = false, release!: () => void
+  fault.deferSync = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const producer = original.confirm()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const observer = joined.confirm(), completed = Promise.allSettled([producer, observer])
+  first.close(); release()
+  const outcomes = await completed
+  for (const outcome of outcomes) expect(outcome).toMatchObject({ status: 'rejected',
+    reason: expect.objectContaining({ message: expect.stringContaining('owner changed') }) })
+  const fresh = await surviving.snapshot()
+  await fresh.confirm()
+  expect(fresh.active?.token).toBe(claim.token)
+  await expect(surviving.claim(body.id, body.agentId)).rejects.toThrow('earlier native hook effect')
+})
+
 it.each(['close', 'owner change'] as const)('revokes every initialization waiter after %s', async reason => {
   let current = true, release!: () => void, delayed = false
   const active = journal({ current: () => current })

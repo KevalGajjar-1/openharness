@@ -177,7 +177,13 @@ export function createNativeHookJournal({ directory, processKey, current = () =>
     await runHookPreparation([file], async attempt => {
       verify(); check()
       await inspectHookFile(file, 0o600).replace(text, attempt, exclusive)
-    }, { retainConflicts: true, current: () => { check(); verify(); return true } })
+    }, {
+      // Recovery and admission can confirm the same immutable bytes at once.
+      // Share only that in-flight sync; each waiter still checks its own facts
+      // and owner. An exclusive publisher can never join or inherit a claim.
+      identity: exclusive ? undefined : `native-hook-confirm:${digest(text)}`,
+      retainConflicts: true, current: () => { check(); verify(); return true },
+    })
   }
   const confirm = async (records: readonly Exclude<Read, undefined>[], verify: () => void, owner = verify) => {
     verify()

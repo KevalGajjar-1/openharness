@@ -1,9 +1,9 @@
 /** Fresh kernel incarnation evidence after asynchronous hook journal publication. */
-import { execFile } from 'node:child_process'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { readProcessEvidence } from '../../lib/processEvidence.js'
 import { controlIdentity, nativeProcessControl, type NativeControlRow } from '../../lib/nativeProcessControl.js'
-import { NativeEvidenceBudget, nativeBytes, nativeText, nativeUnavailable } from './nativeEvidence.js'
+import { NativeEvidenceBudget, nativeUnavailable } from './nativeEvidence.js'
+import { kernelBootId } from './nativeHookBoot.js'
 
 export interface NativeHookOwner {
   /** Kernel boot, engine, PID and precise kernel birth; never an agent ID. */
@@ -15,25 +15,6 @@ export type NativeHookOwnerProof = NativeHookOwner & { verify(): void }
 export type NativeHookOwnerReader = (row: RegisteredSession, expected?: NativeHookOwner) => Promise<NativeHookOwnerProof>
 export type NativeHookCaller = { owner(row: RegisteredSession): NativeHookOwner & { source?: 'caller' | 'runtime' } }
 export type NativeHookCallerReader = (callerPid: number, runtimeOwners: readonly RegisteredSession[]) => Promise<NativeHookCaller>
-
-async function kernelBootId(budget: NativeEvidenceBudget): Promise<string> {
-  const raw = process.platform === 'linux'
-    ? nativeText(await nativeBytes('/proc/sys/kernel/random/boot_id', 128, budget))
-    : process.platform === 'darwin' ? await new Promise<string>((resolve, reject) => {
-      execFile('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'], {
-        encoding: 'utf8', timeout: budget.probe(), maxBuffer: 128, killSignal: 'SIGKILL',
-      }, (error, stdout, stderr) => {
-        if (error || stderr.length) reject(error ?? Error('kernel boot probe failed'))
-        else resolve(stdout)
-      })
-    }) : nativeUnavailable('the kernel boot identity is unavailable on this platform')
-  budget.step()
-  const value = raw.trim().toLowerCase()
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) {
-    return nativeUnavailable('the kernel boot identity is incomplete')
-  }
-  return `${process.platform}:${value}`
-}
 
 export function createNativeHookOwnerReader(): NativeHookOwnerReader & { captureCaller: NativeHookCallerReader } {
   let boot: string | undefined, active = 0

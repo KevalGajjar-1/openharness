@@ -27,9 +27,9 @@ for key in list(environment):
 assert Path(environment.get('TMUX_TMPDIR', '/missing')).is_dir(), 'Private TMUX_TMPDIR is required'
 
 
-def run(pattern=''):
+def run(pattern='', spec='nativeHookJournal.process.spec.ts'):
     return subprocess.run(['node', 'node_modules/vitest/vitest.mjs', 'run',
-                           'src/engines/kit/nativeHookJournal.process.spec.ts', '--maxWorkers=1',
+                           'src/engines/kit/' + spec, '--maxWorkers=1',
                            *(['--testNamePattern', pattern] if pattern else [])],
                           cwd=cli, env=environment, text=True, capture_output=True, timeout=100)
 
@@ -53,5 +53,18 @@ for label, before, after, pattern in mutations:
             print(label + ': caught by assertion', flush=True)
     finally:
         source.write_text(original)
+try:
+    before = 'identity: exclusive ? undefined : `native-hook-confirm:${digest(text)}`,'
+    assert original.count(before) == 1
+    source.write_text(original.replace(before, ''))
+    result = run('joins identical immutable confirmations', 'nativeHookJournal.spec.ts')
+    output = result.stdout + result.stderr
+    if result.returncode == 0 or 'AssertionError' not in output:
+        failures.append('identical confirmation cannot join')
+        print('identical confirmation cannot join: not caught by an assertion\n' + output, flush=True)
+    else:
+        print('identical confirmation cannot join: caught by assertion', flush=True)
+finally:
+    source.write_text(original)
 if failures:
     raise SystemExit('Mutations without assertion proof: ' + ', '.join(failures))
