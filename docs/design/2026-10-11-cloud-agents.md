@@ -3,16 +3,16 @@
 October 11, 2026. Approved. Replaces provider machines (`provider/`, `backend/src/lib/providerLink.ts`).
 
 Some agents never run on your computer. Fo runs errands from its maker's servers: it calls, emails and
-books. Devin writes code in its own cloud machines. Neither has a terminal program for Harness to start
+books. Devin Cloud and Cursor's cloud agents write code in their own cloud machines. None has a terminal program for Harness to start
 in a pane; each has an API. This proposal makes them ordinary harnesses that **run in the cloud**. They
 appear in the same lists, ask in the same Harnesses needing input, show on the Harness device, and are
 started from New Harness. They are not a second product beside the panes.
 
 ## What a person sees
 
-- **New Harness** offers Fo and **Devin Cloud** in its Agent list, as their makers present them. The
-  Devin CLI, listed as Devin today, becomes **Devin CLI**. A cloud agent's Computer selector reads its
-  cloud (Fo's cloud, Devin's cloud) and cannot change.
+- **New Harness** offers the cloud agents in its Agent list beside the CLI agents: **Fo**, **Devin
+  Cloud** and **Cursor Cloud**. A cloud agent's Computer selector reads its cloud (Fo's cloud, Devin's
+  cloud) and cannot change.
 - The harness opens a **chat pane** instead of a terminal: the conversation, a line saying what the agent
   is doing, and a prompt. Its header is every pane's header: the harness name and its activity mark on
   the left (`?` needs input, `⠹` working); the agent selector, the model selector only if the agent
@@ -35,10 +35,11 @@ started from New Harness. They are not a second product beside the panes.
                                                         Fo's cloud
   ```
 
-- **Devin CLI and Devin Cloud** are two agents, as Cognition ships them. Devin CLI is today's terminal
-  pane on a computer. Devin Cloud asks for a GitHub repository Devin can reach rather than a folder (a
-  local folder carries its GitHub remote over; its tooltip says uncommitted changes stay on the
-  computer), and the session's ACU limit takes the place of Model, Approvals, Worktree and Branch:
+- **Devin and Devin Cloud** are two agents, as Cognition presents them; Cursor and Cursor Cloud the same.
+  Devin is today's terminal pane on a computer. Devin Cloud asks for a GitHub repository Devin can reach
+  rather than a folder (a local folder carries its GitHub remote over; its tooltip says uncommitted
+  changes stay on the computer), and the session's ACU limit takes the place of Model, Approvals,
+  Worktree and Branch:
 
   ```
    Devin Cloud   Devin's cloud   autonomous/api
@@ -62,6 +63,7 @@ started from New Harness. They are not a second product beside the panes.
   ```
 
   Stop Harness puts the session to sleep, which stops its ACUs; opening it again from ⌘P wakes it.
+  Cursor Cloud is the same form with Cursor's model selector in place of the ACU limit.
 - When the agent waits for the person, the harness is in **Harnesses needing input** with its choices,
   on the desktop, the phone and the device's question screen, like any other harness.
 - **Stop Harness** puts the agent's work to sleep where the agent allows it (Devin), and says so where it
@@ -77,7 +79,13 @@ Entered in the [Naming System](../naming-system.md):
 | --- | --- | --- |
 | **Cloud** | An agent maker's own servers, as a place a harness runs beside the computers. A **cloud agent** runs there. | Devin Cloud runs in Devin's cloud; Fo runs only in Fo's cloud. |
 
-Nothing else is new. Fo and Devin are **agents** (the software chosen), a Fo conversation is **a
+How cloud agents are named: a CLI agent keeps its name, and the same maker's cloud coding agent is
+that name plus **Cloud** (Codex and Codex Cloud, Cursor and Cursor Cloud, Devin and Devin Cloud). A
+personal agent that has no CLI keeps its maker's name (Fo). Where a maker's personal agent shares its
+CLI's name, the CLI takes its full product name: Meta's Muse agent would make today's Muse agent
+**Muse Code**.
+
+Nothing else is new. Fo and Devin Cloud are **agents** (the software chosen), a Fo conversation is **a
 harness**, and the account that signs it in is a **connection**. Three words are avoided on purpose:
 **machine** and **computer** mean the person's own computers (multi-machine, Connect a computer);
 **remote** already means another of those computers in New Harness and `harness remote`; **provider**
@@ -156,7 +164,7 @@ copy, the questions and the state. An adapter only translates.
 
 ```ts
 interface CloudAgent {
-  id: string                 // 'fo', 'devin'
+  id: string                 // 'fo', 'devin-cloud', 'cursor-cloud'
   name: string               // the vendor's own name
   connection: string         // the Connections code that signs it in
   start(task: string, place: Place): Promise<Conversation>
@@ -173,20 +181,31 @@ type CloudEvent =
       question?: { text: string; choices?: string[] }; links?: { label: string; url: string }[] }
 ```
 
-| | Fo (MCP, `mcp.api.wajo.ai/fo`) | Devin (REST v3, `api.devin.ai/v3`) | Any A2A agent |
-| --- | --- | --- | --- |
-| `start` | `ask_fo` in a new conversation | `POST /sessions` with the task as `prompt` | `message/send` with a new `contextId` |
-| `send` | `ask_fo` continuing it | `POST /sessions/{id}/messages` | `message/send` on the task |
-| `watch` | `get_fo_reply` (waits up to 40 s a call) | `GET /sessions/{id}` every 10 s, then `/messages` | `message/stream`, or `tasks/get` |
-| needs input | Fo's reply waits for the person | `running` + `waiting_for_user` or `waiting_for_approval` | `input-required` |
-| done | the reply closes | `running` + `finished`, or `exit`; `pull_requests` become links | `completed` |
-| `history` | `get_fo_conversation` | `GET /sessions/{id}/messages` | `tasks/get` history |
-| `list` | `list_fo_conversations` (every channel: chat, email, texts, voice) | `GET /sessions` | none |
-| `stop` | none: Fo keeps working | archive, which puts it to sleep | `tasks/cancel` |
+| | Fo (MCP, `mcp.api.wajo.ai/fo`) | Devin Cloud (REST v3, `api.devin.ai/v3`) | Cursor Cloud (REST v1, `api.cursor.com`) | Any A2A agent |
+| --- | --- | --- | --- | --- |
+| `start` | `ask_fo` in a new conversation | `POST /sessions` with the task as `prompt` | `POST /v1/agents` with `prompt.text` and `repos[].url` | `message/send` with a new `contextId` |
+| `send` | `ask_fo` continuing it | `POST /sessions/{id}/messages` | `POST /v1/agents/{id}/runs` (`409 agent_busy` while a run is active) | `message/send` on the task |
+| `watch` | `get_fo_reply` (waits up to 40 s a call) | `GET /sessions/{id}` every 10 s, then `/messages` | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, resumes with `Last-Event-ID`) | `message/stream`, or `tasks/get` |
+| needs input | Fo's reply waits for the person | `running` + `waiting_for_user` or `waiting_for_approval` | a finished run is the agent's turn to wait | `input-required` |
+| done | the reply closes | `running` + `finished`, or `exit`; `pull_requests` become links | run `FINISHED`; its `git` result becomes links | `completed` |
+| `history` | `get_fo_conversation` | `GET /sessions/{id}/messages` | each run's `result`, from `GET /v1/agents/{id}/runs` | `tasks/get` history |
+| `list` | `list_fo_conversations` (every channel: chat, email, texts, voice) | `GET /sessions` | `GET /v1/agents` | none |
+| `stop` | none: Fo keeps working | archive, which puts it to sleep | cancel the active run | `tasks/cancel` |
 
 `get_fo_reply`'s and `get_fo_conversation`'s parameters are not published; the first signed-in
-`tools/list` fixes them. Devin's MCP server (`mcp.devin.ai/mcp`, `devin_session_*`) is the alternative
+`tools/list` fixes them. Cursor's v1 API is a public beta and has no conversation endpoint: the
+transcript is the person's prompts and each run's streamed `assistant` text. Devin's MCP server (`mcp.devin.ai/mcp`, `devin_session_*`) is the alternative
 to its REST API if one credential path for both matters more than REST's exact `status_detail`.
+
+### Who else has a cloud agent
+
+The pattern is common, in two kinds. **Cloud coding agents** are a maker's coding agent on its own
+machine against a GitHub repository: Devin Cloud, Cursor's cloud agents, Codex cloud, Claude Code on the
+web, GitHub's Copilot coding agent, Google's Jules. **Personal agents** run errands with their own cloud
+computer and app connections: Fo, OpenAI's dots, xAI's Grok Bot, Meta's Muse. As of October 2026 Fo,
+Devin and Cursor publish APIs that start and watch a session. Codex cloud is reached only through the
+`codex cloud` command, and dots and Grok Bot publish no API yet. Each one that opens an API is one more
+adapter.
 
 ### Credentials: Connections
 
@@ -201,7 +220,7 @@ every agent's MCP configuration. `api_connections` is for model endpoints and is
 
 | Client | What it needs |
 | --- | --- |
-| Desktop | The place choice in New Harness and a chat pane. The pane reuses the ⌘P transcript preview (`widgets/session_tail_view.dart`), whose footer already takes a waiting question, plus a prompt. |
+| Desktop | Cloud agents in New Harness and a chat pane. The pane reuses the ⌘P transcript preview (`widgets/session_tail_view.dart`), whose footer already takes a waiting question, plus a prompt. |
 | Device | Cloud rows in its list. Questions use the existing question screen; nothing new in the firmware. |
 | Phone | A chat page; it has no transcript view today. |
 | TUI | A text view of the conversation in a pane. |
@@ -228,10 +247,10 @@ in one change, once the A2A adapter exists. Nobody uses them, so nothing migrate
 
 ## Phases
 
-1. **Prototype**, in the `cloud` experiment: the core port, the service with the Fo and Devin adapters, the
-   desktop's place choice and chat pane, and the device. Proven by an end-to-end run against a scripted
-   fake MCP server and a fake Devin API, then one real Fo errand and one real Devin session with a low
-   ACU limit.
+1. **Prototype**, in the `cloud` experiment: the core port, the service with the Fo, Devin Cloud and
+   Cursor Cloud adapters, the desktop's New Harness and chat pane, and the device. Proven by an
+   end-to-end run against a scripted fake MCP server and fake Devin and Cursor APIs, then one real Fo
+   errand and one real session of each cloud coding agent with a low limit.
 2. The phone's chat page, the TUI view, ⌘P and Agent Messages.
 3. The A2A adapter, the provider protocol's removal, and webhooks: Fo's and Devin's notifications land on
    the backend, which wakes the computer's service, so a cloud harness can tell the person it needs them
@@ -244,8 +263,9 @@ Answered by the owner on October 11:
 1. **Cloud agents**: "Cloud" is the place a harness runs, entered in the Naming System. Approved.
 2. **The core change**: agents owned by a service. Approved.
 3. **Retire the provider protocol for A2A.** Approved.
-4. **Devin CLI and Devin Cloud as two agents**, as Cognition ships them. The engine id `devin` stays
-   the CLI, relabelled Devin CLI; the cloud agent's id is `devin-cloud`.
+4. **A CLI agent and its maker's cloud agent are two agents**: Devin and Devin Cloud, Cursor and Cursor
+   Cloud. CLI agents keep their names; the cloud agent adds "Cloud". Cursor Cloud is the third
+   adapter, to prove one interface across three makers.
 5. **The chat pane mockup.** Approved.
 6. **Harness drives both kinds of agent**: terminal programs on the person's computers, and cloud
    agents through their makers' APIs. This replaces the October 5 rule that it drives only terminal

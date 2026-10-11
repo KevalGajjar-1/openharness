@@ -72,6 +72,10 @@ start, pause, or stop a running harness in the workspace. Keep **agent** for cho
 the agent software and describing the AI's actions. Preserve **New Harness** as the
 existing action name.
 
+A CLI agent keeps its name, and the same maker's cloud coding agent is that name
+plus **Cloud**: Codex and Codex Cloud, Devin and Devin Cloud. A personal agent with
+no CLI keeps its maker's name (Fo).
+
 A pane is a view, so closing a pane or tab closes views. **Stop Harness** ends the
 running harness. Adding harnesses to a tab groups them without a separate team
 setup. Turning on **Agent Messages** for a tab lets its harnesses message each
