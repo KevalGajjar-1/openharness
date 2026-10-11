@@ -109,22 +109,23 @@ are involved. Two samples per tree are descriptive, not a performance threshold.
 
 | Median | Main | Readiness change |
 | --- | ---: | ---: |
-| Ready (ms) | 2,760 | 1,349 |
-| Core CPU at ready (ms) | 545 | 370 |
-| Core RSS at ready (MiB) | 85.9 | 82.4 |
-| First launch request (ms) | 334 | 1,199 |
-| Warm launch request (ms) | 312 | 317 |
-| Ready plus first launch (ms) | 3,094 | 2,548 |
+| Ready (ms) | 2,688 | 1,345 |
+| Core CPU at ready (ms) | 525 | 395 |
+| Core RSS at ready (MiB) | 86.0 | 82.7 |
+| First launch request (ms) | 376 | 1,136 |
+| Warm launch request (ms) | 317 | 320 |
+| Ready plus first launch (ms) | 3,065 | 2,481 |
 
 The first launch owns the preparation wait that formerly delayed every request.
-Warm launches retain fresh proof checks. Measurements preceded the canonical-key
-and caller-limit review corrections, which do not affect this workload's paths or
-concurrency. The initial cost receipts `20261011T062124.649240Z-13284` and
+Warm launches retain fresh proof checks. Final production commit `ce7e34dc9`
+was measured alone in `20261011T070759.147272Z-17321`: it includes the alias,
+caller-limit and native-probe corrections. Bundle construction took 14.3 seconds;
+the four matched samples took 14.0 seconds. The initial cost receipts `20261011T062124.649240Z-13284` and
 `20261011T062250.241018Z-19378` failed on the collision; the corrected workload passed
 in `20261011T062724.898061Z-40203` without changing its launch assertions.
 
 This readiness slice began with the main golden at 05:16 UTC on October 11.
-Implementation, failure diagnosis and local validation overlapped through 06:35 UTC;
+Implementation, failure diagnosis and local validation overlapped through 07:08 UTC;
 individual receipts retain test durations. Independent review ran alongside checks.
 CI waiting and merge duration are recorded separately in the PR; publication is zero.
 The original daemon request began October 8 at 23:26:41 UTC, not at this slice's first

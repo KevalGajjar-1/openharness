@@ -6,94 +6,94 @@
   "samples": [
     {
       "bundle": "baseline",
-      "readyMs": 2400.65947,
+      "readyMs": 2623.153111,
       "atReady": {
-        "cpuMs": 530,
-        "rssMiB": 85.0703125
+        "cpuMs": 520,
+        "rssMiB": 87.13671875
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 329.14057,
+          "requestMs": 418.1928069999999,
           "coreCpuMs": 80,
-          "rssMiB": 87.1484375
+          "rssMiB": 88.3828125
         },
         {
           "phase": "warm",
-          "requestMs": 315.82354399999986,
+          "requestMs": 307.15658600000006,
           "coreCpuMs": 50,
-          "rssMiB": 88.34375
+          "rssMiB": 89.89453125
         }
       ]
     },
     {
       "bundle": "candidate",
-      "readyMs": 1382.7350779999997,
+      "readyMs": 1375.9075359999997,
       "atReady": {
-        "cpuMs": 410,
-        "rssMiB": 82.83984375
+        "cpuMs": 420,
+        "rssMiB": 83.28515625
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 1102.719779,
+          "requestMs": 1120.6220399999993,
+          "coreCpuMs": 140,
+          "rssMiB": 86.5703125
+        },
+        {
+          "phase": "warm",
+          "requestMs": 322.70560000000023,
+          "coreCpuMs": 80,
+          "rssMiB": 87.41015625
+        }
+      ]
+    },
+    {
+      "bundle": "candidate",
+      "readyMs": 1313.8398690000004,
+      "atReady": {
+        "cpuMs": 370,
+        "rssMiB": 82.1796875
+      },
+      "launches": [
+        {
+          "phase": "cold",
+          "requestMs": 1151.817194000001,
           "coreCpuMs": 150,
-          "rssMiB": 87.8828125
+          "rssMiB": 87.73046875
         },
         {
           "phase": "warm",
-          "requestMs": 316.75598100000025,
+          "requestMs": 317.89567400000124,
           "coreCpuMs": 80,
-          "rssMiB": 89.765625
-        }
-      ]
-    },
-    {
-      "bundle": "candidate",
-      "readyMs": 1314.5518949999996,
-      "atReady": {
-        "cpuMs": 330,
-        "rssMiB": 81.9296875
-      },
-      "launches": [
-        {
-          "phase": "cold",
-          "requestMs": 1296.1247729999995,
-          "coreCpuMs": 180,
-          "rssMiB": 89.90234375
-        },
-        {
-          "phase": "warm",
-          "requestMs": 317.48370799999975,
-          "coreCpuMs": 80,
-          "rssMiB": 90.828125
+          "rssMiB": 88.484375
         }
       ]
     },
     {
       "bundle": "baseline",
-      "readyMs": 3119.57849,
+      "readyMs": 2753.0194659999997,
       "atReady": {
-        "cpuMs": 560,
-        "rssMiB": 86.6328125
+        "cpuMs": 530,
+        "rssMiB": 84.83203125
       },
       "launches": [
         {
           "phase": "cold",
-          "requestMs": 337.87946399999964,
+          "requestMs": 334.74585900000056,
           "coreCpuMs": 80,
-          "rssMiB": 88.4453125
+          "rssMiB": 86.01171875
         },
         {
           "phase": "warm",
-          "requestMs": 307.37735900000007,
+          "requestMs": 327.1341740000007,
           "coreCpuMs": 50,
-          "rssMiB": 89.51953125
+          "rssMiB": 88.12109375
         }
       ]
     }
   ],
   "baseline": "740fb5286e3764cb9ee17642bf1dd98c47eb58ec (bundle from identical reviewed native-launch tree)",
-  "candidate": "readiness with bounded predecessor settling; before canonical-key and caller-limit review corrections",
-  "receipt": "20261011T062724.898061Z-40203"
+  "candidate": "ce7e34dc96906d34186e16990b87e5bd06edb83e",
+  "receipt": "20261011T070759.147272Z-17321"
 }
