@@ -189,6 +189,21 @@ describe('POST /api/route/jev', () => {
     expect((await post(app, body())).statusCode).toBe(429)
   })
 
+  it('does not wait on a stalled shared count, and leaves it alone for a while after', async () => {
+    jevSays(good)
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => logger)
+    const stalled = vi.fn<JevCounter>(() => new Promise(() => {}))
+    const app = await build(stalled)
+    const started = Date.now()
+    expect((await post(app, body())).statusCode).toBe(200)
+    // One stalled count, then this process's own: well inside the CLI's 8 s.
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(stalled).toHaveBeenCalledTimes(1)
+    expect((await post(app, body())).statusCode).toBe(200)
+    expect(stalled).toHaveBeenCalledTimes(1)
+    expect(error.mock.calls.filter(([line]) => String(line).includes('shared count failed'))).toHaveLength(1)
+  })
+
   it('never logs the words', async () => {
     const lines: unknown[] = []
     for (const level of ['info', 'error', 'warn', 'debug'] as const) {

@@ -221,6 +221,7 @@ describe("asking Jev on Harness's key", () => {
     [504, { success: false, error: { code: 'BACKEND_TIMEOUT' } }, 'UNAVAILABLE', "Harness's server did not answer in time"],
     [502, { success: false, error: { code: 'BACKEND_UNREACHABLE' } }, 'UNAVAILABLE', "Harness's server cannot be reached"],
     [503, { error: 'SERVICE_UNAVAILABLE' }, 'UNAVAILABLE', "Harness's server cannot be reached"],
+    [503, { error: 'GATEWAY_UNAVAILABLE' }, 'UNAVAILABLE', "Harness's server cannot be reached"],
     [404, {}, 'UNAVAILABLE', "Harness's server cannot decide yet"],
     [503, { success: false, error: { code: 'JEV_NOT_CONFIGURED' } }, 'UNAVAILABLE', "Harness's server answered 503"],
     [502, { error: 7 }, 'UNAVAILABLE', "Harness's server answered 502"],
@@ -239,7 +240,9 @@ describe("asking Jev on Harness's key", () => {
     const asked = decide(never)(STATE, QUESTIONS, caller.signal)
     caller.abort(new Error('the window closed'))
     await expect(asked).rejects.toThrow('the window closed')
-    // Already gone before it asked.
-    await expect(decide(never)(STATE, QUESTIONS, caller.signal)).rejects.toThrow('the window closed')
+    // Already gone before it asked: nothing is asked, so nothing is paid for.
+    const unasked = vi.fn<AccountBackend>(() => new Promise(() => {}))
+    await expect(decide(unasked)(STATE, QUESTIONS, caller.signal)).rejects.toThrow('the window closed')
+    expect(unasked).not.toHaveBeenCalled()
   })
 })

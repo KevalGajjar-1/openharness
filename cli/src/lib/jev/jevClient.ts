@@ -89,7 +89,7 @@ function hostedRefusal(status: number, code: string | undefined): JevUnavailable
   if (code === 'JEV_CREDITS') return new JevUnavailable('CREDITS', "Harness's Jev budget has run out")
   if (code === 'JEV_BUSY') return new JevUnavailable('BUSY', 'Jev is busy')
   if (code === 'BACKEND_TIMEOUT') return new JevUnavailable('UNAVAILABLE', "Harness's server did not answer in time")
-  if (code === 'BACKEND_UNREACHABLE' || code === 'SERVICE_UNAVAILABLE') return new JevUnavailable('UNAVAILABLE', "Harness's server cannot be reached")
+  if (code === 'BACKEND_UNREACHABLE' || code === 'SERVICE_UNAVAILABLE' || code === 'GATEWAY_UNAVAILABLE') return new JevUnavailable('UNAVAILABLE', "Harness's server cannot be reached")
   // An older backend, before the route: the CLI self-updates on its own schedule and can arrive first.
   if (status === 404) return new JevUnavailable('UNAVAILABLE', "Harness's server cannot decide yet")
   return new JevUnavailable('UNAVAILABLE', `Harness's server answered ${status}`)
@@ -119,6 +119,8 @@ export function createJevDecide(options: {
     const abort = signal ? AbortSignal.any([signal, timeout]) : timeout
     if (!key) {
       if (!options.backend) throw new JevUnavailable('NO_KEY', 'no OpenRouter key on this computer')
+      // Nobody waiting already: ask nothing, since an asked decision is paid for whether or not it is read.
+      if (abort.aborted) throw abort.reason
       const answer = await bounded(options.backend('POST', HOSTED_JEV_PATH, { state, questions }), abort)
       if (answer.status !== 200) throw hostedRefusal(answer.status, errorCode(answer.body))
       return readAnswers((answer.body.data as { answers?: unknown } | undefined)?.answers)

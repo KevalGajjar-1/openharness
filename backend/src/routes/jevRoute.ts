@@ -24,7 +24,7 @@
  * spend everyone's share: a person presses ⌘B, a loop does not. The caps count in Redis, shared by every
  * process and pod; a process-local count would multiply by both and reset on every deploy.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { validateBody } from '../middlewares/validation.js'
@@ -49,6 +49,11 @@ const MAX_OPTION_CHARS = 640
 const MAX_INSTRUCTION_CHARS = 1_500
 /** Bytes, for a request at those bounds in any script: enforced before the body is parsed. */
 const MAX_BODY_BYTES = 512 * 1024
+
+/** A shared count slower than this is a stalled Redis: three in a row must still leave the CLI its 8 s. */
+const SHARED_COUNT_MS = 300
+/** After one fails, count in this process for this long before trying the shared count again. */
+const SHARED_RETRY_MS = 10_000
 
 /** Per account: a burst of quick ⌘B presses passes, a client in a loop does not get far. */
 const MINUTE_MS = 60_000
@@ -155,11 +160,25 @@ export async function jevRouteRoutes(app: FastifyInstance, options: JevRouteOpti
   const now = options.now ?? Date.now
   const local = localJevCounter(now)
   const shared = options.count ?? local
-  // Redis down must not mean uncapped: count in this process until it answers again.
-  const count: JevCounter = (key, ttlMs) => shared(key, ttlMs).catch((err: unknown) => {
-    logger.error('jev-route: shared count failed, counting in this process', { error: err instanceof Error ? err.message : String(err) })
-    return local(key, ttlMs)
-  })
+  // Redis down or stalled must mean neither uncapped nor a ⌘B that waits on it: count in this process, and
+  // try the shared count again a little later (one log line per failure, not three per request).
+  let sharedAfter = 0
+  const count: JevCounter = async (key, ttlMs) => {
+    if (now() < sharedAfter) return local(key, ttlMs)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        shared(key, ttlMs),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer in ${SHARED_COUNT_MS} ms`)), SHARED_COUNT_MS) }),
+      ])
+    } catch (err) {
+      sharedAfter = now() + SHARED_RETRY_MS
+      logger.error('jev-route: shared count failed, counting in this process', { error: err instanceof Error ? err.message : String(err) })
+      return local(key, ttlMs)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
 
   app.post<{ Body: JevBody }>(JEV_ROUTE_PATH, { bodyLimit: MAX_BODY_BYTES, preHandler: [validateBody(jevBodySchema)] }, async (req, reply) => {
     // Fail CLOSED: an absent key must never read as "decide some other way" on a path that spends credit.
@@ -168,6 +187,20 @@ export async function jevRouteRoutes(app: FastifyInstance, options: JevRouteOpti
       sendError(reply, 'Jev is not set up on this server', 'JEV_NOT_CONFIGURED', 503)
       return
     }
+    // A caller that hangs up has nobody waiting on the answer: do not start, or stop paying for, its decision.
+    // The daemon's own gateway holds its connection open for up to 20 s, so for ⌘B the real bound is
+    // TIMEOUT_MS below; this is for a caller that does hang up.
+    const gone = new AbortController()
+    const onClose = () => { if (!reply.raw.writableFinished) gone.abort() }
+    reply.raw.once('close', onClose)
+    try {
+      await decide(req, reply, gone.signal)
+    } finally {
+      reply.raw.off('close', onClose)
+    }
+  })
+
+  async function decide(req: FastifyRequest<{ Body: JevBody }>, reply: FastifyReply, gone: AbortSignal): Promise<void> {
     const userId = req.user?.sub ?? ''
     const over = await jevAllowance(count, userId, now(), env.JEV_DAILY_DECISIONS)
     if (over === 'account') {
@@ -180,16 +213,13 @@ export async function jevRouteRoutes(app: FastifyInstance, options: JevRouteOpti
       return
     }
 
+    if (gone.aborted) return
     const started = Date.now()
     const { state, questions } = req.body
-    // A CLI that gave up has nobody waiting on the answer: stop paying for it.
-    const gone = new AbortController()
-    const onClose = () => { if (!reply.raw.writableFinished) gone.abort() }
-    reply.raw.once('close', onClose)
     try {
       const res = await fetch(ENDPOINT, {
         method: 'POST',
-        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), gone.signal]),
+        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), gone]),
         headers: {
           Authorization: `Bearer ${env.JEV_OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
@@ -228,10 +258,8 @@ export async function jevRouteRoutes(app: FastifyInstance, options: JevRouteOpti
       })
       sendSuccess(reply, { answers })
     } catch (err) {
-      logger.error('jev-route failed', { userId, ms: Date.now() - started, gone: gone.signal.aborted, error: err instanceof Error ? err.name : String(err) })
+      logger.error('jev-route failed', { userId, ms: Date.now() - started, gone: gone.aborted, error: err instanceof Error ? err.name : String(err) })
       sendError(reply, 'Jev did not answer', 'JEV_UNAVAILABLE', 502)
-    } finally {
-      reply.raw.off('close', onClose)
     }
-  })
+  }
 }
