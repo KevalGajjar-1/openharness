@@ -103,10 +103,10 @@ private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [Previe
   return (window, titlebar)
 }
 
-private func capture(_ window: NSWindow, _ name: String, height: CGFloat = 40) {
+private func capture(_ window: NSWindow, _ name: String, height: CGFloat = 40, width: CGFloat? = nil) {
   let frame = window.contentView!.superview!
   frame.layoutSubtreeIfNeeded()
-  let rect = NSRect(x: 0, y: frame.bounds.height - height, width: frame.bounds.width, height: height)
+  let rect = NSRect(x: 0, y: frame.bounds.height - height, width: width ?? frame.bounds.width, height: height)
   let bitmap = frame.bitmapImageRepForCachingDisplay(in: rect)!
   frame.cacheDisplay(in: rect, to: bitmap)
   try! bitmap.representation(using: .png, properties: [:])!
@@ -162,7 +162,7 @@ private let lampTabs: [PreviewTab] = [
 
 for (theme, palette) in previewPalettes {
   let dark = theme == "dark"
-  func scene(_ name: String, tabs: [PreviewTab] = lampTabs, width: CGFloat = 1280,
+  func scene(_ name: String, tabs: [PreviewTab] = lampTabs, width: CGFloat = 1280, crop: CGFloat? = nil,
              after: (SwarmTabStrip) -> Void = { _ in }, _ act: (SwarmTabStrip) -> Void = { _ in }) {
     let (window, titlebar) = previewWindow(width: width, palette: palette, tabs: tabs, active: "lamp",
       activeMessages: tabs.first?.messages)
@@ -171,15 +171,24 @@ for (theme, palette) in previewPalettes {
     window.contentView!.superview!.layoutSubtreeIfNeeded()
     // A hidden window's strip holds its animation at frame 0 on layout.
     after(titlebar.previewStrip)
-    capture(window, "\(name)-\(theme)")
+    capture(window, "\(name)-\(theme)", width: crop)
     window.close()
   }
   var messaging = lampTabs
   messaging[0].flowing = true
   scene("01-rest-quiet")
-  // The status slot's two frames: 💬, then ⇆ half a second later.
+  // The status slot's two frames: 💬, then mirrored half a second later.
   scene("02-rest-messaging", tabs: messaging)
   scene("02b-rest-messaging-next-frame", tabs: messaging, after: { $0.previewTabs[0].activityFrame = 5 })
+  // The animation, frame by frame, for the review page to play: messaging's
+  // two sides, then the working spinner's ten frames.
+  for frame in [0, 5] {
+    scene("anim-messaging-\(frame)", tabs: messaging, crop: 600,
+      after: { $0.previewTabs[0].activityFrame = frame })
+  }
+  for frame in 0..<10 {
+    scene("anim-working-\(frame)", crop: 600, after: { $0.previewTabs[0].activityFrame = frame })
+  }
   scene("03-hover-off") { $0.previewTabs[2].mouseEntered(with: previewHover) }
   scene("04-hover-on-quiet") { $0.previewTabs[1].mouseEntered(with: previewHover) }
   scene("05-hover-on-messaging", tabs: messaging) { $0.previewTabs[0].mouseEntered(with: previewHover) }

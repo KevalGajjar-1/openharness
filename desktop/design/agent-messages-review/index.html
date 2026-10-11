@@ -36,6 +36,15 @@
     padding: 16px; margin: 16px 0; }
   .note h2 { margin-top: 0; }
   code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .player { display: grid; gap: 12px; margin: 12px 0 8px; }
+  .player img { display: block; width: 100%; max-width: 600px; height: auto; border-radius: 8px;
+    border: 1px solid var(--line); }
+  .player-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .anim-label { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); min-width: 30ch; }
+  .track { width: 100%; max-width: 600px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .track > div { height: 100%; width: 0; background: #2f5bea; }
+  button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--card); color: var(--fg); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -55,6 +64,21 @@
       <b>10 seconds</b> after the last message, then goes back to working, done or question.</li>
       <li>At rest, names use the whole tab again. On hover, a name only moves left as far as 💬 and × need.</li>
     </ul>
+  </div>
+
+  <h2>The animation</h2>
+  <p>Frames rendered from the real title bar, played at the real timing. A message moves, and lamp's status
+  slot shows the chat icon, its bubbles swapping sides every half second. Ten seconds after the last message,
+  lamp goes back to its working spinner. This loops; each new message would start the ten seconds again.
+  With Reduce Motion on, the icon holds still.</p>
+  <div class="player">
+    <img id="anim-dark" src="anim/anim-messaging-0-dark.png" alt="lamp tab, dark, animating">
+    <img id="anim-light" src="anim/anim-messaging-0-light.png" alt="lamp tab, light, animating">
+    <div class="track"><div id="anim-progress"></div></div>
+    <div class="player-row">
+      <span class="anim-label" id="anim-label">Agents messaging</span>
+      <button id="anim-replay" type="button">Replay</button>
+    </div>
   </div>
 
   <h2>Dark (Graphite)</h2>
@@ -112,5 +136,40 @@
   <p class="muted">Re-render: <code>HARNESS_AGENT_MESSAGES_PREVIEW_DIR=&lt;dir&gt; bash desktop/tool/check_swarm_titlebar.sh &lt;flutter-sdk&gt; --agent-messages-preview</code>.
   The “before” image comes from the same tool run against the title bar at #1159 (3a97ef3ed4). “main today” is #1161.</p>
 </main>
+<script>
+(() => {
+  const MESSAGING_MS = 10000, STATUS_MS = 4000, CYCLE = MESSAGING_MS + STATUS_MS;
+  const themes = ['dark', 'light'];
+  const frames = {};
+  for (const theme of themes) {
+    frames[theme] = {
+      messaging: [0, 5].map(f => `anim/anim-messaging-${f}-${theme}.png`),
+      working: Array.from({ length: 10 }, (_, f) => `anim/anim-working-${f}-${theme}.png`),
+    };
+    for (const src of [...frames[theme].messaging, ...frames[theme].working]) new Image().src = src;
+  }
+  const label = document.getElementById('anim-label');
+  const progress = document.getElementById('anim-progress');
+  let start = performance.now();
+  function tick(now) {
+    const t = (now - start) % CYCLE;
+    const messaging = t < MESSAGING_MS;
+    for (const theme of themes) {
+      const set = frames[theme];
+      const src = messaging ? set.messaging[Math.floor(t / 500) % 2]
+        : set.working[Math.floor((t - MESSAGING_MS) / 100) % 10];
+      const img = document.getElementById(`anim-${theme}`);
+      if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+    }
+    label.textContent = messaging
+      ? `Agents messaging · ${((MESSAGING_MS - t) / 1000).toFixed(1)} s left`
+      : 'Quiet again · back to its status: Working';
+    progress.style.width = messaging ? `${(100 * t) / MESSAGING_MS}%` : '0%';
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  document.getElementById('anim-replay').addEventListener('click', () => { start = performance.now(); });
+})();
+</script>
 </body>
 </html>
