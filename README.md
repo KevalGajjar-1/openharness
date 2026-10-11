@@ -139,6 +139,14 @@ curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 hn
 ```
 
+**For agents:** Claude Code and Codex can start, wait for and read other harnesses with the `harness` skill
+([harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)):
+
+```
+/plugin marketplace add autonomous-ai/openharness
+/plugin install harness@openharness
+```
+
 <details>
 <summary><b>Build from source</b></summary>
 

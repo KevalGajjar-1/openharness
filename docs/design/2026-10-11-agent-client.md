@@ -58,9 +58,11 @@ the owner's Mac, 21 harnesses: 5.8 KB of text, 16.2 KB of JSON). `--json` for pr
 left empty would have stopped Harness. `close` is the app's close (`agent_close`): it saves the screen, stops the
 harness and keeps its conversation, and refuses while the harness is working unless `--now`.
 
-The agent's instructions are a skill, [cli/skills/harness/SKILL.md](../../cli/skills/harness/SKILL.md): when to
-use Harness at all, the rule below, the verbs and the limits. How it reaches agents (installed for Claude Code
-and Codex, or a startup note) is not decided yet.
+The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):
+when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code
+and Codex plugin from this repository (`/plugin install harness@openharness`, `codex plugin add harness@openharness`;
+see [harness.autonomous.ai/agents](https://harness.autonomous.ai/agents)). How it reaches the harnesses Harness
+starts (installed with the CLI, or a startup note) is not decided yet.
 
 ### ⌘N or ⌘P: new harness or an existing one
 
