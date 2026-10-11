@@ -3,17 +3,24 @@
  * service's MCP server with the stored credential, renewing it first when it is about to expire, and streams
  * the answer back (event streams included). A service reached by REST (no MCP server the grant can use) is
  * answered here instead, its REST tools served as MCP (rest.ts). Runs in the daemon (services/connectors.ts).
+ *
+ * Two more addresses serve Harness's own cloud agents (services/cloud.ts), which hold no credential either:
+ * - `/<key>/connections`: what is connected, by address and with no secret, so the service finds the
+ *   connection that signs in Fo or Devin by where it points rather than by what the person named it;
+ * - `/<key>/<code>/api/<path>`: one request to a key-only connection's own API (`api_entry`), with its key.
  */
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import { label } from './catalog.js'
-import { needsRefresh, refreshable, type Store, type Token } from './store.js'
+import { bearer, needsRefresh, refreshable, type Store, type Token } from './store.js'
 import { refresh } from './renew.js'
 import { answer as answerRest, transport } from './rest.js'
 
 /** Headers an MCP client sends that the service must see. Authorization never comes from the agent. */
 const FORWARD = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id']
+/** Headers a REST call through `/api/` may carry. */
+const FORWARD_API = ['accept', 'content-type', 'last-event-id']
 const RETURN = ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control']
 const MAX_BODY = 16 * 1024 * 1024
 
@@ -42,14 +49,61 @@ export interface BridgeOptions {
   key: () => string
 }
 
+type Target = { kind: 'mcp'; code: string } | { kind: 'api'; code: string; path: string } | { kind: 'list' }
+
 export function createBridge(vault: Store, options: BridgeOptions): Server {
-  const target = (url: string): string | null => {
+  const target = (url: string): Target | null => {
     const parts = new URL(url, 'http://127.0.0.1').pathname.replace(/^\/|\/$/g, '').split('/')
-    if (parts.length !== 3 || parts[2] !== 'mcp') return null
     const key = options.key()
     const given = Buffer.from(parts[0])
     if (!key || given.length !== Buffer.byteLength(key) || !timingSafeEqual(given, Buffer.from(key))) return null
-    return parts[1]
+    if (parts.length === 2 && parts[1] === 'connections') return { kind: 'list' }
+    if (parts.length === 3 && parts[2] === 'mcp') return { kind: 'mcp', code: parts[1] }
+    if (parts.length >= 4 && parts[2] === 'api') return { kind: 'api', code: parts[1], path: `/${parts.slice(3).join('/')}` }
+    return null
+  }
+
+  /** What is connected, with no secret: an MCP server's address without its query, which can carry a key. */
+  const list = (response: ServerResponse): void => {
+    const connections = Object.entries(vault.tokens()).map(([code, token]) => {
+      const mcp = token.mcp_entry ? new URL(token.mcp_entry.url) : null
+      return { code, name: token.label || label(code), mcp: mcp ? `${mcp.origin}${mcp.pathname}` : null, api: token.api_entry?.origin ?? null,
+        state: token.needs_reconnect ? 'reconnect' : 'connected' }
+    })
+    const raw = JSON.stringify({ connections })
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw) }).end(raw)
+  }
+
+  /** One request to a key-only connection's API, pinned to its origin: a path such as `//elsewhere` cannot
+   *  carry the key to another host. A key is never renewed, so a 401 means connect it again. */
+  const serveApi = async (name: string, token: Token, path: string, request: IncomingMessage, response: ServerResponse, body: Buffer | null): Promise<void> => {
+    const origin = token.api_entry?.origin
+    if (!origin || !token.access_token) { fail(response, 404, `${name} has no API to call.`); return }
+    const upstream = new URL(`${origin}${path}`)
+    if (upstream.origin !== origin) { fail(response, 404, 'Unknown connection address.'); return }
+    upstream.search = new URL(request.url ?? '/', 'http://127.0.0.1').search
+    const headers: Record<string, string> = {}
+    for (const header of FORWARD_API) {
+      const value = request.headers[header]
+      if (typeof value === 'string') headers[header] = value
+    }
+    Object.assign(headers, { authorization: bearer(token), 'user-agent': 'Harness-Connections' })
+    let answer: Response
+    try {
+      answer = await fetch(upstream, { method: request.method, headers, body: body ?? undefined, redirect: 'manual', signal: AbortSignal.timeout(300_000) })
+    } catch { fail(response, 502, `${name} could not be reached. Try again.`); return }
+    if (answer.status === 401) {
+      await answer.body?.cancel()
+      fail(response, 401, `${name} needs to be connected again. Open harness connections.`); return
+    }
+    const back: Record<string, string> = {}
+    for (const header of ['content-type', 'cache-control']) {
+      const value = answer.headers.get(header)
+      if (value) back[header] = value
+    }
+    response.writeHead(answer.status, back)
+    if (!answer.body) { response.end(); return }
+    Readable.fromWeb(answer.body as import('node:stream/web').ReadableStream).on('error', () => response.destroy()).pipe(response)
   }
 
   const forward = (token: Token, request: IncomingMessage, body: Buffer | null): Promise<Response> => {
@@ -89,14 +143,17 @@ export function createBridge(vault: Store, options: BridgeOptions): Server {
     if (request.headers.origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? '')) {
       fail(response, 403, 'Forbidden.'); return
     }
-    const code = target(request.url ?? '/')
-    if (!code) { fail(response, 404, 'Unknown connection address. Run harness connections sync.'); return }
+    const address = target(request.url ?? '/')
+    if (!address) { fail(response, 404, 'Unknown connection address. Run harness connections sync.'); return }
+    if (address.kind === 'list') { list(response); return }
+    const code = address.code
     if (request.headers['transfer-encoding'] && !request.headers['content-length']) { fail(response, 411, 'Send the request with a Content-Length.'); return }
     let body: Buffer | null
     try { body = await readBody(request) } catch { fail(response, 413, 'Request is too large.'); return }
     const name = vault.token(code)?.label || label(code)
     let stored: Token | undefined
     try { stored = vault.token(code) } catch (error) { fail(response, 401, `${name}: ${(error as Error).message}`); return }
+    if (stored && address.kind === 'api') { await serveApi(name, stored, address.path, request, response, body); return }
     const via = stored ? transport(stored) : 'none'
     if (!stored || via === 'none') { fail(response, 404, `${name} is not connected. Open harness connections to connect it.`); return }
     if (via === 'rest') { await serveRest(code, request, response, body); return }

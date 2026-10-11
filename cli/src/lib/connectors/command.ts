@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { label, services } from './catalog.js'
 import { sync } from './agents.js'
-import { disconnect, finish, signInFor } from './connect.js'
+import { addApiKey, disconnect, finish, signInFor } from './connect.js'
 import { call, CallFailure, OFFICIAL_HOSTS, type Output } from './call.js'
 import * as gateway from './gateway.js'
 import { forgetPage, PageServer, rememberPage, runningPage } from './page.js'
@@ -17,6 +17,9 @@ export const connectionsUsage = `Connected services (Linear, Notion, GitHub, Goo
   harness connections list [--json]    this computer's connections (no secrets)
   harness connections info <code>
   harness connections disconnect <code>
+  harness connections add-key <name> <https-url>
+                                       a service's API key, read from stdin, for Harness's cloud agents
+                                       (Devin Cloud, Cursor Cloud); never given to the agents here
   harness connections refresh [<code>] renew tokens that are due (or this one now)
   harness connections sync             give Claude Code, Codex and OpenCode their MCP entries again
   harness connections call <code> <METHOD> <https-url> [--query K=V] [--json BODY|-] [--data K=V]
@@ -101,8 +104,26 @@ function info(vault: Store, code: string, io: Output): number {
   return 0
 }
 
+/** A key from stdin: piped, or typed at a prompt that does not echo it. */
+async function readKey(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    const chunks: Buffer[] = []
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+    return Buffer.concat(chunks).toString('utf8').trim()
+  }
+  const { createInterface } = await import('node:readline')
+  const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
+  process.stdout.write('API key (not shown): ')
+  // Nothing typed is drawn: the key never reaches the screen or the terminal's scrollback.
+  ;(prompt as unknown as { _writeToOutput: (text: string) => void })._writeToOutput = () => {}
+  const key = await new Promise<string>(resolve => prompt.question('', resolve))
+  prompt.close()
+  process.stdout.write('\n')
+  return key.trim()
+}
+
 export async function connectionsCommand(argv: string[], io: Output = { out: text => process.stdout.write(text), err: text => process.stderr.write(text + '\n') },
-  vault = new Store()): Promise<number> {
+  vault = new Store(), key: () => Promise<string> = readKey): Promise<number> {
   const [verb, ...rest] = argv
   try {
     if (!verb || verb === 'open') return await openPage(vault, io)
@@ -113,6 +134,11 @@ export async function connectionsCommand(argv: string[], io: Output = { out: tex
     if (verb === 'disconnect' && rest.length === 1) {
       await disconnect(vault, validateCode(rest[0]))
       io.out('Disconnected on this computer. Revoke access at the provider to remove it elsewhere.\n')
+      return 0
+    }
+    if (verb === 'add-key' && rest.length === 2) {
+      const added = addApiKey(vault, { name: rest[0], url: rest[1], key: await key() })
+      io.out(`Connected ${rest[0]} as ${String(added.connector)}.\n`)
       return 0
     }
     if (verb === 'sync' && rest.length === 0) {

@@ -11,7 +11,7 @@ import { FakeGateway, FakeService } from '../../testing/connectorServers.js'
 import { bridgeKey, sync } from './agents.js'
 import { createBridge } from './bridge.js'
 import { CATALOG, services } from './catalog.js'
-import { addCustom, cards, customCode, disconnect, finish, Flows, signInFor } from './connect.js'
+import { addApiKey, addCustom, cards, customCode, disconnect, finish, Flows, signInFor } from './connect.js'
 import * as gateway from './gateway.js'
 import { LocalSignIn } from './oauth.js'
 import { forgetPage, PageServer, rememberPage, runningPage } from './page.js'
@@ -135,6 +135,86 @@ describe('the bridge', () => {
     expect(answer.headers['www-authenticate']).toBeUndefined()
     expect(JSON.parse(answer.body).error.message).toContain('connected again')
     expect(vault.status('linear', 'Linear', vault.token('linear')).state).toBe('reconnect')
+  })
+})
+
+describe('key-only connections for the cloud agents', () => {
+  let port: number
+  let key: string
+  const seen: { method: string, url: string, auth: string, body: string }[] = []
+  let status = 200
+  let api: string
+
+  beforeEach(async () => {
+    seen.length = 0
+    status = 200
+    const upstream = createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', chunk => chunks.push(chunk)).on('end', () => {
+        seen.push({ method: request.method!, url: request.url!, auth: String(request.headers.authorization), body: Buffer.concat(chunks).toString() })
+        response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }))
+      })
+    })
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+    api = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`
+    closers.push(() => { upstream.close(); upstream.closeAllConnections() })
+    key = bridgeKey(vault)
+    const bridge = createBridge(vault, { key: () => String(vault.file('bridge.json').key) })
+    await new Promise<void>(resolve => bridge.listen(0, '127.0.0.1', resolve))
+    port = (bridge.address() as { port: number }).port
+    closers.push(() => { bridge.close(); bridge.closeAllConnections() })
+  })
+
+  const send = (method: string, path: string, body?: string) => fetch(`http://127.0.0.1:${port}${path}`, { method, body, headers: body ? { 'Content-Type': 'application/json' } : {} })
+
+  it('saves a key only for Harness, never in an agent\'s MCP configuration', async () => {
+    expect(addApiKey(vault, { name: 'Devin', url: `${api}/ignored/path?q=1`, key: 'cog_secret' }, env)).toEqual({ connector: 'devin', state: 'connected' })
+    expect(vault.token('devin')).toMatchObject({ access_token: 'cog_secret', api_entry: { origin: api }, transport: 'none', source: 'custom', label: 'Devin' })
+    expect(JSON.stringify(sync(vault, env))).not.toContain('devin')
+    expect(() => addApiKey(vault, { name: 'Devin', url: api, key: ' ' }, env)).toThrow('Paste the API key.')
+    expect(() => addApiKey(vault, { name: '', url: api, key: 'k' }, env)).toThrow('Give the service a name.')
+    expect(() => addApiKey(vault, { name: 'Bad', url: 'http://example.com', key: 'k' }, env)).toThrow('https://')
+  })
+
+  it('calls the API with the key, pinned to its origin, and lists connections without a secret', async () => {
+    addApiKey(vault, { name: 'Devin', url: api, key: 'cog_secret' }, env)
+    finish(vault, 'fo', { mcp_entry: { url: 'https://mcp.example.com/fo?key=hidden', headers: { 'X-API-Key': 'wak_secret' } } }, 'Fo', env)
+    const answer = await send('POST', `/${key}/devin/api/v3/self?x=1`, '{"a":1}')
+    expect(answer.status).toBe(200)
+    expect(await answer.json()).toEqual({ ok: true })
+    expect(seen.at(-1)).toEqual({ method: 'POST', url: '/v3/self?x=1', auth: 'Bearer cog_secret', body: '{"a":1}' })
+    const listed = await (await send('GET', `/${key}/connections`)).text()
+    expect(listed).not.toContain('secret')
+    expect(listed).not.toContain('hidden')
+    expect(JSON.parse(listed).connections).toEqual(expect.arrayContaining([
+      { code: 'devin', name: 'Devin', mcp: null, api, state: 'connected' },
+      { code: 'fo', name: 'Fo', mcp: 'https://mcp.example.com/fo', api: null, state: 'connected' },
+    ]))
+    // Its MCP address is not served: nothing an agent could use.
+    expect((await send('POST', `/${key}/devin/mcp`, '{}')).status).toBe(404)
+    expect((await send('GET', `/${key}/fo/api/v1/x`)).status).toBe(404)
+    expect((await send('GET', `/wrong/devin/api/v3/self`)).status).toBe(404)
+    expect((await send('GET', `/${key}/devin/other/v3/self`)).status).toBe(404)
+  })
+
+  it('adds a key from the command, read from stdin rather than the command line', async () => {
+    const out: string[] = []
+    const io = { out: (text: string) => { out.push(text) }, err: (text: string) => { out.push(text) } }
+    expect(await connectionsCommand(['add-key', 'Cursor', api], io, vault, async () => 'key_secret')).toBe(0)
+    expect(out.join('')).toContain('Connected Cursor as cursor.')
+    expect(out.join('')).not.toContain('key_secret')
+    expect(vault.token('cursor')).toMatchObject({ access_token: 'key_secret', api_entry: { origin: api } })
+    expect(await connectionsCommand(['add-key', 'Cursor'], io, vault, async () => 'k')).toBe(2)
+  })
+
+  it('turns a refused key into Reconnect and an unreachable API into a retry', async () => {
+    addApiKey(vault, { name: 'Devin', url: api, key: 'cog_secret' }, env)
+    status = 401
+    const refused = await send('GET', `/${key}/devin/api/v3/self`)
+    expect(refused.status).toBe(401)
+    expect((await refused.json()).error.message).toContain('connected again')
+    vault.save('devin', { ...vault.token('devin')!, api_entry: { origin: 'http://127.0.0.1:1' } })
+    expect((await send('GET', `/${key}/devin/api/v3/self`)).status).toBe(502)
   })
 })
 

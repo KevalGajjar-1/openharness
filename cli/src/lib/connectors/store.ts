@@ -23,6 +23,12 @@ export class ConnectorError extends Error {}
 
 export type Source = 'dcr' | 'gateway' | 'custom'
 export interface McpEntry { url: string, headers: Record<string, string> }
+/**
+ * A service reached by its own REST API with a key, for Harness itself rather than for the agents: the cloud
+ * agents' service calls Devin's and Cursor's APIs through the bridge (`/<key>/<code>/api/…`, bridge.ts), which
+ * adds the key. With no MCP server or REST tools beside it, `transport` is `none`, so no agent is given it.
+ */
+export interface ApiEntry { origin: string }
 export interface Token {
   access_token?: string
   refresh_token?: string
@@ -41,6 +47,7 @@ export interface Token {
   rest_entry?: RestEntry
   /** The gateway's word on which of the two agents use. */
   transport?: Transport
+  api_entry?: ApiEntry
 }
 export interface Client {
   client_id: string
@@ -183,6 +190,12 @@ export function cleanToken(entry: unknown): Token {
   const rest = cleanRestEntry(raw.rest_entry)
   if (rest) result.rest_entry = rest
   if (raw.transport === 'mcp' || raw.transport === 'rest' || raw.transport === 'none') result.transport = raw.transport
+  const api = raw.api_entry
+  if (api) {
+    if (typeof api !== 'object' || Array.isArray(api)) throw new ConnectorError('Invalid connection server.')
+    // Only the origin: a path or query saved here would be where a request was bent somewhere else.
+    result.api_entry = { origin: new URL(cleanUrl((api as Record<string, unknown>).origin)).origin }
+  }
   if (!result.access_token && !result.mcp_entry) throw new ConnectorError('No access token was supplied.')
   return result
 }

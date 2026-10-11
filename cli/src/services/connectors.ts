@@ -12,7 +12,7 @@ import type { CoreApi, ServiceRequests } from '../core/api.js'
 import { bridgePort, sync } from '../lib/connectors/agents.js'
 import { createBridge } from '../lib/connectors/bridge.js'
 import { services, type GatewayRow } from '../lib/connectors/catalog.js'
-import { addCustom, cards, disconnect, Flows, signInFor } from '../lib/connectors/connect.js'
+import { addApiKey, addCustom, cards, disconnect, Flows, signInFor } from '../lib/connectors/connect.js'
 import * as gateway from '../lib/connectors/gateway.js'
 import { ConnectorError, Store, validateCode } from '../lib/connectors/store.js'
 
@@ -75,7 +75,7 @@ export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDep
         await disconnect(vault, code, env)
         return { connector: code, state: 'not_connected' }
       }
-      case 'custom': return addCustom(vault, flows, payload, env)
+      case 'custom': return payload.kind === 'api' ? addApiKey(vault, payload, env) : addCustom(vault, flows, payload, env)
       default: return { error: 'CONNECTORS_FAILED', detail: 'Unknown action.' }
     }
   }
