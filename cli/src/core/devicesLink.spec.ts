@@ -119,9 +119,9 @@ describe('what the devices ask of the core', () => {
   })
 
   it('lists the cloud harnesses after this computer\'s agents, as the dial lists agents', async () => {
-    const core = fakeCore()
-    const row = { agentId: 'cloud_1', engine: 'fo', displayName: 'haircut', registeredAt: 1 }
-    const devices = createDevicesLink({ core, notify: () => true, call: vi.fn(), state: () => STATE, cloudRows: () => [row] })
+    const row = { agentId: 'cloud_1', engine: 'fo', displayName: 'haircut', registeredAt: 1 } as unknown as RegisteredSession
+    const core = fakeCore({ agents: { cloud: () => [row] } })
+    const devices = createDevicesLink({ core, notify: () => true, call: vi.fn(), state: () => STATE })
     vi.mocked(core.agents.advertised).mockReturnValue([{ agentId: 'a1', engine: 'claude' } as RegisteredSession])
     expect(((await devices.answer('view', {})) as { agents: Array<{ agentId: string }> }).agents.map((agent) => agent.agentId)).toEqual(['a1', 'cloud_1'])
   })

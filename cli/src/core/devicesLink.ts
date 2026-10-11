@@ -43,8 +43,6 @@ export interface DevicesLinkDeps {
   /** What the windows last said: the desk, the tabs, what is unread, which window has the person's
    *  attention; and the engines here and whether a device watches through the backend. */
   state(): DevicesState
-  /** The cloud harnesses, as the dial lists agents (core/agents/cloud.ts `dialRows`). */
-  cloudRows?: () => Array<Record<string, unknown>>
   log?: (line: string) => void
 }
 
@@ -106,7 +104,7 @@ export function createDevicesLink(deps: DevicesLinkDeps) {
       agents: [
         ...core.agents.advertised().map((session) => ({ ...session, displayName: core.agents.displayName(session), runtimeProfile: core.agents.runtimeProfile(session) })),
         // The cloud harnesses: on the dial's wheel as on the desk, with no pane behind them.
-        ...deps.cloudRows?.() ?? [],
+        ...core.agents.cloud?.() ?? [],
       ],
       machine: { id: core.machine.id(), computerId: core.machine.computerId(), name: core.machine.name() },
       signedIn: core.account.signedIn(),

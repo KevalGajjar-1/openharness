@@ -109,7 +109,7 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
      * terminal agent's files finds one to read. A stopped one is off the wheel, as a stopped agent is.
      */
     dialRows: (): Array<Record<string, unknown>> => [...harnesses.values()].filter((harness) => harness.state !== 'stopped').map((harness) => ({
-      agentId: harness.agentId, sessionId: harness.agentId, engine: harness.agent, displayName: harness.name, runtimeProfile: null,
+      agentId: harness.agentId, sessionId: harness.agentId, engine: harness.agent, displayName: harness.name, defaultName: harness.name, runtimeProfile: null,
       registeredAt: Date.parse(harness.createdAt), lastHookAt: Date.parse(harness.updatedAt), active: true,
       tmuxPane: '', cwd: '', projectDir: '', transcriptPath: null, runtimes: [], primaryRuntimeKey: '',
     })),

@@ -509,6 +509,16 @@ describe('⌘K, the Wi-Fi device\'s borrowed walk, the voice router and stopping
     expect(vi.mocked(core.clients.sendLocal).mock.calls.map(([frame]) => frame.type)).toEqual(['dial_focus', 'dial_scroll'])
   })
 
+  it('walk the cloud harnesses on the desk too, where the core offers them', async () => {
+    const { core, port } = start()
+    port.desk(['a1', 'cloud_1'], true)
+    port.swarms({ active: 't1', swarms: [{ id: 't1', name: 'Tab', agentIds: ['a1', 'cloud_1'], panes: 2 }], tiles: [] })
+    vi.mocked(core.agents.advertised).mockReturnValue([{ agentId: 'a1', registeredAt: 1, engine: 'claude' }] as RegisteredSession[])
+    core.agents.cloud = () => [{ agentId: 'cloud_1', registeredAt: 2, engine: 'fo' }] as unknown as RegisteredSession[]
+    seen.fleet!.fail = true
+    expect(await port.stepFocus('next', 'a1')).toEqual(expect.objectContaining({ agentId: 'cloud_1' }))
+  })
+
   it('tell the voice router the engines here and whether a device watches, and stop everything', async () => {
     const { port } = start()
     port.engines(['claude', 'codex'])

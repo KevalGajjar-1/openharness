@@ -146,6 +146,10 @@ export interface CoreApi {
     resolve(id: string): RegisteredSession | undefined
     /** The live agents the apps are shown. */
     advertised(): RegisteredSession[]
+    /** The running cloud harnesses (core/agents/cloud.ts) as rows an agent list reads: an id, a start, an
+     *  engine and a name, with no pane, transcript or process. Only the lists that show them ask (the dial,
+     *  the fleet); absent where a core or process offers none. */
+    cloud?(): RegisteredSession[]
     /** Whether the agent's terminal is attached: a frame without one reads to the apps as "agent gone". */
     terminalAvailable(agentId: string): boolean
     /** Send the agent's frame to the apps again. */
@@ -1412,6 +1416,8 @@ export interface CoreApiDeps {
   wifi: CoreApi['wifi']
   /** The cloud agents' doors (core/agents/cloud.ts). */
   cloud?: CloudCore
+  /** The running cloud harnesses as list rows (`agents.cloud`). */
+  cloudRows?: () => RegisteredSession[]
   lastTurn: CoreApi['transcripts']['lastTurn']
   /** Where a turn's cards and recaps go: the devices, and the apps. Only their own frame types reach these. */
   turnCard: CoreApi['clients']['turnCard']
@@ -1423,7 +1429,7 @@ export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
   gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, observer, privateGridName, machineName, backend, onNotice,
   runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
-  signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, cloud, lastTurn, turnCard, turnSummary,
+  signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, cloud, cloudRows, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
 }: CoreApiDeps): CoreApi {
   // The devices reach the windows through these alone, and only with their own frames: a devices process
@@ -1445,6 +1451,7 @@ export function createCoreApi({
       byAgent: (agentId) => registry.byAgent(agentId),
       resolve: (id) => registry.resolve(id),
       advertised: () => registry.advertised(),
+      ...(cloudRows ? { cloud: cloudRows } : {}),
       terminalAvailable: (agentId) => registry.terminalAvailable(agentId),
       sync: syncSession,
       runtimeModels,

@@ -738,6 +738,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   }
   const coreApi = createCoreApi({
     cloud: cloudDoors,
+    cloudRows: () => (cloudAgents?.dialRows() ?? []) as unknown as RegisteredSession[],
     // Agents' terminals: a literal-argv launch, and a read-only view for Share's observers (core/terminalWatch.ts).
     terminals: { ...TERMINALS_OFF, ...createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder: (cwd) => !!backendRef?.purgeAgentService?.blocksFolder(cwd) }), watch: terminalWatch.watch },
     dataDir: env.ADAPTER_DATA_DIR,
@@ -1276,7 +1277,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     call: (type, payload, waitMs) => serviceLinks.call('devices', type, payload, waitMs),
     state: () => ({ desk: appPaneAgents, foreground: appWindowForeground, swarms: appSwarmsLatest, unread: appUnreadLatest,
       focus: windowFocus(), engines: registry.active().map((agent) => agent.engine), commanders: backend.hasCommander() }),
-    cloudRows: () => cloudAgents?.dialRows() ?? [],
   })
   // The Wi-Fi device in the devices' process (core/wifiLink.ts): its sessions' requests and what the agents do,
   // in order; on each connection, what the core holds for it (core/wifi.ts).
