@@ -135,6 +135,13 @@ export function runDevicesService(options: DevicesServiceOptions): ServiceProces
         const said = (await ask('activityText', { agentId })).text
         return typeof said === 'string' ? said : null
       },
+      activitySnapshot: async (agentId) => {
+        // A core that predates the query (or has no timer to give) still has the footer.
+        const said = (await ask('activitySnapshot', { agentId }).catch((): Record<string, unknown> => ({}))).activity
+        if (said && typeof said === 'object' && typeof (said as { text?: unknown }).text === 'string') return said as { text: string; elapsedSeconds?: number }
+        const text = (await ask('activityText', { agentId })).text
+        return typeof text === 'string' && text ? { text } : null
+      },
       // The devices make no agent of their own and show no harness's viewer.
       ...AGENT_ACTIONS_OFF,
     },

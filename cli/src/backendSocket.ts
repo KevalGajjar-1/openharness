@@ -1,3 +1,4 @@
+import { withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
 import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport } from './core/api.js'
 import { ServiceUnavailableError } from './core/serviceHost.js'
@@ -594,7 +595,8 @@ export class BackendSocket {
   sendCommander(frame: Frame): void {
     this.onOutboundCommander?.(frame)
     if (env.LOG_FRAMES) logFrame('→', 'device', frame)
-    this.toGateway('device', (gateway) => gateway.commander(frame))
+    // The sentence a processing card carries for the Pro's cable stays on this computer (onOutboundCommander).
+    this.toGateway('device', (gateway) => gateway.commander(withoutUpdate(frame)))
   }
 
   /** Attach one authenticated loopback desktop client to the same RPC and event plane as cloud web. */
