@@ -315,7 +315,12 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       // Share only that in-flight sync; each waiter still checks its own facts
       // and owner. An exclusive publisher can never join or inherit a claim.
       identity: exclusive ? undefined : `native-hook-confirm:${digest(text)}`,
-      retainConflicts: true, current: () => { readFence(() => { verify(); (owner?.check ?? check)() }); return true },
+      retainConflicts: true,
+      // Ancestor flushes keep their original descriptors but need no new disk
+      // authority. The slow-registration profile showed seconds spent repeating
+      // the whole catalog proof at these queue and completion checks.
+      current: () => { (owner?.checkOwner ?? checkOwner)(); return true },
+      verify: () => readFence(() => { verify(); (owner?.check ?? check)() }),
       track: actual => { owner?.preparations.add(actual) },
     })
     if (owner && performance.now() - owner.yieldedAt >= 20) {

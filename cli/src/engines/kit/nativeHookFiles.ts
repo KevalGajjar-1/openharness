@@ -220,7 +220,7 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
       // Removing a discovered entry never authorizes deleting another profile's
       // shared target. A leaf alias requires the owner to resolve that conflict.
       if (content !== null && lstatSync(file).isSymbolicLink()) throw new HookPreparationHeld('the plugin entry is an alias')
-      attempt.check()
+      attempt.verify()
       if (content !== null) unlinkSync(target)
       attempt.observe(file, inspectHookFile(file).verify)
       let parent = dirname(target)
@@ -250,7 +250,11 @@ export interface HookPreparationAttempt {
 export interface HookPreparationOptions {
   /** Join only the same port, executable, command and complete destination set. */
   identity?: string
+  /** Cheap caller/deadline revocation, including every queued and actual flush. */
   current?(): boolean
+  /** Retained external authority at work admission, publication and acknowledgement.
+   * Synchronous: no filesystem proof is shared across an await. */
+  verify?(): void
   timeoutMs?: number
   /** Immutable effect claims must let a competing publisher finish. */
   retainConflicts?: boolean
@@ -276,7 +280,9 @@ function preparationProof(files: readonly string[], verifyRoutes: () => void): H
 async function joinPreparation<T>(pending: PendingPreparation, options: HookPreparationOptions, verifyRoutes: () => void, files: readonly string[]): Promise<T> {
   const deadline = performance.now() + (options.timeoutMs ?? 5_000)
   verifyRoutes()
+  options.verify?.()
   if (options.current?.() === false) throw new HookPreparationHeld('the joining owner changed')
+  if (performance.now() >= deadline) throw new HookPreparationHeld('the joining preparation exceeded its deadline')
   if (pending.waiters >= 16) throw new HookPreparationHeld('the preparation waiters are occupied')
   options.track?.(pending.actual)
   pending.waiters++
@@ -293,8 +299,9 @@ async function joinPreparation<T>(pending: PendingPreparation, options: HookPrep
     if (!pending.proof?.current() || proof.files.some(file => !pending.proof!.files.some(expected => expected.target === file.target && expected.stamp === file.stamp))) {
       throw new HookPreparationHeld('the prepared settings changed while their proof was captured')
     }
-    if (performance.now() >= deadline) throw new HookPreparationHeld('the joining preparation exceeded its deadline')
+    options.verify?.()
     if (options.current?.() === false) throw new HookPreparationHeld('the joining owner changed')
+    if (performance.now() >= deadline) throw new HookPreparationHeld('the joining preparation exceeded its deadline')
     options.confirmed?.(proof)
     return result as T
   } finally { clearTimeout(timer); pending.waiters-- }
@@ -388,7 +395,10 @@ export async function runHookPreparation<T>(files: readonly string[], work: (att
     }
   }
   const observations = new Map<string, () => void>()
-  const verify = () => { check(); verifyRoutes(); for (const inspect of observations.values()) inspect(); check() }
+  const verify = () => {
+    check(); verifyRoutes(); for (const inspect of observations.values()) inspect()
+    options.verify?.(); check()
+  }
   const attempt: HookPreparationAttempt = {
     check, verify,
     observe: (file, inspect) => { observations.set(file, inspect) },

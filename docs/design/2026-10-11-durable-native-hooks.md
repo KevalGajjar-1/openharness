@@ -40,6 +40,21 @@ flush callbacks, approximately 19–20 seconds of process CPU and 0.50–0.52 se
 maximum event-loop delay. These measure traversal and transport, not physical
 flush latency; they are not final runtime acceptance.
 
+The October 11, 23:39 UTC cost correction separates cheap owner/deadline checks
+from full retained publication authority. The full proof still runs before work,
+namespace mutation and acknowledgement, including each joining caller's own
+proof. Actual flush ownership and cleanup are unchanged. Receipt
+`20261011T232937.404392Z-60443` passes types, all 121 file/journal/staging/golden
+cases and seven selected catalog/protocol cases. The same four-shard workload
+takes 12.4 seconds, with 6.1 seconds of process CPU and 325 ms maximum event-loop
+delay. This is a scoped local improvement, not a latency guarantee. Independent
+review approved the five-file implementation slice over `82cbee164`.
+Receipt `20261011T233428.138677Z-82150` catches all 34 replay/publication mutants
+by assertion. The preceding mutation run reported a missing-file exception for
+the removal mutant; its oracle now asserts the observed absence directly.
+The unchanged private Stop acceptance still fails both running and paused cases
+in `20261011T233631.069065Z-90673`. This correction does not unblock landing.
+
 The actual shipped Cursor client exposed a landing blocker. In receipt
 `20261011T220611.845027Z-36324`, both continuously running and paused private cores
 leave an otherwise completed turn held. The original registration exceeds the

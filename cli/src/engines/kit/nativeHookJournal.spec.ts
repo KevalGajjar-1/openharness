@@ -293,6 +293,28 @@ it('checks fresh ownership after every asynchronous disk confirmation', async ()
   expect((await journal().snapshot()).deliveries.get(intake().id)?.result).toBeUndefined()
 })
 
+it('retains publication authority through a held claim flush without borrowing an equal replacement', async () => {
+  const original = journal({ current: () => true })
+  const body = intake()
+  await original.retain(body)
+  const before = [readdirSync(directory), readdirSync(`${directory}.witnesses`)]
+  let staging = false, delayed = false, release!: () => void
+  fault.beforeOpen = path => { if (path.startsWith(`${directory}.witnesses/.harness-hook-`)) staging = true }
+  fault.deferSync = (_fd, done) => {
+    if (!staging || delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const claim = original.claim(body.id, body.agentId).then(value => ({ value }), error => ({ error }))
+  try {
+    await vi.waitFor(() => expect(delayed).toBe(true))
+    const authority = `${directory}.authority`, replacement = join(root, 'replacement')
+    writeFileSync(replacement, readFileSync(authority), { mode: 0o600 })
+    renameSync(replacement, authority)
+  } finally { release?.() }
+  expect(await claim).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/changed/) }) })
+  expect([readdirSync(directory), readdirSync(`${directory}.witnesses`)]).toEqual(before)
+})
+
 it('does not acknowledge an intake whose durability cannot be confirmed', async () => {
   const original = journal()
   await original.snapshot()

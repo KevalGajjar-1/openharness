@@ -12,6 +12,9 @@ unit = 'src/engines/kit/nativeHookReplay.spec.ts'
 wire = 'src/engines/kit/nativeHookTransport.spec.ts'
 storage = 'src/engines/kit/nativeHookCatalog.spec.ts'
 http = 'src/hookServer.nativeProtocol.spec.ts'
+files = 'src/engines/kit/nativeHookFiles.ts'
+files_unit = 'src/engines/kit/nativeHookFiles.spec.ts'
+journal_unit = 'src/engines/kit/nativeHookJournal.spec.ts'
 mutations = [
     ('core readiness never starts client replay', 'src/hookServer.ts',
      '    clientReplay.start()', '    void clientReplay.start', http, 'starts retained client replay'),
@@ -69,6 +72,18 @@ mutations = [
      'witnesses|bootstrap|authority|seal', 'witnesses|bootstrap|seal', storage, 'orphan .history.authority'),
     ('case-insensitive retained slot appears absent', catalog,
      'const name = entry.name.toLowerCase()', 'const name = entry.name', storage, 'case variants'),
+    ('publication authority disconnected', files,
+     'options.verify?.(); check()', 'check()', files_unit, 'publication authority'),
+    ('removal skips its final authority observation', files,
+     'attempt.verify()\n      if (content !== null) unlinkSync(target)', 'attempt.check()\n      if (content !== null) unlinkSync(target)', files_unit, 'final removal observation'),
+    ('joining caller skips its own initial authority', files,
+     'verifyRoutes()\n  options.verify?.()', 'verifyRoutes()', files_unit, 'publisher authority revoked before joining'),
+    ('joining caller borrows the producer final authority', files,
+     '    options.verify?.()\n    if (options.current?.() === false)', '    if (options.current?.() === false)', files_unit, 'publisher authority revoked while waiting'),
+    ('full publication proof borrows an expired owner', files,
+     'options.verify?.(); check()', 'options.verify?.()', files_unit, 'revoked by the full publication authority check itself'),
+    ('journal forgets its retained publication authority', 'src/engines/kit/nativeHookJournal.ts',
+     'verify: () => readFence(() => { verify(); (owner?.check ?? check)() })', 'verify: () => {}', journal_unit, 'retains publication authority through a held claim flush'),
 ]
 environment = {**os.environ, 'TZ': 'UTC', 'TMPDIR': '/tmp'}
 for key in list(environment):
@@ -88,6 +103,8 @@ def run(target, pattern=''):
 
 
 for target, pattern in [(unit, ''), (wire, ''), (http, 'starts retained client replay'),
+                        (files_unit, 'publication authority|publisher authority'),
+                        (journal_unit, 'retains publication authority through a held claim flush'),
                         (storage, 'transient ancestor redirection|orphan .history.authority|case variants|keeps recovered outbox owner checks|yields confirmed publication work|exact published witness')]:
     baseline = run(target, pattern)
     if baseline.returncode:
