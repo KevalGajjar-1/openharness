@@ -48,8 +48,12 @@ const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)}))
 `, { mode: 0o755 })
   try {
     await d.start()
-    await until('the unreleased startup probe to enter', () => existsSync(entered), 3_000, 10)
-    const pid = Number(readFileSync(entered, 'utf8'))
+    const pid = await until('the unreleased startup probe to enter', () => {
+      try {
+        const value = Number(readFileSync(entered, 'utf8'))
+        return Number.isSafeInteger(value) && value > 1 ? value : null
+      } catch { return null }
+    }, 3_000, 10)
     const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
     // Waiting for the bounded probe's timeout is still waiting for a dependency.
     // The former startup only became ready after killing this unreleased child.
