@@ -190,7 +190,9 @@ it.each(['create', 'fork'] as const)('keeps a post-rc held %s with its original 
   // Only the new pane's rc file changes this private config, after preparation.
   // Native probes have no TMUX_PANE. This forces the real final guard to hold.
   const config = join(d.engineConfig.codexHome, 'config.toml'), trigger = join(d.root, 'change-once')
-  const original = readFileSync(config)
+  const original = await until('startup hook preparation to create the private Codex config', () => {
+    try { return readFileSync(config) } catch { return null }
+  }, 10_000)
   writeFileSync(trigger, '')
   writeFileSync(join(d.env.HOME!, '.bashrc'), `if [ -n "$TMUX_PANE" ] && [ -f ${shellSingleQuote(trigger)} ]; then printf '\\n# changed by private pane fixture\\n' >> ${shellSingleQuote(config)}; /bin/rm ${shellSingleQuote(trigger)}; fi\n`)
   const response = await c.request(operation === 'create' ? 'agent_create' : 'agent_fork', operation === 'create'

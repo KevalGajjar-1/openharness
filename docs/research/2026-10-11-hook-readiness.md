@@ -34,3 +34,11 @@ Receipt: `20261011T053403.766571Z-65433`. The final dependency integration, full
 and master coverage, wiring mutations, private daemon acceptance, matched startup
 cost, independent review and PR checks remain required before landing. No release
 is authorized.
+
+The first full private hook lane (`20261011T060712.803551Z-48168`) passed seven
+of eight cases, including the blocked-installer readiness case and all-vendor
+Stop/resume without the optional hooks chunk. The post-rc create fixture read
+its private Codex configuration immediately after readiness, before background
+maintenance had created it. The fixture now waits for that file before taking
+its fault-injection snapshot. All hold, crash and no-replay assertions are unchanged.
+Both create and fork cases passed in `20261011T060955.203043Z-61813`.
