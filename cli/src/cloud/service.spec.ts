@@ -1,0 +1,280 @@
+/**
+ * The cloud service against scripted makers: never a real Fo, Devin or Cursor, and a throwaway data folder.
+ */
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { CloudCore } from '../core/api.js'
+import type { CloudHarness } from '../lib/cloudAgents.js'
+import type { Bridge } from './bridge.js'
+import { nameFor, repositoryOf, startCloudService } from './service.js'
+import { CloudError, type CloudAdapter, type CloudUpdate } from './types.js'
+
+const owner = { local: true, owner: true }
+let dataDir: string
+let clock: number
+let timers: Map<number, { fn: () => void; ms: number }>
+let nextTimer: number
+let doors: { publish: ReturnType<typeof vi.fn>; ask: ReturnType<typeof vi.fn>; unask: ReturnType<typeof vi.fn> }
+
+beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), 'cloud-'))
+  clock = Date.parse('2026-10-11T10:00:00Z')
+  timers = new Map()
+  nextTimer = 1
+  doors = { publish: vi.fn(), ask: vi.fn(), unask: vi.fn() }
+})
+afterEach(() => rmSync(dataDir, { recursive: true, force: true }))
+
+/** A maker whose answers the test scripts, one look at a time. */
+function maker(over: Partial<CloudAdapter> = {}) {
+  const looks: CloudUpdate[] = []
+  const adapter: CloudAdapter & { looks: CloudUpdate[] } = {
+    id: 'devin-cloud',
+    looks,
+    start: vi.fn(async () => ({ remote: { id: 'devin-1' }, links: [{ label: 'Session', url: 'https://app.devin.ai/sessions/1' }] })),
+    send: vi.fn(async () => {}),
+    poll: vi.fn(async () => looks.shift() ?? { messages: [] }),
+    stop: vi.fn(async () => {}),
+    ...over,
+  }
+  return adapter
+}
+
+const bridge = (connections: unknown[] = []): Bridge => ({
+  connections: vi.fn(async () => connections as never),
+  mcpUrl: (code) => `http://bridge/${code}/mcp`,
+  api: vi.fn(async () => ({ status: 200, json: {} })),
+})
+
+function start(adapters: Record<string, CloudAdapter>, given = bridge()) {
+  return startCloudService({
+    dataDir, core: doors as unknown as CloudCore, bridge: given, adapters: adapters as never,
+    now: () => clock,
+    setTimer: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id },
+    clearTimer: (id) => { timers.delete(id as number) },
+    log: () => {},
+  })
+}
+
+/** Runs every timer due now, as many times as it takes, then lets the looks settle. */
+async function tick(): Promise<void> {
+  for (let round = 0; round < 5; round++) {
+    const due = [...timers.entries()]
+    timers.clear()
+    for (const [, timer] of due) timer.fn()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+}
+
+const published = (): CloudHarness[] => doors.publish.mock.calls.at(-1)![0] as CloudHarness[]
+
+describe('names and repositories', () => {
+  it('reads a repository from a GitHub address or the pair', () => {
+    expect(repositoryOf('https://github.com/acme/api')).toBe('acme/api')
+    expect(repositoryOf('https://github.com/acme/api.git')).toBe('acme/api')
+    expect(repositoryOf('git@github.com:acme/api.git')).toBe('acme/api')
+    expect(repositoryOf('acme/api')).toBe('acme/api')
+    expect(repositoryOf('https://gitlab.com/acme/api')).toBeNull()
+    expect(repositoryOf(3)).toBeNull()
+  })
+
+  it('names a harness by its task\'s first line, short', () => {
+    expect(nameFor('\n  fix the flaky login test\nmore', 'devin-cloud')).toBe('fix the flaky login test')
+    expect(nameFor('a'.repeat(60), 'fo')).toHaveLength(40)
+    expect(nameFor('   ', 'fo')).toBe('Fo')
+  })
+})
+
+describe('a cloud harness', () => {
+  it('starts on its maker, is told to the core, and keeps its conversation', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    const made = await service.port.create({ engine: 'devin-cloud', prompt: 'fix the flaky login test', repositoryUrl: 'https://github.com/acme/api', acuLimit: 3 })
+    expect(made.ok).toBe(true)
+    expect(devin.start).toHaveBeenCalledWith({ task: 'fix the flaky login test', repository: 'acme/api', options: { acuLimit: 3, model: undefined } })
+    const harness = published()[0]
+    expect(harness).toMatchObject({ agent: 'devin-cloud', name: 'fix the flaky login test', state: 'working', repository: 'acme/api', messages: 1,
+      links: [{ label: 'Session', url: 'https://app.devin.ai/sessions/1' }] })
+    expect(made.ok && made.agent).toMatchObject({ id: harness.agentId, location: 'cloud', engine: 'devin-cloud' })
+    expect(service.transcript(harness.agentId)).toEqual([{ id: expect.any(String), from: 'person', text: 'fix the flaky login test', at: expect.any(String) }])
+    const saved = JSON.parse(readFileSync(join(dataDir, 'cloud', 'harnesses.json'), 'utf8'))
+    expect(saved.harnesses[0]).toMatchObject({ remote: { id: 'devin-1' }, harness: { agentId: harness.agentId } })
+  })
+
+  it('refuses what it cannot start, in words a person reads', async () => {
+    const devin = maker({ start: vi.fn(async () => { throw new CloudError('NOT_CONNECTED', 'Add your Devin API key') }) })
+    const service = start({ 'devin-cloud': devin, fo: maker({ id: 'fo', start: vi.fn(async () => { throw new Error('boom') }) }) })
+    expect(await service.port.create({ engine: 'claude', prompt: 'x' })).toMatchObject({ ok: false, error: 'INVALID_ENGINE' })
+    expect(await service.port.create({ engine: 'devin-cloud', prompt: '  ' })).toMatchObject({ ok: false, error: 'INVALID_REQUEST' })
+    expect(await service.port.create({ engine: 'devin-cloud', prompt: 'x' })).toMatchObject({ ok: false, detail: expect.stringContaining('GitHub repository') })
+    expect(await service.port.create({ engine: 'devin-cloud', prompt: 'x', repository: 'acme/api' })).toEqual({ ok: false, error: 'NOT_CONNECTED', detail: 'Add your Devin API key' })
+    expect(await service.port.create({ engine: 'fo', prompt: 'x' })).toEqual({ ok: false, error: 'CLOUD_FAILED', detail: 'Fo could not be reached. Try again.' })
+    expect(doors.publish).not.toHaveBeenCalled()
+  })
+
+  it('reads what its maker says, asks the person when it waits, and stops looking once idle', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api', name: 'login fix' })
+    const agentId = published()[0].agentId
+    expect(published()[0].name).toBe('login fix')
+    devin.looks.push(
+      { messages: [{ id: 'm1', text: 'Found a race.', at: '2026-10-11T10:01:00Z' }], state: 'working', activity: 'Reading code' },
+      { messages: [{ id: 'm1', text: 'Found a race.', at: '2026-10-11T10:01:00Z' }, { id: 'm2', text: 'Which branch?', at: '2026-10-11T10:02:00Z' }], state: 'needs_input', question: { text: 'Which branch?', choices: ['main', 'dev'] } },
+    )
+    await tick()
+    expect(published()[0]).toMatchObject({ state: 'needs_input', activity: 'Reading code', messages: 3 })
+    expect(doors.ask).toHaveBeenCalledWith(agentId, expect.stringMatching(/^cloud_q_/), { text: 'Which branch?', choices: ['main', 'dev'] })
+    const requestId = doors.ask.mock.calls[0][1] as string
+    // A waiting harness is looked at less often.
+    expect([...timers.values()].at(-1)?.ms).toBe(30_000)
+
+    expect(await service.port.answer(agentId, 'cloud_q_stale', { answer: 'main' })).toMatchObject({ ok: false, error: 'STALE_QUESTION' })
+    expect(await service.port.answer(agentId, requestId, { answer: 'main' })).toEqual({ ok: true })
+    expect(devin.send).toHaveBeenCalledWith({ id: 'devin-1' }, 'main')
+    expect(doors.unask).toHaveBeenCalledWith(agentId, requestId)
+    expect(published()[0]).toMatchObject({ state: 'working', messages: 4 })
+
+    devin.looks.push({ messages: [{ id: 'm3', text: 'Opened #42.', at: '2026-10-11T10:05:00Z' }], state: 'idle', links: [{ label: 'Pull request #42', url: 'https://github.com/acme/api/pull/42' }], branch: 'devin/fix' })
+    await tick()
+    expect(published()[0]).toMatchObject({ state: 'idle', branch: 'devin/fix', links: [{ label: 'Pull request #42', url: 'https://github.com/acme/api/pull/42' }] })
+    expect(timers.size).toBe(0)
+    expect(service.transcript(agentId).map((message) => [message.from, message.text])).toEqual([
+      ['person', 'fix it'], ['agent', 'Found a race.'], ['agent', 'Which branch?'], ['person', 'main'], ['agent', 'Opened #42.'],
+    ])
+  })
+
+  it('says why it cannot reach its maker and looks again later', async () => {
+    const devin = maker({ poll: vi.fn(async () => { throw new CloudError('RATE_LIMITED', 'Devin Cloud is busy.') }) })
+    const fo = maker({ id: 'fo', poll: vi.fn(async () => { throw new Error('socket') }) })
+    const service = start({ 'devin-cloud': devin, fo })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    await tick()
+    expect(published()[0].activity).toBe('Devin Cloud is busy.')
+    expect([...timers.values()][0].ms).toBeGreaterThan(10_000)
+    await service.port.create({ engine: 'fo', prompt: 'book a haircut' })
+    await tick()
+    expect(published().find((harness) => harness.agent === 'fo')!.activity).toBe('Fo could not be reached.')
+  })
+
+  it('takes words and refuses them when its maker does', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    const agentId = published()[0].agentId
+    expect(await service.port.deliver('cloud_none', 'hi')).toMatchObject({ ok: false, error: 'UNKNOWN_AGENT' })
+    expect(await service.port.deliver(agentId, '  ')).toMatchObject({ ok: false, error: 'INVALID_REQUEST' })
+    devin.send = vi.fn(async () => ({ run: 'run-2' }))
+    expect(await service.requests.cloud_send!({ agentId, text: 'also the tests' }, owner)).toEqual({ ok: true })
+    devin.send = vi.fn(async () => { throw new CloudError('BUSY', 'Devin Cloud is still working.') })
+    expect(await service.requests.cloud_send!({ agentId, text: 'more' }, owner)).toEqual({ error: 'BUSY', detail: 'Devin Cloud is still working.' })
+    expect(await service.requests.cloud_send!({ agentId, text: 'more' }, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
+    const saved = JSON.parse(readFileSync(join(dataDir, 'cloud', 'harnesses.json'), 'utf8'))
+    expect(saved.harnesses[0].remote).toEqual({ id: 'devin-1', run: 'run-2' })
+  })
+
+  it('stops it where its maker can, and says so where it cannot', async () => {
+    const devin = maker()
+    const fo = maker({ id: 'fo', stop: undefined })
+    const service = start({ 'devin-cloud': devin, fo })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    await service.port.create({ engine: 'fo', prompt: 'book a haircut' })
+    const [devinId, foId] = published().map((harness) => harness.agentId)
+    expect(await service.port.stop(devinId)).toEqual({ ok: true })
+    expect(devin.stop).toHaveBeenCalledWith({ id: 'devin-1' })
+    expect(await service.port.stop(foId)).toEqual({ ok: true, detail: 'Fo keeps working on its own.' })
+    expect(published().map((harness) => [harness.state, harness.activity])).toEqual([['stopped', null], ['stopped', 'Fo keeps working on its own.']])
+    expect(await service.port.stop('cloud_none')).toMatchObject({ ok: false, error: 'UNKNOWN_AGENT' })
+    devin.stop = vi.fn(async () => { throw new CloudError('CLOUD_FAILED', 'Devin Cloud answered 500.') })
+    expect(await service.port.stop(devinId)).toEqual({ ok: false, error: 'CLOUD_FAILED', detail: 'Devin Cloud answered 500.' })
+  })
+
+  it('is watched again after a restart, and tells a reconnected core everything again', async () => {
+    const devin = maker()
+    const first = start({ 'devin-cloud': devin })
+    await first.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    devin.looks.push({ messages: [], state: 'needs_input', question: { text: 'Which branch?', choices: [] } })
+    await tick()
+    first.stop()
+    expect(timers.size).toBe(0)
+    // Nothing more is told once stopped.
+    const told = doors.publish.mock.calls.length
+    first.republish()
+    expect(doors.publish.mock.calls.length).toBe(told)
+
+    doors.publish.mockClear()
+    doors.ask.mockClear()
+    devin.looks.push({ messages: [], state: 'needs_input', question: { text: 'Which branch?', choices: [] } })
+    const second = start({ 'devin-cloud': devin })
+    expect([...timers.values()][0].ms).toBe(1_000)
+    await tick()
+    expect(doors.ask).toHaveBeenCalledTimes(1)
+    second.republish()
+    expect(doors.publish).toHaveBeenCalled()
+    expect(doors.ask).toHaveBeenCalledTimes(2)
+    second.stop()
+  })
+
+  it('reads a saved file that is broken or half-written as nothing it cannot use', () => {
+    mkdirSync(join(dataDir, 'cloud'), { recursive: true })
+    writeFileSync(join(dataDir, 'cloud', 'harnesses.json'), JSON.stringify({ harnesses: [null, { harness: { agentId: 'cloud_x', agent: 'nope' }, remote: { id: 'r' } }, { harness: { agentId: 'cloud_y', agent: 'fo', state: 'idle' }, remote: {} }] }))
+    writeFileSync(join(dataDir, 'cloud', 'cloud_x.jsonl'), 'not json\n{"id":"a","from":"agent","text":"hi","at":"x"}\n')
+    const service = start({})
+    expect(timers.size).toBe(0)
+    service.republish()
+    expect(published()).toEqual([])
+    expect(service.transcript('cloud_x')).toEqual([{ id: 'a', from: 'agent', text: 'hi', at: 'x' }])
+  })
+
+  it('stops looking at one unchanged for a day', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    clock += 25 * 60 * 60_000
+    await tick()
+    expect(devin.poll).not.toHaveBeenCalled()
+    expect(timers.size).toBe(0)
+    service.stop()
+  })
+
+  it('looks again at once when its maker waited for news itself (Fo)', async () => {
+    const fo = maker({ id: 'fo', start: vi.fn(async () => ({ remote: { id: 'c1', run: '{}' }, links: [], update: { messages: [], state: 'working' as const, waited: true } })) })
+    const service = start({ fo })
+    await service.port.create({ engine: 'fo', prompt: 'book a haircut' })
+    expect([...timers.values()][0].ms).toBe(0)
+    fo.looks.push({ messages: [], state: 'working', waited: true })
+    await tick()
+    expect(fo.poll).toHaveBeenCalled()
+    service.stop()
+  })
+})
+
+describe('what the apps ask', () => {
+  it('reads a harness\'s conversation, from where the pane has read to', async () => {
+    const devin = maker()
+    const service = start({ 'devin-cloud': devin })
+    await service.port.create({ engine: 'devin-cloud', prompt: 'fix it', repository: 'acme/api' })
+    const agentId = published()[0].agentId
+    devin.looks.push({ messages: [{ id: 'm1', text: 'On it.', at: 'x' }], state: 'working' })
+    await tick()
+    expect(await service.requests.cloud_transcript!({ agentId }, owner)).toMatchObject({ total: 2, messages: [{ from: 'person' }, { from: 'agent', text: 'On it.' }] })
+    expect(await service.requests.cloud_transcript!({ agentId, after: 1 }, owner)).toMatchObject({ total: 2, messages: [{ text: 'On it.' }] })
+    expect(await service.requests.cloud_transcript!({ agentId: 'cloud_none' }, owner)).toEqual({ error: 'UNKNOWN_AGENT' })
+    expect(await service.requests.cloud_transcript!({ agentId }, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
+    service.stop()
+  })
+
+  it('says which cloud agents are connected here, and how to connect the others', async () => {
+    const service = start({}, bridge([{ code: 'fo', name: 'Fo', mcp: 'https://mcp.api.wajo.ai/fo', api: null, state: 'connected' }]))
+    const answer = await service.requests.cloud_agents!({}, owner) as { agents: Array<Record<string, unknown>> }
+    expect(answer.agents).toEqual([
+      { id: 'fo', name: 'Fo', place: "Fo's cloud", kind: 'personal', connected: true },
+      { id: 'devin-cloud', name: 'Devin Cloud', place: "Devin's cloud", kind: 'coding', connected: false, connect: expect.stringContaining('add-key Devin') },
+      { id: 'cursor-cloud', name: 'Cursor Cloud', place: "Cursor's cloud", kind: 'coding', connected: false, connect: expect.stringContaining('add-key Cursor') },
+    ])
+    expect(await service.requests.cloud_agents!({}, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
+  })
+})

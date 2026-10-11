@@ -89,6 +89,10 @@ describe('the core API services stand on', () => {
     expect(core.conversations).toBe(CONVERSATIONS_OFF)
     const conversations = { ...CONVERSATIONS_OFF }
     expect(createCoreApi({ ...deps, conversations }).conversations).toBe(conversations)
+    // The cloud agents' doors, only from a core that offers them.
+    expect(core.cloud).toBeUndefined()
+    const cloud = { publish: vi.fn(), ask: vi.fn(), unask: vi.fn() }
+    expect(createCoreApi({ ...deps, cloud }).cloud).toBe(cloud)
     expect(core.dataDir).toBe('/data')
     expect(await core.terminals.open({ argv: ['/bin/zsh'], cwd: '/work' })).toEqual({ ok: false, error: 'SERVICE_UNAVAILABLE' })
     const terminals = { ...TERMINALS_OFF, open: vi.fn(async () => ({ ok: true as const, agentId: 'shell' })), watch: TERMINALS_OFF.watch }

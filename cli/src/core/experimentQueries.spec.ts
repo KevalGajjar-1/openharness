@@ -6,6 +6,26 @@ import { answerExperimentQuery, createForExperiment } from './experimentQueries.
 const agent = (agentId: string) => ({ agentId, sessionId: `s-${agentId}`, engine: 'claude', cwd: '/w' }) as RegisteredSession
 const experiments = new Set(['orchestrator'])
 
+describe('the cloud agents\' doors', () => {
+  it('are the cloud service\'s alone, and carry its harnesses and questions to the core', async () => {
+    const cloud = { publish: vi.fn(), ask: vi.fn(), unask: vi.fn() }
+    const core = fakeCore({ cloud })
+    const both = new Set(['orchestrator', 'cloud'])
+    expect(await answerExperimentQuery(core, both, 'cloud', 'cloud_publish', { harnesses: [{ agentId: 'cloud_1' }] })).toEqual({})
+    expect(cloud.publish).toHaveBeenLastCalledWith([{ agentId: 'cloud_1' }])
+    await answerExperimentQuery(core, both, 'cloud', 'cloud_publish', { harnesses: 'x' })
+    expect(cloud.publish).toHaveBeenLastCalledWith([])
+    await answerExperimentQuery(core, both, 'cloud', 'cloud_ask', { agentId: 'cloud_1', requestId: 'cloud_q_1', question: { text: 'Which?', choices: [] } })
+    expect(cloud.ask).toHaveBeenCalledWith('cloud_1', 'cloud_q_1', { text: 'Which?', choices: [] })
+    await answerExperimentQuery(core, both, 'cloud', 'cloud_ask', {})
+    expect(cloud.ask).toHaveBeenLastCalledWith('', '', {})
+    await answerExperimentQuery(core, both, 'cloud', 'cloud_unask', { agentId: 'cloud_1', requestId: 'cloud_q_1' })
+    expect(cloud.unask).toHaveBeenCalledWith('cloud_1', 'cloud_q_1')
+    expect(await answerExperimentQuery(core, both, 'orchestrator', 'cloud_publish', {})).toEqual({ error: 'NOT_CLOUD' })
+    expect(await answerExperimentQuery(fakeCore(), both, 'cloud', 'cloud_publish', {})).toEqual({ error: 'NOT_CLOUD' })
+  })
+})
+
 describe('what an experiment in its own process may ask of the core', () => {
   it('shows the live agents as the apps are shown them: name, terminal and harness', async () => {
     const core = fakeCore({
