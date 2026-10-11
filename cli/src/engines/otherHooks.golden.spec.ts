@@ -270,7 +270,10 @@ async function install(vendor: Vendor, port: number): Promise<Run> {
   const spies = [vi.spyOn(console, 'log').mockImplementation(capture('log')), vi.spyOn(console, 'error').mockImplementation(capture('error')),
     vi.spyOn(console, 'warn').mockImplementation(capture('warn'))]
   let threw: string | null = null
-  try { await installEngineHooks(port, { only: new Set([vendor]), environment: {} }) }
+  try {
+    const installed = await installEngineHooks(port, { only: new Set([vendor]), environment: {} }) as { close(): void; settled?: Promise<void> }
+    try { await installed.settled } finally { installed.close() }
+  }
   catch (error) { threw = describeError(error) } finally { for (const spy of spies) spy.mockRestore() }
   return { logs, threw }
 }
