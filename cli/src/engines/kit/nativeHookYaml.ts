@@ -111,14 +111,29 @@ function stripOwnedBlocks(rule: NativeYamlHooks, config: string, hookLines: Read
   return { cleaned: out.join('\n').replace(/\n{3,}$/, '\n'), foreignHooks, removed }
 }
 
+/** What one home's installation said, held until every home before it has said its own. */
+type HomeLines = Array<{ stream: 'log' | 'error'; args: unknown[] }>
+
 /** Installs only homes with a config, each with its own command and allowlist. */
 export async function installNativeYamlHooks(rule: NativeYamlHooks, commandForHome: (home: string) => string, selectedHome?: string, options: HookPreparationOptions & { createMissing?: boolean } = {}): Promise<boolean> {
   const homes = selectedHome ? [selectedHome] : nativeHookHomes(rule.homes, rule.home)
-  let next = 0, installed = true
+  // Homes are prepared four at a time, but what each says is printed in the homes' order: the default
+  // home, then its profiles. Printed as each finished, a profile's lines came before the default home's
+  // whenever its disk confirmation returned first, which the Hermes golden (otherHooks.golden.spec.ts)
+  // caught on busy CI shards. Before the pool (#1158) the homes were installed, and logged, in order.
+  const lines: HomeLines[] = homes.map(() => []), finished = homes.map(() => false)
+  let next = 0, printed = 0, installed = true
+  const print = () => {
+    for (; printed < homes.length && finished[printed]; printed++) {
+      for (const { stream, args } of lines[printed]) console[stream](...args)
+    }
+  }
   const worker = async () => {
     while (next < homes.length) {
-      const home = homes[next++]
-      if (!await installIn(rule, commandForHome(home), home, options)) installed = false
+      const index = next++, home = homes[index]
+      try {
+        if (!await installIn(rule, commandForHome(home), home, options, lines[index])) installed = false
+      } finally { finished[index] = true; print() }
     }
   }
   // The declared catalog includes up to 64 profiles. Starting them all at once
@@ -127,12 +142,14 @@ export async function installNativeYamlHooks(rule: NativeYamlHooks, commandForHo
   return installed
 }
 
-async function installIn(rule: NativeYamlHooks, cmd: string, home: string, options: HookPreparationOptions & { createMissing?: boolean }): Promise<boolean> {
+async function installIn(rule: NativeYamlHooks, cmd: string, home: string, options: HookPreparationOptions & { createMissing?: boolean }, lines: HomeLines): Promise<boolean> {
+  const log = (...args: unknown[]) => { lines.push({ stream: 'log', args }) }
+  const error = (...args: unknown[]) => { lines.push({ stream: 'error', args }) }
   const configPath = join(home, rule.homes.file)
   try { return await runHookPreparation([configPath, join(home, rule.allowlist)], async attempt => {
     const observed = inspectHookFile(configPath)
     if (observed.content === null && !options.createMissing) {
-      if (home === rule.home) console.log(message(rule.messages.missing, { file: configPath }))
+      if (home === rule.home) log(message(rule.messages.missing, { file: configPath }))
       return false
     }
     // A captured launch owns preparation of its selected home, including its
@@ -165,9 +182,9 @@ async function installIn(rule: NativeYamlHooks, cmd: string, home: string, optio
       throw new HookPreparationHeld('the YAML configuration is not a complete mapping')
     }
     if (foreignHooks || document.has('hooks')) {
-      console.error(message(rule.messages.foreign, { file: configPath }))
-      console.error(rule.messages.manual)
-      for (const event of rule.events) console.error(`[hooks]   ${event}: [{ command: ${JSON.stringify(cmd)}, timeout: ${rule.timeout} }]`)
+      error(message(rule.messages.foreign, { file: configPath }))
+      error(rule.messages.manual)
+      for (const event of rule.events) error(`[hooks]   ${event}: [{ command: ${JSON.stringify(cmd)}, timeout: ${rule.timeout} }]`)
       return false
     }
 
@@ -182,21 +199,21 @@ async function installIn(rule: NativeYamlHooks, cmd: string, home: string, optio
     if (next === config) {
       const installed = await observed.replace(config, attempt), approved = await approve(attempt)
       installed.verify(); approved.verify()
-      console.log(rule.messages.current + (home === rule.home ? '' : ` (${basename(home)})`))
+      log(rule.messages.current + (home === rule.home ? '' : ` (${basename(home)})`))
       return true
     }
 
     const installed = await observed.replace(next, attempt), approved = await approve(attempt)
     installed.verify(); approved.verify()
-    console.log(
+    log(
       removed > 1
         ? message(rule.messages.collapsed, { removed: String(removed), file: configPath })
         : message(rule.messages.installed, { file: configPath }),
     )
-    console.log(rule.messages.after)
+    log(rule.messages.after)
     return true
   }, { ...options, identity: JSON.stringify([rule, cmd, home]) }) } catch (err) {
-    console.error(rule.messages.failed, err)
+    error(rule.messages.failed, err)
     return false
   }
 }
