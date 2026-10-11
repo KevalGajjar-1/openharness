@@ -160,6 +160,68 @@ describe('cloud agents on the real daemon', () => {
     again.close()
   }, 240_000)
 
+  it('a Fo harness: through the bridge\'s MCP address, its reply waited for, its choices asked, and Stop said as Fo has none', async () => {
+    // Fo's MCP server's Fo profile: replies as an event stream, sessions by header, the reply waited for.
+    const calls: Array<{ tool: string; args: Record<string, unknown>; key: string }> = []
+    let replies = 0
+    const fo = createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
+        const message = JSON.parse(Buffer.concat(chunks).toString()) as { id?: number; method: string; params?: { name: string; arguments: Record<string, unknown> } }
+        const send = (result: unknown, headers: Record<string, string> = {}) => response.writeHead(200, { 'content-type': 'text/event-stream', ...headers })
+          .end(`data: ${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n\n`)
+        if (message.method === 'initialize') return send({}, { 'mcp-session-id': 'fo-session' })
+        if (!message.id) return response.writeHead(202).end()
+        if (message.method === 'tools/list') return send({ tools: [
+          { name: 'ask_fo', inputSchema: { properties: { message: { type: 'string' }, conversation_id: { type: 'string' } }, required: ['message'] } },
+          { name: 'get_fo_reply', inputSchema: { properties: { conversation_id: { type: 'string' } } } },
+        ] })
+        calls.push({ tool: message.params!.name, args: message.params!.arguments, key: String(request.headers['x-api-key']) })
+        const text = message.params!.name === 'ask_fo'
+          ? (calls.length === 1 ? { status: 'working', conversation_id: 'c1', message: 'Looking for a barber' } : { status: 'done', reply: 'Booked for 9:30.', conversation_id: 'c1' })
+          : (++replies === 1 ? { status: 'working', message: 'Calling Hair Lab' } : { status: 'done', reply: 'They have two times.\n1) 9:30\n2) 11:00\nWhich one?' })
+        send({ content: [{ type: 'text', text: JSON.stringify(text) }] })
+      })
+    })
+    await new Promise<void>((resolve) => fo.listen(0, '127.0.0.1', resolve))
+    const foBase = `http://127.0.0.1:${(fo.address() as { port: number }).port}`
+    try {
+      const port = await freePort()
+      const d = daemon = await IsolatedDaemon.create({ env: { HARNESS_CONNECTIONS_PORT: String(port), HARNESS_CLOUD_ENDPOINTS: JSON.stringify({ fo: `${foBase}/fo` }) } })
+      onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-80).join('\n')}\n---- fo saw\n${JSON.stringify(calls)}`) })
+      const vault = new Store(join(d.root, 'home', '.harness', 'connections'))
+      mkdirSync(vault.root, { recursive: true, mode: 0o700 })
+      // As Add custom saves Fo with its key as a header.
+      vault.save('fo', { source: 'custom', label: 'Fo', mcp_entry: { url: `${foBase}/fo`, headers: { 'X-API-Key': 'wak_e2e' } } })
+      await d.start()
+      const client = await LocalClient.connect(d)
+      const asked = client.next((frame: Frame) => frame.type === 'commander_question', 90_000, 'Fo\'s question')
+      const created = await client.request<{ agent?: Record<string, any>; error?: string }>('agent_create', { engine: 'fo', prompt: 'book a haircut saturday morning near me' }, 90_000)
+      expect(created.error, JSON.stringify(created)).toBeUndefined()
+      const agent = created.agent!
+      expect(agent).toMatchObject({ engine: 'fo', location: 'cloud', project: null, cloud: { place: "Fo's cloud" } })
+      const question = await asked
+      expect(question).toMatchObject({ agentId: agent.id, payload: { questions: [{ q: 'They have two times.\n1) 9:30\n2) 11:00\nWhich one?', options: ['9:30', '11:00'] }] } })
+      expect(calls.map((call) => call.tool)).toEqual(['ask_fo', 'get_fo_reply', 'get_fo_reply'])
+      expect(new Set(calls.map((call) => call.key))).toEqual(new Set(['wak_e2e']))
+      const answered = client.next((frame: Frame) => frame.type === 'question_response_result' && frame.payload?.requestId === question.payload.requestId, 30_000, 'the answer\'s result')
+      client.send('question_response', { requestId: question.payload.requestId, agentId: agent.id, answers: { answer: '9:30' } })
+      expect((await answered).payload).toMatchObject({ ok: true })
+      expect(calls.at(-1)).toMatchObject({ tool: 'ask_fo', args: { message: '9:30', conversation_id: 'c1' } })
+      const booked = await until('Fo\'s booking', async () => {
+        const transcript = await client.request<{ messages: Array<{ from: string; text: string }> }>('cloud_transcript', { agentId: agent.id })
+        return transcript.messages.some((message) => message.text === 'Booked for 9:30.') ? transcript : null
+      }, 30_000, 500)
+      expect(booked.messages.map((message) => message.from)).toEqual(['person', 'agent', 'person', 'agent'])
+      expect(await client.request('agent_delete', { agentId: agent.id })).toEqual(expect.objectContaining({ deleted: true, detail: 'Fo keeps working on its own.' }))
+      expect(d.log()).not.toContain('wak_e2e')
+      client.close()
+    } finally {
+      fo.closeAllConnections()
+      fo.close()
+    }
+  }, 240_000)
+
   it('refuses a cloud agent that is not connected, in words a person reads', async () => {
     const port = await freePort()
     const d = daemon = await IsolatedDaemon.create({ env: { HARNESS_CONNECTIONS_PORT: String(port) } })
