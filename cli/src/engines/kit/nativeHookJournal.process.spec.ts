@@ -94,7 +94,6 @@ beforeAll(() => {
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'hook-journal-process-')))
   directory = join(root, 'history')
-  mkdirSync(directory, { mode: 0o700 })
   mkdirSync(join(root, 'home'), { mode: 0o700 })
 })
 afterEach(async () => {
@@ -104,6 +103,9 @@ afterEach(async () => {
 afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }))
 
 function worker(options: { outbox?: boolean; maxRecords?: number; catalog?: boolean; maxGenerations?: number; terminalGenerations?: number } = {}) {
+  // Catalogs own an existing private root; direct logs must create their own
+  // directory only after publishing bootstrap authority.
+  if (options.catalog) mkdirSync(directory, { recursive: true, mode: 0o700 })
   const child: ChildProcess = fork(script, [directory, JSON.stringify(processKey), JSON.stringify(options)], {
     execPath: process.execPath, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: { HOME: join(root, 'home'), ADAPTER_DATA_DIR: join(root, 'data'), ADAPTER_RUNTIME_DIR: join(root, 'runtime'),

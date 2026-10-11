@@ -32,6 +32,7 @@ function held(reason: string): never { throw new HookPreparationHeld(`native hoo
 class ChangedReadRoute extends HookPreparationHeld {
   constructor() { super('native hook staging: directory route changed during scan') }
 }
+export { ChangedReadRoute as NativeHookReadRouteChanged }
 const owned = (info: BigIntStats) => typeof process.getuid !== 'function' || info.uid === BigInt(process.getuid())
 const number = (value: number) => String(value).padStart(8, '0')
 type Metadata = { file: string; text: string; verify(): void }

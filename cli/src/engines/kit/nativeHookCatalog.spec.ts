@@ -257,12 +257,12 @@ it('finds an existing key beyond an empty probe slot instead of allocating it ag
   while (existsSync(join(root, `.native-hook-effects-${String(index).padStart(3, '0')}.allocation.witness`))) index = (index + 1) % 256
   const selected = join(root, `.native-hook-effects-${String(index).padStart(3, '0')}`)
   put(selected + '.allocation', [1, 'effects', index, hash(processKey)])
-  await (await catalog().effects(processKey)).retain(intake())
+  await expect((async () => (await catalog().effects(processKey)).retain(intake()))()).resolves.toMatchObject({ intake: { id: intake().id } })
   expect(allocationFiles()).toHaveLength(2)
   expect(allocated()).toBe(selected)
 })
 
-it('rejects an ancestor redirection that hides both copies of an existing allocation', async () => {
+it.each([false, true])('discards an ancestor redirection hiding an existing allocation (repeated=%s)', async repeated => {
   await catalog().effects('fixture-seed')
   const start = Number.parseInt(hash(processKey).slice(0, 8), 16) % 256
   let index = (start + 3) % 256
@@ -271,7 +271,7 @@ it('rejects an ancestor redirection that hides both copies of an existing alloca
   put(selected, [1, 'effects', index, hash(processKey)])
   let redirected = false, hideMirror = false
   fault.stat = (path, read) => {
-    if (!redirected && path === selected + '.witness') {
+    if ((!redirected || repeated) && path === selected + '.witness') {
       redirected = true; hideMirror = true
       const parent = dirname(root), saved = parent + '.moved'
       renameSync(parent, saved); mkdirSync(parent, { mode: 0o700 }); mkdirSync(root, { mode: 0o700 })
@@ -280,7 +280,11 @@ it('rejects an ancestor redirection that hides both copies of an existing alloca
     if (hideMirror && path === selected) { hideMirror = false; throw Object.assign(Error('fixture redirected absence'), { code: 'ENOENT' }) }
     return read()
   }
-  await expect(catalog().effects(processKey)).rejects.toThrow('directory route changed')
+  if (repeated) await expect(catalog().effects(processKey)).rejects.toThrow('directory route changed')
+  else {
+    await expect((async () => (await catalog().effects(processKey)).retain(intake()))()).resolves.toMatchObject({ intake: { id: intake().id } })
+    expect(allocated()).toBe(selected.replace(/\.allocation$/, ''))
+  }
   expect(allocationFiles()).toHaveLength(2)
 })
 

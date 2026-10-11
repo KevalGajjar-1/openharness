@@ -204,9 +204,9 @@ it('confirms every exhausted prefix before publishing the first terminal reserva
   }
   const pending = client.acquire(() => true, { purpose: 'terminal' })
   await vi.waitFor(() => expect(paused).toBe(true))
-  expect(readdirSync(root, { recursive: true }).map(String).some(name => name.endsWith('00000001.claim'))).toBe(false)
-  release()
-  const lease = await pending; await lease.close()
+  try {
+    expect(readdirSync(root, { recursive: true }).map(String).some(name => name.endsWith('00000001.claim'))).toBe(false)
+  } finally { release(); const lease = await pending; await lease.close() }
   await expect(client.acquire()).rejects.toThrow('generation capacity')
 })
 

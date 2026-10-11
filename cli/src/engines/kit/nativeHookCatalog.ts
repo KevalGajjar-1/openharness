@@ -2,13 +2,13 @@
  * Allocation is permanent: full or damaged storage holds, never evicts receipts. */
 import { createHash } from 'node:crypto'
 import { lstatSync, opendirSync, type BigIntStats } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import { createNativeHookJournal, inspectNativeHookJournalAuthority, NativeHookJournalHeld,
   type NativeHookJournalBoundary } from './nativeHookJournal.js'
 import { createNativeHookOutbox, NATIVE_HOOK_OUTBOX_SHARDS } from './nativeHookOutbox.js'
-import { nativeHookMetadata as metadata, type createNativeHookStagePool } from './nativeHookStaging.js'
+import { nativeHookMetadata as metadata, NativeHookReadRouteChanged, type createNativeHookStagePool } from './nativeHookStaging.js'
 
 export const NATIVE_HOOK_STORAGE_LIMITS = Object.freeze({
   processes: 256, outboxes: NATIVE_HOOK_OUTBOX_SHARDS,
@@ -28,6 +28,16 @@ function held(detail: string): never { throw new NativeHookJournalHeld(`catalog:
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
 const count = (kind: Kind) => kind === 'effects' ? NATIVE_HOOK_STORAGE_LIMITS.processes : NATIVE_HOOK_STORAGE_LIMITS.outboxes
 let activeOperations = 0
+// Ancestor stamps detect a route moved away and back during a read. A sibling
+// write changes those stamps too. Discard the complete observation and reacquire
+// it; no publication or retained authority is retried under this permission.
+function stableRead<T>(read: () => T): T {
+  for (let attempt = 0;; attempt++) {
+    try { return read() } catch (error) {
+      if (!(error instanceof NativeHookReadRouteChanged) || attempt >= 2) throw error
+    }
+  }
+}
 
 /** The caller supplies an already-private data root and its retained local
  * writer proof. This factory neither creates that root nor owns its lifetime. */
@@ -74,7 +84,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
   const exists = (file: string) => {
     try { lstatSync(file); return true } catch (error) { if (!missing(error)) throw error; return false }
   }
-  const pair = (file: string, verify = checkRoot): Pair | undefined => {
+  const pairOnce = (file: string, verify = checkRoot): Pair | undefined => {
     verify()
     const route = metadata.routeStamps(canonical)
     // These fixed names are direct children of the already pinned root. Fence
@@ -88,6 +98,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
     result.verify()
     return result
   }
+  const pair = (file: string, verify = checkRoot): Pair | undefined => stableRead(() => pairOnce(file, verify))
   const confirm = async (file: string, text: string, verify: () => void, retainedVerify = checkRoot): Promise<Pair> => {
     verify()
     const publishedOutside = metadata.publish(`${file}.witness`, text, verify)
@@ -116,9 +127,9 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       if (exists(history(kind, index) + suffix)) held('a journal has no allocation authority')
     }
   }
-  const inspectAllocation = (kind: Kind, index: number, verify: () => void): Allocation | undefined => {
+  const inspectAllocation = (kind: Kind, index: number, verify: () => void): Allocation | undefined => stableRead(() => {
     const route = metadata.routeStamps(canonical)
-    const saved = pair(`${base(kind, index)}.allocation`, verify), seal = pair(`${base(kind, index)}.seal`, verify)
+    const saved = pairOnce(`${base(kind, index)}.allocation`, verify), seal = pairOnce(`${base(kind, index)}.seal`, verify)
     if (!saved) {
       if (seal) held('an allocation seal has no reservation')
       journalAbsent(kind, index)
@@ -135,7 +146,7 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
     }
     route()
     return { kind, index, key: value[3], pair: saved, seal }
-  }
+  })
   const scan = async (verify: () => void) => {
     verify()
     const frontier = stamp(lstatSync(canonical, { bigint: true }))
@@ -173,13 +184,16 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
       if ((await scan(check)).allocations.length) held('the catalog authority is missing')
       // Staging may start only after the catalog exists. Losing its independent
       // boundary cannot turn retained writer generations into a fresh pool.
-      const ancestors = metadata.routeStamps(dirname(canonical))
-      let emptyFrontier: string | undefined
+      let emptyRoute: (() => void) | undefined
       verifyEmpty = () => {
         check()
-        ancestors()
-        const frontier = stamp(lstatSync(canonical, { bigint: true }))
-        if (frontier === emptyFrontier) return
+        if (emptyRoute) {
+          try { emptyRoute(); return } catch (error) {
+            if (!(error instanceof NativeHookReadRouteChanged)) throw error
+            emptyRoute = undefined
+          }
+        }
+        stableRead(() => {
         const route = metadata.routeStamps(canonical), budget = new NativeEvidenceBudget()
         // A previous draft's hash-named journal is retained evidence too. It
         // cannot disappear from authority merely because today's fixed-name
@@ -203,7 +217,8 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
             if (exists(join(canonical, `.native-hook-stage-${lane}${suffix}`))) held('the catalog authority is missing before staging')
           }
         }
-        route(); ancestors(); check(); emptyFrontier = frontier
+        route(); check(); emptyRoute = route
+        })
       }
     }
     return confirm(versionFile, versionText, () => { check(); verifyEmpty() })

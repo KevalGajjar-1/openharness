@@ -358,6 +358,28 @@ Storage teardown must await catalog close and then pool close: an acquisition's
 reply can expire before its actual work, and only the pool owns that final barrier
 and the writer proof's close. Production composition remains outstanding.
 
+Catalog integration validation exposed harmless ancestor sibling churn during
+fixed-name reads. The catalog now discards and reacquires the entire synchronous
+observation, at most three times on the same deadline. Nested pair reads share
+that bound. Original root identity, the full scan frontier and published-record
+identities remain pinned; only read observations can retry. Initial absence is
+re-enumerated when its complete route changes. A temporary redirection therefore
+finds the original allocation on its fresh read, while repeated redirection holds
+without allocating again. All nine new catalog/reserve/I/O wiring mutations fail
+assertions, as do the thirteen former staging mutants. The complete catalog suite
+passed after the correction (`20261011T183531.217597Z-19078`); the preceding full
+slice passed all eleven real-process cases and 204 cases overall but failed five
+catalog churn cases, so that receipt is not a passing suite.
+
+`openNativeHookStorage` now composes precise writer capture, fixed staging and the
+sealed catalog through the configuration-free kernel probe. Each death proof is
+fresh. Closure revokes catalog admission synchronously, waits for actual journal
+work, and only then closes the staging pool, whose cleanup owns the retained
+writer descriptor. Construction failures close exactly the resources acquired.
+The new composition has no daemon configuration or service import. The daemon
+and bundled client still need to adopt this factory; composition alone does not
+complete their recovery behavior.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;
