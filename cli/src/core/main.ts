@@ -113,7 +113,9 @@ import { createTerminalRequests } from './terminals/requests.js'
 import { createAgentEvents } from './agents/events.js'
 import { createSessionNormalizers } from './transcripts/normalizers.js'
 import { createInput } from './input.js'
-import { createQuestions } from './questions.js'
+import { createQuestionResponse, createQuestions } from './questions.js'
+import { createCloudAgents, type CloudAgents } from './agents/cloud.js'
+import { createCloudLink } from './cloudLink.js'
 import { createTurnActivity } from './turns/activity.js'
 import { createLastTurnReader } from './transcripts/lastTurn.js'
 import { createEngineReaders } from './engines/readers.js'
@@ -159,7 +161,7 @@ import { createEngineHooks, installEngineHooks, installOpencodePluginBeforeSpawn
 import { createCursorDiscovery } from './engines/cursorDiscovery.js'
 import { createCursorTaskHooks, loadPendingCursorTasks } from './engines/cursorTasks.js'
 import { databaseHistory, hermesDb } from './transcripts/databaseHistory.js'
-import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
+import { CLOUD_FALLBACKS, CLOUD_REQUESTS, type CloudCore, CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
 import { createServiceHost, testFaults } from './serviceHost.js'
 import { startStalls } from './stall.js'
 import { createServiceLinks, type ServiceLinks } from './serviceLinks.js'
@@ -722,11 +724,20 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     want: () => devicesWake.ask('wifi', 'a Wi-Fi device'),
     doors: wifiDoors({
       registry, machineId: machineIdNow, displayName: projectDisplayName, running: (sessionId) => turnStartedAt.has(sessionId),
-      socket: () => backendRef ?? null, deviceInput: () => deviceInput, answer: (request) => questions.answer(request),
+      socket: () => backendRef ?? null, deviceInput: () => deviceInput, answer: (request) => cloudAgents?.answer(request) ?? questions.answer(request),
       stop: (agentId) => cancelAgent(agentId, true), devices: () => ports.devices,
     }),
   })
+  // The cloud agents' doors (core/agents/cloud.ts), handed to the core API now and built once the questions and
+  // the socket are, below; the cloud service starts after both.
+  let cloudAgents: CloudAgents | null = null
+  const cloudDoors: CloudCore = {
+    publish: (harnesses) => cloudAgents?.doors.publish(harnesses),
+    ask: (agentId, requestId, question) => cloudAgents?.doors.ask(agentId, requestId, question),
+    unask: (agentId, requestId) => cloudAgents?.doors.unask(agentId, requestId),
+  }
   const coreApi = createCoreApi({
+    cloud: cloudDoors,
     // Agents' terminals: a literal-argv launch, and a read-only view for Share's observers (core/terminalWatch.ts).
     terminals: { ...TERMINALS_OFF, ...createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder: (cwd) => !!backendRef?.purgeAgentService?.blocksFolder(cwd) }), watch: terminalWatch.watch },
     dataDir: env.ADAPTER_DATA_DIR,
@@ -833,9 +844,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     questions: {
       // The device's own object, verbatim: rebuilt as `{ [requestId]: optionId }` it was keyed by the
       // REQUEST id, not the question key `asking.answer` expects, and named a question that does not exist.
-      answer: (agentId, requestId, answers) => { void asking.answer({ agentId, requestId, answers }) },
-      answerReviewed: async (answer) => (await questions.answer({ agentId: answer.agentId, requestId: answer.requestId,
-        answers: answer.answers, expectedQuestions: answer.questions, selectedLabels: answer.selections, freeTextKeys: answer.freeTextKeys })).ok,
+      answer: (agentId, requestId, answers) => { void (cloudAgents?.answer({ requestId, answers }) ?? asking.answer({ agentId, requestId, answers })) },
+      answerReviewed: async (answer) => (await (cloudAgents?.answer({ requestId: answer.requestId, answers: answer.answers }) ?? questions.answer({ agentId: answer.agentId, requestId: answer.requestId,
+        answers: answer.answers, expectedQuestions: answer.questions, selectedLabels: answer.selections, freeTextKeys: answer.freeTextKeys }))).ok,
     },
   })
   // Each service starts and is called through the host, so one that fails is logged and left off and
@@ -1167,7 +1178,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     deviceInput,
   })
   const questions = asking.questions
-  backend.questionProvider = asking.questionResponse
+  // Cloud harnesses (core/agents/cloud.ts): listed with the rest; their questions shown as the panes' are, and
+  // answered through the cloud service.
+  cloudAgents = createCloudAgents({ port: () => ports.cloud, clients: backend, openQuestions: asking.openQuestions, deviceInput })
+  const cloud = cloudAgents
+  backend.questionProvider = createQuestionResponse((payload) => cloud.answer(payload) ?? asking.answer(payload))
   const openQuestions = asking.openQuestions
   // The agents on this machine (core/agents/list.ts), in the socket's frames, with its monitor readings.
   backend.agentsProvider = createAgentList({
@@ -1175,6 +1190,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     toProject: (s) => backend.toProject(s), toStoppedProject: (s) => backend.toStoppedProject(s),
     // The monitor's readings, through its port (services/monitor.ts): none while it is off.
     harnessResourcesReader: () => (ports.monitor ?? MONITOR_OFF).resources(), harnessStorageReader: (agents, invalidate) => (ports.monitor ?? MONITOR_OFF).storage(agents, invalidate),
+    cloudFrames: () => cloud.frames(),
   }).agentsList
   const questionWatcher = asking.questionWatcher
 
@@ -1365,6 +1381,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // as the core sees it there (core/orchestratorLink.ts). It reads its Directors' turns from the frames sent.
   if (outOfProcess.has('orchestrator')) ports.orchestrator = orchestratorLink.port
   else serviceHost.start('orchestrator', inline!.startOrchestrator, coreApi, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS)
+  // Cloud agents, an experiment (services/cloud.ts): in its own process once it is on, asked through its port
+  // (core/cloudLink.ts), which starts it; or in this one behind the service host's guard.
+  if (outOfProcess.has('cloud')) ports.cloud = createCloudLink((type, payload) => serviceLinks.call('cloud', type, payload))
+  else serviceHost.start('cloud', inline!.startCloud, coreApi, CLOUD_FALLBACKS, CLOUD_REQUESTS)
   backend.onFrameSent = (frame) => ports.orchestrator?.frame(frame)
   // Share (services/sharing.ts): in this process, or in its own once it is on (core/sharingLink.ts). Its
   // observers' frames reach it as the relay hands them over.
@@ -2400,7 +2420,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   restoreCancelled = (agentId) => stopJobs.has(agentId) || pinnedControls.has(agentId) || (restartJobs.operation(agentId) !== undefined && restartJobs.operation(agentId) !== 'restart')
   binding.whileChanging((agentId) => restorePanes.busy(agentId) || restartJobs.busy(agentId) || stopJobs.has(agentId))
   const stopAgent = lifecycle.stopAgent
-  backend.stopProvider = createStopRequest({ byAgent: (id) => registry.byAgent(id), stop: stopAgent })
+  const stopTerminalAgent = createStopRequest({ byAgent: (id) => registry.byAgent(id), stop: stopAgent })
+  backend.stopProvider = (payload) => cloud.stop(String(payload.agentId ?? payload.sessionId ?? '')) ?? stopTerminalAgent(payload)
   backend.purgeAgentService = lifecycle.purgeAgentService
   backend.purgeProvider = createPurgeRequest({ purgeAgentService: () => lifecycle.purgeAgentService, invalidateStorage: () => { void (ports.monitor ?? MONITOR_OFF).storage([], true) } })
   // Closing agents no window shows, and the cleanup preview (core/agents/close.ts).
@@ -2455,15 +2476,29 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     byAgent: (id) => registry.byAgent(id), toProject: (s) => backend.toProject(s),
     modelTarget: (selection) => (ports.models ?? MODELS_OFF).launchTarget(selection),
   })
-  backend.createProvider = launches.create
+  // A cloud agent is made by its service (core/agents/cloud.ts); every other engine launches here.
+  backend.createProvider = async (payload, asker, answer) => {
+    const made = cloud.create(payload)
+    if (made) answer(await made)
+    else await launches.create(payload, asker, answer)
+  }
   backend.createStatusProvider = launches.createStatus
   backend.cancelCreateProvider = launches.cancelCreate
   backend.restartProvider = launches.relaunch
   backend.forkProvider = launches.fork
 
   const submitAgent = inputs.submitAgent
-  backend.onMessage = (id, content, deliveryId) => submitAgent(id, content, deliveryId)
-  backend.messageProvider = inputs.messageRequest
+  // Words for a cloud harness go to its service, and a delivery among them is settled as the pane's are.
+  backend.onMessage = (id, content, deliveryId) => {
+    const sent = cloud.deliver(id, content)
+    if (!sent) { submitAgent(id, content, deliveryId); return }
+    if (deliveryId) void sent.then((result) => deliveries.settled({ deliveryId, sessionId: id, state: result.ok ? 'delivered' : 'rejected', ...(result.ok ? {} : { reason: result.error }) }))
+  }
+  backend.messageProvider = (payload) => {
+    const agentId = typeof payload.agentId === 'string' ? payload.agentId : ''
+    if (cloud.owns(agentId)) { void cloud.deliver(agentId, typeof payload.content === 'string' ? payload.content : ''); return }
+    inputs.messageRequest(payload)
+  }
   backend.onCancelOrchestratorMessage = id => input.cancelDelivery(id)
   deliveries.ready() // The input is wired: what was delivered meanwhile (Agent Messages' queue resuming) is written now.
 

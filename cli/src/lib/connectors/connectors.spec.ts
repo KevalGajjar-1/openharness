@@ -212,7 +212,7 @@ describe('key-only connections for the cloud agents', () => {
     status = 401
     const refused = await send('GET', `/${key}/devin/api/v3/self`)
     expect(refused.status).toBe(401)
-    expect((await refused.json()).error.message).toContain('connected again')
+    expect(((await refused.json()) as { error: { message: string } }).error.message).toContain('connected again')
     vault.save('devin', { ...vault.token('devin')!, api_entry: { origin: 'http://127.0.0.1:1' } })
     expect((await send('GET', `/${key}/devin/api/v3/self`)).status).toBe(502)
   })

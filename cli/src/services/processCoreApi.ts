@@ -14,7 +14,7 @@ import { usageTarget, usageTargetKey, usageSnapshot, validUsage, validUsageTarge
  * each asked of the core over its link (`ask`). The agents it reads come as the apps are shown them (`service_query shown`): each with its
  * name, whether its terminal is there and its harness's viewer.
  */
-import { CONVERSATIONS_OFF, DAEMON_UNKNOWN, DELIVERIES_OFF, LANE_OFF, OBSERVER_KEY_OFF, resolveAgent, TERMINALS_OFF, WIFI_OFF, type CoreApi, type DaemonAddress, type TerminalWatch } from '../core/api.js'
+import { CONVERSATIONS_OFF, DAEMON_UNKNOWN, DELIVERIES_OFF, LANE_OFF, OBSERVER_KEY_OFF, resolveAgent, TERMINALS_OFF, WIFI_OFF, type CloudCore, type CoreApi, type DaemonAddress, type TerminalWatch } from '../core/api.js'
 import type { AgentDshContext } from '../lib/agentFrame.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import type { turnsLink } from './turnsLink.js'
@@ -172,5 +172,14 @@ export function processCoreApi(dataDir: string, service: string, view: AgentsVie
       get autonomousEnv() { return daemon().autonomousEnv },
     },
     wifi: UNASKED.wifi,
+    // The cloud agents' doors (core/experimentQueries.ts): told to the core in order, never waited on. A core
+    // that is not connected hears it all again when it is (services/cloudProcess.ts `republish`).
+    ...(ask ? {
+      cloud: {
+        publish: (harnesses) => { void ask('cloud_publish', { harnesses }).catch(() => {}) },
+        ask: (agentId, requestId, question) => { void ask('cloud_ask', { agentId, requestId, question }).catch(() => {}) },
+        unask: (agentId, requestId) => { void ask('cloud_unask', { agentId, requestId }).catch(() => {}) },
+      } satisfies CloudCore,
+    } : {}),
   }
 }

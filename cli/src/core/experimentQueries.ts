@@ -13,7 +13,9 @@
  *   sign-in (Agent Messages' tabs);
  * - `observer_key`: this machine's public key, or its signature on a welcome to one observer of one share, by
  *   the gateway, which holds the identity (Share's owner);
- * - `observer_send`: a frame Share sealed for one of its observers, to the relay through the gateway.
+ * - `observer_send`: a frame Share sealed for one of its observers, to the relay through the gateway;
+ * - `cloud_publish`, `cloud_ask`, `cloud_unask`: the cloud agents' harnesses and their questions
+ *   (`core.cloud`, core/agents/cloud.ts), for the cloud service alone.
  * The core answers them only for the experiments (core/api.ts `EXPERIMENTS`): creating an agent or
  * telling the windows something is no other process's to ask. The process's side is
  * services/processCoreApi.ts.
@@ -22,9 +24,9 @@ import type { BackendSocket } from '../backendSocket.js'
 import type { AgentCreateRequest, CoreApi } from './api.js'
 
 type Payload = Record<string, unknown>
-type Core = Pick<CoreApi, 'agents' | 'turns' | 'clients' | 'daemon' | 'account'>
+type Core = Pick<CoreApi, 'agents' | 'turns' | 'clients' | 'daemon' | 'account' | 'cloud'>
 
-const QUERIES: ReadonlySet<string> = new Set(['shown', 'create', 'stop_turn', 'windows', 'daemon', 'backend', 'observer_key', 'observer_send'])
+const QUERIES: ReadonlySet<string> = new Set(['shown', 'create', 'stop_turn', 'windows', 'daemon', 'backend', 'observer_key', 'observer_send', 'cloud_publish', 'cloud_ask', 'cloud_unask'])
 const METHODS: ReadonlySet<string> = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -76,6 +78,15 @@ export async function answerExperimentQuery(core: Core, experiments: ReadonlySet
       } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) }
       }
+    case 'cloud_publish':
+    case 'cloud_ask':
+    case 'cloud_unask': {
+      if (service !== 'cloud' || !core.cloud) return { error: 'NOT_CLOUD' }
+      if (query === 'cloud_publish') core.cloud.publish(Array.isArray(payload.harnesses) ? payload.harnesses : [])
+      else if (query === 'cloud_ask') core.cloud.ask(text(payload.agentId), text(payload.requestId), (payload.question ?? {}) as { text: string; choices: string[] })
+      else core.cloud.unask(text(payload.agentId), text(payload.requestId))
+      return {}
+    }
     case 'observer_send': {
       const connId = text(payload.connId), type = text(payload.type)
       if (!connId.startsWith('observer:') || !type.startsWith('observer_') || !payload.payload || typeof payload.payload !== 'object') return { error: 'INVALID_FRAME' }
