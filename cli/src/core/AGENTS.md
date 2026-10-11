@@ -24,6 +24,9 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
 ## Where things are
 
 - `agents/`: create, fork, restart, retarget, stop, resume, close, discovery, adoption, binding, the list.
+  `agents/cloud.ts`: agents a service owns, the cloud agents: listed with the rest from what the cloud
+  service publishes, their questions shown as a pane's are, and New Harness, words, an answer and Stop
+  Harness for one handed to its port (`cloudLink.ts` when it runs in its own process).
 - `transcripts/`: attach (bounded reads from the end), ingest, live tail, relaunch marks, normalizers.
   Claude Code/Codex live interpretation is injected through `Engine.live`; core keeps parser handles
   and immutable turn snapshots, never edits their engine state. Supervised Claude Code/Codex parsers

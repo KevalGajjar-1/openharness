@@ -31,6 +31,8 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
   let harnesses = new Map<string, CloudHarness>()
   /** Each open question's agent, by request id: an answer to one of these goes to the service. */
   const asked = new Map<string, string>()
+  /** The questions the dial was shown: only those with choices, since its question screen takes no words. */
+  const onDial = new Set<string>()
 
   const sync = (harness: CloudHarness): void => {
     const frame: Frame = { type: 'agent_synced', payload: { agent: cloudAgentFrame(harness) } }
@@ -67,7 +69,10 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
         payload: { requestId, questions: [{ key: 'answer', q: question.text.slice(0, 500), options: choices, multi: false, canText: true }], notification: { id: requestId, kind: 'needsYou' } },
       }
       deviceInput.setUserAction(agentId, true)
-      clients.sendCommander(frame)
+      if (choices.length) {
+        onDial.add(requestId)
+        clients.sendCommander(frame)
+      }
       clients.sendLocal(frame)
       openQuestions.set(agentId, frame)
       log(`[cloud] ${agentId} asking the person · req=${requestId}`)
@@ -77,7 +82,7 @@ export function createCloudAgents({ port, clients, openQuestions, deviceInput, l
       asked.delete(requestId)
       const frame: Frame = { type: 'commander_question_close', agentId, dbSessionId: agentId, payload: { requestId } }
       deviceInput.setUserAction(agentId, false)
-      clients.sendCommander(frame)
+      if (onDial.delete(requestId)) clients.sendCommander(frame)
       clients.sendLocal(frame)
       openQuestions.delete(agentId)
     },
