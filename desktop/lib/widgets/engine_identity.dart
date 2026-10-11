@@ -861,6 +861,65 @@ const EngineIdentity _terminal = EngineIdentity(
   color: Color(0xffa8b0b8),
 );
 
+/// The cloud agents (CLI lib/cloudAgents.ts): agents that run on their maker's
+/// servers, reached through its API, with no terminal here. A SEPARATE map from
+/// [_engines] for the reason [_harnesses] is one: never probed as an engine
+/// (`engines_probe`), never given a launch flag. Named by the Naming System's
+/// rule: a CLI agent keeps its name, its maker's cloud agent adds "Cloud".
+const _cloudAgents = <String, EngineIdentity>{
+  'fo': EngineIdentity(
+    id: 'fo',
+    label: 'Fo',
+    category: 'Errands',
+    tagline: 'Calls, emails and books things for you',
+    creator: 'Wajo',
+    color: Color(0xffffb86c),
+    homepage: 'https://wajo.ai',
+    blurb: "Wajo's Fo, which runs errands from its own servers.",
+  ),
+  'devin-cloud': EngineIdentity(
+    id: 'devin-cloud',
+    label: 'Devin Cloud',
+    category: 'Code',
+    tagline: 'Devin in its own cloud machine',
+    creator: 'Cognition',
+    color: Color(0xff8fb8ff),
+    asset: 'assets/engine-icons/devin.png',
+    homepage: 'https://devin.ai',
+    blurb: "Cognition's Devin, working in its own cloud machine.",
+  ),
+  'cursor-cloud': EngineIdentity(
+    id: 'cursor-cloud',
+    label: 'Cursor Cloud',
+    category: 'Code',
+    tagline: "Cursor's agent in its own cloud machine",
+    creator: 'Anysphere',
+    color: Color(0xffd5d5d5),
+    asset: 'assets/engine-icons/cursor.png',
+    homepage: 'https://cursor.com',
+    blurb: "Cursor's cloud agent, working on a GitHub repository.",
+  ),
+};
+
+/// The cloud agents, in declaration order — for New Harness's agent list.
+List<EngineIdentity> get cloudAgents =>
+    _cloudAgents.values.toList(growable: false);
+
+/// Where a cloud agent runs, said where a computer's name goes.
+String cloudPlaceOf(String? id) => switch (id) {
+  'fo' => "Fo's cloud",
+  'devin-cloud' => "Devin's cloud",
+  'cursor-cloud' => "Cursor's cloud",
+  _ => 'The cloud',
+};
+
+/// Whether [id] names a cloud agent rather than an engine on a computer.
+bool isCloudAgentId(String? id) => id != null && _cloudAgents.containsKey(id);
+
+/// The cloud agents that work on a GitHub repository (the others take none).
+bool cloudAgentTakesRepository(String? id) =>
+    id == 'devin-cloud' || id == 'cursor-cloud';
+
 /// The terminal's face, for the one list that offers it: New Harness.
 EngineIdentity get terminalIdentity => _terminal;
 
@@ -882,6 +941,7 @@ EngineIdentity engineIdentity(String? engine, {String? displayName}) {
   final id = engine?.trim().toLowerCase() ?? '';
   final known =
       _engines[id] ??
+      _cloudAgents[id] ??
       _harnesses[canonicalHarnessId(id)] ??
       _linkedHarnesses[id] ??
       (id == kTerminalEngine ? _terminal : null);
@@ -983,9 +1043,11 @@ class EngineMark extends StatelessWidget {
     // but sit bare on a dark palette as they always have; only a light one
     // needs the tile.
     final needsDarkTile =
-        const {'cursor', 'opencode', 'autonomous/kicad'}.contains(
-          identity.id,
-        ) ||
+        const {
+          'cursor',
+          'opencode',
+          'autonomous/kicad',
+        }.contains(identity.id) ||
         (!dark && const {'grok', 'copilot'}.contains(identity.id));
     return Opacity(
       opacity: enabled ? 1 : 0.45,

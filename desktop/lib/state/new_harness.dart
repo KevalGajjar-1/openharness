@@ -623,7 +623,11 @@ class NewHarnessController extends ChangeNotifier {
           _harnessId!,
         );
   List<String> get compatibleEngines => _harnessId == null
-      ? [for (final engine in allEngines) engine.id, kTerminalEngine]
+      ? [
+          for (final engine in allEngines) engine.id,
+          for (final agent in cloudAgents) agent.id,
+          kTerminalEngine,
+        ]
       : selectedHarness?.supportedEngines ??
             [knownHarnessBase[canonicalHarnessId(_harnessId!)] ?? 'claude'];
 
@@ -734,7 +738,7 @@ class NewHarnessController extends ChangeNotifier {
   bool refreshingBranches = false;
   String? branchRefreshError;
   DateTime? _branchesCheckedAt;
-  bool get isGitProject => _gitProject.isGit && !isTerminal;
+  bool get isGitProject => _gitProject.isGit && !isTerminal && !isCloud;
   bool get canUseWorktree => isGitProject && !checkingGit;
   bool get worktree =>
       isGitProject &&
@@ -1285,10 +1289,10 @@ class NewHarnessController extends ChangeNotifier {
       _settingsModes.any((mode) => mode.id == _permissionFor(_settingsEngine))
       ? _permissionFor(_settingsEngine)
       : kDefaultPermissionMode;
-  bool get takesTask => takesFirstTask(_base);
+  bool get takesTask => isCloud || takesFirstTask(_base);
   bool get taskTooLong => task.trim().length > kFirstTaskMaxLength;
   List<PermissionMode> get _modes =>
-      isTerminal ? const [] : permissionModesOf(_base);
+      isTerminal || isCloud ? const [] : permissionModesOf(_base);
   bool get hasModes => _modes.isNotEmpty;
   String get mode =>
       _modes.any((mode) => mode.id == _mode) ? _mode : kDefaultPermissionMode;
@@ -1399,8 +1403,44 @@ class NewHarnessController extends ChangeNotifier {
 
   MachineState? get _machine => app.stateOf(_machineId);
   bool get isTerminal => isTerminalEngine(_engine);
+
+  /// A cloud agent (Fo, Devin Cloud, Cursor Cloud): it runs on its maker's
+  /// servers, so it takes no folder, model, approvals or branch here — a coding
+  /// one takes a GitHub repository, and Devin Cloud an ACU limit.
+  bool get isCloud => _harnessId == null && isCloudAgentId(_engine);
+
+  /// The GitHub repository a cloud coding agent works on: the one chosen to
+  /// clone, else the chosen folder's own remote; null when neither is on GitHub.
+  String? get cloudRepository {
+    final cloned = _project.repository?.url;
+    if (cloned != null) return cloned;
+    final folder = _project.folder;
+    final machine = _machine;
+    if (folder == null || machine == null) return null;
+    for (final agent in machine.agents) {
+      final project = machine.projectOf(agent);
+      final remote = project?.remote;
+      if (remote != null &&
+          remote.contains('github.com') &&
+          (project!.cwd == folder || project.root == folder)) {
+        return remote;
+      }
+    }
+    return null;
+  }
+
+  /// Devin Cloud's ACU limit for the session: low by default, since it bills
+  /// while it works.
+  int acuLimit = 5;
+  static const acuLimits = [2, 5, 10, 20];
+  void setAcuLimit(int value) {
+    acuLimit = value;
+    notifyListeners();
+  }
+
   bool get needsProject =>
       !isTerminal &&
+      !isCloud &&
       _project.folder == null &&
       _project.repository == null &&
       projectFolderSlug(_project.name ?? '') == null;
@@ -1418,6 +1458,21 @@ class NewHarnessController extends ChangeNotifier {
         field: NewHarnessField.machine,
         message: 'This machine is unavailable. Choose a machine.',
       );
+    }
+    if (isCloud) {
+      if (cloudAgentTakesRepository(_engine) && cloudRepository == null) {
+        return (
+          field: NewHarnessField.projectMenu,
+          message: 'Choose a GitHub repository for $agentLabel.',
+        );
+      }
+      if (task.trim().isEmpty) {
+        return (
+          field: NewHarnessField.task,
+          message: 'Tell $agentLabel what to do.',
+        );
+      }
+      return null;
     }
     if (_harnessId != null && !_offered(_harnessId!)) {
       return (
@@ -2903,6 +2958,9 @@ class NewHarnessController extends ChangeNotifier {
             'amp',
             'kilo',
             'devin',
+            'devin-cloud',
+            'cursor-cloud',
+            'fo',
             'pi',
             'hermes',
             'commandcode',
@@ -2921,7 +2979,9 @@ class NewHarnessController extends ChangeNotifier {
           ])
             if (isHarnessId(id)
                 ? _offered(id)
-                : engines.contains(id) || id == kTerminalEngine)
+                : engines.contains(id) ||
+                      isCloudAgentId(id) ||
+                      id == kTerminalEngine)
               isHarnessId(id) ? operationId(id) : id,
         })
           isHarnessId(id)
@@ -3447,6 +3507,7 @@ class NewHarnessController extends ChangeNotifier {
       focusField(choice.field);
       return _fail(choice.message);
     }
+    if (isCloud) return _createCloud();
     if (!checking) {
       _syncGitProject();
       if (gitError != null) retryGitProject();
@@ -3673,6 +3734,32 @@ class NewHarnessController extends ChangeNotifier {
       }
       return _fail(failure);
     }
+    busy = false;
+    status = null;
+    return NewHarnessOutcome.created;
+  }
+
+  /// A cloud harness: made by the cloud service on this machine (CLI
+  /// services/cloud.ts), which starts it at its maker; no folder, no install.
+  Future<NewHarnessOutcome> _createCloud() async {
+    busy = true;
+    error = null;
+    status = 'Starting $agentLabel…';
+    notifyListeners();
+    final failure = await app.createCloudHarness(
+      _machineId,
+      engine: _engine,
+      prompt: task.trim(),
+      repositoryUrl: cloudAgentTakesRepository(_engine)
+          ? cloudRepository
+          : null,
+      acuLimit: _engine == 'devin-cloud' ? acuLimit : null,
+      swarmId: _targetId,
+      split: split,
+      placement: effectivePlacement,
+    );
+    if (_disposed) return NewHarnessOutcome.failed;
+    if (failure != null) return _fail(failure);
     busy = false;
     status = null;
     return NewHarnessOutcome.created;

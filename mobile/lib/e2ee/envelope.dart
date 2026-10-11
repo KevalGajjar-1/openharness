@@ -53,6 +53,10 @@ const Set<String> encryptedDownTypes = {
   'memory_snapshot',
   'memory_about_put',
   'memory_deliver',
+  // Cloud agents (CLI services/cloud.ts): a cloud harness's conversation and the person's words for it.
+  'cloud_transcript',
+  'cloud_send',
+  'cloud_agents',
   // The trust-group roster swap (`viewer/group_sync.dart`): the keys every member trusts.
   'group_sync',
   'codex_profiles_list',

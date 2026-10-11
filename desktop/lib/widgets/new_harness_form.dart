@@ -1732,43 +1732,84 @@ class NewHarnessFormState extends State<NewHarnessForm> {
                   capsule: true,
                 ),
               ),
-              _desktopField(
-                order: 2,
-                anchor: _headerMachineAnchor,
-                child: _desktopMachineAnchor(
+              // A cloud agent runs in its maker's cloud, never on a computer:
+              // the place is said where the computer is, and does not change.
+              if (box.isCloud)
+                _desktopField(
+                  order: 2,
+                  anchor: _headerMachineAnchor,
                   child: DesktopPill(
                     key: const ValueKey('new-harness-field-machine'),
                     focusNode: _headerMachineFocus,
-                    label: _repoMachineLabel(box.machineId),
-                    semanticLabel:
-                        'Computer, ${_repoMachineLabel(box.machineId)}',
-                    icon: box.app.stateOf(box.machineId)?.isLocalMachine == true
-                        ? AppIcons.laptop
-                        : AppIcons.monitor,
-                    menu: true,
+                    label: cloudPlaceOf(box.engine),
+                    semanticLabel: 'Runs in ${cloudPlaceOf(box.engine)}',
+                    icon: AppIcons.monitor,
                     capsule: true,
-                    tooltip: 'Choose computer',
+                    tooltip: '${box.agentLabel} runs on its maker\'s servers',
                     textSize: 13,
                     surfaceColor: DesktopChrome.surface,
-                    onPressed: box.locked
-                        ? null
-                        : () => _headerMachineMenu.isOpen
-                              ? _headerMachineMenu.close()
-                              : _headerMachineMenu.open(),
+                    onPressed: null,
+                  ),
+                )
+              else
+                _desktopField(
+                  order: 2,
+                  anchor: _headerMachineAnchor,
+                  child: _desktopMachineAnchor(
+                    child: DesktopPill(
+                      key: const ValueKey('new-harness-field-machine'),
+                      focusNode: _headerMachineFocus,
+                      label: _repoMachineLabel(box.machineId),
+                      semanticLabel:
+                          'Computer, ${_repoMachineLabel(box.machineId)}',
+                      icon:
+                          box.app.stateOf(box.machineId)?.isLocalMachine == true
+                          ? AppIcons.laptop
+                          : AppIcons.monitor,
+                      menu: true,
+                      capsule: true,
+                      tooltip: 'Choose computer',
+                      textSize: 13,
+                      surfaceColor: DesktopChrome.surface,
+                      onPressed: box.locked
+                          ? null
+                          : () => _headerMachineMenu.isOpen
+                                ? _headerMachineMenu.close()
+                                : _headerMachineMenu.open(),
+                    ),
                   ),
                 ),
-              ),
-              _desktopField(
-                order: 3,
-                anchor: _desktopAnchors[_Row.project]!,
-                maxWidth: 340,
-                child: _desktopChoiceButton(
-                  _Row.project,
-                  AppIcons.folder,
-                  label: projectName,
-                  capsule: true,
+              // Fo takes no repository; a cloud coding agent works on the chosen
+              // repository's GitHub copy, never on this computer's folder.
+              if (!box.isCloud || cloudAgentTakesRepository(box.engine))
+                _desktopField(
+                  order: 3,
+                  anchor: _desktopAnchors[_Row.project]!,
+                  maxWidth: 340,
+                  child: Tooltip(
+                    message: box.isCloud
+                        ? (box.cloudRepository == null
+                              ? 'Choose a repository on GitHub, or a folder whose remote is on GitHub'
+                              : 'Works on ${box.cloudRepository}. Changes not pushed stay on this computer.')
+                        : '',
+                    child: _desktopChoiceButton(
+                      _Row.project,
+                      AppIcons.folder,
+                      label: box.isCloud
+                          ? box.cloudRepository
+                                    ?.replaceFirst(
+                                      RegExp(
+                                        r'^(https://github\.com/|git@github\.com:)',
+                                      ),
+                                      '',
+                                    )
+                                    .replaceFirst(RegExp(r'\.git$'), '') ??
+                                projectName
+                          : projectName,
+                      capsule: true,
+                    ),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -1936,11 +1977,39 @@ class NewHarnessFormState extends State<NewHarnessForm> {
         mainAxisSize: MainAxisSize.min,
         spacing: 2,
         children: [
-          if (!box.isTerminal)
+          if (!box.isTerminal && !box.isCloud)
             _desktopField(
               order: 5,
               anchor: _desktopAnchors[_Row.model]!,
               child: _desktopChoiceButton(_Row.model, AppIcons.brain),
+            ),
+          // Devin Cloud bills while it works: the session's limit, low by
+          // default, stepped through on each press.
+          if (box.isCloud && box.engine == 'devin-cloud')
+            _desktopField(
+              order: 5,
+              anchor: _desktopAnchors[_Row.model]!,
+              child: DesktopPill(
+                key: const ValueKey('new-harness-field-acu'),
+                label: 'Up to ${box.acuLimit} ACUs',
+                semanticLabel: 'ACU limit, ${box.acuLimit}',
+                icon: AppIcons.gauge,
+                quiet: true,
+                compact: true,
+                textSize: 12,
+                foregroundColor: DesktopChrome.muted,
+                tooltip:
+                    'The most this session may spend. Press for another limit.',
+                onPressed: box.locked
+                    ? null
+                    : () {
+                        const limits = NewHarnessController.acuLimits;
+                        box.setAcuLimit(
+                          limits[(limits.indexOf(box.acuLimit) + 1) %
+                              limits.length],
+                        );
+                      },
+              ),
             ),
           if (box.hasModes)
             _desktopField(
@@ -1985,7 +2054,8 @@ class NewHarnessFormState extends State<NewHarnessForm> {
                 ),
               ),
             ),
-          if (box.isGitProject || box.checkingGit || box.gitError != null)
+          if (!box.isCloud &&
+              (box.isGitProject || box.checkingGit || box.gitError != null))
             _desktopField(
               order: 9,
               anchor: _desktopAnchors[_Row.branch]!,

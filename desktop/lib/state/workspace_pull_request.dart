@@ -36,6 +36,38 @@ class WorkspacePullRequest extends ChangeNotifier {
   void _focusChanged() {
     final focused = WorkspacePaneContext.focused(app);
     final agent = focused?.agent;
+    // A cloud harness's pull request is on its frame, from its maker: nothing
+    // here has its branch to ask Git about.
+    if (agent?.cloud case final cloud?) {
+      final link = cloud.pullRequest;
+      final number = link == null
+          ? null
+          : int.tryParse(
+              RegExp(r'/pull/(\d+)$').firstMatch(link.url)?.group(1) ?? '',
+            );
+      final identity = (
+        focused!.pane.machineId,
+        agent!.id,
+        null,
+        link?.url,
+        null,
+      );
+      if (identity == _identity) return;
+      _identity = identity;
+      ++_revision;
+      value = PullRequestStatus.fromResult(
+        link == null
+            ? null
+            : {
+                'status': 'found',
+                'number': number,
+                'state': 'Open',
+                'url': link.url,
+              },
+      );
+      notifyListeners();
+      return;
+    }
     final project = agent == null
         ? null
         : app.stateOf(focused!.pane.machineId)?.projectOf(agent);

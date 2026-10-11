@@ -11124,6 +11124,61 @@ class AppNotifier extends ChangeNotifier {
     }
   }
 
+  /// A cloud harness's conversation from message [after] on (`cloud_transcript`,
+  /// CLI services/cloud.ts): `{messages: [{id, from, text, at}], total}`, or
+  /// null when its machine cannot answer.
+  Future<Map<String, dynamic>?> readCloudTranscript(
+    String machineId,
+    String agentId, {
+    int after = 0,
+  }) async {
+    try {
+      final reply = await _conn(machineId).request(
+        'cloud_transcript',
+        payload: {'agentId': agentId, if (after > 0) 'after': after},
+        timeout: const Duration(seconds: 8),
+      );
+      return reply['error'] != null ? null : reply;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The person's words for a cloud harness (`cloud_send`): null once its
+  /// maker took them, else why not, in words a person reads ("Cursor Cloud is
+  /// still working").
+  Future<String?> sendCloudMessage(
+    String machineId,
+    String agentId,
+    String text,
+  ) async {
+    try {
+      final reply = await _conn(machineId).request(
+        'cloud_send',
+        payload: {'agentId': agentId, 'text': text},
+        timeout: const Duration(seconds: 70),
+      );
+      if (reply['error'] == null) return null;
+      final detail = reply['detail'];
+      return detail is String && detail.isNotEmpty
+          ? detail
+          : 'It could not be sent. Try again.';
+    } catch (_) {
+      return 'It could not be sent. Try again.';
+    }
+  }
+
+  /// Answer [question] as the dial does (`question_response`, keyed by the
+  /// question's own id): one of its choices or the person's words. What came of
+  /// it arrives as the question closing; a refusal leaves it open.
+  void answerQuestion(PendingQuestion question, String answer) {
+    _conn(question.machineId).sendRaw('question_response', {
+      'requestId': question.requestId,
+      'agentId': question.agentId,
+      'answers': {question.answerKey: answer},
+    });
+  }
+
   /// The rows of [sessionId] on [machineId] before [beforeTurn], or its last
   /// rows (`session_tail`, the same index as [searchSessions]). Null when the
   /// machine cannot answer: offline, a CLI that predates the request, or a
@@ -11534,6 +11589,31 @@ class AppNotifier extends ChangeNotifier {
       placement: placement,
     );
   }
+
+  /// A cloud harness (CLI services/cloud.ts): made by the machine's cloud
+  /// service at its maker, opened in a pane as any new harness is. Null when it
+  /// started; otherwise what to tell the person ("Add your Devin API key…").
+  Future<String?> createCloudHarness(
+    String machineId, {
+    required String engine,
+    required String prompt,
+    String? repositoryUrl,
+    int? acuLimit,
+    String? swarmId,
+    PaneSplitRequest? split,
+    HarnessPlacement? placement,
+  }) => _create(
+    machineId,
+    {
+      'engine': engine,
+      'prompt': prompt,
+      'repositoryUrl': ?repositoryUrl,
+      'acuLimit': ?acuLimit,
+    },
+    swarmId: swarmId,
+    split: split,
+    placement: placement,
+  );
 
   /// How long, from its start, a create waits for its agent's download beside setup
   /// ([agentPrefetch]). OpenCode took 7–12 s in the VM runs, Codex and Claude Code (one npm, after
