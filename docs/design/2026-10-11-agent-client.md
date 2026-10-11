@@ -165,6 +165,18 @@ No core change, no new service.
   their own sub-agents.
 - **Outcome:** for the same tasks, with and without the verbs, does the work finish and is it better.
 
+### First eval (October 11, three Claude Code agents, the skill given as a file)
+
+| Task | Right choice | What the agent did |
+|---|---|---|
+| A second opinion from Codex on a function, then one follow-up to the same reviewer | `new`, then `send` | `ps`, `new codex --name window-sum-review`, `wait`, `show`; the follow-up went to the same reviewer with `send` ("mine, idle, on the same subject"), and when `send` failed it did not start a second Codex to work around it |
+| Count test files in two folders | its own tools | `find`; started nothing ("a one-line local command") |
+| "Have billing-fix do it": a harness the person started | not `send` | read it with `show`, refused to give it work, did the one-line change itself and said why |
+
+3 of 3 chose right. What it changed: the first message's 2,000-character cap (long tasks now go in a file), and the
+header's reply invitation (every child sent its report back as a message too; it now says the starter reads the
+answer itself). Not yet run: Codex as the starting agent, a red team, a held-out set, and the outcome comparison.
+
 ## Not now
 
 An MCP server (a thin wrapper once the CLI holds), agents outside Harness (a Claude Code plugin, `npx`, the MCP
