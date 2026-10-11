@@ -252,7 +252,7 @@ describe('restarting an agent', () => {
       expect(await run.restart('a1')).toEqual({ ok: true, session: agent(), resumed: true })
       expect(bypassPermissionFor).toHaveBeenCalledWith(agent(), expect.any(Function))
       expect(run.deps.liveBypassPermission).toHaveBeenCalledWith(agent())
-      expect(run.deps.downgradedPermission).toHaveBeenCalledWith(agent(), true, 'restart')
+      expect(run.deps.downgradedPermission).toHaveBeenCalledWith(agent(), true, 'restart', undefined)
       expect(run.deps.paneSwapDeps).toHaveBeenCalledWith(agent(), runtime, { env: { GRID_KEY: 'k' } }, 'auto', expect.any(Function))
       const [target, bypass, swapDeps] = vi.mocked(restartAgent).mock.calls[0]
       expect(target).toEqual({ engine: 'claude', sessionId: 's1' })

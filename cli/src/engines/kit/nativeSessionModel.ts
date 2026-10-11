@@ -1,3 +1,4 @@
+import type { NativeExecutableSnapshot } from './nativeVersion.js'
 /** Native launch writes from an engine's declared SQLite transaction or CLI API protocol.
  * Optional history readers never own these operations. Compatibility extraction first;
  * cancellation and uncertain-write corrections are tracked in the OpenCode control research note. */
@@ -7,7 +8,7 @@ import { promisify } from 'node:util'
 export interface NativeSessionModel { providerID: string; modelID: string }
 export type NativeModelResult = { ok: true } | { ok: false; code: string; detail: string; effect?: 'uncertain' }
 export type NativeApiRun = (args: string[], options: { cwd?: string }) => Promise<{ stdout: string }>
-export interface NativeModelAuthority { current?: () => boolean }
+export interface NativeModelAuthority { current?: () => boolean; executable?: NativeExecutableSnapshot; environment?: NodeJS.ProcessEnv }
 export interface NativeModelRule {
   label: string; serviceMajor: number; id: RegExp; modelFlags: readonly string[]; modelEquals: string; variantSeparator: string
   errors: { sqliteMissing: string; sessionMissing: string; writeFailed: string; binaryMissing: string; switchFailed: string; unknownModel: string }
@@ -118,15 +119,16 @@ export function createSessionModelControl(rule: NativeModelRule, binary: () => s
     return { ok: true }
   }
 
-  const nativeRun = (authority: NativeModelAuthority, selection: { executable?: Promise<string> }): NativeApiRun => {
+  const nativeRun = (authority: NativeModelAuthority, selection: { executable?: Promise<string>; snapshot?: NativeExecutableSnapshot }): NativeApiRun => {
     // Resolve once for this operation, before its first native command. Resolving
     // through a login shell can yield; cancellation must be checked afterwards.
     return async (args, options) => {
-      selection.executable ??= Promise.resolve().then(binary)
+      selection.snapshot ??= authority.executable
+      selection.executable ??= authority.executable ? Promise.resolve(authority.executable.command) : Promise.resolve().then(binary)
       const executable = await selection.executable
-      if (authority.current?.() === false) throw new NativeDispatchCancelled('Native model operation was cancelled before dispatch')
+      if (authority.current?.() === false || selection.snapshot?.current() === false || authority.executable?.current() === false) throw new NativeDispatchCancelled('Native model operation was cancelled before dispatch')
       return new Promise((done, failed) => {
-        const child = execFile(executable, args, { ...(options.cwd ? { cwd: options.cwd } : {}),
+        const child = execFile(executable, args, { ...(authority.environment ? { env: { ...process.env, ...authority.environment } } : {}), ...(options.cwd ? { cwd: options.cwd } : {}),
           timeout: rule.api.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, encoding: 'utf8',
         }, (error, stdout, stderr) => { if (error) failed(Object.assign(error, { stdout, stderr })); else done({ stdout }) })
         child.stdin?.end()

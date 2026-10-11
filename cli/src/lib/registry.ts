@@ -61,7 +61,7 @@ import { externalReservations, externalResumePending, externalResumeIds, parseEx
 export type { ProcessIdentity } from './terminalTypes.js'
 
 export type AgentLaunch =
-  | { state: 'starting' }
+  | { state: 'starting'; nativeToken?: string }
   | { state: 'ready' }
   | { state: 'failed'; error: string; detail?: string }
   /**
@@ -69,7 +69,7 @@ export type AgentLaunch =
    * grid or saved-API agent while models is not running. Nothing about the agent is wrong. It waits in a pane
    * that says why, and is launched once the service is ready. Never a failure: a restore tries it again.
    */
-  | { state: 'held'; service: string; detail: string }
+  | { state: 'held'; service: string; detail: string; nativeToken?: string }
 
 /** Claude Code's hooks report `model` as {id, display_name}; Codex/Cursor report a plain string. This is
  *  the boundary where hook JSON becomes persisted state, so anything else is dropped rather than stored —
@@ -687,11 +687,13 @@ function normalizedForkedFrom(value: unknown): { forkedFrom: ForkOrigin } | Reco
 function normalizedLaunch(value: unknown): AgentLaunch | undefined {
   if (!value || typeof value !== 'object') return undefined
   const launch = value as { state?: unknown; error?: unknown; detail?: unknown }
-  if (launch.state === 'starting' || launch.state === 'ready') return { state: launch.state }
+  const token = (value as { nativeToken?: unknown }).nativeToken
+  const nativeToken = typeof token === 'string' && /^[a-f0-9-]{36}$/.test(token) ? token : undefined
+  if (launch.state === 'starting' || launch.state === 'ready') return { state: launch.state, ...(launch.state === 'starting' && nativeToken ? { nativeToken } : {}) }
   if (launch.state === 'held') {
     const held = value as { service?: unknown; detail?: unknown }
     if (typeof held.service !== 'string' || !/^[a-z][a-z-]{0,39}$/.test(held.service) || typeof held.detail !== 'string') return undefined
-    return { state: 'held', service: held.service, detail: held.detail.slice(0, 500) }
+    return { state: 'held', service: held.service, detail: held.detail.slice(0, 500), ...(nativeToken ? { nativeToken } : {}) }
   }
   if (launch.state !== 'failed' || typeof launch.error !== 'string' || !launch.error) return undefined
   const error = launch.error.slice(0, 80)
@@ -1566,6 +1568,7 @@ class Registry {
 
   /** Register a terminal route before its engine process exists. */
   openPendingAgent(input: {
+    nativeToken?: string
     engine: AgentEngine
     runtimes: TerminalRuntimeRef[]
     primaryRuntimeKey?: string
@@ -1602,7 +1605,7 @@ class Registry {
     const entry: RegisteredSession = {
       schemaVersion: 2,
       active: !externalResume,
-      launch: externalResume ? { state: 'held', service: 'search', detail: 'Waiting for the search service to verify this conversation.' } : { state: 'starting' },
+      launch: externalResume ? { state: 'held', service: 'search', detail: 'Waiting for the search service to verify this conversation.' } : { state: 'starting', ...(input.nativeToken ? { nativeToken: input.nativeToken } : {}) },
       ...(externalResume ? { externalResume } : {}),
       defaultName: normalizedDefaultName(input.defaultName) ?? this.automaticName(input.label?.trim() || engineLabel(input.engine), new Date(now)),
       agentId,

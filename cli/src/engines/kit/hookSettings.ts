@@ -11,7 +11,8 @@ import { env } from '../../config/env.js'
 import type { HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
 import { command, HOOK_SCRIPT, isOurs, foreignHookBlocks, type Settings } from './notifyHooks.js'
-import { HookPreparationHeld, inspectHookFile, runHookPreparation, type HookPreparationOptions } from './nativeHookFiles.js'
+import { HookPreparationHeld, inspectHookFile, runHookPreparation } from './nativeHookFiles.js'
+import type { NativeHookOptions } from './nativeLocations.js'
 
 /** The engines whose hooks run the notify.mjs command. */
 export type HookEngine = Parameters<typeof command>[1]
@@ -21,9 +22,9 @@ export function defaultHookHome(settings: HookSettings): string {
   return 'setting' in settings.home ? env[settings.home.setting] : join(homedir(), settings.home.inHome)
 }
 
-export async function installHookSettings(engine: HookEngine, settings: HookSettings, port: number, home: string = defaultHookHome(settings), options: HookPreparationOptions = {}): Promise<boolean> {
+export async function installHookSettings(engine: HookEngine, settings: HookSettings, port: number, home: string = defaultHookHome(settings), options: NativeHookOptions = {}): Promise<boolean> {
   const file = join(home, settings.file)
-  const cmd = command(port, engine, settings.commandNamesHome ? home : undefined)
+  const cmd = command(port, engine, settings.commandNamesHome ? home : undefined, undefined, options.environment)
   const say = (line: string): string => line.replace(/\{(file|script|port)\}/g, (_, name: string) =>
     name === 'file' ? file : name === 'script' ? HOOK_SCRIPT : String(port))
   const { messages } = settings

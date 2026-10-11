@@ -102,6 +102,33 @@ function setup(over: Partial<LaunchRequestDeps> = {}, launches: { create?: Creat
 }
 
 describe('agent_create, refused before any pane exists', () => {
+  it('recovers native and later service holds with the same request label and original authority', async () => {
+    const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>().mockResolvedValueOnce({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for installation.' })
+      .mockResolvedValueOnce({ ok: false, error: 'GRID_UNAVAILABLE', unavailable: 'models', detail: 'Waiting for models.' })
+      .mockImplementation(async (_input, authority) => ({ ok: true, dispatch: async () => { expect(authority.current()).toBe(true); return dispatch() } }))
+    const first = setup({ prepareCreate })
+    const input = { creationId: CREATION, engine: 'codex', cwd: '/fixture/work', codexHome: '/fixture/profile', prompt: 'fixture first prompt' }
+    await first.ask(input, false)
+    await vi.waitFor(() => expect(first.replies[0]).toMatchObject({ state: 'pending', held: { service: 'native' } }))
+    const label = prepareCreate.mock.calls[0]![1].label
+    const saved = first.deps.receipts.pendingIntent(CREATION)!
+    expect(saved.request).toMatchObject({ local: false, label, input: { prompt: 'fixture first prompt', codexHome: '/fixture/profile' } })
+    first.requests.stop()
+    const second = setup({ prepareCreate, receipts: first.deps.receipts })
+    await second.ask(input, true)
+    await vi.waitFor(() => expect(second.replies[0]).toMatchObject({ state: 'pending', held: { service: 'models' } }))
+    await second.ask(input, true)
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(prepareCreate.mock.calls.every(([, authority]) => authority.label === label && authority.id === CREATION)).toBe(true)
+    expect(first.create).not.toHaveBeenCalled()
+    expect(second.create).not.toHaveBeenCalled()
+    expect(first.deps.receipts.status(CREATION)).toEqual({ state: 'created', agentId: 'new-agent' })
+    expect(preTrustCodexProject).not.toHaveBeenCalled()
+    await second.ask(input)
+    await settle()
+    expect(dispatch).toHaveBeenCalledOnce()
+  })
   it('an engine it does not know, a folder it cannot read, or a cwd that is not an absolute path', async () => {
     const { ask, create } = setup()
     expect(await ask({ cwd: '/w' })).toStrictEqual({ error: 'INVALID_ENGINE' })

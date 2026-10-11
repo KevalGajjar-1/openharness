@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentLaunch, RegisteredSession } from '../../lib/registry.js'
 import { heldLaunch, type RestoreSummary } from '../../lib/restoreAgents.js'
 import { createHeldLaunches, heldFor, heldPaneArgv } from './heldLaunches.js'
 
+const running: ReturnType<typeof createHeldLaunches>[] = []
+afterEach(() => { for (const held of running.splice(0)) held.close() })
 const HELD = heldLaunch('models')
 const row = (agentId: string, launch: AgentLaunch, over: Partial<RegisteredSession> = {}) =>
   ({ agentId, sessionId: `s-${agentId}`, launch, ...over }) as RegisteredSession
@@ -21,6 +23,7 @@ function setup(rows: RegisteredSession[], answer: (only: ReadonlySet<string>) =>
   })
   const log = vi.fn()
   const held = createHeldLaunches({ registry: { list: () => [...registry.values()], byAgent: (id: string) => registry.get(id) } as never, restore, log })
+  running.push(held)
   return { registry, asked, restore, log, held }
 }
 
@@ -106,19 +109,20 @@ describe('agents held until a service is ready', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('runs one pass at a time, and a pass that fails does not stop the next', async () => {
+  it('joins a flight for the same agent, and a failed flight permits the next attempt', async () => {
     let release!: () => void
     const order: string[] = []
     const { held, restore } = setup([row('a', HELD)])
     restore.mockImplementationOnce(async () => { order.push('first'); await new Promise<void>((done) => { release = done }); throw new Error('models hung up') })
     await held.boot(async () => {})
-    const first = held.restoreHeld()
-    const second = held.restoreHeld()
+    const first = held.restoreHeld().catch(error => error)
+    const second = held.restoreHeld().catch(error => error)
     await vi.waitFor(() => expect(order).toEqual(['first']))
     expect(restore).toHaveBeenCalledTimes(1)
     release()
-    await expect(first).rejects.toThrow('models hung up')
-    expect(await second).toMatchObject({ restored: ['a'] })
+    expect((await first).message).toBe('models hung up')
+    expect((await second).message).toBe('models hung up')
+    expect(await held.restoreHeld()).toMatchObject({ restored: ['a'] })
   })
 
   describe("a person's restart of a held agent", () => {
@@ -189,4 +193,51 @@ describe('agents held until a service is ready', () => {
     await pass
     expect(asked).toEqual([['a']])
   })
+})
+
+
+it('restores a sibling while another native preparation is stalled', async () => {
+  const h = setup([row('a', heldLaunch('native')), row('b', heldLaunch('native'))])
+  let finish!: (result: RestoreSummary) => void
+  h.restore.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  await h.held.boot(async () => {})
+  const pass = h.held.restoreHeld()
+  await vi.waitFor(() => expect(h.registry.get('b')?.launch?.state).toBe('starting'))
+  expect(h.registry.get('a')?.launch?.state).toBe('held')
+  finish(summary({ held: ['a'] }))
+  expect(await pass).toMatchObject({ restored: ['b'], held: ['a'] })
+})
+
+it('retries a native hold without a service reconnect and stops scheduling at close', async () => {
+  vi.useFakeTimers()
+  try {
+    const h = setup([row('a', heldLaunch('native'))])
+    h.restore.mockResolvedValueOnce(summary({ held: ['a'] }))
+    await h.held.boot(async () => {})
+    await h.held.restoreHeld()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(h.restore).toHaveBeenCalledTimes(2)
+    h.registry.get('a')!.launch = heldLaunch('native')
+    h.held.close()
+    expect(await h.held.restoreHeld()).toBeNull()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(h.restore).toHaveBeenCalledTimes(2)
+  } finally { vi.useRealTimers() }
+})
+
+it('retries a held sibling while another agent’s observation has not settled', async () => {
+  vi.useFakeTimers()
+  try {
+    const h = setup([row('a', heldLaunch('native')), row('b', heldLaunch('native'))])
+    let finish!: (result: RestoreSummary) => void
+    h.restore.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      .mockResolvedValueOnce(summary({ held: ['b'] }))
+    await h.held.boot(async () => {})
+    const pass = h.held.restoreHeld()
+    await vi.advanceTimersByTimeAsync(2_001)
+    expect(h.registry.get('b')?.launch?.state).toBe('starting')
+    expect(h.restore.mock.calls.map(([only]) => [...only])).toEqual([['a'], ['b'], ['b']])
+    finish(summary({ held: ['a'] }))
+    await pass
+  } finally { vi.useRealTimers() }
 })

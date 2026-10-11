@@ -168,11 +168,13 @@ export function createAgentRestarter({
     agentReconciler.holdRoute(routeKey)
     try {
       const restartPermission = await downgradedPermission(session,
-        await bypassPermissionFor(session, () => liveBypassPermission(session)), 'restart')
+        await bypassPermissionFor(session, () => liveBypassPermission(session)), 'restart', built.overrides.native)
+      if (restartPermission.nativeHold || built.overrides.native?.current() === false) return { ok: false, error: 'NATIVE_LAUNCH_HELD', detail: restartPermission.nativeHold ?? 'Waiting for fresh executable and hook evidence.' }
+      const dispatchCurrent = () => current() && built.overrides.native?.current() !== false
       const outcome = await restartAgent(
         { engine, sessionId: session.sessionId, ...(session.resumeOnly ? { resumeOnly: true as const } : {}) },
         restartPermission.bypassPermission === true,
-        { ...paneSwapDeps(session, runtime, built.overrides, restartPermission.permissionMode ?? null, current), isCurrent: current },
+        { ...paneSwapDeps(session, runtime, built.overrides, restartPermission.permissionMode ?? null, dispatchCurrent), isCurrent: dispatchCurrent },
       )
 
       if (!current()) return changed

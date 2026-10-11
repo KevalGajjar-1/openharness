@@ -259,16 +259,18 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
           permissionMode: saved.permissionMode ?? null,
           bypassPermission: saved.bypassPermission === true,
         }
-        const { choice: permission, droppedFlag } = permissionMode === undefined
-          ? await dropPermissionFlagIfUnsupported(saved.engine, savedPermission)
+        const { choice: permission, droppedFlag, nativeHold } = permissionMode === undefined
+          ? await dropPermissionFlagIfUnsupported(saved.engine, savedPermission, undefined, built.overrides.native)
           : { choice: savedPermission, droppedFlag: null }
         transcript?.verify()
         if (!current()) return resumeChanged
+        if (nativeHold || built.overrides.native?.current() === false) return { ok: false, error: 'NATIVE_LAUNCH_HELD', detail: nativeHold ?? 'Waiting for fresh executable and hook evidence.' }
         if (droppedFlag) {
           console.warn(`[resume] ${sid(saved.agentId)} · ${saved.engine} does not take ${droppedFlag}`
             + ` · resuming in Ask · update ${saved.engine} to get ${saved.permissionMode ?? 'Auto'} back`)
         }
         const options = {
+          ...(built.overrides.native ? { native: built.overrides.native } : {}),
           resumeSessionId,
           bypassPermission: permission.bypassPermission === true,
           ...(permission.permissionMode ? { permissionMode: permission.permissionMode } : {}),

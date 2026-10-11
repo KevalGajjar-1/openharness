@@ -40,7 +40,10 @@ vi.mock('../../engines/kit/nativePlugin.js', () => ({
   prepareNativePlugin: vi.fn(() => ({ verify: () => {}, commit: async () => ({ verify: () => {} }) })),
   prepareNativePluginRemoval: vi.fn(() => ({ verify: () => {}, commit: async () => ({ verify: () => {} }) })),
 }))
-vi.mock('../../engines/kit/nativeHookFiles.js', () => ({ runHookPreparation: async (_files: string[], work: () => Promise<unknown>) => work() }))
+vi.mock('../../engines/kit/nativeHookFiles.js', () => ({
+  runHookPreparation: async (_files: string[], work: () => Promise<unknown>) => work(),
+  hookPreparationRoutes: () => ({ verify: () => {}, keys: [] }),
+}))
 // The engines' folder trust (engines/launchPrep.ts), one spy per engine: never the person's own config.
 const trust = vi.hoisted(() => ({
   claudeTrusts: vi.fn((_path: string) => false), codexTrusts: vi.fn((_path: string, _profile?: string | null) => false),
@@ -214,7 +217,7 @@ describe('creating an agent', () => {
       const grid = { networkId: 'g1', networkName: 'Home', baseUrl: 'http://g', model: 'm' }
       const { create } = setup()
       buildGridLaunch.mockResolvedValueOnce({ ok: false, error: 'GRID_UNAVAILABLE', detail: 'models is down', unavailable: 'models' })
-      expect(await create(request({ dsh: 'blender', grid }))).toEqual({ ok: false, error: 'GRID_UNAVAILABLE', detail: 'models is down' })
+      expect(await create(request({ dsh: 'blender', grid }))).toEqual({ ok: false, error: 'GRID_UNAVAILABLE', detail: 'models is down', unavailable: 'models' })
       expect(materializeWorkspace).not.toHaveBeenCalled()
       expect(preTrustClaudeProject).not.toHaveBeenCalled()
       expect(prepareInstructionWrites).not.toHaveBeenCalled()
@@ -277,7 +280,7 @@ describe('creating an agent', () => {
       const refused = { ok: false as const, error: 'DSH_UNAVAILABLE', detail: 'Store unavailable', unavailable: 'store' as const }
       const materialize = vi.fn(async () => refused)
       const { create } = setup({ dshLaunch: { materialize, launch: launchDsh } })
-      expect(await create(request({ dsh: 'blender' }))).toEqual({ ok: false, error: refused.error, detail: refused.detail })
+      expect(await create(request({ dsh: 'blender' }))).toEqual(refused)
       expect(launchDsh).not.toHaveBeenCalled()
       expect(createAndRegisterPane).not.toHaveBeenCalled()
       expect(preTrustClaudeProject).not.toHaveBeenCalled()
@@ -418,7 +421,7 @@ describe('creating an agent', () => {
       expect(loadEngine).not.toHaveBeenCalled()
       buildGridLaunch.mockResolvedValueOnce({ ok: false, error: 'GRID_UNSUPPORTED', detail: 'no' })
       await t.create(request({ engine: 'claude', agent: 'reviewer', grid: { networkName: 'g' } }))
-      expect(t.deps.gridLaunchMachine).toHaveBeenCalledWith('claude')
+      expect(t.deps.gridLaunchMachine).toHaveBeenCalledWith('claude', undefined)
     })
 
     it('opens as a named agent, with a first prompt, and does not install an engine with a path override', async () => {

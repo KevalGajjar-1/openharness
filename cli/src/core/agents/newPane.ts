@@ -21,6 +21,7 @@ export interface PaneWatcherDeps {
   /** Ask the reconciler to bind what now runs in a pane (TerminalAgentReconciler.triggerHint). */
   triggerHint: (runtime: TerminalRuntimeRef, engine: AgentEngine) => Promise<void>
   captureTerminal: (target: string, historyLines?: number) => Promise<string | null>
+  waitingPane?: (runtime: TmuxRuntimeRef, token: string) => Promise<boolean | 'unknown'>
   retainExitedSession: (session: RegisteredSession, announce: boolean) => void
 }
 
@@ -29,7 +30,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => {
   timer.unref?.()
 })
 
-export function createPaneWatcher({ registry, announceSession, triggerHint, captureTerminal, retainExitedSession }: PaneWatcherDeps) {
+export function createPaneWatcher({ registry, announceSession, triggerHint, captureTerminal, retainExitedSession, waitingPane }: PaneWatcherDeps) {
   /**
    * Watch a pane this daemon just opened until its engine process shows up (ready), dies (failed), or
    * ten minutes pass. Shared by create and fork: the two open panes the same way and wait the same way.
@@ -64,6 +65,13 @@ export function createPaneWatcher({ registry, announceSession, triggerHint, capt
           await sleep(delayMs)
           delayMs = Math.min(delayMs * 2, 750)
           continue
+        }
+        const nativeToken = pending.launch?.state === 'starting' ? pending.launch.nativeToken : undefined
+        if (nativeToken && await waitingPane?.(spawned.runtime, nativeToken) === true) {
+          const held = registry.setLaunch(pending.agentId, { state: 'held', service: 'native', nativeToken,
+            detail: 'Waiting to confirm the engine executable and native hooks. This launch will retry.' })
+          if (held) announceSession(held)
+          return
         }
         if (paneState.dead) {
           const installed = await commandAvailableInInteractiveShell(command[0], undefined, installIfMissing)

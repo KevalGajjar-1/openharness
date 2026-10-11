@@ -1,6 +1,7 @@
 /** Eager mechanics for native JSON hook schemas; unreadable settings are never empty settings. */
 import { command, isOurs, isManagedHookCommand, foreignHookBlocks, type Settings, type HookBlock } from './notifyHooks.js'
-import { HookPreparationHeld, inspectHookFile, runHookPreparation, type HookPreparationOptions } from './nativeHookFiles.js'
+import { HookPreparationHeld, inspectHookFile, runHookPreparation } from './nativeHookFiles.js'
+import type { NativeHookOptions } from './nativeLocations.js'
 
 export interface NativeHookSettings {
   file: string
@@ -28,8 +29,8 @@ function entries(value: unknown): Entry[] {
   return value
 }
 
-export async function installNativeHookSettings(rule: NativeHookSettings, port: number, options: HookPreparationOptions = {}): Promise<boolean> {
-  const cmd = command(port, rule.engine)
+export async function installNativeHookSettings(rule: NativeHookSettings, port: number, options: NativeHookOptions = {}): Promise<boolean> {
+  const cmd = command(port, rule.engine, undefined, undefined, options.environment)
   try { return await runHookPreparation([rule.file], async attempt => {
     const observed = inspectHookFile(rule.file)
     const parsed: unknown = observed.content === null ? {} : JSON.parse(observed.content)

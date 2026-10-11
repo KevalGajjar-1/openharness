@@ -135,7 +135,11 @@ export function createAgentRetargeter({
       codexHome: session.codexHome,
       ...(grid ? {} : { subscriptionModel: remembered }),
     }
-    const valid = await validateLaunchOverrides(launchOverridesDeps, session.engine, target)
+    const inspected = await launchOverridesDeps.native?.(session.engine, session, { id: session.agentId, current })
+    if (!current()) return changed()
+    if (inspected && !inspected.ok) return inspected
+    const native = inspected?.ok ? inspected.launch : undefined
+    const valid = await validateLaunchOverrides(launchOverridesDeps, session.engine, target, native)
     if (!current()) return changed()
     if (!valid.ok) return { ok: false, error: valid.error, detail: valid.detail }
     // A resumed opencode session takes its model from its own rows in opencode.db, not from `-m`
@@ -149,7 +153,7 @@ export function createAgentRetargeter({
     const rewritesOpencodeSession = session.engine === 'opencode' && !!session.sessionId
       && (!!grid || !!remembered?.includes('/'))
     const opencode = session.engine === 'opencode' ? opencodeLaunch : null
-    const opencodeMajor = opencode ? await opencode.opencodeMajorVersion() : null
+    const opencodeMajor = native ? native.opencodeMajor : opencode ? await opencode.opencodeMajorVersion() : null
     if (!current()) return changed()
     if (rewritesOpencodeSession && opencode && !opencode.isOpencodeV2(opencodeMajor) && !binaryOnPath('sqlite3')) {
       return {
@@ -187,7 +191,7 @@ export function createAgentRetargeter({
       // (clearing uses set-environment, which every supported tmux has). Built from the override the
       // desktop just sent, never from the row: the row is what this call REPLACES. After the refusal
       // guards, so a refused move leaves the live process's own configuration untouched.
-      const built = await relaunchOverrides(session, target, current)
+      const built = await relaunchOverrides(session, target, current, native)
       if (!current()) return changed()
       if (!built.ok) return { ok: false, error: built.error, detail: built.detail }
 
@@ -237,7 +241,7 @@ export function createAgentRetargeter({
             // (A model of opencode's own is looked for in its catalogue; a grid's provider lives in
             // the pane's own config, which the service never reads.)
             checkCatalog: !grid,
-          }, { current })
+          }, { current: () => current() && native?.current() !== false, ...(native?.executable ? { executable: native.executable, environment: built.overrides.env } : {}) })
           nativeEffect = written.ok ? 'applied' : (written.effect ?? 'none')
           if (!current()) return changed()
           if (!written.ok) {
@@ -255,7 +259,8 @@ export function createAgentRetargeter({
       }
       const bypassPermission = await bypassPermissionFor(session, () => liveBypassPermission(session))
       if (!current()) return changed()
-      const retargetPermission = await downgradedPermission(session, bypassPermission, 'retarget')
+      const retargetPermission = await downgradedPermission(session, bypassPermission, 'retarget', native)
+      if (retargetPermission.nativeHold || native?.current() === false) return failed('NATIVE_LAUNCH_HELD', retargetPermission.nativeHold ?? 'Waiting for fresh executable and hook evidence.')
       if (!current()) return changed()
       const outcome = await restartAgent(
         { engine: session.engine, sessionId: session.sessionId, ...(session.resumeOnly ? { resumeOnly: true as const } : {}) },

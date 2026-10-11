@@ -48,7 +48,7 @@ export function createPaneSwap({ byAgent, tmuxBackend, prepareSessionResume, kee
   const paneSwapDeps = (
     session: RegisteredSession,
     runtime: TmuxRuntimeRef,
-    launch: { env?: Record<string, string>; extraArgs?: readonly string[]; clearEnv?: readonly string[] } = {},
+    launch: { native?: import('../../engines/nativeLaunch.js').NativeLaunch; env?: Record<string, string>; extraArgs?: readonly string[]; clearEnv?: readonly string[] } = {},
     /** The mode this swap may actually ask for — the row's own, unless the engine on disk has since
      *  stopped taking its flag and the caller dropped it (`dropPermissionFlagIfUnsupported`). */
     permissionMode: string | null = session.permissionMode ?? null,
@@ -108,6 +108,7 @@ export function createPaneSwap({ byAgent, tmuxBackend, prepareSessionResume, kee
     },
     buildArgv: (opts) => buildEngineLaunchArgv(session.engine, {
       ...opts,
+      ...(launch.native ? { native: launch.native } : {}),
       // The mode picked at create outranks what the live argv said: `bypassPermission` is a yes/no, and
       // Plan or Accept edits would come back as Ask without it.
       ...(permissionMode ? { permissionMode } : {}),

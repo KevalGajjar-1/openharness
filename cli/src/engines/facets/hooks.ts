@@ -1,4 +1,4 @@
-import type { HookPreparationOptions } from '../kit/nativeHookFiles.js'
+import type { NativeHookOptions } from '../kit/nativeLocations.js'
 import type { Env } from '../../config/env.js'
 import type { LiveEvent } from '../kit/events.js'
 import type { LiveTurn } from './live.js'
@@ -119,8 +119,8 @@ export interface HookContract {
 
 /** What core calls, composed from an engine's contract and the kit's mechanics (engines/hooks.ts). */
 export interface EngineHooks {
-  install(port: number, options?: HookPreparationOptions): Promise<boolean>
-  installIn(port: number, home: string, options?: HookPreparationOptions): Promise<boolean>
+  install(port: number, options?: NativeHookOptions): Promise<boolean>
+  installIn(port: number, home: string, options?: NativeHookOptions): Promise<boolean>
   transcriptFor?(body: HookSession, agent: HookSession | undefined): string | undefined
   admit?(body: HookSession): HookAdmission
   onStop?(context: HookTurnContext, body: HookStop): void | Promise<void>

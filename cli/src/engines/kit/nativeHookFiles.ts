@@ -1,7 +1,7 @@
 /** Hook preparation owns only a verified file version. Unknown contents are
  * never an empty configuration, and a completed write includes its directory. */
 import { randomUUID } from 'node:crypto'
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs'
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
@@ -132,8 +132,9 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
   return {
     content, directory, stamp: before,
     verify, prepare,
-    async replace(next: string, attempt: HookPreparationAttempt): Promise<HookFilePublication> {
+    async replace(next: string, attempt: HookPreparationAttempt, exclusive = false): Promise<HookFilePublication> {
       attempt.verify(); prepare(next)
+      if (exclusive && content !== null) throw new HookPreparationHeld('another owner already published this claim')
       if (content === next) {
         // A previous rename may have succeeded before directory sync failed.
         // Equality alone cannot turn that uncertainty into a durable success.
@@ -174,7 +175,8 @@ export function inspectHookFile(file: string, defaultMode = 0o666) {
         // route; only directories created above can replace an absent fact.
         verifyNativePathFacts(facts.filter(fact => fact.identity !== null))
         attempt.verify()
-        renameSync(temporary, actual)
+        if (exclusive) { linkSync(temporary, actual); unlinkSync(temporary) }
+        else renameSync(temporary, actual)
         const committed = inspectHookFile(file)
         if (committed.content !== next || committed.stamp !== version(fstatSync(fd, { bigint: true }))) {
           throw new HookPreparationHeld('the published settings changed before sync')
@@ -234,6 +236,8 @@ export interface HookPreparationOptions {
   identity?: string
   current?(): boolean
   timeoutMs?: number
+  /** Immutable effect claims must let a competing publisher finish. */
+  retainConflicts?: boolean
   /** Evidence retained by this launch; never a global success cache. */
   confirmed?(proof: HookPreparationProof): void
 }
@@ -292,9 +296,8 @@ function dispatchFlushes(): void {
   }
 }
 
-/** Disk waits remain in eager core code. Reservations survive a timeout until
- * actual I/O settles: a late fsync must never use a closed, recycled descriptor. */
-export async function runHookPreparation<T>(files: readonly string[], work: (attempt: HookPreparationAttempt) => Promise<T>, options: HookPreparationOptions = {}): Promise<T> {
+/** A caller keeps its own aliases even when it later follows a newer publisher. */
+export function hookPreparationRoutes(files: readonly string[]): { verify(): void; keys: string[]; facts: ReturnType<NativePaths['snapshot']> } {
   if (!files.length || files.length > 32) throw new HookPreparationHeld('the destination set exceeds its limit')
   const reservations = files.map(file => {
     const paths = new NativePaths(new NativeEvidenceBudget(250))
@@ -314,12 +317,19 @@ export async function runHookPreparation<T>(files: readonly string[], work: (att
     }
   }
   const keys = [...new Set(reservations.map(reservation => reservation.key))].sort()
+  return { verify: verifyRoutes, keys, facts: [...new Map(reservations.flatMap(item => item.facts).map(fact => [fact.path, fact])).values()] }
+}
+
+/** Disk waits remain in eager core code. Reservations survive a timeout until
+ * actual I/O settles: a late fsync must never use a closed, recycled descriptor. */
+export async function runHookPreparation<T>(files: readonly string[], work: (attempt: HookPreparationAttempt) => Promise<T>, options: HookPreparationOptions = {}): Promise<T> {
+  const { verify: verifyRoutes, keys } = hookPreparationRoutes(files)
   const conflicts = [...pendingPreparations].filter(pending => pending.keys.some(key => keys.includes(key)))
   if (conflicts.length) {
     const same = conflicts.length === 1 && options.identity !== undefined && conflicts[0].identity === options.identity
       && JSON.stringify(conflicts[0].keys) === JSON.stringify(keys)
     if (same) return await joinPreparation<T>(conflicts[0], options, verifyRoutes, files)
-    for (const pending of conflicts) pending.revoke()
+    if (!options.retainConflicts) for (const pending of conflicts) pending.revoke()
     throw new HookPreparationHeld('another preparation still owns these destinations')
   }
   if (pendingPreparations.size >= MAX_PREPARATIONS) throw new HookPreparationHeld('the disk preparation slots are occupied')

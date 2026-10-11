@@ -16,7 +16,7 @@ beforeAll(() => {
 })
 afterAll(() => { Object.defineProperty(process, 'platform', platform); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }) })
 it('preserves the files selected by fresh and changed grid launches and their borrowed sessions', async () => {
-  const { writeGridConfigDir } = await import('./gridConfigDir.js')
+  const { publishGridConfigDir } = await import('./publishedGridConfig.js')
   const target = join(root, 'native-sessions'); mkdirSync(target)
   writeFileSync(join(target, 'session.json'), '{"fixture":"retained conversation"}\n')
   const actual: Record<string, unknown> = {}
@@ -26,7 +26,7 @@ it('preserves the files selected by fresh and changed grid launches and their bo
     ['grok', [{ name: 'settings.json', content: '{"baseUrl":"https://fixture.invalid/v1"}\n' }], [{ name: 'sessions', target }]],
     ['pi', [{ name: 'models.json', content: '{"providers":{"other":{"apiKey":"GRID_API_KEY"}}}\n' }, { name: 'settings.json', content: '{"skills":["/fixture/skills"]}\n' }], []],
   ] as const) {
-    const directory = await writeGridConfigDir(name, files, links)
+    const { directory } = await publishGridConfigDir(name, files, links)
     actual[`${name}-${Object.keys(actual).length}`] = {
       files: Object.fromEntries(files.map(file => [file.name, readFileSync(join(directory, file.name), 'utf8')])),
       links: Object.fromEntries(links.map(link => [link.name, readlinkSync(join(directory, link.name)).replace(root, '<root>')])),

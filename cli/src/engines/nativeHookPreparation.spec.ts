@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, symlinkSync, renameSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, symlinkSync, renameSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 
-const probe = vi.hoisted(() => ({ major: 1 as number | null, failSync: false, failRemove: false, beforeSync: undefined as (() => Promise<void>) | undefined, onStat: undefined as ((path: unknown) => void) | undefined }))
-vi.mock('./launchControl.js', () => ({ opencodeMajorVersion: async () => probe.major }))
+const probe = vi.hoisted(() => ({ major: 1 as number | null, beforeProbe: undefined as (() => Promise<void>) | undefined, failSync: false, failRemove: false, beforeSync: undefined as (() => Promise<void>) | undefined, onStat: undefined as ((path: unknown) => void) | undefined }))
+vi.mock('./launchControl.js', () => ({ opencodeMajorVersion: async () => { await probe.beforeProbe?.(); return probe.major } }))
 vi.mock('node:fs', async original => {
   const fs = await original<typeof import('node:fs')>()
   return { ...fs,
@@ -18,7 +18,7 @@ vi.mock('node:fs', async original => {
 })
 const roots: string[] = []
 afterEach(() => {
-  probe.major = 1; probe.failSync = false; probe.failRemove = false; probe.beforeSync = undefined; probe.onStat = undefined
+  probe.major = 1; probe.beforeProbe = undefined; probe.failSync = false; probe.failRemove = false; probe.beforeSync = undefined; probe.onStat = undefined
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -341,4 +341,64 @@ it('rechecks the OpenCode deadline after final proof reads', async () => {
     return true as never
   })
   expect(await install(4242, undefined, { timeoutMs: 10 })).toBe(false)
+})
+
+it('keeps the original route when following a newer OpenCode publisher', async () => {
+  const { root, install } = await fixture()
+  const a = join(root, 'route-a'), b = join(root, 'route-b'), alias = join(root, 'selected-config')
+  mkdirSync(a); mkdirSync(b); symlinkSync(a, alias)
+  const environment = { HOME: join(root, 'HOME'), OPENCODE_PLUGIN_DIR: join(alias, 'plugin') }
+  const snapshot = { command: '/fixture/opencode', identity: 'same-executable', major: 2, current: () => true }
+  let release!: () => void, began!: () => void
+  const paused = new Promise<void>(done => { release = done }), started = new Promise<void>(done => { began = done })
+  probe.beforeSync = async () => { probe.beforeSync = undefined; began(); await paused }
+  const confirmed = vi.fn()
+  const first = install(4242, snapshot, { environment, confirmed })
+  try {
+    await started
+    unlinkSync(alias); symlinkSync(b, alias)
+    expect(await install(4242, snapshot, { environment })).toBe(true)
+  } finally { release() }
+  expect(await first).toBe(false)
+  expect(confirmed).not.toHaveBeenCalled()
+})
+
+it('cannot write through a route that changed during the version probe', async () => {
+  const { root, install } = await fixture()
+  const a = join(root, 'probe-a'), b = join(root, 'probe-b'), alias = join(root, 'probe-selected')
+  mkdirSync(a); mkdirSync(b); symlinkSync(a, alias)
+  const environment = { HOME: join(root, 'HOME'), OPENCODE_PLUGIN_DIR: join(alias, 'plugin') }
+  let release!: () => void
+  probe.beforeProbe = () => new Promise<void>(done => { release = done })
+  const preparing = install(4242, undefined, { environment })
+  unlinkSync(alias); symlinkSync(b, alias)
+  release()
+  expect(await preparing).toBe(false)
+  expect(() => readFileSync(join(b, 'plugin/launcher-register.js'))).toThrow()
+  expect(() => readFileSync(join(b, 'plugins/launcher-register/tui.js'))).toThrow()
+})
+
+it.each(['deadline', 'owner', 'executable'] as const)('checks %s after the last original-route verification', async reason => {
+  const { install } = await fixture()
+  let time = 0, owner = true, executable = true, verifications = 0
+  vi.spyOn(performance, 'now').mockImplementation(() => time)
+  const files = await import('./kit/nativeHookFiles.js'), capture = files.hookPreparationRoutes
+  vi.spyOn(files, 'hookPreparationRoutes').mockImplementation(paths => {
+    const original = capture(paths)
+    return { ...original, verify: () => {
+      original.verify()
+      if (++verifications === 2) {
+        if (reason === 'deadline') time = 20
+        else if (reason === 'owner') owner = false
+        else executable = false
+      }
+    } }
+  })
+  vi.spyOn(files, 'runHookPreparation').mockImplementationOnce(async (_files, _work, options) => {
+    options?.confirmed?.({ files: [], current: () => true }); return true as never
+  })
+  const confirmed = vi.fn()
+  expect(await install(4242, { command: '/fixture/opencode', identity: 'fixture', major: 2, current: () => executable },
+    { timeoutMs: 10, current: () => owner, confirmed })).toBe(false)
+  expect(confirmed).not.toHaveBeenCalled()
 })

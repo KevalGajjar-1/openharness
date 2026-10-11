@@ -128,7 +128,7 @@ it('does not claim work yielded after shutdown or execute work stopped just afte
 
   const effect = vi.fn(async () => created)
   const second = setup(vi.fn(async () => effect), { ...receipts, runIntent: async (_id, _fingerprint, request, _held, prepare) => {
-    const ready = await prepare(request)
+    const ready = await prepare(request, { id: _id, current: () => true, hold: () => {} })
     second.pending.stop()
     return ready!()
   } })

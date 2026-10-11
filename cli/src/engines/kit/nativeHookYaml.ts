@@ -112,7 +112,7 @@ function stripOwnedBlocks(rule: NativeYamlHooks, config: string, hookLines: Read
 }
 
 /** Installs only homes with a config, each with its own command and allowlist. */
-export async function installNativeYamlHooks(rule: NativeYamlHooks, commandForHome: (home: string) => string, selectedHome?: string, options: HookPreparationOptions = {}): Promise<boolean> {
+export async function installNativeYamlHooks(rule: NativeYamlHooks, commandForHome: (home: string) => string, selectedHome?: string, options: HookPreparationOptions & { createMissing?: boolean } = {}): Promise<boolean> {
   const homes = selectedHome ? [selectedHome] : nativeHookHomes(rule.homes, rule.home)
   let next = 0, installed = true
   const worker = async () => {
@@ -127,14 +127,17 @@ export async function installNativeYamlHooks(rule: NativeYamlHooks, commandForHo
   return installed
 }
 
-async function installIn(rule: NativeYamlHooks, cmd: string, home: string, options: HookPreparationOptions): Promise<boolean> {
+async function installIn(rule: NativeYamlHooks, cmd: string, home: string, options: HookPreparationOptions & { createMissing?: boolean }): Promise<boolean> {
   const configPath = join(home, rule.homes.file)
   try { return await runHookPreparation([configPath, join(home, rule.allowlist)], async attempt => {
-    const observed = inspectHookFile(configPath), config = observed.content
-    if (config === null) {
+    const observed = inspectHookFile(configPath)
+    if (observed.content === null && !options.createMissing) {
       if (home === rule.home) console.log(message(rule.messages.missing, { file: configPath }))
       return false
     }
+    // A captured launch owns preparation of its selected home, including its
+    // first settings file. A background catalog scan never creates a profile.
+    const config = observed.content ?? ''
 
     const budget = new NativeEvidenceBudget(250)
     let tokens = 0
