@@ -11,6 +11,7 @@ import { inspectHookFile, runHookPreparation } from './nativeHookFiles.js'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import type { NativeHookOwner } from './nativeHookOwner.js'
+import { validNativeHookWireIdentity, type NativeHookWireIdentity } from './nativeHookClientProtocol.js'
 import type { NativeHookStageLease } from './nativeHookStaging.js'
 
 let activeOperations = 0
@@ -49,6 +50,8 @@ export interface NativeHookIntake {
   firedAt?: number
   owner?: NativeHookOwner
   payload: Record<string, unknown>
+  /** Absent for legacy intake. Its presence cannot be inferred from a retry. */
+  wire?: NativeHookWireIdentity
   /** Only outbox logs accept phases; the effect journal cannot interpret ACKs. */
   phases?: readonly NativeHookPhase[]
 }
@@ -128,6 +131,7 @@ function validIntake(value: unknown, maxBytes = 300_000): value is NativeHookInt
     && (value.owner === undefined || object(value.owner) && typeof value.owner.key === 'string' && value.owner.key.length > 0
       && value.owner.key.length <= 512 && typeof value.owner.evidence === 'string' && value.owner.evidence.length > 0
       && value.owner.evidence.length <= 128_000)
+    && (value.wire === undefined || validNativeHookWireIdentity(value.wire))
     && object(value.payload) && Buffer.byteLength(JSON.stringify(value)) <= maxBytes
 }
 

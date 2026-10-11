@@ -32,6 +32,7 @@ function fixture() {
   const journals: ReturnType<typeof log>[] = []
   const storage: NativeHookStorage = {
     effects: vi.fn(async () => { throw Error('client cannot open an effects journal') }),
+    readEffects: vi.fn(async () => { throw Error('fresh client cannot look up core receipts') }),
     outbox: vi.fn(async (_shard, current) => { const value = log(current); journals.push(value); return value }),
     close: vi.fn(async () => { journals.forEach(journal => journal.close()) }),
   }

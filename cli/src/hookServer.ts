@@ -33,6 +33,8 @@ import type { NativeHookClaim, NativeHookDelivery } from './engines/kit/nativeHo
 import { openNativeHookStorage, type NativeHookStorage } from './engines/kit/nativeHookStorage.js'
 import { bundledProcessImageHelper, invalidateProcessImageHelper } from './lib/nativeProcessImages.js'
 import { inspectNativeHookOrigin, nativeHookOriginCaller } from './engines/kit/nativeHookOrigin.js'
+import { nativeHookAcknowledgement, nativeHookWireIdentity, type NativeHookAcknowledgement,
+  type NativeHookWireIdentity } from './engines/kit/nativeHookClientProtocol.js'
 import type { NativeHookCaller, NativeHookCallerReader, NativeHookOwner, NativeHookOwnerProof, NativeHookOwnerReader } from './engines/kit/nativeHookOwner.js'
 
 /**
@@ -273,18 +275,23 @@ function validHookBody(value: unknown): value is BoundHookBody {
   return true
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+function readBody(req: http.IncomingMessage, exact = false): Promise<string> {
   return new Promise((resolve) => {
     let data = ''
     let bytes = 0
     let oversized = false
-    req.setEncoding('utf8')
-    req.on('data', (chunk: string) => {
+    let buffers: Buffer[] = []
+    if (!exact) req.setEncoding('utf8')
+    req.on('data', (chunk: string | Buffer) => {
       bytes += Buffer.byteLength(chunk)
-      if (bytes > MAX_HOOK_BODY_BYTES) { oversized = true; data = ''; return }
-      data += chunk
+      if (bytes > MAX_HOOK_BODY_BYTES) { oversized = true; data = ''; buffers = []; return }
+      if (exact) buffers.push(Buffer.from(chunk))
+      else data += chunk
     })
-    req.on('end', () => resolve(oversized ? '' : data))
+    req.on('end', () => {
+      try { resolve(oversized ? '' : exact ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(buffers)) : data) }
+      catch { resolve('') }
+    })
     req.on('error', () => resolve(''))
   })
 }
@@ -610,19 +617,75 @@ export function startHookServer(
         return row ? [[row.agentId, structuredClone(row)] as const] : []
       })).values()] : [])
   }
+  /** A completed phase needs no live engine. This lookup has no allocation or
+   * dispatch capability and cannot upgrade a legacy receipt into the v1 protocol. */
+  const answerCompletedNativeRegistration = async (body: BoundHookBody, id: string, firedAt: number,
+    wire: NativeHookWireIdentity, answer: (status: number, reply: unknown) => void, receipt: NativeHookAcknowledgement,
+  ): Promise<boolean> => {
+    const origin = inspectNativeHookOrigin(body.nativeOrigin), engine = body.engine ?? 'claude'
+    const candidates = [...origin.ancestry, ...(engine === 'cursor' && origin.runtime ? [origin.runtime.process] : [])]
+      .map(row => `${origin.boot}\u0000${engine}\u0000${row.pid}\u0000${row.birth}`)
+    const deadline = performance.now() + 4500, current = () => !closed && performance.now() < deadline
+    const check = () => { if (!current()) throw new IdentityReadUnavailable('native receipt recovery exceeded its deadline') }
+    const opened = await storage()
+    check()
+    const journals = await opened.readEffects(candidates, current)
+    try {
+      const snapshots: Array<Awaited<ReturnType<Journal['snapshot']>>> = []
+      const matches: Array<{ key: string; delivery: NativeHookDelivery }> = []
+      for (const [key, journal] of journals) {
+        check()
+        const snapshot = await journal.snapshot()
+        await snapshot.confirm(); check(); snapshot.verify()
+        snapshots.push(snapshot)
+        const delivery = snapshot.deliveries.get(id)
+        if (delivery) matches.push({ key, delivery })
+      }
+      if (!matches.length) return false
+      if (matches.length !== 1) throw new IdentityReadUnavailable('native receipt has ambiguous original namespaces')
+      const { key, delivery } = matches[0]!, intake = delivery.intake
+      const fingerprint = createHash('sha256').update(JSON.stringify([body, firedAt, wire])).digest('hex')
+      // Do not authorize a different body, phase or time from an older intake's
+      // terminal flag, even if its visible JSON otherwise appears equivalent.
+      if (intake.fingerprint !== fingerprint || intake.firedAt !== firedAt
+        || JSON.stringify(intake.wire) !== JSON.stringify(wire)) {
+        snapshots.forEach(snapshot => snapshot.verify()); check()
+        answer(409, { pending: false, error: 'HOOK_DELIVERY_CONFLICT' }); return true
+      }
+      if (!delivery.result) return false
+      if (intake.owner?.key !== key || intake.conversationId !== (body.sessionId ?? '')
+        || typeof delivery.result.accepted !== 'boolean' || typeof delivery.result.status !== 'number' || !delivery.result.reply) {
+        throw new IdentityReadUnavailable('the retained native receipt is incomplete')
+      }
+      snapshots.forEach(snapshot => snapshot.verify()); check()
+      answer(200, receipt)
+      return true
+    } finally { for (const journal of journals.values()) journal.close() }
+  }
   const admitStart = async (body: BoundHookBody, native: { firedAt?: number; deliveryId?: string | string[];
-    recovery?: { agentId: string; key: string; owner?: NativeHookOwner } },
-    respond: (status: number, reply: unknown) => void,
+    recovery?: { agentId: string; key: string; owner?: NativeHookOwner }; wire?: NativeHookWireIdentity },
+    respond: (status: number, reply: unknown, ownership?: NativeHookAcknowledgement['outcome']) => void,
   ): Promise<void> => {
     // Every rejection below says WHY, out loud. They used to be silent, and a hook that arrives and
     // is dropped looks exactly like a hook that never fired — which is precisely the confusion behind
     // "the agent is running in my terminal but the list does not show it".
     // Answered once: a hook answered before its resolution waited is only logged after it.
     let answered = false
+    let ownership: NativeHookAcknowledgement['outcome'] | undefined
+    let verifyOwnership: (() => void) | undefined
     const answer = (code: number, reply: unknown): void => {
       if (answered) return
+      if (native.wire && ownership) {
+        try {
+          if (closed || !verifyOwnership) throw new IdentityReadUnavailable('native acknowledgement authority is unavailable')
+          verifyOwnership()
+        } catch (error) {
+          ownership = undefined; code = 202
+          reply = { pending: false, retry: true, detail: `Waiting for confirmed native acknowledgement: ${error instanceof Error ? error.message : 'receipt unavailable'}`.slice(0, 1024) }
+        }
+      }
       answered = true
-      respond(code, reply)
+      respond(code, reply, ownership)
     }
     const ignore = (reason: string): void => {
       console.log(`[hooks] ${sid(body.sessionId ?? '?')} ${body.hookEvent ?? 'session-start'} ignored · ${reason}`)
@@ -644,7 +707,8 @@ export function startHookServer(
     const engine = body.engine ?? 'claude'
     // Capture before process resolution yields. Native time is unchanged across client retries.
     const admissionOrder = { firedAt: native.firedAt, arrival: ++admissionArrival }
-    const fingerprint = createHash('sha256').update(JSON.stringify([body, admissionOrder.firedAt])).digest('hex')
+    const fingerprint = createHash('sha256').update(native.wire
+      ? JSON.stringify([body, admissionOrder.firedAt, native.wire]) : JSON.stringify([body, admissionOrder.firedAt])).digest('hex')
     const originalBody = structuredClone(body)
     const deliveryHeader = native.deliveryId
     const nativeDeliveryId = typeof deliveryHeader === 'string' && /^[a-zA-Z0-9_-]{16,96}$/.test(deliveryHeader) ? deliveryHeader : undefined
@@ -744,6 +808,10 @@ export function startHookServer(
       const snapshot = await confirmedSnapshot(context, processAgent)
       if (!snapshot.active && [...snapshot.deliveries.values()].every(item => item.result || history.records.has(item.intake.id))) recovered.add(context.key)
       const known = snapshot.deliveries.get(deliveryId)
+      if (known && (known.intake.fingerprint !== fingerprint || known.intake.agentId !== processAgent.agentId
+        || known.intake.conversationId !== (body.sessionId ?? ''))) {
+        answer(conflict.status, conflict.reply); return
+      }
       if (!known?.result && !history.records.has(deliveryId)) {
         const key = `${context.key}\u0000${deliveryId}`
         if (intakeReservations.has(key) || receiptCount + reservedCount >= receiptCapacity
@@ -751,6 +819,7 @@ export function startHookServer(
           if (known) {
             recovered.delete(context.key)
             recoveryHeld(processAgent.agentId, 'Waiting for capacity to resume this retained native hook.')
+            ownership = 'owned'; verifyOwnership = () => { snapshot.verifyAuthority(); known.verify() }
             answer(200, { pending: true })
           } else answer(429, { pending: false, error: 'HOOK_ADMISSION_BUSY', detail: 'Hook acknowledgement storage is full; this delivery was not queued.' })
           return
@@ -761,7 +830,10 @@ export function startHookServer(
       durable = await context.journal.retain({ id: deliveryId, fingerprint, agentId: processAgent.agentId,
         conversationId: body.sessionId ?? '', ...(admissionOrder.firedAt ? { firedAt: admissionOrder.firedAt } : {}),
         ...(context.owner ? { owner: context.owner } : {}),
+        ...(native.wire ? { wire: native.wire } : {}),
         payload: { ...originalBody } })
+      ownership = 'owned'
+      verifyOwnership = () => { snapshot.verifyAuthority(); durable.verify() }
     } catch (error) {
       if (error instanceof Error && error.message.includes('HOOK_DELIVERY_CONFLICT')) answer(conflict.status, conflict.reply)
       else {
@@ -775,9 +847,10 @@ export function startHookServer(
     }
     if (durable.result) {
       if (typeof durable.result.status !== 'number' || !durable.result.reply) {
+        ownership = undefined
         answer(202, { pending: false, retry: true, detail: 'Waiting for a complete native hook outcome.' }); return
       }
-      answer(durable.result.status, durable.result.reply); return
+      ownership = 'complete'; answer(durable.result.status, durable.result.reply); return
     }
     const completed = history.records.get(deliveryId)
     if (completed) {
@@ -982,11 +1055,16 @@ export function startHookServer(
           // before a successor can confirm its terminal record and overtake it.
           if (decision.kind === 'accept' && !notified) { claim.verify(); notified = true; notify() }
           await claim.finish({ status, reply, accepted: decision.kind === 'accept', arrival: admissionOrder.arrival })
+          ownership = undefined
           context.claims.delete(deliveryId); context.restored.add(deliveryId)
           // Completion is final even if restoring the next frontier fails. A
           // concurrent intake can have arrived while this result was syncing;
           // only its freshly confirmed frontier can reopen interpretation.
-          try { await confirmedSnapshot(context, processAgent) }
+          try {
+            const completed = await confirmedSnapshot(context, processAgent), receipt = completed.deliveries.get(deliveryId)
+            if (!receipt?.result) throw new IdentityReadUnavailable('the native completion receipt is unavailable')
+            ownership = 'complete'; verifyOwnership = () => { completed.verifyAuthority(); receipt.verify() }
+          }
           catch (error) {
             recoveryHeld(processAgent.agentId,
               `Waiting for native hook recovery: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024))
@@ -1031,6 +1109,7 @@ export function startHookServer(
       if (!pending) { recovered.add(context.key); return }
       if (!validHookBody(pending.intake.payload)) throw new IdentityReadUnavailable('the retained native hook body is invalid')
       await admitStart(structuredClone(pending.intake.payload), { deliveryId: pending.intake.id, firedAt: pending.intake.firedAt,
+        ...(pending.intake.wire ? { wire: pending.intake.wire } : {}),
         recovery: { agentId: pending.intake.agentId, key: context.key, owner: pending.intake.owner } }, () => {})
     } catch (error) {
       if (!closed) recoveryHeld(row.agentId,
@@ -1139,6 +1218,46 @@ export function startHookServer(
       // through its pid, never through here.
       if (req.method === 'GET' && url === '/api/status') {
         json(200, handlers.onStatus ? await handlers.onStatus() : { supported: false }); return
+      }
+
+      if (req.method === 'POST' && url === '/api/native-hook/v1/session-start') {
+        if (!hookOk) { json(401, { error: 'UNAUTHORIZED' }); return }
+        const raw = await readBody(req, true), id = req.headers['x-harness-hook-delivery-id'], fired = req.headers['x-harness-hook-fired-at']
+        const firedAt = hookFiredAt(req)
+        let body: BoundHookBody
+        try {
+          const parsed: unknown = JSON.parse(raw)
+          if (!validHookBody(parsed) || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,96}$/.test(id)
+            || typeof fired !== 'string' || !/^[1-9]\d{0,15}$/.test(fired) || !firedAt) throw Error('invalid native envelope')
+          const origin = inspectNativeHookOrigin(parsed.nativeOrigin)
+          if (origin.callerPid !== parsed.callerPid) throw Error('native caller changed')
+          body = parsed
+        } catch { json(400, { error: 'invalid native hook envelope' }); return }
+        // Validated above; the explicit local values also prevent any legacy
+        // random-ID, missing-time or live-caller recapture fallback.
+        const delivery = { id: id as string, firedAt: firedAt! }, phase = { name: 'registration' as const,
+          path: '/api/hook/session-start' as const, body: raw }, wire = nativeHookWireIdentity(phase.path, raw)
+        try {
+          if (await answerCompletedNativeRegistration(body, delivery.id, delivery.firedAt, wire, json,
+            nativeHookAcknowledgement(delivery, phase, 'complete'))) return
+        } catch (error) {
+          json(202, { pending: false, retry: true,
+            detail: `Waiting for native receipt recovery: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024) }); return
+        }
+        if (body.engine === 'cursor' && body.hookEvent === 'stop'
+          || body.engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure')) {
+          json(202, { pending: false, retry: true, detail: 'Waiting for durable linked Stop admission.' }); return
+        }
+        await admitStart(body, { deliveryId: delivery.id, firedAt: delivery.firedAt, wire }, (status, reply, ownership) => {
+          if (ownership && (status >= 200 && status < 300 || ownership === 'complete' && status === 400)) {
+            json(200, nativeHookAcknowledgement(delivery, phase, ownership))
+          } else if (status >= 200 && status < 300) {
+            const detail = (reply as { detail?: string; reason?: string })?.detail ?? (reply as { reason?: string })?.reason
+              ?? 'Waiting for confirmed native hook ownership.'
+            json(202, { pending: false, retry: true, detail })
+          } else json(status, reply)
+        })
+        return
       }
 
       // SessionStart AND UserPromptSubmit both POST here (the catch hook re-registers so a session

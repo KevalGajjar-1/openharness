@@ -7,6 +7,8 @@ import type { NativeHookPhase } from './nativeHookJournal.js'
 export const NATIVE_HOOK_CLIENT_PROTOCOL = 1
 export const NATIVE_HOOK_ROUTE_PREFIX = '/api/native-hook/v1/'
 export type NativeHookClientPhase = NativeHookClientDelivery['phases'][number]
+/** Derived by the server from the received bytes, never accepted from JSON. */
+export interface NativeHookWireIdentity { version: 1; path: string; bodySha256: string }
 export interface NativeHookAcknowledgement {
   version: 1
   id: string
@@ -18,6 +20,17 @@ export interface NativeHookAcknowledgement {
 }
 const paths = new Set(['session-start', 'turn-stop', 'session-end', 'turn-start', 'tool-start'])
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
+
+export function nativeHookWireIdentity(path: string, body: string): NativeHookWireIdentity {
+  return { version: 1, path: nativeHookMutationRoute(path), bodySha256: hash(body) }
+}
+export function validNativeHookWireIdentity(value: unknown): value is NativeHookWireIdentity {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const wire = value as Record<string, unknown>
+  return Object.keys(wire).length === 3 && wire.version === 1 && typeof wire.path === 'string'
+    && wire.path.startsWith(NATIVE_HOOK_ROUTE_PREFIX) && paths.has(wire.path.slice(NATIVE_HOOK_ROUTE_PREFIX.length))
+    && typeof wire.bodySha256 === 'string' && /^[a-f0-9]{64}$/.test(wire.bodySha256)
+}
 
 export function nativeHookMutationRoute(path: string): string {
   const name = path.slice('/api/hook/'.length)

@@ -346,6 +346,50 @@ export function createNativeHookCatalog({ root, verifyRoot, pool, operationTimeo
     }
   }
   return {
+    /** Receipt recovery has no live process owner and grants no effect claim.
+     * Select only already sealed namespaces; absence must never allocate one. */
+    async readEffects(processKeys: readonly string[], current: () => boolean = () => true) {
+      const keys = [...new Set(processKeys)]
+      if (keys.length > 33 || keys.some(key => !key || key.length > 512)) held('invalid receipt lookup keys')
+      const selected = await run(async check => {
+        const control = pair(versionFile)
+        if (control && (!control.mirror || control.record.text !== versionText)) held('the receipt catalog authority is incomplete')
+        const before = await scan(check)
+        if (!control) {
+          if (before.allocations.length) held('the receipt catalog authority is missing')
+          return []
+        }
+        const matches = keys.flatMap(processKey => {
+          const allocation = before.allocations.find(item => item.kind === 'effects' && item.key === hash(processKey))
+          if (!allocation) return []
+          if (!allocation.pair.mirror || !allocation.seal?.mirror) held('the receipt namespace is not sealed')
+          const proof = inspectNativeHookJournalAuthority(history('effects', allocation.index))
+          if (allocation.seal.record.text !== JSON.stringify([1, hash(allocation.pair.record.text), proof.fingerprint])) {
+            held('the receipt namespace authority changed')
+          }
+          proof.verify()
+          const verify = () => rootReads.run(() => {
+            checkRoot(); control.verify(); allocation.pair.verify(); allocation.seal!.verify(); proof.verify()
+            if (!current()) held('the receipt lookup expired')
+          })
+          return [{ processKey, allocation, verify }]
+        })
+        before.verify(); control.verify(); check()
+        return matches
+      }, () => { if (!current()) held('the receipt lookup expired') })
+      return new Map(selected.map(({ processKey, allocation, verify }) => {
+        const journal = createNativeHookJournal({ directory: history('effects', allocation.index), processKey, current,
+          maxBytes: NATIVE_HOOK_STORAGE_LIMITS.effectBytes, maxRecords: NATIVE_HOOK_STORAGE_LIMITS.records,
+          boundary: boundary(allocation, () => { verify(); return current() }) })
+        return [processKey, { snapshot: async () => {
+          verify()
+          const snapshot = await journal.snapshot(false)
+          verify()
+          return { ...snapshot, verify: () => { verify(); snapshot.verify() },
+            confirm: async () => { verify(); await snapshot.confirm(); verify() } }
+        }, close: journal.close }] as const
+      }))
+    },
     async effects(processKey: string, current: () => boolean = () => true) {
       const allocation = await run(check => allocate('effects', processKey, check),
         () => { if (!current()) held('the original journal owner changed') })

@@ -23,6 +23,7 @@ export async function openNativeHookStorage(root: string, helpers: NativeControl
     let closing: Promise<void> | undefined
     return {
       effects: catalog.effects,
+      readEffects: catalog.readEffects,
       outbox: catalog.outbox,
       close(): Promise<void> {
         // Catalog.close revokes synchronously. Wait for actual journal I/O,

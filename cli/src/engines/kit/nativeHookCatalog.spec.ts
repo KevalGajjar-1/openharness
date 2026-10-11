@@ -109,6 +109,63 @@ it('durably allocates before initialization and retains one process namespace ac
   expect(names.filter(name => /^\.native-hook-stage-\d\/\d{8}\.claim$/.test(name))).toHaveLength(3)
 })
 
+it('looks up only existing sealed effect histories without allocating missing namespaces', async () => {
+  const empty = catalog()
+  const absent = await empty.readEffects([processKey]).then(value => ({ value, error: undefined }), error => ({ value: undefined, error }))
+  expect(absent.error).toBeUndefined()
+  expect(absent.value!.size).toBe(0)
+  expect(readdirSync(root)).toEqual([])
+  const original = await empty.effects(processKey)
+  await original.retain(intake())
+  await (await original.claim(intake().id, intake().agentId)).finish({ status: 200, reply: { ok: true } })
+  const before = allocationFiles(), recovered = await catalog().readEffects([processKey, processKey, 'absent-process'])
+  expect([...recovered.keys()]).toEqual([processKey])
+  const read = recovered.get(processKey)!
+  expect(Object.keys(read).sort()).toEqual(['close', 'snapshot'])
+  const snapshot = await read.snapshot(); await snapshot.confirm(); snapshot.verify()
+  expect(snapshot.deliveries.get(intake().id)?.result).toMatchObject({ status: 200 })
+  expect(allocationFiles()).toEqual(before)
+  read.close()
+  await expect(read.snapshot()).rejects.toThrow('owner changed')
+})
+
+it.each(['allocation', 'seal', 'authority'])('holds an incomplete %s during receipt lookup without rebuilding it', async missing => {
+  const store = catalog(), original = await store.effects(processKey)
+  await original.retain(intake())
+  const file = allocated() + (missing === 'authority' ? '.history.authority' : `.${missing}`)
+  unlinkSync(file)
+  const before = readdirSync(root, { recursive: true }).map(String).sort()
+  await expect(catalog().readEffects([processKey])).rejects.toThrow()
+  expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
+  expect(existsSync(file)).toBe(false)
+})
+
+it('bounds receipt keys and checks the lookup owner before returning a read capability', async () => {
+  const store = catalog()
+  await expect(store.readEffects(Array.from({ length: 34 }, (_, i) => `process-${i}`))).rejects.toThrow('lookup keys')
+  await expect(store.readEffects([processKey], () => false)).rejects.toThrow('lookup expired')
+  expect(readdirSync(root)).toEqual([])
+})
+
+it.each([
+  ['empty', 'remove', 'snapshot'], ['empty', 'replace', 'snapshot'],
+  ['populated', 'remove', 'snapshot'], ['populated', 'replace', 'snapshot'],
+  ['populated', 'remove', 'confirm'], ['populated', 'replace', 'confirm'],
+])('retains selected receipt authority for %s history across seal %s before %s', async (contents, change, step) => {
+  const store = catalog(), journal = await store.effects(processKey)
+  if (contents === 'populated') await journal.retain(intake())
+  else await journal.snapshot()
+  const read = (await catalog().readEffects([processKey])).get(processKey)!
+  const snapshot = step === 'confirm' ? await read.snapshot() : undefined
+  const file = allocated() + '.seal', original = readlinkSync(file)
+  unlinkSync(file)
+  if (change === 'replace') symlinkSync(original, file)
+  const before = readdirSync(root, { recursive: true }).map(String).sort()
+  await expect(snapshot ? snapshot.confirm() : read.snapshot()).rejects.toThrow()
+  expect(readdirSync(root, { recursive: true }).map(String).sort()).toEqual(before)
+  expect(existsSync(file)).toBe(change === 'replace')
+})
+
 it('holds new intake at normal exhaustion while every previously accepted effect can finish', async () => {
   await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
   const journal = await catalog().effects(processKey), bodies = [intake(), intake('fixture-delivery-0002')]
