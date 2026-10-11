@@ -25,6 +25,7 @@ import 'first_arrival.dart';
 import 'harness_monitor_controller.dart';
 import 'agent_handoff_file.dart';
 import 'agent_switch_handoff.dart';
+import '../agent_messages/agent_messages.dart';
 import '../api/api_client.dart';
 import '../viewer/sign_in_browser.dart';
 import '../viewer/direct_link.dart';
@@ -1388,6 +1389,49 @@ class AppNotifier extends ChangeNotifier {
   List<TerminalPane> get panes => activeSwarm.panes;
   Iterable<TerminalPane> get allPanes => swarms.expand((s) => s.panes).toSet();
   String get activeSwarmId => activeSwarm.id;
+
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): each tab's
+  /// flag, the traffic the daemons push as `messages_changed`, and the marks it
+  /// leaves on panes. Its own notifier, so traffic never rebuilds the workspace.
+  late final agentMessages = AgentMessagesController(
+    read: () => api.readAgentMessageTabs(),
+    write: (tabId, enabled) => api.setAgentMessages(tabId, enabled),
+    request: (machineId, payload) => _conn(machineId).request(
+      'agent_messages',
+      payload: payload,
+      timeout: const Duration(seconds: 8),
+    ),
+    nameOf: (machineId, agentId) =>
+        stateOf(machineId)?.agents
+            .where((agent) => agent.id == agentId)
+            .firstOrNull
+            ?.displayName,
+  );
+
+  /// The machines whose daemons may hold [tabId]'s Agent Messages log: this
+  /// computer's, and every connected machine of the owner's with a harness in
+  /// the tab. A shared machine's harnesses never take part.
+  List<String> agentMessageMachines(String tabId) {
+    final tab = swarms.where((swarm) => swarm.id == tabId).firstOrNull;
+    final ids = <String>{
+      ?localMachineState?.machine.machineId,
+      for (final pane in tab?.panes ?? const <TerminalPane>[])
+        if (pane.agentId != null) pane.machineId,
+    };
+    return [
+      for (final id in ids)
+        if (machineStates[id] case final machine?
+            when !machine.machine.isShared &&
+                !machine.needsLink &&
+                machine.nodeOnline != false &&
+                machine.connectionStatus == ConnectionStatus.connected)
+          id,
+    ];
+  }
+
+  /// [tabId]'s Agent Messages log, from every daemon that may hold part of it.
+  Future<AgentMessageLog> readAgentMessages(String tabId) =>
+      agentMessages.history(tabId, agentMessageMachines(tabId));
 
   final _orchestratorProjects = <String, OrchestratorController>{};
 
@@ -5462,6 +5506,7 @@ class AppNotifier extends ChangeNotifier {
   void _clearAccountWorkspace({bool notices = true}) {
     if (notices) _clearDeviceNoticeState();
     experimentalFeatures.bind(null);
+    agentMessages.reset();
     _agentChanges.clear();
     ++_layoutRevision;
     // Sign-out sends the desk nothing: the tabs closing here are this window
@@ -10667,7 +10712,13 @@ class AppNotifier extends ChangeNotifier {
   ///
   /// Reads the focused pane rather than taking an id, so every route into a
   /// harness clears it without each one having to remember to.
-  void _seeFocusedAgent() => seeWatchedAgents();
+  void _seeFocusedAgent() {
+    seeWatchedAgents();
+    // Its Agent Messages mark has done its job once the person is looking.
+    if (focusedPane case TerminalPane(:final machineId, :final agentId?)) {
+      agentMessages.seen(machineId, agentId);
+    }
+  }
 
   String? _eventAgentId(
     MachineState machine,
@@ -15291,6 +15342,8 @@ class AppNotifier extends ChangeNotifier {
       return;
     }
     _desk.enabled = true;
+    // Each tab's Agent Messages flag lives beside the desk, read once it is.
+    unawaited(agentMessages.refresh());
     // Tabs from before the desk carry per-window ids (`swarm-N`) two computers
     // would both mint. Give them desk ids once; the layout store keys by the
     // same string, so it follows on the next save.
@@ -16569,6 +16622,12 @@ class AppNotifier extends ChangeNotifier {
       _orchestratorProjects['$machineId/${payload['id']}']?.changed();
       return;
     }
+    if (type == 'messages_changed') {
+      // Before the activity check below: this payload is traffic between
+      // harnesses, never a turn of the pane's own.
+      agentMessages.handleEvent(payload);
+      return;
+    }
     // Only terminal protocol frames visit the session pool. Heartbeats, dial
     // scroll and discovery events must not await every retained terminal.
     // Each session still sees terminal frames: ready replies match their own
@@ -16871,6 +16930,11 @@ class AppNotifier extends ChangeNotifier {
         break;
       case 'desk_changed':
         unawaited(experimentalFeatures.refresh());
+        // Turning Agent Messages on or off for a tab says `desk_changed` too,
+        // with the desk itself unchanged (backend routes/agentMessages.ts).
+        if (status == AppStatus.authenticated) {
+          unawaited(agentMessages.refresh());
+        }
         // Another window — on another computer, or this one — changed the
         // tabs. The payload is only the revision; the document is fetched.
         final deskRevision = payload['revision'];
@@ -17376,6 +17440,7 @@ class AppNotifier extends ChangeNotifier {
     _modelManager?.dispose();
     harnessMonitor.dispose();
     _modelsMenu?.dispose();
+    agentMessages.dispose();
     for (final project in _orchestratorProjects.values) {
       project.dispose();
     }
