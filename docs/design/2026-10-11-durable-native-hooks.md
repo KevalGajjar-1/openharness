@@ -249,6 +249,52 @@ from approximately 15:29 to 16:27 UTC; receipt durations remain separate from th
 elapsed interval. Production catalog/budget wiring, client replay, linked Stop
 completion and overall PR review remain open. No merge, release or publication.
 
+Writer reclamation now requires positive local-storage and kernel-scope evidence.
+Every writer admission and cleanup checks the same retained local-root proof;
+checking only the reaper would wrongly admit a network client whose files a local
+server could reclaim. Linux accepts a conservative native-filesystem allowlist,
+captures the PID namespace device/inode, and requires a canonical single-PID
+`NStgid`/`NSpid` view plus `/proc/self`. Darwin's verified helper requires APFS/HFS
+and `MNT_LOCAL`. Unknown, layered and remote filesystems hold. This follows the
+[kernel's proc namespace semantics](https://www.man7.org/linux/man-pages/man5/proc_pid_status.5.html);
+it does not use a machine ID as exclusive-host evidence. A retained directory
+descriptor pins the admitted filesystem and original route, avoiding a fresh
+mount lookup for every record. At most 32 scope descriptors are retained; an
+uncertain close keeps its capacity reservation. Pool shutdown revokes admission,
+waits for actual acquisitions, lease cleanup and release, then closes that proof.
+
+The new staging claim format includes namespace identity. Same-boot namespace
+mismatches hold before PID inspection. Reboot, explicit ESRCH and a different
+precise birth can prove death only between matching fresh local-root observations.
+Canonical birth validation rejects alternative spellings and impossible Darwin
+microseconds before any death branch. Existing draft-only v1 staging claims are
+held, never guessed into the new format; neither format has production wiring yet.
+
+The first actual-scope capacity runs exposed ancestor sibling churn, rather than
+a capacity pass: receipts `20261011T170035.270812Z-7112` and
+`20261011T170405.733557Z-22026` failed their populated-lane assertion. Recovery
+now discards and retries only an affected synchronous read batch, at most three
+times with yielding. The original namespace and both directory frontiers stay
+pinned. Malformed records, changed leaves, missing authority and mutations never
+enter that retry. Repeated churn holds without publishing from discarded reads.
+
+Receipt `20261011T170833.816322Z-41357` passes types (4.4 seconds), all 142 focused
+writer/scope/staging/origin/architecture/unchanged-golden cases (14.2 seconds), nine
+assertion-failing writer mutations (19.6 seconds), and five process/capacity cases
+(35.2 seconds). Native macOS scope with a freshly built helper recovered generation
+8,192 in 1.697 seconds, with a 1.23 ms final fence and 25.0 ms maximum callback gap.
+The Linux fixture uses real root descriptors, route checks and metadata, mocking
+only unavailable host kernel interfaces: 1.633 seconds, 1.39 ms, and 20.8 ms.
+Both capacity runs mock flush latency; separate OS-process cases exercise actual
+flush lifetime. Native helper receipt `20261011T165245.537118Z-71783` passed all
+18 native cases; that C source has not changed afterward. These are local receipts,
+not Linux CI acceptance. Implementation, review and validation overlapped from
+approximately 16:31 to 17:12 UTC. Receipt `20261011T171132.840774Z-53907` also
+rejects all thirteen existing staging mutations by assertion after these changes
+(21.9 seconds). Merge and publication remain zero. Catalog
+allocation, complete quota enforcement and client/server recovery integration
+remain required.
+
 Client packaging will retain one self-contained `notify.mjs` artifact under the
 existing updater, checksum and rollback protocol. The shared native probe must
 receive its helper artifact and routed runtime directory through a pure interface;

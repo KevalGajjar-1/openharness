@@ -6,8 +6,9 @@ import { dirname, join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 import { flushHookFile, HookPreparationHeld, type HookFileStage } from './nativeHookFiles.js'
+import { validNativeHookWriter as validWriter, type NativeHookWriter } from './nativeHookWriter.js'
 
-export interface NativeHookWriter { boot: string; pid: number; birth: string }
+export type { NativeHookWriter } from './nativeHookWriter.js'
 export interface NativeHookStageLease {
   stage(destination: string): HookFileStage
   /** Revoke synchronously, then wait for actual stage cleanup before release. */
@@ -21,12 +22,10 @@ const identity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.mode}:${
 const stamp = (info: BigIntStats) => `${identity(info)}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
 function held(reason: string): never { throw new HookPreparationHeld(`native hook staging: ${reason}`) }
+class ChangedReadRoute extends HookPreparationHeld {
+  constructor() { super('native hook staging: directory route changed during scan') }
+}
 const owned = (info: BigIntStats) => typeof process.getuid !== 'function' || info.uid === BigInt(process.getuid())
-const validWriter = (value: NativeHookWriter) => !!value
-  && /^(linux|darwin):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.boot)
-  && Number.isSafeInteger(value.pid) && value.pid > 1 && value.pid <= 0x7fffffff
-  && typeof value.birth === 'string' && value.birth.length <= 40
-  && (value.boot.startsWith('linux:') ? /^\d+$/.test(value.birth) : /^\d+:\d+$/.test(value.birth))
 const number = (value: number) => String(value).padStart(8, '0')
 type Metadata = { file: string; text: string; verify(): void }
 type Claim = { record: Metadata; writer: NativeHookWriter; nonce: string }
@@ -70,13 +69,13 @@ function publish(file: string, text: string, verify: () => void, exclusive = fal
 
 function claim(record: Metadata): Claim {
   const value = JSON.parse(record.text)
-  if (Buffer.byteLength(record.text) > 256 || JSON.stringify(value) !== record.text
-    || !Array.isArray(value) || value.length !== 5 || value[0] !== 1
-    || !validWriter({ boot: value[1], pid: value[2], birth: value[3] })
+  if (Buffer.byteLength(record.text) > 384 || JSON.stringify(value) !== record.text
+    || !Array.isArray(value) || value.length !== 6 || value[0] !== 2
+    || !validWriter({ boot: value[1], pid: value[2], birth: value[3], namespace: value[5] })
     || typeof value[4] !== 'string' || !/^[a-f0-9-]{36}$/.test(value[4])) held('invalid writer claim')
-  return { record, writer: { boot: value[1], pid: value[2], birth: value[3] }, nonce: value[4] }
+  return { record, writer: { boot: value[1], pid: value[2], birth: value[3], namespace: value[5] }, nonce: value[4] }
 }
-const claimText = (writer: NativeHookWriter) => JSON.stringify([1, writer.boot, writer.pid, writer.birth, randomUUID()])
+const claimText = (writer: NativeHookWriter) => JSON.stringify([2, writer.boot, writer.pid, writer.birth, randomUUID(), writer.namespace])
 const releaseText = (record: Metadata) => JSON.stringify([1, hash(record.text)])
 
 /** A timeout may end the response, but never closes a descriptor still in fsync. */
@@ -107,7 +106,7 @@ function routeStamps(directory: string): () => void {
     if (part === dirname(part)) break
   }
   return () => {
-    for (const [part, expected] of route) if (stamp(lstatSync(part, { bigint: true })) !== expected) held('directory route changed during scan')
+    for (const [part, expected] of route) if (stamp(lstatSync(part, { bigint: true })) !== expected) throw new ChangedReadRoute()
   }
 }
 
@@ -141,9 +140,12 @@ async function names(directory: string, limit: number, verifyRoute: () => void) 
 
 /** The root must already be private. A catalog owns its lifetime; this factory
  * may create only its eight fixed namespaces, never recreate a lost authority. */
-export function createNativeHookStagePool({ root, writer, dead, maxGenerations = MAX_GENERATIONS }: {
+export function createNativeHookStagePool({ root, writer, verifyWriter, closeWriter, dead, maxGenerations = MAX_GENERATIONS }: {
   root: string
   writer: NativeHookWriter
+  /** Retained local-root proof from captureNativeHookWriter, required on writes too. */
+  verifyWriter(root: string): void
+  closeWriter(): void
   /** Fresh exact boot/PID/birth evidence. Unknown is an error or false, never dead. */
   dead(writer: NativeHookWriter): Promise<boolean>
   maxGenerations?: number
@@ -154,12 +156,15 @@ export function createNativeHookStagePool({ root, writer, dead, maxGenerations =
   if (!location.info.isDirectory() || (location.info.mode & 0o777n) !== 0o700n || !owned(location.info)) held('the pool root is not private')
   const poolKey = hash(location.path), rootIdentity = identity(location.info)
   const rootVerify = () => {
+    verifyWriter(root)
     verifyNativePathFacts(facts)
     if (identity(lstatSync(location.path, { bigint: true })) !== rootIdentity) held('pool root changed')
   }
   const initializers = new Map<number, Metadata>()
   const initializing = new Map<number, Promise<Namespace>>()
   const retiring = new Map<number, { busy: boolean; release(): void }>()
+  const acquisitions = new Set<Promise<NativeHookStageLease>>(), leases = new Set<NativeHookStageLease>()
+  let closed = false, closing: Promise<void> | undefined
   let cursor = 0
   const initialize = async (lane: number, check: () => void): Promise<Namespace> => {
     check(); rootVerify()
@@ -270,32 +275,49 @@ export function createNativeHookStagePool({ root, writer, dead, maxGenerations =
     // evidence. Old metadata is never pruned or used as new writer permission.
     const pending: Array<{ generation: number; claim: Claim }> = []
     let last: Claim | undefined
-    let began = performance.now(), verifyBatch = routeStamps(space.directory)
     const leaf = (file: string) => metadata(file, () => {})
-    for (const [generation, name] of claims.entries()) {
+    for (let cursor = 0; cursor < claims.length;) {
       // Complete route proofs bracket each synchronous batch. Repeating the
       // whole namespace proof for every old leaf would make recovery quadratic
       // in path depth and consume the caller's entire admission deadline.
-      const outsideClaim = leaf(join(space.witnesses, name))
-      const insideClaim = leaf(join(space.directory, name))
-      if (!outsideClaim || insideClaim && insideClaim.text !== outsideClaim.text) held('claim copies disagree')
-      last = claim(outsideClaim)
-      const releaseName = `${number(generation)}.release`, released = leaf(join(space.witnesses, releaseName))
-      const releaseCopy = leaf(join(space.directory, releaseName))
-      if (releaseCopy && !released || released && (released.text !== releaseText(outsideClaim) || releaseCopy && releaseCopy.text !== released.text)) held('release copies disagree')
-      if (!released) {
-        const record = last.record
-        last = { ...last, record: { ...record, verify: () => { space.verify(); record.verify(); insideClaim?.verify(); space.verify() } } }
-        pending.push({ generation, claim: last })
+      for (let attempt = 0;; attempt++) {
+        inside.verify(); outside.verify()
+        const verifyBatch = routeStamps(space.directory), began = performance.now(), batch: typeof pending = []
+        let next = cursor, batchLast: Claim | undefined
+        try {
+          while (next < claims.length && next - cursor < 64) {
+            const generation = next++, name = claims[generation]
+            const outsideClaim = leaf(join(space.witnesses, name))
+            const insideClaim = leaf(join(space.directory, name))
+            if (!outsideClaim || insideClaim && insideClaim.text !== outsideClaim.text) held('claim copies disagree')
+            batchLast = claim(outsideClaim)
+            const releaseName = `${number(generation)}.release`, released = leaf(join(space.witnesses, releaseName))
+            const releaseCopy = leaf(join(space.directory, releaseName))
+            if (releaseCopy && !released || released && (released.text !== releaseText(outsideClaim) || releaseCopy && releaseCopy.text !== released.text)) held('release copies disagree')
+            if (!released) {
+              const record = batchLast.record
+              batchLast = { ...batchLast, record: { ...record, verify: () => { space.verify(); record.verify(); insideClaim?.verify(); space.verify() } } }
+              batch.push({ generation, claim: batchLast })
+            }
+            if (performance.now() - began >= 20) break
+          }
+          verifyBatch(); inside.verify(); outside.verify()
+          pending.push(...batch); last = batchLast; cursor = next
+          break
+        } catch (error) {
+          if (!(error instanceof ChangedReadRoute) || attempt >= 2) throw error
+          // Ancestor sibling churn invalidates only this read. Keep the original
+          // entry list and frontiers, discard every batch result, then re-read.
+          // Changed leaves, malformed records and mutations never enter retry.
+          inside.verify(); outside.verify()
+          await new Promise<void>(done => setImmediate(done))
+          inside.verify(); outside.verify()
+        }
       }
-      if (generation % 64 === 63 || performance.now() - began >= 20) {
-        verifyBatch(); inside.verify(); outside.verify()
-        await new Promise<void>(done => setImmediate(done)); began = performance.now(); inside.verify(); outside.verify()
-        verifyBatch = routeStamps(space.directory)
-      }
+      if (cursor < claims.length) { await new Promise<void>(done => setImmediate(done)); inside.verify(); outside.verify() }
     }
     if (stages.some(name => !pending.some(item => name.startsWith(`${number(item.generation)}.${item.claim.nonce}.`)))) held('stage has no unreleased writer')
-    verifyBatch(); inside.verify(); outside.verify()
+    inside.verify(); outside.verify()
     return { length: claims.length, last, pending, stages, verify: () => { inside.verify(); outside.verify() } }
   }
   const refuseOccupied = async (space: Namespace) => {
@@ -442,17 +464,36 @@ export function createNativeHookStagePool({ root, writer, dead, maxGenerations =
   }
   return {
     async acquire(current: () => boolean = () => true, { timeoutMs = 4_500 }: { timeoutMs?: number } = {}): Promise<NativeHookStageLease> {
+      if (closed) held('writer pool is closed')
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 5_000) held('invalid acquisition deadline')
       if (activeAcquisitions >= 16) held('acquisition slots are occupied')
       activeAcquisitions++
       const deadline = performance.now() + timeoutMs
       let expired = false, acquiring = true, timer: ReturnType<typeof setTimeout> | undefined
-      const actual = acquire(() => current() && !expired && (!acquiring || performance.now() < deadline))
-        .then(lease => { acquiring = false; return lease })
-        .finally(() => { activeAcquisitions--; clearTimeout(timer) })
+      const actual = acquire(() => !closed && current() && !expired && (!acquiring || performance.now() < deadline))
+        .then(lease => {
+          acquiring = false
+          const tracked: NativeHookStageLease = { ...lease, async close() { await lease.close(); leases.delete(tracked) } }
+          leases.add(tracked); return tracked
+        })
+        .finally(() => { acquisitions.delete(actual); activeAcquisitions--; clearTimeout(timer) })
+      acquisitions.add(actual)
       return await Promise.race([actual, new Promise<never>((_, reject) => {
         timer = setTimeout(() => { expired = true; reject(new HookPreparationHeld('native hook staging acquisition exceeded its deadline')) }, timeoutMs)
       })])
+    },
+    close(): Promise<void> {
+      closed = true
+      return closing ??= (async () => {
+        await Promise.allSettled([...acquisitions])
+        const outcomes = await Promise.allSettled([...leases].map(lease => lease.close()))
+        const failed = outcomes.find(outcome => outcome.status === 'rejected')
+        if (failed?.status === 'rejected') throw failed.reason
+        for (const [lane, cleanup] of retiring) { cleanup.release(); retiring.delete(lane) }
+        // Every actual await, descriptor close, cleanup and lease release has
+        // settled. Only now may the retained local-filesystem proof be closed.
+        closeWriter()
+      })().catch(error => { closing = undefined; throw error })
     },
   }
 }

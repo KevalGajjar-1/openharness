@@ -14,10 +14,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
 #include <sys/proc.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <CommonCrypto/CommonDigest.h>
 
@@ -264,7 +267,34 @@ done:
     return okay ? 0 : 75;
 }
 
+/* A process on a different host must not reap an apparently absent local PID.
+ * Only ordinary local filesystems are supported for this cleanup authority.
+ * The caller pins the full route; this descriptor pins the inspected directory. */
+static int scope_main(int argc, char **argv) {
+    pid_t timeout;
+    if (argc != 4 || !parse_pid(argv[2], &timeout) || timeout > 3000 || argv[3][0] != '/') return 64;
+    int fd = open(argv[3], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return 75;
+    struct stat before, after;
+    struct statfs volume, final_volume;
+    int okay = !fstat(fd, &before) && S_ISDIR(before.st_mode) && !fstatfs(fd, &volume)
+        && (volume.f_flags & MNT_LOCAL)
+        && (!strcmp(volume.f_fstypename, "apfs") || !strcmp(volume.f_fstypename, "hfs"))
+        && !fstatfs(fd, &final_volume) && !fstat(fd, &after)
+        && before.st_dev == after.st_dev && before.st_ino == after.st_ino
+        && volume.f_fsid.val[0] == final_volume.f_fsid.val[0]
+        && volume.f_fsid.val[1] == final_volume.f_fsid.val[1]
+        && volume.f_type == final_volume.f_type && volume.f_flags == final_volume.f_flags
+        && !strcmp(volume.f_fstypename, final_volume.f_fstypename);
+    if (close(fd) || !okay) return 75;
+    printf("{\"schema\":1,\"mode\":\"scope\",\"device\":\"%llu\",\"inode\":\"%llu\",\"mount\":\"%d:%d\",\"filesystem\":\"%s\",\"type\":%u}\n",
+        (unsigned long long)(uint32_t)before.st_dev, (unsigned long long)before.st_ino,
+        volume.f_fsid.val[0], volume.f_fsid.val[1], volume.f_fstypename, volume.f_type);
+    return ferror(stdout) || fflush(stdout) ? 74 : 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[1], "--scope")) return scope_main(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--control")) return control_main(argc, argv, 1);
     if (argc >= 2 && !strcmp(argv[1], "--identity")) return control_main(argc, argv, 0);
     if (argc < 3 || argc > MAX_PIDS + 2 || strcmp(argv[1], "--paths") != 0) return 64;

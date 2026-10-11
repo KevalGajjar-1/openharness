@@ -20,7 +20,9 @@ beforeAll(() => {
     import { inspectHookFile, runHookPreparation } from ${JSON.stringify(resolve('src/engines/kit/nativeHookFiles.ts'))}
     const [directory] = process.argv.slice(2), dead = new Set(), leases = new Map()
     const pool = createNativeHookStagePool({ root: directory,
-      writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', pid: process.pid, birth: '12345' },
+      writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: process.pid, birth: '12345' },
+      verifyWriter: () => {},
+      closeWriter: () => {},
       // Only the parent test's observed child exit grants this fixture proof.
       // Production supplies exact kernel boot/PID/birth evidence separately.
       dead: async writer => dead.has(writer.pid) && writer.birth === '12345',

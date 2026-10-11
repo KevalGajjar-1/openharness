@@ -24,12 +24,26 @@ STUB = r'''
 #include <sys/proc_info.h>
 #include <sys/proc.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 
 static unsigned births, paths, commands, lists;
 static int scenario(const char *name) {
     const char *value = getenv("PROBE_FIXTURE_CASE");
     return value && strcmp(value, name) == 0;
+}
+int fixture_fstatfs(int fd, struct statfs *value) {
+    (void)fd;
+    static unsigned reads;
+    reads++;
+    if (scenario("scope-denied")) { errno = EPERM; return -1; }
+    memset(value, 0, sizeof(*value));
+    value->f_flags = scenario("scope-remote") ? 0 : MNT_LOCAL;
+    value->f_type = 17;
+    value->f_fsid.val[0] = scenario("scope-changed") && reads > 1 ? 2 : 1;
+    strcpy(value->f_fstypename, scenario("scope-fuse") ? "fusefs"
+        : scenario("scope-network") ? "nfs" : "apfs");
+    return 0;
 }
 int fixture_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int size) {
     if (scenario("denied")) { errno = EPERM; return 0; }
@@ -127,7 +141,7 @@ class ProcessImagesTest(unittest.TestCase):
         command(['/usr/bin/xcrun', 'clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                  '-Dproc_pidinfo=fixture_proc_pidinfo', '-Dproc_pidpath=fixture_proc_pidpath',
                  '-Dproc_pidfdinfo=fixture_proc_pidfdinfo', '-Dproc_listchildpids=fixture_proc_listchildpids',
-                 '-Dsysctl=fixture_sysctl',
+                 '-Dsysctl=fixture_sysctl', '-Dfstatfs=fixture_fstatfs',
                  str(SOURCE), str(stub), '-o', str(cls.stub)])
         sleeper = cls.root / 'sleeper.c'
         sleeper.write_text('#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\n'
@@ -194,6 +208,29 @@ class ProcessImagesTest(unittest.TestCase):
                 result = subprocess.run([str(self.stub), *argv], capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 64)
                 self.assertEqual(result.stdout, b'')
+
+    def test_scope_pins_a_real_private_local_directory(self):
+        result = command([str(self.probe), '--scope', '2000', str(self.root)])
+        row = json.loads(result.stdout)
+        info = self.root.stat()
+        self.assertEqual((row['schema'], row['mode']), (1, 'scope'))
+        self.assertEqual((row['device'], row['inode']), (str(info.st_dev), str(info.st_ino)))
+        self.assertIn(row['filesystem'], ['apfs', 'hfs'])
+        self.assertNotIn('hostHex', row)
+
+    def test_scope_holds_remote_unknown_changing_or_unreadable_volumes(self):
+        for case in ['scope-remote', 'scope-fuse', 'scope-network', 'scope-changed', 'scope-denied']:
+            with self.subTest(case=case):
+                result = subprocess.run([str(self.stub), '--scope', '2000', str(self.root)],
+                                        capture_output=True, timeout=5,
+                                        env={**os.environ, 'PROBE_FIXTURE_CASE': case})
+                self.assertEqual(result.returncode, 75)
+                self.assertEqual(result.stdout, b'')
+        alias = self.root / 'scope-alias'
+        alias.symlink_to(self.root, target_is_directory=True)
+        result = subprocess.run([str(self.probe), '--scope', '2000', str(alias)], capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 75)
+        self.assertEqual(result.stdout, b'')
 
     def test_unavailable_racing_or_incomplete_identities_are_not_reported_as_paths(self):
         for case in ['denied', 'short-info', 'pid-mismatch', 'pid-reused', 'exec-changed',

@@ -24,10 +24,29 @@ vi.mock('node:fs', async original => { const fs = await original<typeof import('
   lstatSync: (path: string, options: Parameters<typeof fs.lstatSync>[1]) => fault.stat?.(path, () => fs.lstatSync(path, options)) ?? fs.lstatSync(path, options),
 } })
 let root: string
-const writer = (pid = 8100): NativeHookWriter => ({ boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', pid, birth: '12345' })
-const pool = (options: Partial<Parameters<typeof createNativeHookStagePool>[0]> = {}) => createNativeHookStagePool({ root, writer: writer(), dead: async () => false, ...options })
+const writer = (pid = 8100): NativeHookWriter => ({ boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid, birth: '12345' })
+const pool = (options: Partial<Parameters<typeof createNativeHookStagePool>[0]> = {}) => createNativeHookStagePool({ root, writer: writer(), verifyWriter: () => {}, closeWriter: () => {}, dead: async () => false, ...options })
 const stages = () => readdirSync(root, { recursive: true }).map(String).filter(name => name.endsWith('.tmp'))
 const resetFaults = () => { fault.fail = false; fault.defer = undefined; fault.openDirectory = undefined; fault.readLink = undefined; fault.publish = undefined; fault.stat = undefined }
+
+it('rejects a network-view writer before it can publish a claim visible to a local server', async () => {
+  const remote = pool({ verifyWriter: () => { throw Error('fixture root is network mounted') } })
+  await expect(remote.acquire()).rejects.toThrow('network mounted')
+  expect(readdirSync(root)).toEqual([])
+  const local = await pool().acquire()
+  await local.close()
+})
+
+it('keeps local-root authority on stage publication and cleanup after writer capture', async () => {
+  let local = true
+  const captured = pool({ verifyWriter: () => { if (!local) throw Error('fixture local mount changed') } })
+  const lease = await captured.acquire(), stage = lease.stage(join(root, 'receipt'))
+  writeFileSync(stage.path, 'retained private staging bytes', { mode: 0o600 })
+  local = false
+  expect(() => stage.verify()).toThrow('local mount changed')
+  expect(() => stage.verifyCleanup()).toThrow('local mount changed')
+  expect(readFileSync(stage.path, 'utf8')).toBe('retained private staging bytes')
+})
 beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), 'hook-staging-'))); resetFaults() })
 afterEach(() => { resetFaults(); rmSync(root, { recursive: true, force: true }) })
 async function publish(lease: NativeHookStageLease, text: string, target = join(root, 'receipt')) {
@@ -119,6 +138,46 @@ it('does not treat unavailable process evidence as writer death', async () => {
   for (const lease of leases) await lease.close()
 })
 
+it('re-reads only a discarded batch after ancestor sibling churn without skipping the retained lane', async () => {
+  const first = await pool().acquire(); await first.close()
+  let scanning = false, changed = false
+  fault.openDirectory = (path, original) => {
+    if (path === join(root, '.native-hook-stage-0')) scanning = true
+    return original()
+  }
+  fault.readLink = (path, original) => {
+    if (scanning && !changed && path.endsWith('/00000000.claim')) {
+      changed = true; writeFileSync(join(root, 'unrelated-entry'), 'fixture sibling churn')
+    }
+    return original()
+  }
+  const lease = await pool().acquire(), stage = lease.stage(join(root, 'receipt'))
+  expect(changed).toBe(true)
+  expect(stage.path).toContain('.native-hook-stage-0/00000001.')
+  await stage.finish(); await lease.close()
+})
+
+it('bounds repeated ancestor churn and never publishes from a discarded batch', async () => {
+  const first = await pool().acquire(); await first.close()
+  let scanning = false, changes = 0
+  fault.openDirectory = (path, original) => {
+    if (path === join(root, '.native-hook-stage-0')) scanning = true
+    return original()
+  }
+  fault.readLink = (path, original) => {
+    if (scanning && path === join(root, '.native-hook-stage-0.witnesses/00000000.claim')) {
+      writeFileSync(join(root, `fixture-churn-${++changes}`), '')
+    }
+    return original()
+  }
+  const lease = await pool().acquire(), stage = lease.stage(join(root, 'receipt'))
+  expect(changes).toBeGreaterThan(1)
+  expect(changes).toBeLessThanOrEqual(9)
+  expect(stage.path).toContain('.native-hook-stage-1/00000000.')
+  expect(readdirSync(join(root, '.native-hook-stage-0')).filter(name => name.endsWith('.claim'))).toEqual(['00000000.claim'])
+  await stage.finish(); await lease.close()
+})
+
 it('keeps a lane held when its bounded generation history is exhausted', async () => {
   const client = pool({ maxGenerations: 1 })
   for (let index = 0; index < 8; index++) { const lease = await client.acquire(); await lease.close() }
@@ -142,6 +201,42 @@ it('serializes sequential stages and drains cleanup before allowing another', as
   const second = lease.stage(join(root, 'second'))
   expect(second.path).not.toBe(first.path)
   await second.finish(); await lease.close()
+})
+
+it('retains the local-root descriptor until actual acquisition settles after timeout', async () => {
+  const closeWriter = vi.fn(), client = pool({ closeWriter })
+  let release!: () => void, delayed = false
+  fault.defer = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const acquisition = client.acquire(() => true, { timeoutMs: 30 })
+  await expect(acquisition).rejects.toThrow('deadline')
+  const closing = client.close()
+  expect(closeWriter).not.toHaveBeenCalled()
+  await expect(client.acquire()).rejects.toThrow('pool is closed')
+  release(); await closing
+  expect(closeWriter).toHaveBeenCalledTimes(1)
+  await client.close()
+  expect(closeWriter).toHaveBeenCalledTimes(1)
+})
+
+it('retains the local-root descriptor until stage cleanup and every lease release finish', async () => {
+  const closeWriter = vi.fn(), client = pool({ closeWriter }), lease = await client.acquire()
+  const stage = lease.stage(join(root, 'receipt'))
+  let release!: () => void, delayed = false
+  fault.defer = (_fd, done) => {
+    if (delayed) return false
+    delayed = true; release = () => done(null); return true
+  }
+  const cleaning = stage.finish()
+  await vi.waitFor(() => expect(delayed).toBe(true))
+  const closing = client.close()
+  expect(closeWriter).not.toHaveBeenCalled()
+  expect(() => stage.verify()).toThrow('revoked')
+  release(); await cleaning; await closing
+  expect(closeWriter).toHaveBeenCalledTimes(1)
+  expect(readdirSync(join(root, '.native-hook-stage-0'))).toContain('00000000.release')
 })
 
 it('retries a failed cleanup sync in the still-live writer before releasing its lane', async () => {
