@@ -11,6 +11,7 @@ import type { OpenTabProtection } from '../../lib/openTabProtection.js'
 import { sid } from '../../lib/log.js'
 import { projectDisplayName, type registry } from '../../lib/registry.js'
 import type { SessionCheckpointStore } from '../../lib/sessionCheckpoint.js'
+import type { StoppedAgentStore } from '../../lib/stoppedAgents.js'
 import type { TerminalBackendCoordinator } from '../../lib/terminalBackendCoordinator.js'
 import type { Watcher } from '../../watcher/watcher.js'
 
@@ -29,6 +30,8 @@ export interface ClosingDeps {
   announceSession: CloseAgentServiceDeps['changed']
   /** Once the engine's worker is linked again, or the wait is over (core/engines/engineLinks.ts). */
   engineReady: (engine: string, ms: number) => Promise<void>
+  /** The agents stopped and kept: a close of one already closed is answered closed. */
+  stoppedAgents?: Pick<StoppedAgentStore, 'get' | 'resumeReservedAt'>
 }
 
 /** How long a close waits for an engine worker that restarted under its read, before reading once more. */
@@ -36,7 +39,7 @@ export const CLOSE_READ_RECONNECT_MS = 10_000
 
 export function createAgentClosing({
   readScreen, registry, cleanupTabs, watcher, captureTerminal, sessionTurnState, openQuestions, terminals, sessionCheckpoints,
-  stopAgent, announceSession, engineReady,
+  stopAgent, announceSession, engineReady, stoppedAgents,
 }: ClosingDeps) {
   /**
    * Read what the transcript has that the tail has not delivered yet. A close sent just as the engine's worker
@@ -74,6 +77,17 @@ export function createAgentClosing({
     },
     stop: stopAgent,
     changed: announceSession,
+    // Not live, not being resumed, and kept as stopped with the conversation the close names: it was closed. A record
+    // that cannot be read says nothing, and the close is answered as changed, as before.
+    closedAlready: request => {
+      if (!stoppedAgents || registry.byAgent(request.agentId)) return false
+      try {
+        if (stoppedAgents.resumeReservedAt(request.agentId) !== null) return false
+        const stopped = stoppedAgents.get(request.agentId)
+        return !!stopped && new Date(stopped.registeredAt).toISOString() === request.createdAt
+          && (!request.sessionId || stopped.sessionId === request.sessionId)
+      } catch { return false }
+    },
   })
   const cleanupPreview = async (): Promise<Record<string, unknown>> => {
     await cleanupTabs.refresh()

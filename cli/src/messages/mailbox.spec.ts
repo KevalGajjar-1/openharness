@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaneInbox } from './inbox.js'
 import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, FYI_REASON, HOOKLESS_MS, HOOKLESS_REASON, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
-import type { DeliveryStatus, Message } from './model.js'
+import { NOTICE_TEXT, paneNotice, type DeliveryStatus, type Message } from './model.js'
 import { MessageStore } from './store.js'
 
 let root: string
@@ -131,6 +131,21 @@ describe('Agent Messages\' mailbox', () => {
     expect(t.mailbox.read('web', ['m0000002'])).toEqual([])
     t.mailbox.pump()
     expect(t.delivered.filter(([, , id]) => id.includes(parked.key))).toHaveLength(1)
+  })
+
+  it('leaves the person a line in the pane for each message the hook gives the model', () => {
+    // A tab's agents traded messages at their tool calls while their panes showed nothing (owner, 2026-10-12).
+    const t = setup()
+    const delivery = t.accept({ ...message(), fyi: true })
+    const item = JSON.parse(readFileSync(join(root, 'agent-messages', 'inbox', '3', `${delivery.key}.json`), 'utf8'))
+    expect(item.notice).toBe('← lead · FYI: review 3f2a9c1')
+    expect(item.text).toContain('review 3f2a9c1')
+    // Its first line that says something, on one line, cut short.
+    expect(paneNotice({ ...message(), text: '\n  \nQuiet window   starts now\nuntil 06:16Z' })).toBe('← lead: Quiet window starts now')
+    const long = paneNotice({ ...message(), text: 'x'.repeat(500) })
+    expect(long).toBe(`← lead: ${'x'.repeat(NOTICE_TEXT - 1)}…`)
+    expect(paneNotice({ ...message(), text: 'short' })).toBe('← lead: short')
+    expect(paneNotice({ ...message(), text: '' })).toBe('← lead: ')
   })
 
   it('never types news into an idle agent: it waits for its next tool call, or for the agent to read it', () => {

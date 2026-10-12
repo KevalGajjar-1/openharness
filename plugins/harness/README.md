@@ -7,8 +7,12 @@ It holds two things:
 
 - `skills/harness/SKILL.md`: the `harness` skill, in the [Agent Skills](https://agentskills.io) format. When to use
   Harness instead of your own sub-agents, the commands, and the rules.
-- `.mcp.json` (Claude Code, Codex) and `mcp.json` (Cursor): Harness's MCP server, `harness mcp` over stdio. The two
+- `.mcp.json` (Claude Code) and `mcp.json` (Cursor): Harness's MCP server, `harness mcp` over stdio. The two
   say the same.
+- `.codex-plugin/plugin.json` (Codex, which reads it before `.claude-plugin/plugin.json`): the same plugin and server,
+  with `default_tools_approval_mode = "approve"`, so Codex runs Harness's MCP tools without asking. What an agent may
+  do with them is Harness's to decide; a setting the person makes for the server in Codex's `config.toml`
+  (`[plugins."harness@openharness".mcp_servers.harness]`) still wins.
 
 Both need the Harness CLI on the agent's `PATH`:
 

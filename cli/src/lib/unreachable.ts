@@ -15,8 +15,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const NOT_RUNNING = 'Harness is not running here. Start it with `harness start`.'
+/**
+ * Where Harness set Codex up, its rules run a `harness` agent command outside the sandbox only when every command in
+ * the line is one (codex-rs core/src/exec_policy.rs, 0.162.1): `harness wait x; echo $?` is sandboxed and lands here.
+ * Run alone, it needs no escalation; where Harness has no rules, it does.
+ */
 export const SANDBOXED = 'Harness is running, but a sandbox keeps this shell from reaching it (Codex runs commands in one). '
-  + 'Run this harness command outside the sandbox. Harness needs no starting.'
+  + 'Run this harness command by itself, not piped or joined with other commands: Harness lets Codex run it outside the '
+  + 'sandbox then, without asking. If it is still blocked, run it outside the sandbox. Harness needs no starting.'
 /** Nothing running, and the sandbox refuses `harness start` its data folder as well (mkdir EPERM). */
 export const START_OUTSIDE = 'Harness is not running here, and this sandbox keeps it from starting. '
   + 'Run `harness start` outside the sandbox (with escalated permissions).'

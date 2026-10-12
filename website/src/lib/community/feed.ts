@@ -1,4 +1,5 @@
 import { communityCategories } from './contract';
+import type { HarnessSummary } from './types';
 
 /** The longest feed search the backend accepts (`q` on GET /api/community/harnesses). */
 export const searchMaxChars = 80;
@@ -24,6 +25,15 @@ export function feedPath({ following, mine, forkedFrom, query, category, sort }:
   if (sort && sort !== 'newest') params.set('sort', sort);
   if (after) params.set('cursor', after);
   return `harnesses?${params}`;
+}
+
+/**
+ * A ranked feed's cards in the server's order: its publications and the website's starters, which a
+ * popular feed ranks among them. Ids with no card here — a starter outside the view — are skipped.
+ */
+export function inFeedOrder(order: readonly string[], items: readonly HarnessSummary[]): HarnessSummary[] {
+  const byId = new Map(items.map(item => [item.id, item]));
+  return order.flatMap(id => byId.get(id) ?? []);
 }
 
 export type FeedViewParams = { q?: string | string[]; category?: string | string[]; sort?: string | string[] };

@@ -187,11 +187,14 @@ pub(super) fn list(app: &mut App, request: Request) {
         );
     }
     if kind == "host" {
+        // "This computer" stands in for this computer only until it has its own name: once the
+        // daemon has registered it, that row is the same computer a second time.
+        let named = app.fleet.registered_local_machine().is_some();
         let rows = app
             .fleet
             .machines
             .iter()
-            .filter(|m| !m.shared)
+            .filter(|m| !m.shared && !(named && crate::local::is_local(&m.id)))
             .map(|m| {
                 let unique = app
                     .fleet
@@ -206,15 +209,7 @@ pub(super) fn list(app: &mut App, request: Request) {
                 } else {
                     m.id.as_str()
                 };
-                let mut row = Row::new(id, &m.name).extra(&m.id).right(if m.usable() {
-                    if m.local {
-                        "this computer"
-                    } else {
-                        "connected"
-                    }
-                } else {
-                    "offline"
-                });
+                let mut row = Row::new(id, &m.name).extra(&m.id).right(if m.usable() { "connected" } else { "offline" });
                 row.disabled = !m.usable();
                 row
             })
@@ -234,6 +229,12 @@ pub(super) fn list(app: &mut App, request: Request) {
         .map(str::to_string)
         .or_else(|| app.homes.get(&machine).cloned())
         .unwrap_or_default();
+    // Another computer's home is read when its folders are first asked for. Nothing else did here
+    // (only New Harness read it), so its folders stayed "still loading" and only its agents'
+    // scratch folders were offered.
+    if kind == "folder" && !app.homes.contains_key(&machine) && app.shell_context.homes_asked.insert(machine.clone()) {
+        crate::input::load_dsh(app, machine.clone());
+    }
     let browsing = kind == "folder" && crate::shell_picker::folder_parts(query).0.is_some();
     let parent = if kind == "folder" {
         match folder_parent(query, &cwd, app.homes.get(&machine).map(String::as_str)) {
@@ -260,6 +261,7 @@ pub(super) fn list(app: &mut App, request: Request) {
                 .agents
                 .values()
                 .filter(|a| a.machine_id == machine && !a.cwd.is_empty())
+                .filter(|a| !super::scratch_folder(&a.cwd))
                 .collect();
             recent.sort_by_key(|a| std::cmp::Reverse(a.recency()));
             let mut seen = HashSet::new();

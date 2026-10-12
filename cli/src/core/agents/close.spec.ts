@@ -49,6 +49,30 @@ describe('closing agents no window shows', () => {
     expect(close.changed).toBe(deps.announceSession)
   })
 
+  it('knows a close of one already closed: not live, and kept stopped with the conversation the close names', () => {
+    const live = row({ agentId: 'live' })
+    const kept = row({ agentId: 'kept', sessionId: 's-kept', registeredAt: 5 })
+    const registry = { byAgent: vi.fn((id: string) => (id === 'live' ? live : undefined)) } as unknown as ClosingDeps['registry']
+    const stoppedAgents = { get: vi.fn((id: string) => (id === 'kept' || id === 'live' ? kept : null)), resumeReservedAt: vi.fn((_id: string): number | null => null) }
+    const { close } = setup({ registry, stoppedAgents })
+    const asked = (agentId: string, over: Record<string, string> = {}) => ({ agentId, sessionId: 's-kept', createdAt: new Date(5).toISOString(), mode: 'now' as const, ...over })
+    expect(close.closedAlready!(asked('kept'))).toBe(true)
+    // Asked before its conversation was known: the creation alone.
+    expect(close.closedAlready!(asked('kept', { sessionId: '' }))).toBe(true)
+    expect(close.closedAlready!(asked('kept', { sessionId: 's-other' }))).toBe(false)
+    expect(close.closedAlready!(asked('kept', { createdAt: new Date(6).toISOString() }))).toBe(false)
+    expect(close.closedAlready!(asked('live'))).toBe(false)
+    expect(close.closedAlready!(asked('gone'))).toBe(false)
+    // Being resumed: about to be live again, not closed.
+    stoppedAgents.resumeReservedAt.mockReturnValueOnce(1)
+    expect(close.closedAlready!(asked('kept'))).toBe(false)
+    // A record that cannot be read says nothing.
+    stoppedAgents.get.mockImplementationOnce(() => { throw new Error('unreadable') })
+    expect(close.closedAlready!(asked('kept'))).toBe(false)
+    // A core that keeps no stopped agents knows none closed.
+    expect(setup({ registry }).close.closedAlready!(asked('kept'))).toBe(false)
+  })
+
   describe('what an agent is doing', () => {
     it('reads its newest lines first, then its screen, its turn and whether it is asking', async () => {
       const { deps, close } = setup()

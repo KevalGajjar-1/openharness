@@ -322,9 +322,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(reads, 2);
     expect(find.text('lead → api'), findsNWidgets(2));
-    // Let the tab's messaging run out before the test ends.
-    await tester.pump(const Duration(seconds: 11));
-    expect(controller.isFlowing('tab'), isFalse);
   });
 
   test('times read as a clock today and with the day before', () {

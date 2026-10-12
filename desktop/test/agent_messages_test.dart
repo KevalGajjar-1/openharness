@@ -230,14 +230,14 @@ void main() {
       messages.handleEvent(_sent());
       messages.reset();
       expect(messages.isOn('tab'), isFalse);
-      expect(messages.isFlowing('tab'), isFalse);
+      expect(messages.trafficFor('tab'), 0);
       expect(messages.markFor('studio', 'lead'), isNull);
       expect(messages.loaded, isFalse);
     });
   });
 
   group('traffic', () {
-    test('a tab flows for 10 seconds after its last message', () {
+    test('a message counts as traffic and leaves the tab as it was', () {
       fakeAsync((async) {
         backend.tabs = {'tab': true};
         final messages = controller();
@@ -246,25 +246,18 @@ void main() {
         var notified = 0;
         messages.addListener(() => notified++);
         messages.handleEvent(_sent());
-        expect(messages.isFlowing('tab'), isTrue);
-        expect(messages.stateOf('tab'), TabMessagesState.flowing);
         expect(messages.trafficFor('tab'), 1);
-        async.elapse(const Duration(seconds: 3));
+        expect(
+          messages.stateOf('tab'),
+          TabMessagesState.on,
+          reason: 'a tab never shows traffic: messages arrive when they arrive',
+        );
+        expect(notified, 1, reason: 'an open log reads again');
         messages.handleEvent(_sent(state: 'delivered'));
         expect(messages.trafficFor('tab'), 2);
-        async.elapse(const Duration(seconds: 9));
-        expect(messages.isFlowing('tab'), isTrue);
-        final before = notified;
-        async.elapse(const Duration(seconds: 1));
-        expect(messages.isFlowing('tab'), isFalse);
         expect(messages.stateOf('tab'), TabMessagesState.on);
-        expect(
-          notified,
-          greaterThan(before),
-          reason: 'the status slot goes back by itself',
-        );
-        expect(async.pendingTimers, isEmpty);
         messages.dispose();
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
@@ -317,7 +310,7 @@ void main() {
         final mark = messages.markFor('studio', 'lead')!;
         expect(mark.warning, isTrue);
         expect(mark.label, '→ rate limited');
-        expect(messages.isFlowing('tab'), isFalse);
+        expect(messages.trafficFor('tab'), 0);
         messages.dispose();
       });
     });
@@ -328,9 +321,9 @@ void main() {
       messages.handleEvent({'messageId': 'm0000001'});
       messages.handleEvent({'tabId': '', 'messageId': 'm0000001'});
       messages.handleEvent({'limited': 'nobody'});
-      expect(messages.isFlowing(''), isFalse);
+      expect(messages.trafficFor(''), 0);
       messages.handleEvent({'tabId': 'tab', 'messageId': 'm0000003'});
-      expect(messages.isFlowing('tab'), isTrue);
+      expect(messages.trafficFor('tab'), 1);
       expect(messages.markFor('studio', 'lead'), isNull);
     });
   });
@@ -488,7 +481,7 @@ void main() {
     Map<String, dynamic> recent(String id, {required Duration ago}) =>
         _row(id, at: now.subtract(ago).millisecondsSinceEpoch);
 
-    test('a new message that just moved flows and marks its panes', () async {
+    test('a message that just moved is traffic and marks its panes', () async {
       final asked = <(String, Map<String, dynamic>)>[];
       final messages = AgentMessagesController(
         read: backend.read,
@@ -498,8 +491,8 @@ void main() {
           return {
             'messages': [
               recent('m0000001', ago: const Duration(minutes: 5)),
-              // Past the 10 s a tab flows, within a round of the remote
-              // watch's: still news when a round first sees it.
+              // Within a round of the remote watch's: still news when a
+              // round first sees it.
               recent('m0000002', ago: const Duration(seconds: 30)),
             ],
           };
@@ -517,7 +510,6 @@ void main() {
         'tabId': 'tab',
         'limit': 20,
       });
-      expect(messages.isFlowing('tab'), isTrue);
       expect(messages.trafficFor('tab'), 1);
       expect(messages.markFor('studio', 'lead')?.label, '→ API worker');
       expect(messages.markFor('laptop', 'api')?.label, '← Lead');
@@ -531,33 +523,6 @@ void main() {
       expect(messages.markFor('studio', 'lead'), isNull);
       messages.handleEvent(_sent(id: 'm0000002', state: 'delivered'));
       expect(messages.markFor('studio', 'lead'), isNull);
-    });
-
-    test('remote traffic flows one round longer, so rounds renew it', () {
-      fakeAsync((async) {
-        final messages = AgentMessagesController(
-          read: backend.read,
-          write: backend.write,
-          request: (_, _) async => {
-            'messages': [recent('m0000004', ago: const Duration(seconds: 5))],
-          },
-          nameOf: (_, _) => null,
-          now: () => now,
-        );
-        unawaited(
-          messages.pollRemote([
-            (tabId: 'tab', machineIds: ['laptop']),
-          ], round: const Duration(seconds: 15)),
-        );
-        async.flushMicrotasks();
-        expect(messages.isFlowing('tab'), isTrue);
-        async.elapse(const Duration(seconds: 24));
-        expect(messages.isFlowing('tab'), isTrue);
-        async.elapse(const Duration(seconds: 1));
-        expect(messages.isFlowing('tab'), isFalse);
-        messages.dispose();
-        expect(async.pendingTimers, isEmpty);
-      });
     });
 
     test('older messages are remembered, not announced', () async {
@@ -574,7 +539,7 @@ void main() {
       await messages.pollRemote([
         (tabId: 'tab', machineIds: ['laptop']),
       ]);
-      expect(messages.isFlowing('tab'), isFalse);
+      expect(messages.trafficFor('tab'), 0);
       expect(messages.markFor('studio', 'lead'), isNull);
       messages.handleEvent(_sent(id: 'm0000003', state: 'delivered'));
       expect(
@@ -703,7 +668,7 @@ void main() {
             ],
           },
         });
-        expect(app.agentMessages.isFlowing(app.activeSwarmId), isTrue);
+        expect(app.agentMessages.trafficFor(app.activeSwarmId), 1);
         expect(
           app.agentMessages.markFor('studio', 'lead')?.label,
           '→ API worker',

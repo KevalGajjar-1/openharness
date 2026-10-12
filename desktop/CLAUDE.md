@@ -447,10 +447,11 @@ add a kind there, not at the call site.
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
   Tabs center their name/status group and show no shortcut hint (Command changes nothing on
   them). Hovering a tab shows Agent Messages' 💬 — grey off, accent blue on — just
-  left of ×; while its agents message, the status slot shows an animated 💬 for 10 s instead
+  left of ×; traffic between its agents shows nothing on the tab, whose status slot keeps its
+  own status (owner, 2026-10-12: messages arrive when they arrive)
   (`lib/agent_messages/`, `AgentMessagesController` on `AppNotifier.agentMessages`, its own
-  notifier so traffic never rebuilds the workspace; `MessagingMark`; `SwarmTabButton` mirrors
-  it natively). At rest the name has the whole tab; hovered, it moves left only as far as 💬
+  notifier so traffic never rebuilds the workspace; `SwarmTabButton` mirrors it natively).
+  At rest the name has the whole tab; hovered, it moves left only as far as 💬
   and × need. Tab and pane close
   marks are small and quiet, with larger click targets. Terminal panes end with matching
   plain-text agent/model selectors and close at every width. Hovering the right

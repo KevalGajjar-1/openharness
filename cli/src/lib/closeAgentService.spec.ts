@@ -185,6 +185,29 @@ it('an inspect asked for while a close is saving waits for it, and is never answ
   expect(await closing).toEqual({ closed: true })
   expect(await inspecting).toEqual({ error: 'AGENT_CHANGED' })
 })
+it('a close of one already closed, the same conversation, is closed: asked after it, or waiting behind the close that did it', async () => {
+  // A window closing a tab closes its panes one at a time; the harnesses a pane's harness started close with it
+  // (services/agentCleanup.ts), and the window's own close of one of them was answered AGENT_CHANGED.
+  const asked = request()
+  const closedAlready = vi.fn((r: AgentCloseRequest) => r.agentId === asked.agentId && r.sessionId === asked.sessionId && !registry.byAgent(r.agentId))
+  service.dispose()
+  service = new CloseAgentService({ ...deps, closedAlready })
+  let finish!: () => void
+  vi.mocked(deps.checkpoint).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const cleanup = service.request(request('now'))
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  const window = service.request(request('idle'))
+  finish()
+  expect(await cleanup).toEqual({ closed: true })
+  expect(await window).toEqual({ closed: true })
+  expect(await service.request(request('now'))).toEqual({ closed: true })
+  expect(deps.stop).toHaveBeenCalledOnce()
+  // Asking what it is doing, or to close it after its task, is about a live one: it changed.
+  expect(await service.request(request('inspect'))).toEqual({ error: 'AGENT_CHANGED' })
+  expect(await service.request(request('after_task'))).toEqual({ error: 'AGENT_CHANGED' })
+  // Another conversation by that id was not closed.
+  expect(await service.request({ ...request('now'), sessionId: 'other' })).toEqual({ error: 'AGENT_CHANGED' })
+})
 it('a close now asked for while a close after the task is being planned closes now', async () => {
   let read!: (activity: CloseActivity) => void
   vi.mocked(deps.activity).mockImplementationOnce(() => new Promise(resolve => { read = resolve }))

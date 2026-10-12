@@ -7,9 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/agent_messages/agent_messages.dart';
 import 'package:harness/shared/theme/app_icons.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
-import 'package:harness/state/harness_activity.dart' show activityFrameInterval;
 import 'package:harness/widgets/desktop_workspace_tab.dart';
-import 'package:harness/widgets/harness_activity_mark.dart';
 
 import 'support/agent_messages_api.dart';
 import 'swarm_screen_test.dart' show mount;
@@ -17,7 +15,7 @@ import 'swarm_state_test.dart' show createApp;
 
 /// The tab's Agent Messages (docs/design/2026-10-10-agent-messages.md, "The
 /// tab"): hovering a tab reveals 💬 — grey while off, its color while on — and
-/// ×; while agents message, the status slot shows 💬 in place of the status.
+/// ×. Traffic between its agents shows nothing on the tab.
 typedef _Spec = ({String id, TabMessagesState? messages, bool working});
 
 const _messagesColor = Color(0xffbc3fbc);
@@ -164,19 +162,6 @@ void main() {
     );
   });
 
-  testWidgets('flowing: no 💬 or × at rest — the status slot says it', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _host([(id: 'app', messages: TabMessagesState.flowing, working: false)]),
-    );
-    expect(_messages('app').hitTestable(), findsNothing);
-    expect(_close('app').hitTestable(), findsNothing);
-    await _hover(tester, 'app');
-    expect(_glyph(tester, 'app').withValues(alpha: 1), _messagesColor);
-    expect(_tooltip(tester, 'app'), 'Agents messaging · click to turn off');
-  });
-
   testWidgets('hover reveals only its own tab', (tester) async {
     await tester.pumpWidget(
       _host([
@@ -207,7 +192,7 @@ void main() {
       _host(
         [
           (id: 'one', messages: TabMessagesState.off, working: false),
-          (id: 'two', messages: TabMessagesState.flowing, working: false),
+          (id: 'two', messages: TabMessagesState.on, working: false),
         ],
         onToggle: toggled.add,
         onSelect: selected.add,
@@ -224,7 +209,7 @@ void main() {
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       _host([
-        (id: 'app', messages: TabMessagesState.flowing, working: false),
+        (id: 'app', messages: TabMessagesState.on, working: false),
         (id: 'off', messages: TabMessagesState.off, working: false),
       ]),
     );
@@ -234,7 +219,7 @@ void main() {
     final mouse = await _hover(tester, 'app');
     final on = tester.getSemantics(_messages('app'));
     expect(on.label, 'Agent Messages');
-    expect(on.hint, 'Agents messaging · click to turn off');
+    expect(on.hint, 'Agent messages on · click to turn off');
     expect(on.getSemanticsData().flagsCollection.isToggled, Tristate.isTrue);
     await mouse.moveTo(tester.getCenter(_label('off')));
     await tester.pump();
@@ -246,55 +231,6 @@ void main() {
         CustomSemanticsAction.getAction(id)!.label,
     ];
     expect(actions, containsAll(['Close tab', 'Turn Agent Messages on']));
-    semantics.dispose();
-  });
-
-  testWidgets('the messaging mark trades sides every half second', (
-    tester,
-  ) async {
-    final semantics = tester.ensureSemantics();
-    final clock = ActivityClock(now: tester.binding.clock.now);
-    addTearDown(clock.dispose);
-    Future<void> show({bool reduce = false}) => tester.pumpWidget(
-      MaterialApp(
-        home: MediaQuery(
-          data: MediaQueryData(disableAnimations: reduce),
-          child: Center(
-            child: MessagingMark(color: _messagesColor, clock: clock),
-          ),
-        ),
-      ),
-    );
-    Finder mirrored = find.byKey(const ValueKey('messaging-mark:mirrored'));
-    Finder plain = find.byKey(const ValueKey('messaging-mark:plain'));
-    await show();
-    expect(clock.running, isTrue);
-    final seen = <bool>{};
-    for (var i = 0; i < 10; i++) {
-      expect(
-        mirrored.evaluate().length + plain.evaluate().length,
-        1,
-        reason: 'one 💬 at a time',
-      );
-      seen.add(mirrored.evaluate().isNotEmpty);
-      expect(
-        mirrored.evaluate().isNotEmpty,
-        MessagingMark.mirroredAt(clock.frame),
-      );
-      await tester.pump(activityFrameInterval);
-    }
-    expect(seen, {true, false}, reason: 'both sides within a second');
-    expect(find.bySemanticsLabel(agentsMessagingLabel), findsOneWidget);
-    // Centered in the tab's 16px slot, so mirroring turns it in place.
-    final slot = tester.getRect(find.byType(MessagingMark));
-    expect(slot.width, MessagingMark.width);
-    expect(tester.getCenter(find.byType(Icon)), slot.center);
-    await show(reduce: true);
-    for (var i = 0; i < 10; i++) {
-      expect(plain, findsOneWidget, reason: 'Reduce Motion holds it still');
-      await tester.pump(activityFrameInterval);
-    }
-    await tester.pumpWidget(const SizedBox());
     semantics.dispose();
   });
 
@@ -323,7 +259,7 @@ void main() {
     },
   );
 
-  testWidgets('a messaging tab shows 💬 in its status slot, then its status', (
+  testWidgets('a message moving in a tab changes nothing on it', (
     tester,
   ) async {
     final app = createApp();
@@ -333,8 +269,14 @@ void main() {
     api.flags[tab] = true;
     await app.agentMessages.refresh();
     await mount(tester, app);
-    final messaging = find.byKey(ValueKey('tab-messaging:$tab'));
-    expect(messaging, findsNothing);
+    List<String?> tooltips() => [
+      for (final tooltip in tester.widgetList<Tooltip>(
+        find.ancestor(of: _label(tab), matching: find.byType(Tooltip)),
+      ))
+        tooltip.message,
+    ];
+    final label = tester.getRect(_label(tab));
+    final hints = tooltips();
     app.agentMessages.handleEvent({
       'tabId': tab,
       'messageId': 'm0000001',
@@ -345,21 +287,18 @@ void main() {
       ],
     });
     await tester.pump();
-    expect(messaging, findsOneWidget);
-    expect(_messages(tab).hitTestable(), findsNothing, reason: 'no 💬 button');
-    final tooltip = tester.widget<Tooltip>(
-      find.ancestor(of: _label(tab), matching: find.byType(Tooltip)).first,
-    );
-    expect(tooltip.message, contains(agentsMessagingLabel));
-    final semantics = tester.ensureSemantics();
+    expect(app.agentMessages.trafficFor(tab), 1);
+    expect(app.agentMessages.stateOf(tab), TabMessagesState.on);
     expect(
-      find.bySemanticsLabel(RegExp('$agentsMessagingLabel\$')),
-      findsOneWidget,
-      reason: 'the tab says it, as the native tab does',
+      tester.getRect(_label(tab)),
+      label,
+      reason: 'no status slot opens beside the name',
     );
-    semantics.dispose();
-    await tester.pump(const Duration(seconds: 10));
-    expect(messaging, findsNothing, reason: 'back to its status');
+    expect(tooltips(), hints);
+    expect(_messages(tab).hitTestable(), findsNothing, reason: 'no 💬 at rest');
+    expect(find.byIcon(AppIcons.agentMessagesOn).hitTestable(), findsNothing);
+    // Let the pane marks lapse before the test ends.
+    await tester.pump(app.agentMessages.markLife);
     await tester.pumpWidget(const SizedBox());
   });
 }
