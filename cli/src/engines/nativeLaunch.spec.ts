@@ -4,14 +4,15 @@ import { captureLaunchExecutable } from './kit/launchExecutable.js'
 import { engineHooks } from './hooks.js'
 import * as hooks from './nativeHooks.js'
 
-const fixture = vi.hoisted(() => ({ current: true, hooks: true, version: '2.0.0', help: '--auto --permission-mode --approve-for-me', calls: [] as string[], pending: [] as (() => void)[], stalled: false, failed: false, environments: [] as NodeJS.ProcessEnv[] }))
+const fixture = vi.hoisted(() => ({ current: true, hooks: true, version: '2.0.0', help: '--auto --permission-mode --approve-for-me', calls: [] as string[], pending: [] as (() => void)[], stalled: false, failed: false, environments: [] as NodeJS.ProcessEnv[], exit: 0, stderr: '' }))
 vi.mock('./kit/launchExecutable.js', async original => ({ ...await original<typeof import('./kit/launchExecutable.js')>(), captureLaunchExecutable: vi.fn(async () => ({ state: 'ready',
   executable: { command: '/fixture/engine', identity: 'fixture', current: () => fixture.current },
   environment: { HOME: '/fixture/home', PATH: '/fixture/bin', CODEX_HOME: '/fixture/codex', CLAUDE_CONFIG_DIR: '/fixture/claude', HERMES_HOME: '/fixture/hermes' },
 })) }))
-vi.mock('node:child_process', () => ({ execFile: (command: string, args: string[], _options: { env: NodeJS.ProcessEnv }, done: (error: Error | null, output: string) => void) => {
+vi.mock('node:child_process', () => ({ execFile: (command: string, args: string[], _options: { env: NodeJS.ProcessEnv }, done: (error: Error | null, output: string, errors: string) => void) => {
   fixture.calls.push(command); fixture.environments.push(_options.env)
-  const settle = () => done(fixture.failed ? Error('Private probe unavailable') : null, args[0] === '--version' ? fixture.version : fixture.help)
+  const settle = () => done(fixture.failed ? Error('Private probe unavailable') : fixture.exit ? Object.assign(Error('Command failed'), { code: fixture.exit }) : null,
+    args[0] === '--version' ? fixture.version : fixture.help, fixture.stderr)
   if (fixture.stalled) fixture.pending.push(settle); else queueMicrotask(settle)
   return { stdin: { end: vi.fn(), destroy: vi.fn() } }
 } }))
@@ -19,7 +20,7 @@ vi.mock('./hooks.js', () => ({ engineHooks: { claude: { installIn: vi.fn(async (
 vi.mock('./nativeHooks.js', () => Object.fromEntries(['installOpencodePlugin', 'installHermesHooks', 'installCursorHooks',
   'installCommandCodeHooks', 'installDevinHooks', 'installAmpPlugin', 'installKiloPlugin', 'installGrokHooks', 'installAgyHooks', 'installCopilotHooks', 'installPiExtension',
 ].map(name => [name, vi.fn(async () => fixture.hooks)])))
-beforeEach(() => { fixture.current = true; fixture.hooks = true; fixture.version = '2.0.0'; fixture.help = '--auto --permission-mode --approve-for-me'; fixture.calls = []; fixture.pending = []; fixture.stalled = false; fixture.failed = false; fixture.environments = [] })
+beforeEach(() => { fixture.current = true; fixture.hooks = true; fixture.version = '2.0.0'; fixture.help = '--auto --permission-mode --approve-for-me'; fixture.calls = []; fixture.pending = []; fixture.stalled = false; fixture.failed = false; fixture.environments = []; fixture.exit = 0; fixture.stderr = '' })
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs() })
 
 it('needs no executable, hooks or probes for a terminal', async () => {
@@ -49,6 +50,27 @@ it('holds an unavailable version without caching a permanent unknown', async () 
   expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: false, unavailable: 'native' })
   fixture.version = '1.18.0'
   expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: true, launch: { opencodeMajor: 1 } })
+})
+
+it('says why an OpenCode that ran and failed cannot run, and waits for one that is changing', async () => {
+  // A Node stack trace: the line naming the failure, not its first or last.
+  fixture.exit = 1; fixture.version = ''
+  fixture.stderr = 'node:internal/modules/cjs/loader:1228\n  throw err;\n\nError: Cannot find module \'opencode-linux-x64\'\n\nNode.js v22.20.0\n'
+  expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: false, cannotRun: true,
+    detail: 'OpenCode is installed but cannot run: Error: Cannot find module \'opencode-linux-x64\'' })
+  fixture.stderr = 'Segmentation fault\n'
+  expect(await inspectNativeLaunch('opencode')).toMatchObject({ detail: 'OpenCode is installed but cannot run: Segmentation fault' })
+  fixture.stderr = ''
+  expect(await inspectNativeLaunch('opencode')).toMatchObject({ detail: 'OpenCode is installed but cannot run: it exited with status 1' })
+  fixture.current = false
+  const changing = await inspectNativeLaunch('opencode')
+  expect(changing).toMatchObject({ ok: false, unavailable: 'native' })
+  expect(changing).not.toHaveProperty('cannotRun')
+})
+it('says Claude Code by its name when it cannot run', async () => {
+  fixture.exit = 127; fixture.stderr = 'env: node: No such file or directory\n'
+  expect(await inspectNativeLaunch('claude', { permissionMode: 'auto' })).toMatchObject({ cannotRun: true,
+    detail: 'Claude Code is installed but cannot run: env: node: No such file or directory' })
 })
 
 it('revokes every hook write when a retained configuration loses authority', async () => {

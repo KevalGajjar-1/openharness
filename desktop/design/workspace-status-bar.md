@@ -25,7 +25,7 @@ tooltip, and the row's last control is the account's. While this computer
 holds no account that is **Sign in**, the only control in the row with a word
 and a fill; it opens the sign-in over the workspace. Signed in, the same place
 is the account's initial in a circle, and a click opens a short menu: who is
-signed in, then Add Phone (until the account has a phone), Customize Harness,
+signed in, then Add Phone (until the account has a phone), Appearance,
 Notifications, Settings and Sign out, each opening what the app already has.
 Nothing is drawn between the icons and the account control; `controlGap`
 separates them. A narrow window drops Devices first; the account control
@@ -481,7 +481,7 @@ system SF Mono face at 18 pt; the dialog itself follows the selected terminal
 font, size and palette. The same suite checks narrow windows, enlarged text,
 alternate palettes, and retained keyboard focus when appearance changes.
 
-Customize Harness → Status offers twelve saved themes, grouped into Minimal
+Appearance → Status offers twelve saved themes, grouped into Minimal
 and Powerline, with a preview of the same sample pane beneath each choice.
 Selection covers only the name row. Tab and Shift-Tab move between choices;
 Enter or Space selects, scrolls the choice into view, and saves it. The selected

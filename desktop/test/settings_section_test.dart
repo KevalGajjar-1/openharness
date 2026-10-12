@@ -70,6 +70,24 @@ void main() {
     expect(SettingsSection.customize.label, 'Appearance');
   });
 
+  test('Appearance is found by its old name and by what its panel holds', () {
+    for (final query in [
+      'appear',
+      'customize',
+      'workspace',
+      'wallpaper',
+      'theme',
+      'palette',
+      'font',
+    ]) {
+      expect(SettingsSection.customize.matches(query), isTrue, reason: query);
+    }
+    expect(SettingsSection.customize.matches('notif'), isFalse);
+    // A row with no keywords is found by its label alone.
+    expect(SettingsSection.notifications.matches('notif'), isTrue);
+    expect(SettingsSection.notifications.matches('customize'), isFalse);
+  });
+
   test('nothing in Settings is a thing that lives elsewhere', () {
     expect(
       SettingsSection.values.map((s) => s.name),

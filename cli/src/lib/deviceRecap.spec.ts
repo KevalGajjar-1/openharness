@@ -36,6 +36,11 @@ describe('deriveLongRecap', () => {
   it('strips markdown and collapses whitespace', () => {
     expect(deriveLongRecap('## Kết quả\n\n- **SJC**: 149 triệu\n\n```sh\nls\n```\nDone.')).toBe('Kết quả SJC: 149 triệu Done.')
   })
+  it('keeps code and the underscores inside words, and drops only the emphasis around them', () => {
+    expect(deriveLongRecap('Name it `MAX_SIZE`, not *max_size*; see __init__ and _this_ word.'))
+      .toBe('Name it MAX_SIZE, not max_size; see init and this word.')
+    expect(deriveLongRecap('Set AI_AGENT and `__init__.py` stays as it is.')).toBe('Set AI_AGENT and __init__.py stays as it is.')
+  })
   it('clips long text at a word boundary with an ellipsis, within the char and byte caps', () => {
     const long = Array.from({ length: 600 }, (_, i) => `từ${i}`).join(' ')
     const out = deriveLongRecap(long)!

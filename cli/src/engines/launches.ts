@@ -99,8 +99,9 @@ export function agentInstructionArgs(engine: AgentEngine | string, said: { instr
     ]
     return instructionsArgsIn(attribution, instructions, attributionFiles(attribution, place))
   }
-  return [
-    ...(said.prLine && attribution ? attributionArgsIn(attribution, said.prLine, attributionFiles(attribution, place)) : []),
-    ...(said.instructions && told?.kind === 'append' ? told.args.map((arg) => fill(arg, 'text', said.instructions!)) : []),
-  ]
+  const setting = said.prLine && attribution ? attributionArgsIn(attribution, said.prLine, attributionFiles(attribution, place)) : []
+  // Only beside the setting it backs: where the person's settings hide the engine's attribution, neither is given.
+  const reminder = setting.length && attribution?.instruction ? attributionInstruction({ instruction: attribution.instruction }, said.prLine!).text : null
+  const texts = told?.kind === 'append' ? [said.instructions, reminder].filter((text): text is string => !!text) : []
+  return [...setting, ...(texts.length && told?.kind === 'append' ? told.args.map((arg) => fill(arg, 'text', texts.join('\n\n'))) : [])]
 }

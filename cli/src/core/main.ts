@@ -179,7 +179,7 @@ import { answerAgentQuery } from './agentQueries.js'
 import { createDeliveries } from './deliveries.js'
 import { createTerminalWatch } from './terminalWatch.js'
 import { createSharingLink } from './sharingLink.js'
-import { createExperimentHooks, wakeExperiments } from './experiments.js'
+import { createExperimentHooks, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
 import { answerExperimentQuery, createForExperiment } from './experimentQueries.js'
 import { createOrchestratorLink } from './orchestratorLink.js'
 import { daemonCommand } from '../lib/daemonCommand.js'
@@ -1805,7 +1805,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onDeskOps: (body) => proxyBackend('POST', '/api/desk/ops', body),
     // Which tabs have Agent Messages on, for the window's tabs (backend routes/agentMessages.ts).
     onAgentMessagesRead: () => proxyBackend('GET', '/api/agent-messages'),
-    onAgentMessagesWrite: (tabId, body) => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body),
+    onAgentMessagesWrite: (tabId, body) => writeAgentMessagesTab(() => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body), body,
+      () => experimentHooks.want('messages')),
     onExperimentalRead: () => proxyBackend('GET', '/api/experimental-settings'),
     onExperimentalWrite: (body) => proxyBackend('PATCH', '/api/experimental-settings', body),
     onAgentSettingsRead: agentSettings.read,

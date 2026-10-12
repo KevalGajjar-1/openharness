@@ -52,3 +52,12 @@ it('does not mistake a newly visible executable for its still-running installerâ
   expect(ensure).toHaveBeenCalledOnce()
   expect(status).toHaveBeenCalledWith('codex', authority.id, authority.current)
 })
+
+it('holds an executable that cannot run while its installer is unsettled, and refuses it only after', async () => {
+  const broken: NativeLaunchResult = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Codex is installed but cannot run: fixture', cannotRun: true }
+  const status = vi.fn().mockResolvedValueOnce({ complete: false, detail: 'Waiting for the saved installer to settle.' }).mockResolvedValue(null)
+  const prepare = createNativeLaunchPreparer({ installations: { ensure: vi.fn(), status }, inspect: vi.fn(async () => broken) })
+  const authority = { id: 'fixture-request', current: () => true }
+  expect(await prepare('codex', {}, authority)).toEqual({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for the saved installer to settle.' })
+  expect(await prepare('codex', {}, authority)).toBe(broken)
+})

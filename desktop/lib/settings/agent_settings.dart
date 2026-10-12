@@ -56,7 +56,13 @@ class AgentSettingsStore extends ChangeNotifier {
 
   final _values = <AgentSetting, bool>{};
   bool loaded = false, saving = false, _disposed = false;
+
+  /// Bumped by every read and write: an answer is taken only while its own is the latest, so a
+  /// change the person starts wins over any read already under way.
   int _generation = 0;
+
+  /// The generation of the read under way, while it is the latest.
+  int? _reading;
 
   /// Why the last read or write failed, or why there is nothing to read.
   String? error;
@@ -92,11 +98,13 @@ class AgentSettingsStore extends ChangeNotifier {
       ? failure.message
       : 'Couldn’t reach Harness on this computer. Check that it is running, then refresh.';
 
+  static const _predates = 'Update Harness on this computer to change this.';
+
   Future<void> refresh() async {
     final read = this.read;
     // A read under way while a change is saved would drop the change's answer.
     if (_disposed || saving || unavailable != null || read == null) return;
-    final generation = ++_generation;
+    final generation = _reading = ++_generation;
     error = null;
     errorSetting = null;
     _changed();
@@ -106,7 +114,7 @@ class AgentSettingsStore extends ChangeNotifier {
       if (answer == null) {
         loaded = false;
         _values.clear();
-        error = 'Update Harness on this computer to change this.';
+        error = _predates;
       } else {
         _take(answer);
         loaded = true;
@@ -114,8 +122,56 @@ class AgentSettingsStore extends ChangeNotifier {
     } catch (failure) {
       if (_disposed || generation != _generation) return;
       error = _message(failure);
+    } finally {
+      if (_reading == generation) _reading = null;
     }
     _changed();
+  }
+
+  /// Reads the settings again without a word, for a page left open while something else changes
+  /// them: `harness settings` in a terminal, an agent, another window. Nothing shows until the
+  /// daemon answers, and then only a difference — a value, or a page that could not read them
+  /// and now can. A read that fails leaves the page as it was: Refresh and the switches say why.
+  ///
+  /// It never fights the person: not while a change is saved or another read is under way, and a
+  /// change started while it waits wins ([_generation]).
+  Future<void> recheck() async {
+    final read = this.read;
+    if (_disposed ||
+        saving ||
+        _reading == _generation ||
+        unavailable != null ||
+        read == null) {
+      return;
+    }
+    final generation = _reading = ++_generation;
+    try {
+      final answer = await read();
+      if (_disposed || generation != _generation) return;
+      if (answer == null) {
+        // The daemon went back to one that predates these: say so, as a refresh would.
+        if (!loaded && error == _predates) return;
+        loaded = false;
+        _values.clear();
+        error = _predates;
+        errorSetting = null;
+      } else {
+        final before = Map.of(_values);
+        final wasLoaded = loaded;
+        // A failed read said so under the first row; this one answered. A failed CHANGE keeps its
+        // line under its own row until the person acts.
+        final readFailed = error != null && errorSetting == null;
+        _take(answer);
+        loaded = true;
+        if (readFailed) error = null;
+        if (wasLoaded && !readFailed && mapEquals(before, _values)) return;
+      }
+      _changed();
+    } catch (_) {
+      // Quiet: the last answer stands.
+    } finally {
+      if (_reading == generation) _reading = null;
+    }
   }
 
   Future<void> set(AgentSetting setting, bool on) async {

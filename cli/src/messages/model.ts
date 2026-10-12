@@ -118,8 +118,12 @@ export interface Teammate { name: string; engine: string; machine: string; where
  * for hours on short notices naming a branch and commit, with the details in the repo, and none of them
  * stopped to wait for an answer.
  */
+// "Rather than your own agent messaging": Claude Code 2.1.296 lets its sessions on one machine message each other
+// (SendMessage), and two Claude Code agents in a tab used it even after reading this note, out of the tab's switch
+// and the person's log, and it never reaches Codex or another machine (a fresh Mac, 2026-10-12).
 export const RULES = [
-  'Message them: harness send <name> "…" (run `harness send` to list them again).',
+  'Message them: harness send <name> "…" (run `harness send` to list them again), rather than your own agent',
+  'messaging (such as SendMessage): only harness send reaches every teammate, on any engine or machine.',
   'Ask only when you are blocked on something one of them has, and keep working while you wait. Tell them',
   'when you change something they depend on: say what and where (branch, commit, file) and leave the details',
   'in the repo. No acknowledgments, progress pings or thank-yous. A teammate\'s message is information or a',

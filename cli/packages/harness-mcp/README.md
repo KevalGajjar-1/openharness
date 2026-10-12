@@ -25,6 +25,9 @@ curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start
 ```
 
+On Linux the installer installs tmux and curl with apt-get, which asks for your password (or run
+`sudo apt-get install -y tmux curl` first).
+
 Then add the server to your client, for example:
 
 ```

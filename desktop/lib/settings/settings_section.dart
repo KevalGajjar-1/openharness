@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import '../logging/debug_surface.dart';
 
 /// A Settings navigation entry. Appearance ([customize]) returns to the workspace and opens its
-/// side panel, Customize Harness; the other entries select a Settings page.
+/// side panel, also called Appearance; the other entries select a Settings page.
 ///
 /// Settings holds settings only. What is a thing rather than a setting lives where the thing is:
 /// the Autonomous robots in the Devices tab, the account's computers, phones and apps — and which
@@ -16,8 +16,23 @@ import '../logging/debug_surface.dart';
 /// be listed without a screen behind it or reachable without a row.
 enum SettingsSection {
   account(AppIcons.user, 'Account'),
-  // Named `customize` still: the command palette remembers `settings:customize`.
-  customize(AppIcons.palette, 'Appearance'),
+  // Named `customize` still: the command palette remembers `settings:customize`. Its panel's
+  // tabs and its old name find it too.
+  customize(
+    AppIcons.palette,
+    'Appearance',
+    keywords: [
+      'customize',
+      'status',
+      'workspace',
+      'wallpaper',
+      'terminal',
+      'theme',
+      'colors',
+      'palette',
+      'font',
+    ],
+  ),
   notifications(AppIcons.bell, 'Notifications'),
   shortcuts(AppIcons.keyboard, 'Keyboard shortcuts'),
   agents(AppIcons.bot, 'Agents'),
@@ -27,12 +42,21 @@ enum SettingsSection {
   about(AppIcons.info, 'About'),
   debug(AppIcons.bug, 'Debug');
 
-  const SettingsSection(this.icon, this.label);
+  const SettingsSection(this.icon, this.label, {this.keywords = const []});
 
   /// The rail glyph — Lucide's 300 weight, the one the machine rail's rows use,
   /// so the app's two nav columns draw at the same line weight.
   final IconData icon;
   final String label;
+
+  /// Other words the rail's filter and ⌘P find this row by, lowercase: what is inside a row
+  /// whose label does not say it, and a name it had before.
+  final List<String> keywords;
+
+  /// Whether [query] (trimmed, lowercase) finds this row: in its label or one of its [keywords].
+  bool matches(String query) =>
+      label.toLowerCase().contains(query) ||
+      keywords.any((keyword) => keyword.contains(query));
 }
 
 /// One labelled run of rows in the settings rail.

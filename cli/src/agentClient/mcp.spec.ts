@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream'
+import { step } from './commands.js'
 import { describe, expect, it } from 'vitest'
 import { agentOfClient, answer, callerEnv, INSTRUCTIONS, mcpCommand, PROTOCOL_VERSIONS, result, type McpDeps, type Ran } from './mcp.js'
 
@@ -60,13 +61,26 @@ describe('harness mcp', () => {
   })
 
   it('says whose session it is when the agent did not, and leaves a harness pane and a named session alone', () => {
-    expect(callerEnv(deps({ env: { PATH: '/bin' } }), 'cursor-vscode')).toEqual({ PATH: '/bin', AI_AGENT: 'cursor', HARNESS_AGENT_SESSION: 'mcp-1' })
-    expect(callerEnv(deps({ env: { AI_AGENT: 'amp_1_agent' } }))).toEqual({ AI_AGENT: 'amp_1_agent', HARNESS_AGENT_SESSION: 'mcp-1' })
+    const via = { HARNESS_VIA_MCP: '1' }
+    expect(callerEnv(deps({ env: { PATH: '/bin' } }), 'cursor-vscode')).toEqual({ PATH: '/bin', AI_AGENT: 'cursor', HARNESS_AGENT_SESSION: 'mcp-1', ...via })
+    expect(callerEnv(deps({ env: { AI_AGENT: 'amp_1_agent' } }))).toEqual({ AI_AGENT: 'amp_1_agent', HARNESS_AGENT_SESSION: 'mcp-1', ...via })
     expect(callerEnv(deps({ env: {} }))).toMatchObject({ AI_AGENT: 'mcp-client' })
     expect(callerEnv(deps({ env: {}, session: undefined }))).toMatchObject({ HARNESS_AGENT_SESSION: `mcp-${process.ppid}` })
-    expect(callerEnv(deps({ env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' } }), 'claude-code')).toEqual({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' })
-    expect(callerEnv(deps({ env: { CODEX_THREAD_ID: 't' } }))).toEqual({ CODEX_THREAD_ID: 't' })
-    expect(callerEnv(deps({ env: { TMUX_PANE: '%1' }, inPane: true }))).toEqual({ TMUX_PANE: '%1' })
+    expect(callerEnv(deps({ env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' } }), 'claude-code')).toEqual({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's', ...via })
+    expect(callerEnv(deps({ env: { CODEX_THREAD_ID: 't' } }))).toEqual({ CODEX_THREAD_ID: 't', ...via })
+    expect(callerEnv(deps({ env: { TMUX_PANE: '%1' }, inPane: true }))).toEqual({ TMUX_PANE: '%1', ...via })
+  })
+
+  it('has the verbs it runs name their next steps as its tools, and the shell keeps its own', () => {
+    const mcp = { HARNESS_VIA_MCP: '1' }
+    expect(step(mcp, 'show', 'reviewer')).toBe('harness_read (name: "reviewer")')
+    expect(step(mcp, 'wait', 'reviewer')).toBe('harness_wait (names: "reviewer")')
+    expect(step(mcp, 'send', 'reviewer')).toBe('harness_send (to: "reviewer")')
+    expect(step(mcp, 'ps')).toBe('harness_list')
+    expect(step(mcp, 'show', 'reviewer', { flag: '--chars 9000', arg: 'chars: 9000' })).toBe('harness_read (name: "reviewer", chars: 9000)')
+    expect(step({}, 'show', 'reviewer', { flag: '--chars 9000', arg: 'chars: 9000' })).toBe('harness show reviewer --chars 9000')
+    expect(step({}, 'send', 'reviewer')).toBe('harness send reviewer "…"')
+    expect(step({}, 'ps')).toBe('harness ps')
   })
 
   it('knows the agents MCP clients are by the names they give', () => {

@@ -38,6 +38,17 @@ export function wakeExperiments(options: {
 }
 
 /**
+ * A tab's Agent Messages switch, written through the backend. Turned on, the experiment is asked for at once, so the
+ * tab's agents get its note now: otherwise only its first request or its saved state starts it, and on one machine
+ * neither comes, so no agent heard of `harness send` (a fresh Mac, 2026-10-12).
+ */
+export async function writeAgentMessagesTab<T extends { status: number }>(write: () => Promise<T>, body: unknown, want: () => void): Promise<T> {
+  const result = await write()
+  if (result.status >= 200 && result.status < 300 && (body as { enabled?: unknown } | null)?.enabled === true) want()
+  return result
+}
+
+/**
  * The account's notices the backend announces (`desk_changed`, …), for the experiments that hear them: each
  * listener in this process (`core.account.onNotice`), guarded, and each experiment's process (`tell`). Agent
  * Messages reads its tabs again at `desk_changed`.

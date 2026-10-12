@@ -460,7 +460,7 @@ add a kind there, not at the call site.
   percentages. Automatic names use the strongest shared harness type,
   project, or machine, preferring traits that distinguish tabs and excluding dependent viewers.
   The context follows a viewer's owner and uses the compact project label, never a worktree path
-  or marker. User-renamed tabs always retain their saved name. Customize Harness → Status
+  or marker. User-renamed tabs always retain their saved name. Appearance → Status
   selects shell-inspired text or Powerline themes; the focused PR label uses that same theme.
   The single focused PR reader is `state/workspace_pull_request.dart`.
 - `lib/theme/app_theme.dart` (`AppColors`, `AppTheme.terminalLight/terminalDark`) is a set of
@@ -665,7 +665,7 @@ add a kind there, not at the call site.
   Controls come from `shared/widgets/` too (`AppSelectField`, `AppIconButton`) — raw Material
   `DropdownButton`/`IconButton` do not match anything else in the app.
   **Settings holds settings only** (owner, 2026-10-11): Account alone at the top, then General
-  (Appearance — the `customize` row, which opens Customize Harness over the workspace —
+  (Appearance — the `customize` row, which opens the Appearance panel over the workspace —
   Notifications, Keyboard shortcuts), Agents (Agents, Connectors, Usage), Labs (Experimental) and
   Help (About, Debug in dev builds). A thing is managed where it lives: the Autonomous robots —
   Wi-Fi code pairing, Revoke, Still companion — in the Devices tab (`devices/wifi_robots.dart`);
@@ -675,7 +675,9 @@ add a kind there, not at the call site.
   workspace asks for Machines with `AppNotifier.requestMachines` (`openMachines` in
   `widgets/new_device_notice.dart`). Settings ▸ Agents reads and writes this computer's daemon
   (`/api/agent-settings`, bare JSON, not `{success, data}`); a setting the daemon's answer does
-  not name is not shown.
+  not name is not shown. `harness settings` changes the same file and the daemon sends no event,
+  so the open page reads again every 5 s while the window can be seen and once when it comes back
+  to the front (`AgentSettingsStore.recheck`): quiet, and never across a change being saved.
 - **The log is written to files, and Settings ▸ Debug reads them back** (`lib/logging/`,
   `settings/sections/debug_*.dart`). `appLog` (`app-YYYYMMDD.log`) is the narrative — `app`, `ws`,
   `api`, `flutter` — and `cliLog` (`cli-YYYYMMDD.log`) is a transcript of every child process, both

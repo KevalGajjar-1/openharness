@@ -15,7 +15,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { VERSION } from '../version.js'
 import { AGENT_SESSION_ENV } from './model.js'
-import { EXIT } from './commands.js'
+import { EXIT, VIA_MCP_ENV } from './commands.js'
 
 /** Newest first: the client's own when it is one of these, else the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const
@@ -172,7 +172,8 @@ export async function answer(message: Message, deps: McpDeps, state: { client?: 
  * and Codex's shells do; an MCP server's environment may not). `AI_AGENT` names the agent, as its client said.
  */
 export function callerEnv(deps: McpDeps, client = ''): NodeJS.ProcessEnv {
-  const env = { ...(deps.env ?? process.env) }
+  // The verbs then name their next steps as this server's tools.
+  const env: NodeJS.ProcessEnv = { ...(deps.env ?? process.env), [VIA_MCP_ENV]: '1' }
   if (deps.inPane || (env.CLAUDECODE === '1' && env.CLAUDE_CODE_SESSION_ID) || env.CODEX_THREAD_ID) return env
   if (!env.AI_AGENT) env.AI_AGENT = agentOfClient(client)
   env[AGENT_SESSION_ENV] = deps.session ?? `mcp-${process.ppid}`
