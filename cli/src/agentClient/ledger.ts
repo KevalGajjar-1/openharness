@@ -10,6 +10,9 @@
  * A harness asked for and not started yet (its engine still installing) has a line of its own, `Pending`, with the
  * machine's creation id: it starts by itself later, after `harness new` has answered, and is then recorded as started
  * by whichever verb of the agent's first sees it made (agentClient/commands.ts `opened`). Older readers skip the line.
+ *
+ * A harness an agent closed with `harness close` has a line too, `Closed`: its `harness wait` then says the harness
+ * was closed, by the agent itself, rather than reporting it stopped as a failure. Older readers skip that line as well.
  */
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -31,6 +34,13 @@ export interface Pending {
   by: LedgerMember & { name: string; engine: string }
   creation: { machineId: string; creationId: string; name: string; engine: string }
   depth: number
+}
+
+/** [by] closed [closed] with `harness close`. */
+export interface Closed {
+  at: number
+  by: LedgerMember
+  closed: LedgerMember
 }
 
 /** How long a pending line is asked after. An install ends within twenty minutes (engines/kit/nativeInstall.ts). */
@@ -77,10 +87,18 @@ export function parsePending(line: string): Pending | null {
   }
 }
 
+export function parseClosed(line: string): Closed | null {
+  let v: Record<string, unknown>
+  try { v = JSON.parse(line) } catch { return null }
+  if (!v || typeof v !== 'object' || typeof v.at !== 'number' || !member(v.by) || !member(v.closed)) return null
+  const by = v.by as unknown as LedgerMember, closed = v.closed as unknown as LedgerMember
+  return { at: v.at, by: { machineId: by.machineId, agentId: by.agentId }, closed: { machineId: closed.machineId, agentId: closed.agentId } }
+}
+
 const same = (a: LedgerMember, b: LedgerMember): boolean => a.machineId === b.machineId && a.agentId === b.agentId
 
 export class Ledger {
-  private cache: { key: string; rows: Started[]; pending: Pending[] } | null = null
+  private cache: { key: string; rows: Started[]; pending: Pending[]; closed: Closed[] } | null = null
   constructor(readonly path: string) {}
 
   /** Where the older lines went when the file passed its size. */
@@ -90,11 +108,11 @@ export class Ledger {
    *  only when either changed. */
   all(): Started[] { return this.read().rows }
 
-  private read(): { rows: Started[]; pending: Pending[] } {
+  private read(): { rows: Started[]; pending: Pending[]; closed: Closed[] } {
     const files = [this.previous, this.path].map((path) => { try { const st = statSync(path); return { path, key: `${st.mtimeMs}:${st.size}` } } catch { return null } })
     const key = files.map((f) => f?.key ?? '-').join('|')
     if (this.cache?.key === key) return this.cache
-    const rows: Started[] = [], pending: Pending[] = []
+    const rows: Started[] = [], pending: Pending[] = [], closed: Closed[] = []
     for (const file of files) {
       if (!file) continue
       let text = ''
@@ -104,14 +122,16 @@ export class Ledger {
         const row = parseStarted(line)
         if (row) { rows.push(row); continue }
         const asked = parsePending(line)
-        if (asked) pending.push(asked)
+        if (asked) { pending.push(asked); continue }
+        const close = parseClosed(line)
+        if (close) closed.push(close)
       }
     }
-    this.cache = { key, rows, pending }
+    this.cache = { key, rows, pending, closed }
     return this.cache
   }
 
-  append(row: Started | Pending): void {
+  append(row: Started | Pending | Closed): void {
     mkdirSync(dirname(this.path), { recursive: true })
     // One short line with O_APPEND: two agents starting harnesses at once never interleave.
     appendFileSync(this.path, `${JSON.stringify(row)}\n`, { mode: 0o600 })
@@ -137,6 +157,11 @@ export class Ledger {
     // counted twice met the limits early and matched no name (two rows for one).
     const children = new Map(this.all().filter((row) => same(row.by, m)).map((row) => [`${row.child.machineId}/${row.child.agentId}`, row]))
     return [...children.values()].sort((a, b) => a.at - b.at)
+  }
+
+  /** When [by] last closed [m] with `harness close`, or null when it did not. */
+  closedBy(by: LedgerMember, m: LedgerMember): number | null {
+    return this.read().closed.findLast((row) => same(row.by, by) && same(row.closed, m))?.at ?? null
   }
 
   /** 0 for a harness the person started. */

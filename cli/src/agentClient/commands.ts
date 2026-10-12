@@ -52,7 +52,8 @@ A harness's state and its last turn: what it was asked and what it answered (the
 export const WAIT_USAGE = `Usage: harness wait <name>[,<name>…] [--any] [--timeout 30m] [--json]
 
 Waits until each harness has stopped working, then prints its state. --any returns when the first one does.
-Exit status: 0 idle, 3 one needs the person (a question or a permission), 4 one stopped or is gone, 124 timed out.
+Exit status: 0 idle or closed by you, 3 one needs the person (a question or a permission), 4 one stopped or is gone,
+124 timed out.
 --timeout takes 90s, 30m, 2h; 0 waits as long as it takes.`
 export const CLOSE_USAGE = `Usage: harness close <name> [--now] [--json]
 
@@ -467,7 +468,8 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
 
 // ── wait ───────────────────────────────────────────────────────────────────────────────────────────
 
-type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'timeout' | 'failed'
+/** `closed`: stopped or gone because the caller closed it (`harness close`, the ledger's `Closed` line). */
+type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'closed' | 'timeout' | 'failed'
 
 export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
   return run(WAIT_USAGE, deps, wantsJson, argv, async (s) => {
@@ -519,12 +521,16 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       const sawWorking = new Set<Target>()
       /** Idle looks in a row, on the same turn. */
       const idle = new Map<Target, { turn: string; looks: number }>()
+      // Ended because the caller closed it: what it asked for, not a failure. A real Codex lead closed its harness and
+      // then waited on it, as it had queued, and was answered "Failed (exit 4) · stopped · it was stopped".
+      const ended = (t: Target, state: 'stopped' | 'gone'): Settled =>
+        o.caller && o.ledger.closedBy(o.caller, { machineId: t.machineId, agentId: t.frame.id }) !== null ? 'closed' : state
       const look = async (t: Target, frames: Frame[]): Promise<Settled | null> => {
         const frame = frames.find((f) => f.id === t.frame.id)
         // Not live: stopped, or gone. Asked of the full list only then.
-        if (!frame) return (await list(t.daemon, true)).some((f) => f.id === t.frame.id) ? 'stopped' : 'gone'
+        if (!frame) return ended(t, (await list(t.daemon, true)).some((f) => f.id === t.frame.id) ? 'stopped' : 'gone')
         t.frame = frame
-        if (frame.status === 'stopped') return 'stopped'
+        if (frame.status === 'stopped') return ended(t, 'stopped')
         // The daemon says it is working: no need to read its screen.
         const screen = frame.activity?.state === 'working' ? 'working' : await inspect(t)
         if (screen === 'working') { sawWorking.add(t); idle.delete(t); return null }
@@ -587,6 +593,7 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       ]
       if (flags.has('--json')) s.out(JSON.stringify({ harnesses: results }, null, 1))
       else for (const r of results) {
+        if (r.state === 'closed') { s.out(`${r.name}: closed (you closed it)`); continue }
         const next = r.state === 'idle' ? `read it: ${step(s.env, 'show', r.name)}`
           : r.state === 'needs-input' ? 'it waits for the person (a question or a permission); only the person answers it'
           : r.state === 'timeout' ? `still working; wait again or read it: ${step(s.env, 'show', r.name)}`
@@ -649,8 +656,21 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
         throw new AgentClientError('WORKING', `${name} is ${reply.activity === 'needs_input' ? 'waiting for the person' : 'working'}. Wait for it (${step(s.env, 'wait', name)}), or close it anyway with ${s.env[VIA_MCP_ENV] === '1' ? 'now: true' : '--now'}.`)
       }
       if (reply.error === 'AGENT_CHANGED') throw new AgentClientError('AGENT_CHANGED', `${name} changed while closing. Check it with ${step(s.env, 'show', name)}, then try again.`)
+      // Its machine cannot read which conversation it is in just now, and closing it would lose that conversation. The
+      // machine's own reason ("the native control descriptor type is unavailable") means nothing to the agent asking.
+      if (reply.error === 'IDENTITY_UNAVAILABLE') {
+        throw new AgentClientError('IDENTITY_UNAVAILABLE', `${name} was not closed: Harness cannot tell which conversation it is in right now, and closing it would lose that conversation. Try again in a moment.`)
+      }
       if (reply.error) throw new AgentClientError(String(reply.error), typeof reply.detail === 'string' && reply.detail ? reply.detail : `Could not close ${name}.`)
-      s.out(flags.has('--json') ? JSON.stringify({ name, id: t.frame.id, closed: true }) : `Closed ${name}. Its conversation is kept.`)
+      // Recorded for `wait`, which then says the caller closed it rather than that it stopped. The close is done either way.
+      if (o.caller) {
+        try { o.ledger.append({ at: s.now(), by: { machineId: o.caller.machineId, agentId: o.caller.agentId }, closed: { machineId: t.machineId, agentId: t.frame.id } }) }
+        catch { /* `wait` then says it stopped */ }
+      }
+      // Closed while still starting, before its machine could read its conversation: there is none to keep.
+      const kept = reply.withoutConversation !== true
+      s.out(flags.has('--json') ? JSON.stringify({ name, id: t.frame.id, closed: true, ...(kept ? {} : { conversationKept: false }) })
+        : kept ? `Closed ${name}. Its conversation is kept.` : `Closed ${name}. It was still starting, so no conversation was kept.`)
       return EXIT.ok
     } finally { if (t?.remote) t.daemon.close(); o.daemon.close() }
   })
@@ -789,9 +809,11 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       const live = await liveFor(s, o, caller)
       const running = recent.findLast((row) => live.has(memberKey(row.child.machineId, row.child.agentId)))
       if (!running) return null
-      const called = running.child.name, minutes = Math.max(1, Math.round((s.now() - running.at) / 60_000))
+      // Under a minute is "just now": rounded up to a minute, a harness started two seconds earlier was "1 min ago".
+      const called = running.child.name, age = s.now() - running.at
+      const when = age < 60_000 ? 'just now' : `${Math.round(age / 60_000)} min ago`
       return { name: called, machineId: running.child.machineId, agentId: running.child.agentId, state: 'running',
-        note: `"${called}" is already running: you started it ${minutes} min ago. Wait for it with ${step(s.env, 'wait', called)} `
+        note: `"${called}" is already running: you started it ${when}. Wait for it with ${step(s.env, 'wait', called)} `
           + `or read it with ${step(s.env, 'show', called)}. Do not start it again; to start a new one by that name, close it first (${step(s.env, 'close', called)}).` }
     },
     pending: (machineId, creation) => {

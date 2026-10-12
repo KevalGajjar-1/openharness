@@ -381,6 +381,35 @@ describe('harness wait', () => {
     expect(g.out[0]).toBe('x: gone · it is gone')
   })
 
+  // A Codex lead closed its harness, then waited on it as it had queued: "Failed (exit 4) … stopped · it was stopped".
+  it('says a harness the caller closed was closed by it, and is no failure; another\'s close still is', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead'), frame('kid', { status: 'stopped' }), frame('gone')]
+    const h = harness(d)
+    started(h.ledger, 'lead', 'kid')
+    started(h.ledger, 'lead', 'gone')
+    h.ledger.append({ at: NOW, by: { machineId: 'm', agentId: 'lead' }, closed: { machineId: 'm', agentId: 'kid' } })
+    expect(await waitCommand(['kid'], h.deps)).toBe(EXIT.ok)
+    expect(h.out).toEqual(['kid: closed (you closed it)'])
+    expect(await waitCommand(['kid', '--json'], h.deps)).toBe(EXIT.ok)
+    expect(JSON.parse(h.out[1])).toEqual({ harnesses: [{ name: 'kid', id: 'kid', state: 'closed' }] })
+    // Gone from the list after it closed it: still its close.
+    h.ledger.append({ at: NOW, by: { machineId: 'm', agentId: 'lead' }, closed: { machineId: 'm', agentId: 'gone' } })
+    let n = 0
+    d.extra.agents_list = () => ({ agents: n++ < 1 ? d.frames : [] })
+    const g = harness(d)
+    expect(await waitCommand(['gone'], g.deps)).toBe(EXIT.ok)
+    expect(g.out).toEqual(['gone: closed (you closed it)'])
+    // Closed by another agent, or by the person: stopped, as before.
+    delete d.extra.agents_list
+    const other = harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 'T1' } })
+    other.ledger.append({ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'codex:T1', name: 'Codex', engine: 'codex' }, child: { machineId: 'm', agentId: 'kid', name: 'kid' } })
+    expect(await waitCommand(['kid'], other.deps)).toBe(EXIT.stopped)
+    expect(other.out).toEqual(['kid: stopped · it was stopped'])
+    const person = harness(d, { pane: undefined })
+    expect(await waitCommand(['kid'], person.deps)).toBe(EXIT.stopped)
+  })
+
   it('waits for all of several, listing once a round, or the first with --any; a name twice is one harness', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('a'), frame('b')]
@@ -533,6 +562,43 @@ describe('harness close', () => {
       'disk full',
       'Could not close k.',
     ])
+  })
+
+  // Codex 0.162.1, closed a second after its start (2026-10-12): the machine's own reason came through as it was,
+  // "Conversation identity is held: the native control descriptor type is unavailable."
+  it('says plainly when it closed a harness still starting without a conversation, or could not close one', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead'), frame('kid')]
+    const replies: Array<Record<string, unknown>> = [
+      { closed: true, withoutConversation: true }, { closed: true, withoutConversation: true },
+      { error: 'IDENTITY_UNAVAILABLE', detail: 'Conversation identity is held: the native control descriptor type is unavailable.' },
+    ]
+    d.extra.agent_close = () => replies.shift()!
+    const h = harness(d)
+    started(h.ledger, 'lead', 'kid')
+    expect(await closeCommand(['kid', '--now'], h.deps)).toBe(EXIT.ok)
+    expect(h.out).toEqual(['Closed kid. It was still starting, so no conversation was kept.'])
+    expect(await closeCommand(['kid', '--now', '--json'], h.deps)).toBe(EXIT.ok)
+    expect(JSON.parse(h.out[1])).toEqual({ name: 'kid', id: 'kid', closed: true, conversationKept: false })
+    expect(await closeCommand(['kid', '--now'], h.deps)).toBe(EXIT.failed)
+    expect(h.err).toEqual(['kid was not closed: Harness cannot tell which conversation it is in right now, and closing it would lose that conversation. Try again in a moment.'])
+  })
+
+  it('records what an agent closed, for its wait; the person\'s closes and a record that cannot be written change nothing', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead'), frame('kid'), frame('theirs')]
+    const h = harness(d)
+    started(h.ledger, 'lead', 'kid')
+    expect(await closeCommand(['kid'], h.deps)).toBe(EXIT.ok)
+    expect(h.ledger.closedBy({ machineId: 'm', agentId: 'lead' }, { machineId: 'm', agentId: 'kid' })).toBe(NOW)
+    // Older lines and readers: the closed line is no start, and asks for nothing.
+    expect(h.ledger.childrenOf({ machineId: 'm', agentId: 'lead' }).map((row) => row.child.agentId)).toEqual(['kid'])
+    expect(h.ledger.pendingOf(null, NOW)).toEqual([])
+    expect(await closeCommand(['theirs'], harness(d, { pane: undefined }).deps)).toBe(EXIT.ok)
+    expect(readFileSync(ledgerPath(dir), 'utf8').trim().split('\n')).toHaveLength(2)
+    const unwritable = harness(d, { ledger: (data) => Object.assign(new Ledger(ledgerPath(data)), { append: () => { throw new Error('read-only') } }) })
+    expect(await closeCommand(['kid'], unwritable.deps)).toBe(EXIT.ok)
+    expect(unwritable.out).toEqual(['Closed kid. Its conversation is kept.'])
   })
 
   it('closes one harness at a time, by name', async () => {
@@ -946,6 +1012,19 @@ describe('an agent asking again for a harness it already has', () => {
     // Started more than ten minutes ago: new work by an old name, not a retry.
     const later = harness(d, { env: {}, now: () => NOW + 11 * 60_000 })
     expect(await (await agentOrigin(later.deps))!.existing!('reviewer', codexHere)).toBeNull()
+  })
+
+  // Asked again two seconds later, an agent was told it had started it "1 min ago".
+  it('says a harness started under a minute ago was started just now', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('k1', { name: 'pong' })]
+    const h = harness(d)
+    h.ledger.append({ at: NOW - 2_000, depth: 1, by: { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }, child: { machineId: 'm', agentId: 'k1', name: 'pong' } })
+    expect((await (await agentOrigin(h.deps))!.existing!('pong', { machineId: 'm', engine: 'codex' }))?.note)
+      .toMatch(/^"pong" is already running: you started it just now\. /)
+    const minute = harness(d, { now: () => NOW + 58_000 })
+    expect((await (await agentOrigin(minute.deps))!.existing!('pong', { machineId: 'm', engine: 'codex' }))?.note)
+      .toMatch(/you started it 1 min ago\. /)
   })
 
   it('records a harness asked for before it starts, and its creation once it has', async () => {

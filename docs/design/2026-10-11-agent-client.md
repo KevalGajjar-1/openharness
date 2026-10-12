@@ -52,11 +52,15 @@ harness close <name> [--now]                        # save its screen and stop i
 
 Text by default, for agents as much as people: they read it as well, and it is a third of JSON's size (`ps` on
 the owner's Mac, 21 harnesses: 5.8 KB of text, 16.2 KB of JSON). `--json` for programs. Every error says what to run next.
-`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out.
+`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out. A harness the caller closed itself is
+`closed (you closed it)` and exits 0 (`close` notes it in the ledger): a Codex lead that closed its harness and then
+waited on it, as it had queued, was told it had failed (October 12).
 
 **Close, not stop** (owner, October 11): `harness stop` stops the daemon, and an agent typing it with a name
 left empty would have stopped Harness. `close` is the app's close (`agent_close`): it saves the screen, stops the
-harness and keeps its conversation, and refuses while the harness is working unless `--now`.
+harness and keeps its conversation, and refuses while the harness is working unless `--now`. A harness still starting
+is closed once its first conversation binds; one that has bound none within ten seconds is closed without one, and
+says so (October 12: Codex 0.162.1 closed a second after its start was refused, its conversation not yet readable).
 
 The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):
 when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code

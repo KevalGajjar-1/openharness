@@ -48,6 +48,11 @@ export interface StopAgentOptions {
   checkpoint?(session: RegisteredSession, phase: 'before' | 'after'): Promise<void>
   /** Fresh proof that an unbound chat has never started and its composer is empty. */
   confirmUnusedConversation?(session: RegisteredSession): Promise<boolean>
+  /**
+   * A close of a harness still starting that waited for its first conversation in vain (closeAgentService.ts): when its
+   * conversation cannot be read, it is stopped without one, and this is called. Never for a conversation once bound.
+   */
+  withoutConversation?(): void
 }
 
 // Hooks rebuild registry objects. Compare stable values, never JavaScript object
@@ -93,7 +98,12 @@ export function createStopAgentService(deps: StopAgentServiceDeps) {
         return runtimeIdentity(current, !starting) === identity && (!conversation || current!.sessionId === conversation)
           && (binding === undefined || bindingIdentity(current!) === binding)
       }
-      const captured = await captureResumeIdentity({ ...live })
+      const captured = await captureResumeIdentity({ ...live }).catch((error: unknown) => {
+        if (!options.withoutConversation || conversation || live.transcriptPath || live.boundAt != null
+          || !(error instanceof IdentityReadUnavailable)) throw error
+        options.withoutConversation()
+        return { ...live }
+      })
       // Discovery or a hook may have updated this row while reading the native store.
       // A replacement process must never be stopped using an older snapshot.
       if (!sameTarget() || options.current?.() === false) {

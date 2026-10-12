@@ -11,6 +11,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient } from './harness/client.js'
 import { CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
@@ -247,6 +248,46 @@ describe('Harness for agents, end to end', () => {
     client.close()
   })
 
+  // Codex 0.162.1 in a clean macOS VM (2026-10-12): `harness close <it> --now` a second after `harness new` answered
+  // "Conversation identity is held: the native control descriptor type is unavailable." and the harness kept working,
+  // because for its first seconds every read of the Codex process was refused. The fake Codex holds such a descriptor
+  // for as long, and its first hook is as late: until then nothing could bind its conversation, as there.
+  it.each([
+    ['binds its conversation a few seconds in', 6_000, 'Closed pong. Its conversation is kept.'],
+    ['never binds while the close waits', 120_000, 'Closed pong. It was still starting, so no conversation was kept.'],
+  ] as const)('an agent closes a Codex it started a second ago, which %s', async (_, unboundMs, said) => {
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    const module = pathToFileURL(join(CLI_ROOT, 'e2e', 'harness', 'fakeEngine.mjs')).href
+    const config = { ...d.engineConfig, unreadableDescriptorMs: unboundMs, firstHookDelayMs: unboundMs }
+    writeFileSync(join(d.root, 'bin', 'codex'), `#!${process.execPath}\nimport(${JSON.stringify(module)}).then((m) => m.run('codex', ${JSON.stringify(config)}))\n`, { mode: 0o755 })
+    await d.start()
+    const client = await LocalClient.connect(d)
+    const run = (...args: string[]) => harness(d, '', args, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'outside-session' })
+
+    const started = await run('new', 'codex', 'pong', '--name', 'pong', '--', 'Reply with pong')
+    expect(started.code, started.out + started.err).toBe(0)
+    // The same start asked again is the same harness, started "just now", not "1 min ago".
+    const again = await run('new', 'codex', 'pong', '--name', 'pong', '--', 'Reply with pong')
+    expect(again.out + again.err).toContain('you started it just now')
+    const row = async () => ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', { includeStopped: true }, 30_000)).agents).find((a) => a.name === 'pong')
+    const live = await until('pong running', async () => { const r = await row(); return r?.status === 'active' && r.tmuxPane ? r : null }, 60_000, 250)
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    const closed = await run('close', 'pong', '--now')
+    expect(closed.err).not.toMatch(/descriptor|identity is held/)
+    expect(closed.code, closed.out + closed.err).toBe(0)
+    expect(closed.out.trim()).toBe(said)
+    const stopped = await until('pong stopped', async () => { const r = await row(); return !r || r.status === 'stopped' ? r ?? {} : null }, 30_000, 250)
+    if (unboundMs < 10_000) expect(stopped.sessionId).toBeTruthy()
+    expect(await enginesIn(d, String(live.tmuxPane))).toBe('')
+    // It closed it itself: `wait` says so, and is not a failure.
+    const waited = await run('wait', 'pong', '--timeout', '30s')
+    expect(waited.out.trim()).toBe('pong: closed (you closed it)')
+    expect(waited.code, waited.out + waited.err).toBe(0)
+    client.close()
+  }, 180_000)
+
   it('an agent that uses MCP does the same through harness mcp', async () => {
     const d = await IsolatedDaemon.create()
     daemon = d
@@ -431,6 +472,13 @@ describe('Harness for agents, end to end', () => {
     client.close()
   })
 })
+
+/** The fake engines still running in [pane]'s process tree, or '' once none is: a pane closed with them has no tree. */
+async function enginesIn(d: IsolatedDaemon, pane: string): Promise<string> {
+  const panes = await d.tmux.run('list-panes', '-a', '-F', '#{pane_id}').catch(() => '')
+  if (!panes.split('\n').includes(pane)) return ''
+  return (await commandsIn(d, pane)).split('\n').filter((line) => /^(?:codex|claude)\s/.test(line)).join('\n')
+}
 
 /** [text] as a pattern that matches it whatever `ps` prints for a character outside ASCII. */
 const ascii = (text: string): string => [...text].map((ch) => /[ -~]/.test(ch) ? ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '.+?').join('')
