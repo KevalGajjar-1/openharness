@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream'
+import { parseNewArgs } from '../lib/newCommand.js'
 import { step } from './commands.js'
 import { describe, expect, it } from 'vitest'
 import { agentOfClient, answer, callerEnv, INSTRUCTIONS, mcpCommand, PROTOCOL_VERSIONS, result, type McpDeps, type Ran } from './mcp.js'
@@ -64,6 +65,31 @@ describe('harness mcp', () => {
       ['send', 'a', 'also the footer'],
       ['close', 'a'], ['close', 'a', '--now'],
     ])
+  })
+
+  it('starts a harness in a new project Harness makes when asked for one, or when given no folder', async () => {
+    // A folder was required, so Codex as an MCP client could only name one of its own: Claude Code, started in an empty
+    // ~/work, waited on its trust question (a clean VM, CLI 0.3.75, 2026-10-11).
+    const listed = ((await answer({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, deps()))!.result as { tools: Array<{ name: string; inputSchema: { required: string[]; properties: Record<string, unknown> } }> })
+      .tools.find((tool) => tool.name === 'harness_start')!
+    expect(listed.inputSchema.required).toEqual(['task', 'name'])
+    expect(listed.inputSchema.properties).toHaveProperty('project')
+    expect(INSTRUCTIONS).toContain('For scratch or new work give it a project name (project), not a folder of your own')
+    const r = runner()
+    const d = deps({ run: r.run })
+    await answer(call('harness_start', { task: 'a second opinion', project: 'opinion', name: 'opinion' }), d)
+    await answer(call('harness_start', { task: 'go', name: 'quick', agent: 'codex', machine: 'mini' }), d)
+    await answer(call('harness_start', { task: 'go', name: 'both', folder: 'app', project: 'p' }), d)
+    expect(r.calls.map((c) => c.argv)).toEqual([
+      ['new', 'claude', '--new', 'opinion', '--name', 'opinion', '--task', 'a second opinion'],
+      ['new', 'codex', '@mini', '--new', '--name', 'quick', '--task', 'go'],
+      ['new', 'claude', '/work/here/app', '--new', 'p', '--name', 'both', '--task', 'go'],
+    ])
+    // As `harness new` reads them: a new project, one named by the clock, and a refusal to guess between the two.
+    const words = { cwd: '/work/here', home: '/home/me' }
+    expect(parseNewArgs(r.calls[0].argv.slice(1), words)).toMatchObject({ agent: 'claude', cwd: null, projectName: 'opinion', name: 'opinion' })
+    expect(parseNewArgs(r.calls[1].argv.slice(1), words)).toMatchObject({ agent: 'codex', machine: 'mini', cwd: null, projectName: '' })
+    expect(() => parseNewArgs(r.calls[2].argv.slice(1), words)).toThrow('Name a folder or a new project, not both.')
   })
 
   it('says whose session it is when the agent did not, and leaves a harness pane and a named session alone', () => {

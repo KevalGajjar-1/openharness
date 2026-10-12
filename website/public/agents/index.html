@@ -119,9 +119,11 @@ curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plug
       <tr><td><code>harness ps [--all]</code></td><td>The harnesses on this machine: name, agent, state, who started it,
         when it was last active, its folder and what it is about. <code>--all</code> adds the ones stopped in the
         last week.</td></tr>
-      <tr><td><code>harness new [agent] [@machine] [folder] --name NAME -- TASK</code></td><td>Start a harness and give
+      <tr><td><code>harness new [agent] [@machine] [folder | project] --name NAME -- TASK</code></td><td>Start a harness and give
         it a task. <code>agent</code> is <code>claude</code> (the default), <code>codex</code>, or another agent
-        installed there. The folder is the current directory when left out.</td></tr>
+        installed there. The folder is the current directory when left out. For scratch or new work, give a project
+        name (<code>harness new codex review -- …</code>) rather than a folder of your own: Claude Code and Codex ask
+        the person to trust a folder Harness did not make.</td></tr>
       <tr><td><code>harness wait NAME[,NAME…] [--any] [--timeout 30m]</code></td><td>Wait until each harness stops
         working. <code>--any</code> returns when the first one does. The timeout takes <code>90s</code>,
         <code>30m</code> or <code>2h</code> (30 minutes by default); <code>0</code> waits as long as it
@@ -226,8 +228,9 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
     <thead><tr><th>Tool</th><th>Arguments</th><th>Same as</th></tr></thead>
     <tbody>
       <tr><td><code>harness_list</code></td><td><code>all?</code></td><td><code>harness ps</code></td></tr>
-      <tr><td><code>harness_start</code></td><td><code>task</code>, <code>folder</code>, <code>name</code>,
-        <code>agent?</code> (<code>claude</code> or <code>codex</code>), <code>machine?</code></td><td><code>harness new</code></td></tr>
+      <tr><td><code>harness_start</code></td><td><code>task</code>, <code>name</code>, <code>folder?</code> or
+        <code>project?</code> (a new project for scratch or new work), <code>agent?</code> (<code>claude</code> or
+        <code>codex</code>), <code>machine?</code></td><td><code>harness new</code></td></tr>
       <tr><td><code>harness_wait</code></td><td><code>names</code>, <code>any?</code>, <code>timeout_seconds?</code>
         (120 by default, 600 at most; if they are still working, call it again)</td><td><code>harness wait</code></td></tr>
       <tr><td><code>harness_read</code></td><td><code>name</code>, <code>chars?</code></td><td><code>harness show</code></td></tr>

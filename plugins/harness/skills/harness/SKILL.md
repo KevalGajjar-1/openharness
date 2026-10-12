@@ -53,7 +53,7 @@ sub-agents: cheaper and faster. Everything you start appears in Harness, where t
 
 ```
 harness ps [--all]                                  # the harnesses here
-harness new [agent] [@machine] [folder] --name <name> -- <task>
+harness new [agent] [@machine] [folder | project] --name <name> -- <task>
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
 harness show <name> [--chars N]                     # its state, the last ask and its answer
 harness send <name> "text"                          # a teammate in this tab, when Agent Messages are on there
@@ -64,6 +64,8 @@ harness close <name> [--now]                        # when you are done with one
   changes. Every verb also takes the start of an id.
 - `agent` is `claude` (the default), `codex`, or another agent installed on that machine. The folder defaults
   to the current directory.
+- For scratch or new work, give a project name (`harness new codex review -- …`, which makes `~/harnesses/review`)
+  rather than a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 - Put the whole task in `-- <task>`: what to do, where, what done looks like, and what to answer with. A task
   holds 2,000 characters; for a longer one, write it to a file and name the file in the task.
 - `wait` exits 0 when it is idle, 3 when it needs the person (a question or a permission: only the person
@@ -101,7 +103,7 @@ the answer. For several at once, start each with its own name and wait on all of
 ## Harness's MCP tools
 
 If Harness's MCP server (`harness mcp`) is connected, its tools are the same verbs under the same rules:
-`harness_list` (ps), `harness_start` (new: task, folder and name, `agent` claude or codex, `machine`),
+`harness_list` (ps), `harness_start` (new: task, name, `folder` or `project`, `agent` claude or codex, `machine`),
 `harness_wait` (up to 120 seconds by default and 600 at most; if they are still working, call it again),
 `harness_read` (show), `harness_close` (close), and `harness_send` (send), offered only inside a harness.
 

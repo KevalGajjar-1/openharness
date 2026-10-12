@@ -9,7 +9,7 @@ harnesses, wait for them, read their answers and close them:
 | Tool | What it does |
 |---|---|
 | `harness_list` | the harnesses here: state, who started each, what each is about |
-| `harness_start` | start an agent on a task in a folder, by name |
+| `harness_start` | start an agent on a task in a folder or a new project, by name |
 | `harness_wait` | wait until harnesses stop working |
 | `harness_read` | a harness's last ask and its answer |
 | `harness_close` | close a harness you started |
