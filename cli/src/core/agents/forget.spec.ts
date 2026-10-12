@@ -18,6 +18,7 @@ function setup() {
     stoppedAgents: { save: vi.fn() },
     syncRecapPool: vi.fn(),
     normalizers: { forget: vi.fn() },
+    forgetAttach: vi.fn(),
     turnStartedAt: new Map([['s1', 1], ['other', 2]]),
     neverFoldedHistory: new Set(['s1', 'other']),
     replayedFirstTurn: new Set(['s1', 'other']),
@@ -27,7 +28,6 @@ function setup() {
     runtimeProfiles: { forget: vi.fn() },
     watcher: { removeSession: vi.fn(async () => {}) },
     stopHeartbeat: vi.fn(),
-    teams: { forget: vi.fn() },
     input: { forget: vi.fn() },
     deviceInput: { forget: vi.fn() },
     detachDsh: vi.fn(),
@@ -42,6 +42,7 @@ function setup() {
 function expectLetGo(deps: ForgetDeps, sessionId: string, agentId: string) {
   expect(deps.syncRecapPool).toHaveBeenCalled()
   expect(deps.normalizers.forget).toHaveBeenCalledWith(sessionId)
+  expect(deps.forgetAttach).toHaveBeenCalledWith(sessionId)
   expect(deps.turnStartedAt.has(sessionId)).toBe(false)
   expect(deps.neverFoldedHistory.has(sessionId)).toBe(false)
   expect(deps.replayedFirstTurn.has(sessionId)).toBe(false)
@@ -53,7 +54,6 @@ function expectLetGo(deps: ForgetDeps, sessionId: string, agentId: string) {
   expect(deps.runtimeProfiles.forget).toHaveBeenCalledWith(sessionId)
   expect(deps.watcher.removeSession).toHaveBeenCalledWith(sessionId)
   expect(deps.stopHeartbeat).toHaveBeenCalledWith(sessionId)
-  expect(deps.teams.forget).toHaveBeenCalledWith(agentId)
   expect(deps.input.forget).toHaveBeenCalledWith(agentId)
   expect(deps.deviceInput.forget).toHaveBeenCalledWith(agentId)
   expect(deps.mirror.forget).toHaveBeenCalledWith(sessionId)
@@ -61,6 +61,35 @@ function expectLetGo(deps: ForgetDeps, sessionId: string, agentId: string) {
 
 describe('forgetting a session', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.mocked(removePendingCursorTasks).mockClear() })
+
+  it.each(['bound', 'unbound', 'process'] as const)('archives the proven capture of an unchanged %s agent', mode => {
+    const { deps, forgetSession } = setup()
+    const live = deps.registry.resolve(mode === 'unbound' ? 'fresh' : 'a1')!
+    if (mode === 'process') live.processIdentity = { pid: 41, startMarker: 'birth', executable: '<engine>' }
+    const captured = { ...live, sessionId: 's1', transcriptPath: '/fixture/parent.jsonl', boundAt: 23, source: 'stop-repair' }
+    forgetSession(live.agentId, { captured })
+    expect(deps.stoppedAgents.save).toHaveBeenCalledWith(expect.objectContaining(captured))
+    expect(deps.registry.removeAgent).toHaveBeenCalledWith(live.agentId)
+  })
+
+  it.each(['agent', 'engine', 'registered', 'conversation', 'process', 'executable', 'missing process'] as const)(
+    'refuses a captured conversation after the %s identity changes', changed => {
+      const { deps, forgetSession } = setup()
+      const live = deps.registry.resolve('a1')!
+      live.processIdentity = { pid: 41, startMarker: 'birth', executable: '<engine>' }
+      const captured = { ...live, processIdentity: { ...live.processIdentity }, transcriptPath: '/fixture/parent.jsonl' }
+      if (changed === 'agent') captured.agentId = 'other'
+      if (changed === 'engine') captured.engine = 'codex'
+      if (changed === 'registered') captured.registeredAt = 2
+      if (changed === 'conversation') captured.sessionId = 'other'
+      if (changed === 'process') captured.processIdentity.pid++
+      if (changed === 'executable') live.processIdentity.executable = '<replacement>'
+      if (changed === 'missing process') live.processIdentity = null
+      expect(() => forgetSession('a1', { captured })).toThrow('changed before')
+      expect(deps.stoppedAgents.save).not.toHaveBeenCalled()
+      expect(deps.registry.removeAgent).not.toHaveBeenCalled()
+      expect(deps.clients.send).not.toHaveBeenCalled()
+    })
 
   it('drops a crash-resume boundary when the conversation is stopped or unbound', () => {
     const { deps } = setup()
@@ -108,6 +137,30 @@ describe('forgetting a session', () => {
     expect(String(log.mock.calls[0][0])).toContain('forgotten')
   })
 
+  // Its last record may hold a conversation another harness took meanwhile (conversationOwners.ts).
+  it('settles who owns the conversation its last record holds, once it is no longer running; never on a release', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { deps } = setup()
+    const order: string[] = []
+    vi.mocked(deps.registry.removeAgent).mockImplementation(() => { order.push('removed'); return true })
+    const owners = { settleSaved: vi.fn(() => { order.push('settled'); return [] }) }
+    const forget = createForgetSession({ ...deps, owners })
+    forget('s1')
+    expect(owners.settleSaved).toHaveBeenCalledWith('a1')
+    expect(order).toEqual(['removed', 'settled'])
+    forget('s1', { keepAgent: true })
+    forget('unknown-session')
+    expect(owners.settleSaved).toHaveBeenCalledTimes(1)
+    owners.settleSaved.mockImplementationOnce(() => { throw new Error('stopped store unreadable') })
+    forget('s1')
+    owners.settleSaved.mockImplementationOnce(() => { throw 'plain' })
+    forget('s1')
+    expect(warn).toHaveBeenCalledWith('[agent] a1 could not settle who owns its conversation: stopped store unreadable')
+    expect(warn).toHaveBeenCalledWith('[agent] a1 could not settle who owns its conversation: plain')
+    expect(deps.clients.send).toHaveBeenCalledWith({ type: 'agent_deleted', payload: { agentId: 'a1', retained: true } })
+  })
+
   it('removes a session the registry no longer knows, announced by the agent id the caller names', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const named = setup()
@@ -116,11 +169,25 @@ describe('forgetting a session', () => {
     expect(named.deps.stoppedAgents.save).not.toHaveBeenCalled()
     expect(named.deps.detachDsh).toHaveBeenCalledWith('a9')
     expect(named.deps.clients.send).toHaveBeenCalledWith({ type: 'agent_deleted', payload: { agentId: 'a9', retained: false } })
-    expect(named.deps.input.forget).toHaveBeenCalledWith('s9')
+    expect(named.deps.input.forget).toHaveBeenCalledWith('a9')
     // With no agent id at all, the session id is all there is to announce.
     const bare = setup()
     bare.forgetSession('s9')
     expect(bare.deps.clients.sendCommander).toHaveBeenCalledWith({ type: 'agent_deleted', payload: { agentId: 's9' } })
+  })
+
+  it('clears agent-keyed input after binding revalidation has already released the session index', () => {
+    const { deps } = setup()
+    vi.mocked(deps.registry.resolve).mockReturnValue(undefined)
+    const pending = ['input', 'deviceInput'].map(() => new Map([['a1', 'queued'], ['other', 'keep']]))
+    for (const [index, key] of (['input', 'deviceInput'] as const).entries()) {
+      deps[key].forget = id => { pending[index]!.delete(id) }
+    }
+    createForgetSession(deps)('s1', { force: true, keepAgent: true, agentId: 'a1' })
+    for (const queue of pending) expect([...queue]).toEqual([['other', 'keep']])
+    expect(deps.stoppedAgents.save).not.toHaveBeenCalled()
+    expect(deps.registry.removeAgent).not.toHaveBeenCalled()
+    expect(deps.normalizers.forget).toHaveBeenCalledWith('s1')
   })
 
   it('forgets an agent that has no session yet under the id it was asked by', () => {

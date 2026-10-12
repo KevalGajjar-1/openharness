@@ -38,9 +38,20 @@ export function wakeExperiments(options: {
 }
 
 /**
+ * A tab's Agent Messages switch, written through the backend. Turned on, the experiment is asked for at once, so the
+ * tab's agents get its note now: otherwise only its first request or its saved state starts it, and on one machine
+ * neither comes, so no agent heard of `harness send` (a fresh Mac, 2026-10-12).
+ */
+export async function writeAgentMessagesTab<T extends { status: number }>(write: () => Promise<T>, body: unknown, want: () => void): Promise<T> {
+  const result = await write()
+  if (result.status >= 200 && result.status < 300 && (body as { enabled?: unknown } | null)?.enabled === true) want()
+  return result
+}
+
+/**
  * The account's notices the backend announces (`desk_changed`, …), for the experiments that hear them: each
- * listener in this process (`core.account.onNotice`), guarded, and each experiment's process (`tell`). Tab
- * collaboration reads its tab channels again at `desk_changed`, as the socket did before it left.
+ * listener in this process (`core.account.onNotice`), guarded, and each experiment's process (`tell`). Agent
+ * Messages reads its tabs again at `desk_changed`.
  */
 export function createAccountNotices(tell: (notice: BackendNotice) => void, log: (line: string) => void = (line) => console.warn(line)) {
   const listeners = new Set<(notice: BackendNotice) => void>()
@@ -59,26 +70,21 @@ export function createAccountNotices(tell: (notice: BackendNotice) => void, log:
 }
 
 /**
- * What the core does for the experiments as a whole: ask the master for one (`want`), first doing what that
- * experiment must not miss from then on (`onWant`: the teams' scopes kept from the moment teams is on), and
- * hand the account's notices to the listeners here and to each experiment in its own process.
+ * What the core does for the experiments as a whole: ask the master for one (`want`), and hand the account's
+ * notices to the listeners here and to each experiment in its own process.
  */
 export function createExperimentHooks(deps: {
   want: (service: string) => void
   notify: (service: string, frame: { type: string; payload: Record<string, unknown> }) => boolean
   outOfProcess: ReadonlySet<string>
   experiments: Iterable<string>
-  onWant?: Readonly<Record<string, () => void>>
   log?: (line: string) => void
 }) {
   const notices = createAccountNotices((notice) => {
     for (const name of deps.experiments) if (deps.outOfProcess.has(name)) deps.notify(name, { type: 'service_event', payload: { kind: 'notice', notice } })
   }, deps.log)
   return {
-    want(service: string): void {
-      if (deps.onWant && Object.hasOwn(deps.onWant, service)) deps.onWant[service]()
-      deps.want(service)
-    },
+    want: deps.want,
     onNotice: notices.onNotice,
     notice: notices.notice,
   }

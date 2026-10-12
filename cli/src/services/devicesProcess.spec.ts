@@ -187,6 +187,18 @@ describe('the core\'s doors, across the link', () => {
     expect(await api.agents.activityText('a1')).toBe('Reading')
     f.answer('activityText', { text: null })
     expect(await api.agents.activityText('a1')).toBeNull()
+    f.answer('activitySnapshot', { activity: { text: 'Working', elapsedSeconds: 931 } })
+    expect(await api.agents.activitySnapshot!('a1')).toEqual({ text: 'Working', elapsedSeconds: 931 })
+    // An older core does not know the query, or has no timer to give: the footer alone is still the footer.
+    f.answer('activityText', { text: 'Reading' })
+    f.answer('activitySnapshot', { error: 'UNKNOWN_QUERY' })
+    expect(await api.agents.activitySnapshot!('a1')).toEqual({ text: 'Reading' })
+    f.answer('activitySnapshot', new Error('the core went away'))
+    expect(await api.agents.activitySnapshot!('a1')).toEqual({ text: 'Reading' })
+    f.answer('activitySnapshot', { activity: null })
+    expect(await api.agents.activitySnapshot!('a1')).toEqual({ text: 'Reading' })
+    f.answer('activityText', { text: null })
+    expect(await api.agents.activitySnapshot!('a1')).toBeNull()
     f.answer('recent', { turns: [{ recap: 'done' }] })
     expect(await api.turns.recent('a1', 2)).toEqual([{ recap: 'done' }])
     f.answer('recent', {})
@@ -235,6 +247,27 @@ describe('the core\'s doors, across the link', () => {
     api.turns.send('a1', 'lost')
     expect(api.clients.sendToWindow('w1', { type: 'dial_form', payload: {} })).toBe(false)
     expect(f.notices).toHaveLength(8)
+  })
+
+  // A dial says hello before its process is connected to a core that just started (2026-10-09, a user's
+  // log: hello at 14:22:54.141, connected at 14:22:54.525): the core must still hear that it watches, or it
+  // makes no cards for it and the dial shows Working for turns that ended, and no recaps.
+  it('tell a core that connects whether a dial is watching, as they last said it', () => {
+    const f = setup()
+    const api = f.api()
+    api.clients.dialWatching(true)
+    expect(f.notices).toEqual([])
+    f.connect()
+    expect(f.notices).toEqual([['dialWatching', { watching: true }]])
+    // A core that restarts while the dial stays is told again.
+    f.options().onDisconnected!()
+    f.connect()
+    expect(f.notices).toEqual([['dialWatching', { watching: true }], ['dialWatching', { watching: true }]])
+    // No dial any more: a new core starts out knowing that, and is told nothing.
+    api.clients.dialWatching(false)
+    f.options().onDisconnected!()
+    f.connect()
+    expect(f.notices).toHaveLength(3)
   })
 })
 

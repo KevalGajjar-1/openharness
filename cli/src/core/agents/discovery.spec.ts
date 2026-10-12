@@ -46,7 +46,6 @@ function setup(over: Partial<DiscoveryDeps> = {}) {
     syncRecapPool: vi.fn(),
     attachSession: vi.fn(async () => true),
     invalidateTerminalControl: vi.fn(),
-    teams: { forget: vi.fn() },
     input: { forget: vi.fn() },
     deviceInput: { forget: vi.fn() },
     questionWatcher: { stop: vi.fn() },
@@ -182,6 +181,21 @@ describe('discovery', () => {
       expect(run.deps.registry.setLaunch).toHaveBeenCalledTimes(1)
     })
 
+    it.each(['held', 'removed', 'rebound'] as const)('cannot retire or announce an attachment whose binding became %s', async state => {
+      const run = setup(), awake = row()
+      run.rows.set('a1', awake)
+      vi.mocked(run.deps.attachSession).mockImplementationOnce(async () => {
+        if (state === 'held') awake.identityHold = 'waiting for native evidence'
+        if (state === 'removed') run.rows.clear()
+        if (state === 'rebound') awake.sessionId = 'replacement'
+        return false
+      })
+      await run.handlers.onObserved(seen(), row({ active: false }))
+      await settle()
+      expect(run.deps.registry.setActive).not.toHaveBeenCalled()
+      expect(run.deps.announceSession).not.toHaveBeenCalled()
+    })
+
     it('announces an awake agent whose grid moved, and nothing when it did not or could not be read', async () => {
       const run = setup()
       run.rows.set('a1', row())
@@ -202,7 +216,6 @@ describe('discovery', () => {
       const exited = row({ resumeOnly: true } as Partial<RegisteredSession>)
       await run.handlers.onDormant(exited, 'engine exited')
       expect(run.deps.invalidateTerminalControl).toHaveBeenCalledWith('a1')
-      expect(run.deps.teams.forget).toHaveBeenCalledWith('a1')
       expect(run.deps.input.forget).toHaveBeenCalledWith('a1')
       expect(run.deps.deviceInput.forget).toHaveBeenCalledWith('a1')
       expect(run.deps.questionWatcher.stop).toHaveBeenCalledWith('s1')

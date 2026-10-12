@@ -750,27 +750,20 @@ model Desk {
   @@map("desks")
 }
 
-/// Routing only; channel messages and member capabilities stay on the host daemon.
-/// A deterministic _id makes concurrent claims atomic using MongoDB's built-in
-/// unique primary index. This never changes the format of the shared desk.
-model TabChannel {
-  id            String   @id @map("_id") @db.ObjectId
-  userId        String
-  tabId         String
-  hostMachineId String
-  createdAt     DateTime @default(now())
-
-  @@map("tab_channels")
-}
-
-/// Explicit account opt-in for automatic swarm collaboration; absence means off.
-model TabChannelSettings {
-  id        String  @id @map("_id") @db.ObjectId
+/// Agent Messages, per tab (docs/design/2026-10-10-agent-messages.md): whether the harnesses in one desk tab
+/// may message each other. Absence means off. Kept beside the desk, never in its tab JSON: a backend pod that
+/// has not upgraded drops a tab whose JSON it does not know (lib/desk.ts parseTabs). A deterministic _id makes
+/// a concurrent first write converge.
+model AgentMessageTab {
+  id        String   @id @map("_id") @db.ObjectId
   userId    String
-  enabled   Boolean @default(false)
-  revision  Int     @default(0)
+  tabId     String
+  enabled   Boolean  @default(false)
+  revision  Int      @default(0)
+  updatedAt DateTime @updatedAt
 
-  @@map("tab_channel_settings")
+  @@index([userId])
+  @@map("agent_message_tabs")
 }
 
 /// Explicit account opt-ins; missing choices stay off. Each write changes one feature.
@@ -884,6 +877,30 @@ model DeviceKeyLogState {
   updatedAt DateTime @updatedAt
 
   @@map("device_key_log_state")
+}
+
+/// A device's signed "It's mine" for another key on the account's device key log (lib/deviceAckCore.ts):
+/// once one trusted device confirms a new one, the account's other devices stop showing it as New.
+/// Kept beside `device_key_log` and never in its chain — an op the chain does not know would make every
+/// older client freeze the whole log — so a client that predates it never sees one.
+///
+/// `ack` is the JSON the device sent, kept verbatim; its signature covers a binary encoding of its
+/// fields, and every device checks it against its own verified log, never this table's word. The unique
+/// `(userId, pub, signer)` makes appending idempotent: one acknowledgement per key per signer.
+model DeviceKeyAck {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  /// The acknowledged key, and the seq of the log entry that added it.
+  pub       String
+  addSeq    Int
+  /// The key that acknowledged it (and signed `ack`).
+  signer    String
+  ack       String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, pub, signer])
+  @@index([userId, addSeq])
+  @@map("device_key_acks")
 }
 
 /// Public/private link metadata only. The owner daemon keeps the final policy and encrypted discussion.

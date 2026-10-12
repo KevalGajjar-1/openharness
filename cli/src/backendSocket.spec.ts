@@ -38,7 +38,7 @@ import * as scmProjects from './scm/scmProjects.js'
 import * as machineResources from './lib/machineResources.js'
 import * as projectFolder from './lib/projectFolder.js'
 import * as projectPreview from './lib/projectPreview.js'
-import * as opencodeVersion from './engines/opencode/version.js'
+import * as opencodeVersion from './engines/launchControl.js'
 import { randomUUID } from 'node:crypto'
 import { fakeGridAnswers, installFakeGrid, type FakeGrid } from './lib/__fixtures__/fakeGrid.js'
 import { clearGridMcpUrlCache } from './lib/gridMcpUrl.js'
@@ -398,30 +398,30 @@ describe('agent_update opened: one "last used" for every app', () => {
 })
 
 describe('viewer forwarding authentication', () => {
-  it('routes a sealed command_bar to the command bar with its connection, who asked, and nothing in the clear', async () => {
+  it('routes a sealed service request with its connection, who asked, and nothing in the clear', async () => {
     const socket = relaySocket('token')
     const routed: Array<{ type: string; asker: unknown }> = []
-    socket.serviceRouter = (type, _payload, asker, reply) => { routed.push({ type, asker }); reply({ selectedId: null }); return true }
+    socket.serviceRouter = (type, _payload, asker, reply) => { routed.push({ type, asker }); reply({ memories: [] }); return true }
     const ownerCommands = vi.spyOn(socket.ownerCommands, 'request')
     vi.spyOn(gatewayOf(socket).e2ee, 'hasSession').mockReturnValue(true)
     const role = vi.spyOn(gatewayOf(socket).e2ee, 'sessionRole').mockReturnValue('web')
-    const clear = { type: 'command_bar', payload: { requestId: 'one', request: { prompt: 'fixture', candidates: [] } } }
+    const clear = { type: 'memory_snapshot', payload: { requestId: 'one' } }
     vi.spyOn(gatewayOf(socket).e2ee, 'unwrapDown').mockReturnValue(clear)
-    const sealedReply = vi.spyOn(gatewayOf(socket).e2ee, 'wrapRpcReply').mockReturnValue({ type: 'command_bar_result', payload: { __e2e: 'sealed' } })
+    const sealedReply = vi.spyOn(gatewayOf(socket).e2ee, 'wrapRpcReply').mockReturnValue({ type: 'memory_snapshot_result', payload: { __e2e: 'sealed' } })
     await dispatchDown(socket, clear, 'remote')
     expect(routed).toEqual([])
-    const sealed = { type: 'command_bar', payload: { __e2e: { v: 1, k: 'p', n: 1, ct: 'fixture' } } }
-    // A device's session asks as no owner: the command bar refuses it (services/commandBar.ts).
+    const sealed = { type: 'memory_snapshot', payload: { __e2e: { v: 1, k: 'p', n: 1, ct: 'fixture' } } }
+    // A device's session asks as no owner: the service refuses it (services/memory.ts).
     role.mockReturnValue('device')
     await dispatchDown(socket, sealed, 'remote')
     role.mockReturnValue('web')
     await dispatchDown(socket, sealed, 'remote')
     expect(routed).toEqual([
-      { type: 'command_bar', asker: { local: false, owner: false, connection: 'remote', requestId: 'one' } },
-      { type: 'command_bar', asker: { local: false, owner: true, connection: 'remote', requestId: 'one' } },
+      { type: 'memory_snapshot', asker: { local: false, owner: false, connection: 'remote', requestId: 'one' } },
+      { type: 'memory_snapshot', asker: { local: false, owner: true, connection: 'remote', requestId: 'one' } },
     ])
     expect(ownerCommands).not.toHaveBeenCalled()
-    expect(sealedReply).toHaveBeenCalledWith('remote', 'command_bar_result', 'one', { selectedId: null })
+    expect(sealedReply).toHaveBeenCalledWith('remote', 'memory_snapshot_result', 'one', { memories: [] })
     await socket.stop()
   })
 
@@ -736,6 +736,22 @@ describe('BackendSocket outbound queue', () => {
     expect((sent[1].frame as { type?: string }).type).toBe('commander_event')
     expect(sent[1]).toMatchObject({ webEligible: false, commanderEligible: true })
 
+    await socket.stop()
+  })
+
+  it('keeps a processing card\'s update for the devices tee and off the relay', async () => {
+    const socket = relaySocket('token')
+    const tee = vi.fn()
+    socket.onOutboundCommander = tee
+    socket.connect()
+    const ws = wsMock.instances[0]
+    ws.open()
+    const relayed = vi.fn()
+    vi.spyOn(socket as unknown as { toGateway(what: string, call: (g: unknown) => void): void }, 'toGateway')
+      .mockImplementation((_what, call) => call({ commander: relayed }))
+    socket.sendCommander({ type: 'commander_event', agentId: 's1', dbSessionId: 's1', payload: { kind: 'processing', text: 'Working', update: 'Reading the spec' } })
+    expect((tee.mock.calls[0][0] as { payload: Record<string, unknown> }).payload.update).toBe('Reading the spec')
+    expect((relayed.mock.calls[0][0] as { payload: Record<string, unknown> }).payload).toEqual({ kind: 'processing', text: 'Working' })
     await socket.stop()
   })
 
@@ -2232,6 +2248,18 @@ describe('BackendSocket outbound queue', () => {
         type: 'agent_create_status_result', payload: { requestId: 'missing', creationId, state: 'missing' },
       }))
       socket.handleLocalFrame('local:missing-receipt', {
+        type: 'agent_create_cancel', payload: { requestId: 'cancel', creationId },
+      })
+      await vi.waitFor(() => expect(frames).toContainEqual({
+        type: 'agent_create_cancel_result', payload: { requestId: 'cancel', creationId, state: 'cancelled' },
+      }))
+      socket.handleLocalFrame('local:missing-receipt', {
+        type: 'agent_create', payload: { requestId: 'late', creationId, engine: 'claude', cwd: '/tmp/work' },
+      })
+      await vi.waitFor(() => expect(frames).toContainEqual({
+        type: 'agent_create_result', payload: { requestId: 'late', creationId, state: 'cancelled' },
+      }))
+      socket.handleLocalFrame('local:missing-receipt', {
         type: 'agent_create', payload: { requestId: 'invalid', creationId: '../bad', engine: 'claude', cwd: '/tmp/work' },
       })
       await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({
@@ -3242,7 +3270,7 @@ describe('agent_create with a prompt, a name and a named agent', () => {
 
   it('passes the named agent through for opencode, and null when none was given', async () => {
     // v1 — pinned, so the answer does not depend on the OpenCode installed where the suite runs.
-    vi.spyOn(opencodeVersion, 'opencodeMajorVersion').mockReturnValue(1)
+    vi.spyOn(opencodeVersion, 'opencodeMajorVersion').mockResolvedValue(1)
     const { seen, reply } = await create({ agent: 'harness-compute', name: 'Local model' })
     expect(seen).toEqual([expect.objectContaining({ engine: 'opencode', agent: 'harness-compute', name: 'Local model', prompt: null })])
     expect(reply).toMatchObject({ agent: expect.objectContaining({ id: 'named-1' }) })
@@ -3251,7 +3279,7 @@ describe('agent_create with a prompt, a name and a named agent', () => {
   })
 
   it('refuses a named agent for opencode v2, whose TUI exits 1 on --agent, before any pane exists', async () => {
-    vi.spyOn(opencodeVersion, 'opencodeMajorVersion').mockReturnValue(2)
+    vi.spyOn(opencodeVersion, 'opencodeMajorVersion').mockResolvedValue(2)
     const { seen, reply } = await create({ agent: 'harness-compute' })
     expect(reply).toMatchObject({ error: 'AGENT_UNSUPPORTED', detail: expect.stringContaining('opencode') })
     expect(seen).toHaveLength(0)
@@ -4047,6 +4075,6 @@ describe('relay down-frames are default-deny: sealed, or the backend\'s own', ()
     await dispatch({ type: 'message', payload: { content: 'hi', agentId: 'a1' } }, 'local:app', 'local')
     expect(onMessage).toHaveBeenCalledWith('a1', 'hi')
     await dispatch({ type: 'message', payload: { content: 'task in A', agentId: 'a1', tabId: 'swarm-a' } }, 'local:app', 'local')
-    expect(onMessage).toHaveBeenLastCalledWith('a1', 'task in A', undefined, 'swarm-a')
+    expect(onMessage).toHaveBeenLastCalledWith('a1', 'task in A')
   })
 })

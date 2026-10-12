@@ -26,6 +26,7 @@ const session = (over: Partial<RegisteredSession> = {}): RegisteredSession =>
 
 function setup() {
   const deps: LaunchHelperDeps = {
+    authority: () => () => true,
     prepareApiTools: vi.fn(),
     launchOverridesDeps: { marker: 'deps' } as unknown as LaunchOverridesDeps,
     setGridLaunch: vi.fn(() => true),
@@ -37,21 +38,67 @@ function setup() {
 describe('relaunch helpers', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
-  it('refuses an OpenCode relaunch whose code could not be loaded, having written nothing, and loads nothing for another engine', async () => {
+  it('preserves an unknown native permission observation as a launch hold', async () => {
+    const { helpers } = setup()
+    vi.mocked(dropPermissionFlagIfUnsupported).mockResolvedValueOnce({ choice: { bypassPermission: false }, droppedFlag: null, nativeHold: 'Waiting for help.' })
+    expect(await helpers.downgradedPermission(session(), true, 'restore')).toEqual({ bypassPermission: false, nativeHold: 'Waiting for help.' })
+  })
+
+  it('rejects preparation that was already revoked before dispatch', async () => {
+    const { deps } = setup()
+    deps.authority = () => () => false
+    expect(await createLaunchHelpers(deps).relaunchOverrides(session())).toMatchObject({ error: 'AGENT_CHANGED' })
+    expect(buildLaunchOverrides).not.toHaveBeenCalled()
+    expect(prepareInstructionWrites).not.toHaveBeenCalled()
+  })
+
+  it('keeps the caller authority separate and does not write after a cancelled preparation reply', async () => {
     const { deps, helpers } = setup()
-    vi.mocked(loadEngine).mockResolvedValueOnce(null)
-    expect(await helpers.relaunchOverrides(session({ engine: 'opencode' }))).toEqual({ ok: false, error: 'ENGINE_UNAVAILABLE', detail: 'OpenCode\'s code could not be loaded' })
-    // No instruction files prepared, no API notes, no overrides built.
+    expect(await helpers.relaunchOverrides(session(), session(), () => false)).toMatchObject({ error: 'AGENT_CHANGED' })
+    expect(buildLaunchOverrides).not.toHaveBeenCalled()
+    vi.mocked(buildLaunchOverrides).mockResolvedValueOnce({ ok: false, error: 'AGENT_CHANGED', detail: 'revoked' })
+    expect(await helpers.relaunchOverrides(session())).toMatchObject({ error: 'AGENT_CHANGED' })
     expect(prepareInstructionWrites).not.toHaveBeenCalled()
     expect(deps.prepareApiTools).not.toHaveBeenCalled()
-    expect(buildLaunchOverrides).not.toHaveBeenCalled()
-    vi.mocked(loadEngine).mockClear()
-    expect(await helpers.relaunchOverrides(session())).toEqual({ ok: true })
-    expect(loadEngine).not.toHaveBeenCalled()
-    expect(prepareInstructionWrites).toHaveBeenCalledWith('/work')
-    // With OpenCode's code, an OpenCode relaunch is built.
+  })
+
+  it.each(['service', 'SCM'] as const)('a Stop or rebind during %s cannot redirect deferred instructions', async stage => {
+    const { deps } = setup()
+    let allowed = true
+    deps.authority = () => () => allowed
+    const row = session()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    if (stage === 'service') vi.mocked(buildLaunchOverrides).mockImplementationOnce(async () => { await gate; return { ok: true } as never })
+    else vi.mocked(prepareInstructionWrites).mockImplementationOnce(async () => { await gate })
+    const result = createLaunchHelpers(deps).relaunchOverrides(row)
+    await vi.waitFor(() => expect(stage === 'service' ? buildLaunchOverrides : prepareInstructionWrites).toHaveBeenCalled())
+    row.cwd = '/replacement'; row.engine = 'codex'
+    allowed = false
+    release()
+    expect(await result).toMatchObject({ error: 'AGENT_CHANGED' })
+    expect(deps.prepareApiTools).not.toHaveBeenCalled()
+    if (stage === 'service') expect(prepareInstructionWrites).not.toHaveBeenCalled()
+    else expect(prepareInstructionWrites).toHaveBeenCalledExactlyOnceWith('/work')
+  })
+
+  it.each(['store', 'models'])('leaves instruction files alone while %s is unavailable', async unavailable => {
+    const { deps, helpers } = setup()
+    const refused = { ok: false as const, error: 'SERVICE_UNAVAILABLE', detail: 'Waiting for preparation.', unavailable }
+    vi.mocked(buildLaunchOverrides).mockResolvedValueOnce(refused)
+    expect(await helpers.relaunchOverrides(session())).toEqual(refused)
+    expect(prepareInstructionWrites).not.toHaveBeenCalled()
+    expect(deps.prepareApiTools).not.toHaveBeenCalled()
+  })
+
+  it('relaunches with eager control when optional OpenCode code cannot load', async () => {
+    const { deps, helpers } = setup()
+    vi.mocked(loadEngine).mockImplementation(() => new Promise(() => {}))
     expect(await helpers.relaunchOverrides(session({ engine: 'opencode' }))).toEqual({ ok: true })
-    expect(loadEngine).toHaveBeenCalledWith('opencode')
+    expect(await helpers.relaunchOverrides(session())).toEqual({ ok: true })
+    expect(prepareInstructionWrites).toHaveBeenCalledWith('/work')
+    expect(deps.prepareApiTools).toHaveBeenCalledWith('/work', 'opencode')
+    expect(loadEngine).not.toHaveBeenCalled()
   })
 
   it('rebuilds a launch from the row: its DSH, folder and named agent, whatever the source adds', async () => {
@@ -60,10 +107,18 @@ describe('relaunch helpers', () => {
     expect(deps.prepareApiTools).toHaveBeenCalledWith('/work', 'claude')
     expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({
       dsh: 'blender', dshRuntime: null, cwd: '/work', agent: 'reviewer', gridLaunch: null,
-    }), 'a1')
+    }), 'a1', expect.any(Function), undefined)
     const grid = { networkId: 'grid-1', networkName: 'Home grid' }
     await helpers.relaunchOverrides(session({ dsh: undefined, dshRuntime: undefined, agent: undefined } as Partial<RegisteredSession>), { gridLaunch: grid } as never)
-    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ dsh: null, agent: null, gridLaunch: grid }), 'a1')
+    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ dsh: null, agent: null, startedBy: null, gridLaunch: grid }), 'a1', expect.any(Function), undefined)
+  })
+
+  it('keeps who started it from the row, so a harness another agent started keeps its pull request line', async () => {
+    const { deps, helpers } = setup()
+    const grid = { networkId: 'grid-1', networkName: 'Home grid' }
+    // A retarget's source is the new grid alone: who started the harness is still the row's.
+    await helpers.relaunchOverrides(session({ startedBy: 'agent' }), { gridLaunch: grid } as never)
+    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ startedBy: 'agent', gridLaunch: grid }), 'a1', expect.any(Function), undefined)
   })
 
   it('records the web-search decision a relaunch made, when it made one', () => {
@@ -92,7 +147,7 @@ describe('relaunch helpers', () => {
     const { helpers } = setup()
     vi.mocked(dropPermissionFlagIfUnsupported).mockResolvedValueOnce({ choice: { bypassPermission: false }, droppedFlag: '--permission-mode' } as never)
     expect(await helpers.downgradedPermission(session({ permissionMode: 'plan' } as Partial<RegisteredSession>), true, 'restart')).toEqual({ bypassPermission: false })
-    expect(dropPermissionFlagIfUnsupported).toHaveBeenCalledWith('claude', { permissionMode: 'plan', bypassPermission: true })
+    expect(dropPermissionFlagIfUnsupported).toHaveBeenCalledWith('claude', { permissionMode: 'plan', bypassPermission: true }, undefined, undefined)
     expect(String(warn.mock.calls[0][0])).toContain('does not take --permission-mode · starting in Ask · update claude to get plan back')
     vi.mocked(dropPermissionFlagIfUnsupported).mockResolvedValueOnce({ choice: { bypassPermission: true }, droppedFlag: '--dangerously-skip-permissions' } as never)
     await helpers.downgradedPermission(session(), true, 'retarget')

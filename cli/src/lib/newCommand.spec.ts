@@ -142,7 +142,8 @@ describe('harness new: the daemon', () => {
     const d = deps(['codex'], socket)
     expect(await newCommand(d)).toBe(0)
     expect(socket.sent.map((frame) => frame.type)).toEqual(['machine_select', 'agent_create'])
-    expect(socket.sent[0]!.payload).toEqual({ machineId: 'm2', localProtocolVersion: 1 })
+    // A tool, not a window: a window would turn the question watcher on and count as someone looking.
+    expect(socket.sent[0]!.payload).toEqual({ machineId: 'm2', localProtocolVersion: 1, tool: true })
     expect(socket.sent[1]!.payload).toMatchObject({ engine: 'codex', cwd: '/work/repo' })
     expect(d.out[0]).toBe('Created Codex harness 9-19 10:02 on this computer in /work/repo.')
   })
@@ -167,6 +168,146 @@ describe('harness new: the daemon', () => {
     const refused = deps(['acme/typst'], new FakeSocket((frame) => frame.type === 'dsh_list' ? { dsh: catalog } : null))
     expect(await newCommand(refused)).toBe(1)
     expect(refused.err[0]).toBe('Install it first: harness dsh install acme/typst')
+  })
+
+  it('says a launch the machine refused or could not confirm failed, never "Created"', async () => {
+    const failed = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create'
+      ? { creationId: 'c1', state: 'failed', failure: { code: 'SPAWN_FAILED', detail: 'no codex' } } : null))
+    expect(await newCommand(failed)).toBe(1)
+    expect(failed.err[0]).toBe('The agent could not be started. (no codex)')
+    expect(failed.out).toEqual([])
+    const unknownCode = deps(['codex', '--json'], new FakeSocket((frame) => frame.type === 'agent_create'
+      ? { creationId: 'c1', state: 'failed', failure: { code: 'ODD' } } : null))
+    expect(await newCommand(unknownCode)).toBe(1)
+    expect(JSON.parse(unknownCode.out[0]!)).toEqual({ ok: false, error: 'ODD' })
+    const bare = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create' ? { creationId: 'c1', state: 'failed' } : null))
+    expect(await newCommand(bare)).toBe(1)
+    expect(bare.err[0]).toBe('The harness could not be started.')
+    const unconfirmed = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create' || frame.type === 'agent_create_status'
+      ? { creationId: 'c1', state: 'unconfirmed' } : null), { sleep: async () => {} })
+    expect(await newCommand(unconfirmed)).toBe(1)
+    expect(unconfirmed.err[0]).toMatch(/could not confirm .*\(unconfirmed\).*harness ps/)
+  })
+
+  it('asks after a launch the machine holds until it is made, by its creation id', async () => {
+    let asks = 0
+    const socket = new FakeSocket((frame) => {
+      if (frame.type === 'agent_create') return { creationId: frame.payload.creationId, state: 'pending' }
+      if (frame.type === 'agent_create_status') return ++asks < 3 ? { creationId: frame.payload.creationId, state: 'pending' } : { state: 'created', agent: { id: 'h1', name: 'held' } }
+      return null
+    })
+    const slept: number[] = []
+    const d = deps(['codex'], socket, { sleep: async (ms) => { slept.push(ms) } })
+    expect(await newCommand(d)).toBe(0)
+    expect(d.out[0]).toBe('Created held on this computer in /work/repo.')
+    const create = socket.sent.find((f) => f.type === 'agent_create')!
+    expect(socket.sent.filter((f) => f.type === 'agent_create_status').every((f) => f.payload.creationId === create.payload.creationId)).toBe(true)
+    expect(slept).toEqual([2_000, 2_000, 2_000])
+  })
+
+  it('says what a held launch waits for and, given up on, cancels it so it never starts later', async () => {
+    const held = (detail: string) => ({ state: 'pending', held: { service: 'native', detail } })
+    let asks = 0
+    const socket = new FakeSocket((frame) => {
+      if (frame.type === 'agent_create') return { creationId: frame.payload.creationId, ...held('Installing the required engine.') }
+      if (frame.type === 'agent_create_status') return ++asks < 5 ? held('Installing the required engine.') : held('Waiting to confirm the selected executable’s permission flags.')
+      if (frame.type === 'agent_create_cancel') return { creationId: frame.payload.creationId, state: 'cancelled' }
+      return null
+    })
+    const d = deps(['opencode', '--', 'fix it'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(1)
+    // Each reason once, as it changes, then why it stopped.
+    expect(d.err).toEqual([
+      'Installing the required engine.',
+      'Waiting to confirm the selected executable’s permission flags.',
+      'Harness did not start the harness within a minute: Waiting to confirm the selected executable’s permission flags. '
+        + 'The request is cancelled, so it will not start later.',
+    ])
+    expect(asks).toBe(30)
+    const create = socket.sent.find((f) => f.type === 'agent_create')!
+    expect(socket.sent.filter((f) => f.type === 'agent_create_cancel').map((f) => f.payload.creationId)).toEqual([create.payload.creationId])
+    expect(d.out).toEqual([])
+  })
+
+  it('takes what became of a launch it could no longer cancel, and says so when it cannot cancel at all', async () => {
+    const answer = (cancel: Record<string, unknown> | null) => new FakeSocket((frame) =>
+      frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending' }
+        : frame.type === 'agent_create_cancel' ? cancel : null)
+    const started = deps(['codex'], answer({ state: 'created', agent: { id: 'h2', name: 'late' } }), { sleep: async () => {} })
+    expect(await newCommand(started)).toBe(0)
+    expect(started.out[0]).toBe('Created late on this computer in /work/repo.')
+    expect(started.err).toEqual([])
+    const refused = deps(['codex'], answer({ state: 'failed', failure: { code: 'ENGINE_CANNOT_RUN', detail: 'Codex is installed but cannot run: env: node: No such file or directory' } }), { sleep: async () => {} })
+    expect(await newCommand(refused)).toBe(1)
+    expect(refused.err).toEqual(['Codex is installed but cannot run: env: node: No such file or directory'])
+    // Claimed just before the cancel: starting now, not later, and not cancelled.
+    const claimed = deps(['codex'], answer({ state: 'unconfirmed' }), { sleep: async () => {} })
+    expect(await newCommand(claimed)).toBe(1)
+    expect(claimed.err).toEqual(['Harness could not confirm the harness started (unconfirmed). Check with `harness ps` before starting another.'])
+    const held = deps(['codex', 'my-game'], answer({ state: 'failed', failure: { code: 'NATIVE_LAUNCH_HELD', detail: 'Waiting to confirm native engine locations.' } }), { sleep: async () => {} })
+    expect(await newCommand(held)).toBe(1)
+    expect(held.err).toEqual(['The agent\'s engine was not ready to start. (Waiting to confirm native engine locations.)'])
+    // A daemon with no cancel (or no answer): the request is still saved, and that is said plainly.
+    const older = deps(['codex', '--json'], answer(null), { sleep: async () => {} })
+    expect(await newCommand(older)).toBe(1)
+    expect(JSON.parse(older.out[0]!)).toEqual({ ok: false, error: 'Harness did not start the harness within a minute. '
+      + 'It is still saved and may start later by itself: check with `harness ps` before starting another.' })
+    expect(older.err).toEqual([])
+  })
+
+  it('says why the machine refused an engine that cannot run, in the machine\'s words', async () => {
+    const d = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create' ? { creationId: 'c1', state: 'failed',
+      failure: { code: 'ENGINE_CANNOT_RUN', detail: 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory' } } : null))
+    expect(await newCommand(d)).toBe(1)
+    expect(d.err).toEqual(['Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory'])
+  })
+
+  it('reads the folder off the harness the machine made', async () => {
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create'
+      ? { state: 'created', agent: { id: 'a1', name: 'fixer', project: { cwd: '/work/repo/.worktrees/x' } } } : null)
+    const d = deps(['codex'], socket)
+    expect(await newCommand(d)).toBe(0)
+    expect(d.out[0]).toBe('Created fixer on this computer in /work/repo/.worktrees/x.')
+  })
+
+  it('run by an agent: checks its limits, heads its task with who sent it, records it, and says how to follow it', async () => {
+    const created: Array<[string, Record<string, unknown>]> = []
+    let warning: string | null = null
+    const origin = {
+      check: async () => {},
+      prompt: (text: string, machineId: string) => `[from lead on ${machineId}]\n\n${text}`,
+      created: async (machineId: string, agent: Record<string, unknown>) => { created.push([machineId, agent]); return warning },
+      next: (agent: Record<string, unknown>) => `Read it: harness show ${String(agent.name)}`,
+    }
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'a9', name: 'reviewer' } } : null)
+    const d = deps(['codex', '--name', 'reviewer', '--', 'review', 'it'], socket, { origin: async () => origin })
+    expect(await newCommand(d)).toBe(0)
+    expect(socket.sent[1]!.payload.prompt).toBe('[from lead on m2]\n\nreview it')
+    // The machine records that an agent started it: the pull requests it opens say so (lib/agentAttribution.ts).
+    expect(socket.sent[1]!.payload.startedBy).toBe('agent')
+    expect(created).toEqual([['m2', { id: 'a9', name: 'reviewer' }]])
+    expect(d.out[1]).toBe('Read it: harness show reviewer')
+    // No task: nothing to head.
+    const quiet = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'b1', name: 'idle' } } : null)
+    expect(await newCommand(deps(['codex'], quiet, { origin: async () => origin }))).toBe(0)
+    expect(quiet.sent[1]!.payload.prompt).toBeUndefined()
+    // Over a limit: refused before anything is asked of the machine.
+    const refused = new FakeSocket(() => null)
+    const over = deps(['codex', '--', 'go'], refused, { origin: async () => ({ ...origin, check: async () => { throw new Error('You have 8 harnesses running.') } }) })
+    expect(await newCommand(over)).toBe(1)
+    expect(over.err[0]).toBe('You have 8 harnesses running.')
+    expect(refused.sent).toEqual([])
+    // A record another machine could not keep: said, and the harness is still made.
+    warning = 'its limits start from zero'
+    const far = deps(['codex', '--', 'go'], new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'f1', name: 'far' } } : null), { origin: async () => origin })
+    expect(await newCommand(far)).toBe(0)
+    expect(far.err).toEqual(['its limits start from zero'])
+    // A person at a terminal: no origin, the old words.
+    const atTerminal = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'c1', name: 'x' } } : null)
+    const person = deps(['codex'], atTerminal, { origin: async () => null })
+    expect(await newCommand(person)).toBe(0)
+    expect(person.out[1]).toBe('Open it in Harness with ⌘O.')
+    expect(atTerminal.sent[1]!.payload).not.toHaveProperty('startedBy')
   })
 
   it('turns the machine\'s refusal into words, and a usage slip into the usage', async () => {

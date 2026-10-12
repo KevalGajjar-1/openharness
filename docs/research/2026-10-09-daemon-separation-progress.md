@@ -1,6 +1,6 @@
 # Daemon separation continuation, 2026-10-09
 
-The architectural requirements and remaining order are in the [handoff](2026-10-08-daemon-separation-handoff.md). No release is authorized.
+The architectural requirements and remaining order are in the [handoff](2026-10-08-daemon-separation-handoff.md). No release is authorized. The current remaining scope is the [completion checklist](2026-10-09-daemon-core-completion.md); the sections below are the historical implementation record.
 
 ## Crash resume
 
@@ -181,3 +181,82 @@ existing engine/timestamp prefix, avoiding same-clock collisions across calls,
 daemon processes and restarts. Discovery still accepts both old and new names;
 existing panes are neither renamed nor removed. All native fixtures use private
 homes, shell history and sockets. Final validation and review are pending.
+
+
+## Later follow-ups and remaining safety work
+
+The same-millisecond label fix landed in [#1091](https://github.com/autonomous-ai/openharness/pull/1091).
+The capture authority fence landed in [#1093](https://github.com/autonomous-ai/openharness/pull/1093).
+Kilo and Hermes adoption/control boundaries landed in [#1095](https://github.com/autonomous-ai/openharness/pull/1095)
+and [#1097](https://github.com/autonomous-ai/openharness/pull/1097).
+Eager native identity and Muse/Pi repair landed in [#1104](https://github.com/autonomous-ai/openharness/pull/1104)
+and [#1106](https://github.com/autonomous-ai/openharness/pull/1106).
+OpenCode's version/model control extraction landed in [#1110](https://github.com/autonomous-ai/openharness/pull/1110)
+as `ee33093971d27e9dcda7f2ae8c35f54b61cec0bb` at 11:30:10 UTC, with all automatic checks and independent review.
+Their detailed evidence is in the dated identity, repair, capture, Kilo and OpenCode notes beside this one.
+No release has occurred.
+
+The six original phases have landed. The architectural bar is not complete. Native hook installation now
+has its own [golden-first extraction and fault evidence](2026-10-09-native-hook-installation.md).
+The required next work is bounded asynchronous executable/version preparation, explicit held preparation
+and durable launch intent, retarget authority across native writes, unreadable/unconfirmed native mutation
+handling, and the OpenCode v2 Close checkpoint audit. The precise gaps are recorded in
+[OpenCode control](2026-10-09-opencode-control.md). Remaining shared-control work includes bounded identity
+scans, Cursor pending-task persistence, agy turn backstop/control facts, input verification declarations,
+and the final unavailable-service/readiness audit. Line counts do not establish any of those properties.
+
+## Native locations and retry isolation
+
+[PR #1118](https://github.com/autonomous-ai/openharness/pull/1118) bounds exact Cursor/Grok locations and Copilot/agy process claims, rejects incomplete or changing evidence, and retains/retries failed bindings and pending transcript discovery without blocking siblings. The [implementation, independent review corrections, validation and measured cost](2026-10-09-native-location-discovery.md) are recorded separately. Former-code golden artifacts remain unchanged and all 21 broken-wiring variants assertion-fail. Native identity as a whole remains open in the completion checklist: exact resume/legacy records, saved-home catalogs, Hermes pools and shared visible hold state still need completion.
+
+## Fresh Hermes stores and retained Stop homes
+
+[PR #1120](https://github.com/autonomous-ai/openharness/pull/1120) merged as `a847441e5` at 16:39:44 UTC on October 9. Fresh complete native pools hold unreadable, ambiguous, oversized or changing evidence; Stop preserves the proven home. The [report](2026-10-09-hermes-store-pools.md) contains the unchanged golden, 27 assertion-failing mutants, full coverage/native acceptance and matched cost. Final source had independent exact-head/base approval and every automatic head check, including `ci/required`. Implementation/review corrections ended at 15:52, local acceptance and cost by 15:57, and final documentation review at 16:00. CI waiting and integration extended to 16:39 after the recorded legacy-golden safety correction and three documentation-only main advances. The merge helper ran 16:39:30–16:39:44. Publication remains zero. Native identity as a group remains open; exact resume is next, followed by legacy records, saved-home failure handling and shared hold visibility.
+
+
+## Native descriptor evidence and durable home adoption
+
+[PR #1131](https://github.com/autonomous-ai/openharness/pull/1131) merged as `9eafacf3b512a0b1ffd23e0d446115896b01f7ed` on October 10 at 00:33:06 UTC. Its [report](2026-10-09-native-descriptor-evidence.md) records the unchanged 29-observation golden, 21 assertion-failing mutations, native/private acceptance, full coverage, 150 matched cost samples, and exact-head/base independent review. Automatic CI run `38008750415` completed all applicable checks including `ci/required`. Merge verification ran 00:32:53–00:33:06. No release occurred.
+
+The owner resumed the paused task on October 9 at 22:25:51 UTC. [Durable home adoption](2026-10-10-durable-home-adoption.md) landed in [#1132](https://github.com/autonomous-ai/openharness/pull/1132) as `c7d460b1d8018ed56126c662702fd44db886d07d` at October 10 01:43:24 UTC. Independent review approved exact head `7ae6c83921b76733e96db70a0948c73ff1b55e70` against base `9eafacf3b512a0b1ffd23e0d446115896b01f7ed`. Automatic run `38013783062` passed every applicable check including `ci/required`. Final local validation ran 01:35:58–01:38:38; composed resume and large-transcript checks ran alone 01:40:42–01:41:56. Merge verification ran 01:43:11–01:43:24. Publication remains zero.
+
+Work continues on [saved-binding evidence and recovery](2026-10-10-saved-binding-evidence.md). This is not a claim that the native-identity group or complete refactor is finished.
+
+## Saved binding and atomic hook admission
+
+[PR #1133](https://github.com/autonomous-ai/openharness/pull/1133) landed saved-binding
+evidence and visible recovery as `a2a7874f3` at October 10 05:16:31 UTC.
+[PR #1137](https://github.com/autonomous-ai/openharness/pull/1137) then landed atomic
+native hook admission and live Stop ownership as `9618c2e2c` at 08:36:54 UTC. The
+[hook admission report](2026-10-10-native-hook-admission.md) records exact-head review,
+unchanged goldens, mutation proofs, costs, acceptance and automatic CI. The guarded
+merge occupied 08:36:40–08:36:54; publication remains zero.
+
+The next [Stop/Resume/Close authority change](2026-10-10-control-transcript-authority.md)
+has independent source approval and passing unit, core, harnessd and Resume gates;
+private lifecycle acceptance, mutation checks, costs and final CI remain under way.
+The [completion checklist](2026-10-09-daemon-core-completion.md) still tracks durable
+delivery/lifecycle intent and the other concrete architecture gaps.
+
+## October 10: native transcript authority landed
+
+PR #1139 merged as `d852e1d9998e939ec40f3d52d864e1717e74d8ae` after independent
+review of `74afc203000c8504dcb88cfb91454f3a894f1968` against main
+`526d6bb9d081a5e8afbefd21ddefb28586570adc`. The guarded merge receipt started at
+10:03:54 UTC and confirms that the reviewed and tested trees match the squash.
+[Automatic CI](https://github.com/autonomous-ai/openharness/actions/runs/38043296667)
+passes all four Linux shards, typecheck, process checks and `ci/required`. Private
+acceptance passed all 74 cases in six lanes in 694.3 seconds. Core/services and
+harnessd retain 100% coverage; serial Resume passed 602 cases with 100% coverage.
+Both new healthy goldens remain unchanged; 30 wiring faults fail by assertion.
+
+The initial CI's legacy fixtures were corrected without product-code changes: two
+purge fixtures now supply a native header, and two explicitly named unsafe capture
+answers now require a typed hold with unchanged inputs. The final fixture delta
+passed typecheck and its 18 affected tests; CI covers the complete final source.
+Independent review approved the exact final head and the declared evidence reuse.
+Implementation, validation, CI/review waiting and guarded merge remain separate
+intervals; overlap is not summed into an elapsed duration. No release or publication.
+
+Reviewed native-history deletion is the next isolated migration. The recorded native
+consumer golden also preserves the former handoff behavior for its subsequent move.

@@ -5,10 +5,13 @@
  * Moved verbatim out of `runForeground` (the core boundary, step 12: docs/design/2026-10-03-harnessd.md).
  */
 import { engineHooks } from '../../engines/hooks.js'
-import { sessionStoreContracts, type SessionStoreEngine } from '../../engines/sessionStoreContracts.js'
+import { sessionStoreContracts } from '../../engines/sessionStoreContracts.js'
 import { chooseHookAgent, type HookServerHandlers } from '../../hookServer.js'
-import { adoptHomes, movedHomes } from '../../lib/engineHomes.js'
-import { loadEngine, type InProcessModules } from '../../engines/inProcess.js'
+import { confirmHomes, recoverEngineHomes } from '../../lib/engineHomes.js'
+import { createHomeAdoptions } from './homeAdoptions.js'
+import * as nativeHooks from '../../engines/nativeHooks.js'
+import type { NativeHookOptions } from '../../engines/kit/nativeLocations.js'
+import type { OpencodeLaunchSnapshot } from '../../engines/launchControl.js'
 import { sid } from '../../lib/log.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
 import { processRows } from '../../lib/terminalAgentDiscovery.js'
@@ -25,7 +28,8 @@ export interface EngineHookDeps {
   /** Hints name tmux panes; without tmux there is nothing they can point at. */
   tmuxBackend: unknown
   agentReconciler: Pick<TerminalAgentReconciler, 'triggerHint' | 'trigger'>
-  registry: Pick<typeof registry, 'byRuntimeEngine'>
+  registry: Pick<typeof registry, 'byRuntimeEngine' | 'byAgent'>
+  syncSession: (row: RegisteredSession) => void
 }
 
 /**
@@ -46,14 +50,14 @@ type HookQuery = Parameters<ResolveHookAgent>[0]
 const recordKey = (session: RegisteredSession | undefined): string =>
   session ? `${session.agentId}\u0000${session.processIdentity?.pid ?? ''}\u0000${session.processIdentity?.startMarker ?? ''}` : ''
 
-export function createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending }: EngineHookDeps) {
+export function createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending, syncSession }: EngineHookDeps) {
   /**
    * The agents on the hinted panes: those whose recorded process the caller descends from, the rest,
    * and of the rest those with no live process recorded at all (none yet, or one that has exited).
    * `ancestry` is the hook's own process and those it descends from, read as the hook arrived
    * (`resolveHookAgent`); `table`, the process table to judge the recorded processes by, else a new read.
    */
-  const matchCaller = async (resolved: TerminalRuntimeRef[], engine: HookQuery['engine'], ancestry: ReadonlySet<number>, table?: ProcessRow[]) => {
+  const matchCaller = async (resolved: TerminalRuntimeRef[], engine: HookQuery['engine'], ancestry: ReadonlyMap<number, ProcessRow>, table?: ProcessRow[]) => {
     const rows = table ?? await processRows()
     if (!rows) return null
     const recordedAlive = (session: RegisteredSession): boolean => {
@@ -62,7 +66,8 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
     }
     const callerBelongsTo = (session: RegisteredSession): boolean => {
       const expectedPid = session.processIdentity?.pid
-      return !!expectedPid && ancestry.has(expectedPid)
+      const original = expectedPid && ancestry.get(expectedPid)
+      return !!original && sameProcessIdentity(original, session.processIdentity)
     }
     const candidates = new Map<string, RegisteredSession>()
     /**
@@ -80,12 +85,16 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
     const onHintedRuntime = new Map<string, RegisteredSession>()
     const unrecorded: RegisteredSession[] = []
     for (const runtime of resolved) {
-      const candidate = registry.byRuntimeEngine(runtime, engine)
-      if (!candidate) continue
+      const live = registry.byRuntimeEngine(runtime, engine)
+      if (!live) continue
+      // The caller resumes after this async function returns. Capture at the
+      // ancestry check, before that continuation can observe a replacement row.
+      const candidate = structuredClone(live)
       if (callerBelongsTo(candidate)) candidates.set(candidate.agentId, candidate)
       else {
         onHintedRuntime.set(candidate.agentId, candidate)
-        if (!recordedAlive(candidate)) unrecorded.push(candidate)
+        // A reused PID is positive evidence of another process, not an unrecorded launch.
+        if (!recordedAlive(candidate) && !ancestry.has(candidate.processIdentity?.pid ?? 0)) unrecorded.push(candidate)
       }
     }
     return { candidates, onHintedRuntime, unrecorded }
@@ -110,7 +119,7 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
     // shell that exits with the hook (its 500ms, or `onWait`'s answer); read after the reconcile pass or
     // the wait, the ancestry stopped at a pid already gone and a restart's new conversation was never
     // bound (e2e/updates.e2e.ts). macOS's /bin/sh is a bash that execs the hook: never seen there.
-    const arrival = processRows()
+    const arrival = processRows().then(rows => rows?.map(row => ({ ...row })) ?? null)
     const resolved: TerminalRuntimeRef[] = []
     for (const hint of runtimeHints ?? []) {
       if (tmuxBackend) resolved.push({ backend: 'tmux', paneId: hint.paneId })
@@ -123,9 +132,14 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
     // A `ps` already running (processRows shares it) may predate the hook's process; the next read has it.
     if (table && !table.some((row) => row.pid === callerPid)) table = await processRows()
     if (!table) return null
-    const parents = new Map(table.map((row) => [row.pid, row.parentPid]))
-    const ancestry = new Set<number>()
-    for (let pid = callerPid; pid > 0 && !ancestry.has(pid); pid = parents.get(pid) ?? 0) ancestry.add(pid)
+    const parents = new Map(table.map(row => [row.pid, row]))
+    const ancestry = new Map<number, ProcessRow>()
+    for (let pid = callerPid; pid > 0 && !ancestry.has(pid);) {
+      const row = parents.get(pid)
+      if (!row) break
+      ancestry.set(pid, { ...row })
+      pid = row.parentPid
+    }
 
     let found = (await matchCaller(resolved, engine, ancestry, table))!
     let choice = chooseHookAgent([...found.candidates.values()], [...found.onHintedRuntime.values()], engine)
@@ -183,19 +197,23 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
   const onSessionEnd = (_sessionId: string, _reason: string | undefined): void => {
     void agentReconciler.trigger()
   }
-  return { resolveHookAgent, onSessionEnd }
+  const onAdmissionHeld = (id: string, reason: string | undefined): void => {
+    const row = registry.byAgent(id)
+    if (!row) return
+    if (reason) row.admissionHold = reason
+    else delete row.admissionHold
+    syncSession(row)
+  }
+  return { resolveHookAgent, onSessionEnd, onAdmissionHeld }
 }
 
 /**
  * OpenCode's plugin, installed again before an OpenCode spawn (core/agents/create.ts): OpenCode may have moved
- * from 1.x to 2.x under a running daemon, and its new TUI must not find the old server plugin. False when the
- * other engines' installers could not be loaded.
+ * from 1.x to 2.x under a running daemon, and its new TUI must not find the old server plugin. Installation
+ * never depends on loading its optional interpreter.
  */
-export async function installOpencodePluginBeforeSpawn(port: number): Promise<boolean> {
-  const installers = await loadEngine('hooks')
-  if (!installers) return false
-  installers.installOpencodePlugin(port)
-  return true
+export async function installOpencodePluginBeforeSpawn(port: number, snapshot?: OpencodeLaunchSnapshot): Promise<boolean> {
+  return await (snapshot ? nativeHooks.installOpencodePlugin(port, snapshot) : nativeHooks.installOpencodePlugin(port)) !== false
 }
 
 export interface InstallEngineHooksOptions {
@@ -208,23 +226,22 @@ export interface InstallEngineHooksOptions {
 }
 
 /**
- * The other engines' installers, in the order they have always run. Their code is loaded only here, once, as
- * the core starts (engines/inProcess.ts `hooks`), and only when one of them is to be installed.
+ * The other engines' declarations are installed in their original order, without an optional import.
  */
-const OTHER_INSTALLERS: Array<[string, (installers: InProcessModules['hooks']) => (port: number) => void]> = [
-  ['cursor', (installers) => installers.installCursorHooks],
-  ['opencode', (installers) => installers.installOpencodePlugin],
-  ['kilo', (installers) => installers.installKiloPlugin],
-  ['pi', (installers) => installers.installPiExtension],
+const OTHER_INSTALLERS: Array<[string, (port: number, options: NativeHookOptions) => void | boolean | Promise<unknown>]> = [
+  ['cursor', nativeHooks.installCursorHooks],
+  ['opencode', (port, options) => nativeHooks.installOpencodePlugin(port, undefined, options)],
+  ['kilo', nativeHooks.installKiloPlugin],
+  ['pi', nativeHooks.installPiExtension],
   // A self-update refreshes plugin files here; running engine processes pick them up according to each
   // vendor's own plugin reload lifecycle.
-  ['amp', (installers) => installers.installAmpPlugin],
-  ['hermes', (installers) => installers.installHermesHooks],
-  ['devin', (installers) => installers.installDevinHooks],
-  ['commandcode', (installers) => installers.installCommandCodeHooks],
-  ['grok', (installers) => installers.installGrokHooks],
-  ['agy', (installers) => installers.installAgyHooks],
-  ['copilot', (installers) => installers.installCopilotHooks],
+  ['amp', nativeHooks.installAmpPlugin],
+  ['hermes', (port, options) => nativeHooks.installHermesHooks(port, undefined, options)],
+  ['devin', nativeHooks.installDevinHooks],
+  ['commandcode', nativeHooks.installCommandCodeHooks],
+  ['grok', nativeHooks.installGrokHooks],
+  ['agy', nativeHooks.installAgyHooks],
+  ['copilot', nativeHooks.installCopilotHooks],
 ]
 
 /**
@@ -234,43 +251,47 @@ const OTHER_INSTALLERS: Array<[string, (installers: InProcessModules['hooks']) =
  * files owned by thirteen different CLIs, and one that is malformed, read-only or mid-write is not
  * a reason for the other twelve to go uninstalled — let alone for the daemon not to come up.
  *
- * Claude Code's and Codex's first, in line, as before. Then the other engines' installers are loaded, at this
- * same step, which the caller awaits so that nothing it starts next (a restored pane among them) runs before
- * their hooks are in place. Installers that could not be loaded are skipped and named, as one that throws is.
- * Never rejects.
+ * Core starts this after readiness. Every launch separately confirms the hooks it
+ * needs; an unrelated vendor's disk or version probe cannot delay control. The
+ * controller is returned immediately so shutdown can revoke every pending write.
+ * `settled` observes this initial pass, never readiness. It does not reject.
  */
-export async function installEngineHooks(port: number, options: InstallEngineHooksOptions = {}): Promise<void> {
-  const hookStep = (vendor: string, install: () => void): void => {
+export function installEngineHooks(port: number, options: InstallEngineHooksOptions = {}): { close(): void; settled: Promise<void> } {
+  const pending: Promise<void>[] = []
+  const hookStep = (vendor: string, install: () => void | boolean | Promise<unknown>): void => {
     if (options.only && !options.only.has(vendor)) return
-    try { install() } catch (error) {
+    const failed = (error: unknown) => {
       console.warn(`[hooks] ${vendor} install skipped · ${error instanceof Error ? error.message : error}`)
     }
+    try {
+      const result = install()
+      if (result === false) failed('native hook preparation is unavailable')
+      else if (result && typeof result !== 'boolean') pending.push(result.then(answer => {
+        if (answer === false) failed('native hook preparation is unavailable')
+      }, failed))
+    } catch (error) { failed(error) }
   }
   // The homes the person moved (lib/engineHomes.ts, by each engine's declared session store) get the hooks
   // too: every one adopted before, those the daemon's own environment names, and those of the login shell
   // every engine is launched through once it has been read. That read is never waited on (cli.ts), so an
   // engine started in the first seconds of a daemon's very first start with a moved home may miss its first hook.
-  const installIn = (homes: Array<[SessionStoreEngine, string]>): void => {
-    for (const [engine, home] of homes) hookStep(engine, () => engineHooks[engine].installIn(port, home))
-  }
-  const adopt = (environment: NodeJS.ProcessEnv): void => {
-    const moved = (Object.entries(adoptHomes(environment)) as Array<[SessionStoreEngine, string | null]>)
-      .filter((found): found is [SessionStoreEngine, string] => !!found[1])
-    if (!moved.length) return
-    console.log(`[hooks] engines keep their data elsewhere here: ${moved.map(([engine, home]) => `${sessionStoreContracts[engine].product} in ${home}`).join(', ')}`)
-    installIn(moved)
-  }
-  installIn((Object.keys(sessionStoreContracts) as SessionStoreEngine[]).flatMap((engine) => movedHomes(engine).map((home): [SessionStoreEngine, string] => [engine, home])))
-  adopt(options.environment ?? process.env)
-  void options.loginShell?.then(adopt)
-  for (const [engine, hooks] of Object.entries(engineHooks)) hookStep(engine, () => hooks.install(port))
-  const others = OTHER_INSTALLERS.filter(([vendor]) => !options.only || options.only.has(vendor))
-  if (!others.length) return
-  const installers = await loadEngine('hooks')
-  for (const [vendor, installer] of others) {
-    hookStep(vendor, () => {
-      if (!installers) throw new Error('its installer could not be loaded')
-      installer(installers)(port)
-    })
-  }
+  const adoptions = createHomeAdoptions({
+    read: recoverEngineHomes,
+    confirm: confirmHomes,
+    install: async (engine, home) => {
+      if (options.only && !options.only.has(engine)) return
+      if (!await engineHooks[engine].installIn(port, home, { current: adoptions.current })) throw new Error(`${sessionStoreContracts[engine].product} hook preparation is unavailable`)
+      console.log(`[hooks] ${sessionStoreContracts[engine].product} hooks installed in its adopted home`)
+    },
+    held: reason => {
+      if (reason) console.warn(`[hooks] home adoption held · ${reason}`)
+      else console.log('[hooks] home adoption recovered')
+    },
+  })
+  adoptions.submit(options.environment ?? process.env)
+  void options.loginShell?.then(adoptions.submit, error => console.warn(`[hooks] login-shell homes unavailable · ${error instanceof Error ? error.message : error}`))
+  const nativeOptions = { current: adoptions.current }
+  for (const [engine, hooks] of Object.entries(engineHooks)) hookStep(engine, () => hooks.install(port, nativeOptions))
+  for (const [vendor, install] of OTHER_INSTALLERS) hookStep(vendor, () => install(port, nativeOptions))
+  return { close: adoptions.close, settled: Promise.all(pending).then(() => {}) }
 }

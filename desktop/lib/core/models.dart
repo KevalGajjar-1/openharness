@@ -548,9 +548,14 @@ class Agent {
     final launch = launchRaw is Map
         ? Map<String, dynamic>.from(launchRaw)
         : const <String, dynamic>{};
+    // `held`: the daemon will not start it yet, and says why, such as a
+    // conversation another process may have open. Read as `ready` it showed
+    // only its name over an empty pane ("Unavailable"), with no reason
+    // (onboarding reopening a team's recent conversations, 2026-10-09).
     final launchState = switch (launch['state']) {
       'starting' => 'starting',
       'failed' => 'failed',
+      'held' => 'held',
       _ => 'ready',
     };
     final grid = j['grid'] as Map<String, dynamic>?;
@@ -609,7 +614,7 @@ class Agent {
       status: (j['status'] as String?) ?? 'active',
       launchState: launchState,
       launchError: launchState == 'failed' ? _safeLabel(launch['error']) : null,
-      launchDetail: launchState == 'failed'
+      launchDetail: launchState == 'failed' || launchState == 'held'
           ? _safeDetail(launch['detail'])
           : null,
       terminalAvailable: terminalAvailable,
@@ -1174,17 +1179,11 @@ class GridModel {
   /// for every other row, and always from a daemon that predates it.
   final GridModelUnavailable? unavailable;
 
-  /// A Jev (System One) decision model (`kind: decision`): it answers typed questions at
-  /// `/v1/systemone` and cannot chat, so no harness runs on it — the picker lists it apart and
-  /// shows how to call it instead. False for every chat model, and from a daemon that predates it.
-  final bool decision;
-
   const GridModel({
     required this.id,
     required this.node,
     this.grid,
     this.unavailable,
-    this.decision = false,
   });
 }
 
@@ -1353,14 +1352,6 @@ class GridSection {
     this.lastKnownAge,
     this.wakeOutcome,
   });
-
-  /// The models a harness can run on: [models] without the decision models, which answer only at
-  /// `/v1/systemone` and cannot chat. The New Harness menu listed tev1 and kev-0.8b among the chat
-  /// models, where choosing one started a harness on a model that cannot answer it.
-  List<GridModel> get harnessModels => [
-    for (final model in models)
-      if (!model.decision) model,
-  ];
 }
 
 /// `gridName` is null when the machine has no grid yet — told apart from "a grid with nothing on
@@ -1417,7 +1408,6 @@ class GridModels {
                 node: m['node'] is String ? m['node'] as String : '',
                 grid: grid,
                 unavailable: GridModelUnavailable.fromWire(m['unavailable']),
-                decision: m['kind'] == 'decision',
               ),
             )
             .where((m) => m.id.isNotEmpty)

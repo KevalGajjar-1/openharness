@@ -18,9 +18,11 @@ export const hooks: HookContract = {
     // when the JSONL-derived turn_ended is missed. Neither supports a matcher (silently ignored).
     events: [{ event: 'SessionStart' }, { event: 'SessionEnd' }, { event: 'UserPromptSubmit' }, { event: 'Stop' }, { event: 'StopFailure' }],
     timeout: 5,
+    // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
+    // Its reply, `harness send`, is allowed in the person's permission rules: auto mode's check refused a
+    // Harness command outright, and a person away from the pane cannot answer a question.
+    inbox: { event: 'PostToolUse', allow: { list: ['permissions', 'allow'], rule: 'Bash(harness send:*)' } },
     commandNamesHome: false,
-    unreadable: 'replace',
-    write: 'in-place',
     upToDate: { command: 'first-ours', matcher: false },
     messages: {
       current: '[hooks] Claude session + turn (Stop/StopFailure) hooks already installed',

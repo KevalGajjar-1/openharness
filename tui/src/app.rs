@@ -713,6 +713,8 @@ pub struct App {
     /// A disposable USB session offers direct try, install and network actions on its home.
     pub os_live: bool,
     pub os_welcome: crate::os_welcome::State,
+    /// A computer's first hn opening OpenCode with a task typed (first_run.rs).
+    pub first_run: crate::first_run::State,
     pub os_first_use: bool,
     /// While a command runs in another session (`-t work:2`): the session to come back to.
     pub swap_back: Option<u32>,
@@ -941,6 +943,7 @@ impl App {
             os_session: std::env::var("HARNESS_OS").as_deref() == Ok("1"),
             os_live: std::env::var("HARNESS_OS").as_deref() == Ok("1") && std::env::var("HARNESS_OS_LIVE").as_deref() == Ok("1"),
             os_welcome: Default::default(),
+            first_run: Default::default(),
             os_first_use: std::env::var("HARNESS_OS_FIRST_USE").as_deref() == Ok("1"),
             wait_channels: HashMap::new(),
             cli_held: std::collections::VecDeque::new(),
@@ -5753,6 +5756,13 @@ impl App {
         if !(self.tabs.len() == 1 && self.tabs[0].root.is_none()) { self.shell_asked = true; return }
         if self.link(&self.fleet.local_id).is_none() { return }
         self.shell_asked = true;
+        // A computer's first hn, as the installer marked it: OpenCode with a task typed, not a shell
+        // (first_run.rs). Only a plain `hn`: `hn new`, its folder, its command and a chain after it
+        // are asked for, and get them.
+        if self.start_session.is_none() && self.start_then.is_empty() && crate::first_run::take() {
+            crate::first_run::start(self);
+            return;
+        }
         // The desk's first shell: where hn was started (-c: where it was asked to), running what
         // `hn new` asked for.
         let start = self.start_session.take().unwrap_or_default();
@@ -6112,14 +6122,18 @@ impl App {
         // The accounts' rate limits, from each machine that holds one (every five minutes; the
         // first a few seconds in).
         if self.started.elapsed() > Duration::from_secs(4) && self.usage_checked.map(|t| t.elapsed() > Duration::from_secs(300)).unwrap_or(true) {
+            // (Half a minute, not five, after a machine that could not be asked or whose first read
+            // failed — this computer's connection is not up yet a few seconds after a signed-in start.)
+            let soon = || Instant::now().checked_sub(Duration::from_secs(270));
             self.usage_checked = Some(Instant::now());
             let ids: Vec<String> = self.fleet.machines.iter().filter(|m| m.usable()).map(|m| m.id.clone()).collect();
+            if ids.is_empty() { self.usage_checked = soon() }
             for id in ids {
-                let Some(link) = self.link(&id) else { continue };
+                let Some(link) = self.link(&id) else { self.usage_checked = soon(); continue };
                 let generation = link.generation;
                 self.spawn(async move { link.rpc("usage_read", json!({}), Duration::from_secs(30)).await }, move |app, reply| {
                     if app.connection_generation(&id) != Some(generation) { return }
-                    let Ok(reply) = reply else { return };
+                    let Ok(reply) = reply else { if !app.usage.contains_key(&id) { app.usage_checked = soon() } return };
                     let readings: Vec<fleet::Usage> = reply.get("providers").and_then(Value::as_array).map(|p| p.iter().filter_map(fleet::usage_from).collect()).unwrap_or_default();
                     app.usage.insert(id, readings);
                 });
@@ -6325,6 +6339,7 @@ impl App {
 
     pub fn on_tick(&mut self) {
         crate::os_welcome::tick(self);
+        crate::first_run::tick(self);
         self.run_start_then();
         crate::new_harness::welcome_tick(self);
         self.ask_said();

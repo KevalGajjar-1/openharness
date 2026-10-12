@@ -1,3 +1,4 @@
+import type { NativeHookOptions } from '../kit/nativeLocations.js'
 import type { Env } from '../../config/env.js'
 import type { LiveEvent } from '../kit/events.js'
 import type { LiveTurn } from './live.js'
@@ -29,10 +30,8 @@ export type FolderSetting = { [K in keyof Env]: Env[K] extends string ? K : neve
 
 /**
  * Where an engine reads its hooks, and how Harness keeps its own block there. Declared data, applied by the
- * one kit installer (kit/hookSettings.ts), synchronously, at daemon start and before a spawn. Core authors
- * the command every block runs (kit/notifyHooks.ts). Copied from the former engines/{claude,codex}/
- * installHooks.ts, whose every write, mode and log line the kit reproduces (engines/hookInstallers.golden.spec.ts):
- * the two treated a malformed file, a symlink and a drifted block differently, and so do these fields.
+ * one kit installer (kit/hookSettings.ts) before spawn. Core authors the command
+ * every block runs; unavailable configuration remains unchanged and holds launch.
  */
 export interface HookSettings {
   /** The engine's home when core names none: a folder in the person's home, or a daemon setting. */
@@ -43,18 +42,14 @@ export interface HookSettings {
   events: ReadonlyArray<{ event: string; matcher?: string }>
   /** Seconds the engine gives the hook. */
   timeout: number
+  /**
+   * Agent Messages' own block (kit/messagesHook.ts), apart from notify.mjs's: at this event the waiting messages
+   * of the agent's pane become the model's context. One block, for every tool, in the person's settings beside
+   * the others; absent for an engine with no such event. `allow` lets the agent reply with `harness send`.
+   */
+  inbox?: { event: string; allow?: SendAllowance }
   /** The command names this home as the engine's (`--codex-home`): a profile's sessions are in its own store. */
   commandNamesHome: boolean
-  /**
-   * A file that cannot be read or parsed. `replace`: start from empty settings, and the write replaces it.
-   * `keep`: leave it as it is and say so, since replacing it could switch off the person's own hooks.
-   */
-  unreadable: 'replace' | 'keep'
-  /**
-   * `in-place`: write the file where it is, through a symlink, keeping its mode. `atomic`: write a new file
-   * beside it and rename it over the old one, which replaces a symlink and takes the new file's mode.
-   */
-  write: 'in-place' | 'atomic'
   /**
    * When the block of ours already there needs no write. It is the only block of ours, and its command is
    * the current one: the command of its first notify.mjs hook (`first-ours`) or of its first hook (`first`).
@@ -78,6 +73,42 @@ export interface HookSettings {
     /** The lines for an unreadable file that is kept. */
     malformed?: readonly string[]
   }
+  /**
+   * Where the engine asks a person to review a hook before it first runs, Harness's own blocks recorded as
+   * reviewed, the way the engine records the answer itself (kit/hookReview.ts).
+   */
+  reviewed?: HookReviewRecord
+}
+
+/**
+ * `harness send` allowed in the engine's own permission rules, so a teammate's reply never waits on a
+ * permission question. Three agents on two machines, 2026-10-11: one's replies to the lead sat in a local
+ * file for hours because Claude Code's permission check refused the command that would have carried them. Either a rule
+ * added to a list in the settings file (`list`, the person's other rules kept), or a rules file of the
+ * engine's that Harness owns whole (`file`, in the settings' home).
+ */
+export type SendAllowance = { list: readonly [string, string]; rule: string } | { file: string; rule: string }
+
+/**
+ * An engine's record of hooks a person reviewed: in its config file in the same home, a table per hook keyed
+ * `<real path of the settings file>:<event>:<block>:<hook>`, holding the hash the engine computes of that hook
+ * (Codex 0.162 `hooks.state`, `trusted_hash`). A hook whose hash differs from the recorded one is asked about again.
+ */
+export interface HookReviewRecord {
+  /** The engine's config file, in the settings' home. */
+  file: string
+  /** The TOML table the records are sub-tables of. */
+  table: string
+  /** The field of a record that holds the hash. */
+  key: string
+  /** The engine's name for each declared event, in keys and in the hash. */
+  events: Readonly<Record<string, string>>
+  /** The events whose matcher is part of the hash; the engine ignores the others'. */
+  matcherEvents: readonly string[]
+  /** The timeout, in seconds, the engine assumes for a hook that names none. */
+  defaultTimeout: number
+  /** The daemon's log lines, with {config} filled in. */
+  messages: { recorded: string; skipped: string }
 }
 
 /** A session another session delegated to, told apart by its transcript's first record. */
@@ -103,8 +134,8 @@ export interface HookContract {
 
 /** What core calls, composed from an engine's contract and the kit's mechanics (engines/hooks.ts). */
 export interface EngineHooks {
-  install(port: number): void
-  installIn(port: number, home: string): void
+  install(port: number, options?: NativeHookOptions): Promise<boolean>
+  installIn(port: number, home: string, options?: NativeHookOptions): Promise<boolean>
   transcriptFor?(body: HookSession, agent: HookSession | undefined): string | undefined
   admit?(body: HookSession): HookAdmission
   onStop?(context: HookTurnContext, body: HookStop): void | Promise<void>

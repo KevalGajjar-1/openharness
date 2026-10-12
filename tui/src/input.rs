@@ -858,12 +858,7 @@ fn fill_rows(app: &App, kind: &PickerKind, picker: &mut Picker) {
                 if let Some(want) = in_use.or(top) { picker.select(&want); picker.placed = picker.selected_id.clone() }
             }
             picker.right_half = true;
-            // (On a Jev model there is nothing to use: Enter copies how to call it.)
-            picker.hints = match picker.selected_id.as_deref() {
-                Some(id) if id.starts_with("mv:jev:") => vec![("enter", "copy how to call it")],
-                Some(id) if id.starts_with("mv:jevlocal:") => vec![("enter", "get · start · copy"), ("C-s", "stop it")],
-                _ => vec![("enter", "use · get"), ("C-s", "stop a local model")],
-            };
+            picker.hints = vec![("enter", "use · get"), ("C-s", "stop a local model")];
             picker.empty = if crate::models::target(app).is_none() { crate::models::no_target_why(app) } else { "Loading its models…".into() };
             picker.status = crate::models::target(app).and_then(|t| app.fleet.agent(&t.machine, &t.agent)).map(|a| a.name.clone()).unwrap_or_default();
         }
@@ -896,8 +891,9 @@ fn fill_rows(app: &App, kind: &PickerKind, picker: &mut Picker) {
             picker.hints = vec![("→/enter", "open"), ("enter", "set"), ("esc", "done")];
         }
         // (Typed into, it ranks by match, best first, as fzf does; empty, it keeps its groups. A
-        // query matches a command's name and keywords, not the description shown beside it.)
-        PickerKind::Commands => { picker.live = true; picker.set_rows(modal::command_rows_for(app, !picker.query.is_empty(), crate::settings::in_tmux(picker))); picker.hints = vec![("enter", "run"), ("M-k", "change its key")] }
+        // query matches a command's name and its keywords — what a row used to say beside it is
+        // searched, not shown, so hn's own commands still rank above tmux's.)
+        PickerKind::Commands => { picker.live = true; picker.search_extra = true; picker.set_rows(modal::command_rows_for(app, !picker.query.is_empty(), crate::settings::in_tmux(picker))); picker.hints = vec![("enter", "run"), ("M-k", "change its key")] }
         // ── keys ──
         PickerKind::Keybinds => { picker.keep_order = true; picker.set_rows(modal::keybind_rows(app)); picker.hints = vec![("enter", "change"), ("esc", "done")] }
         PickerKind::Help => { picker.set_rows(modal::mode_rows(app)); picker.hints = vec![("enter", "go")] }
@@ -1609,6 +1605,7 @@ fn creation_finished(app: &mut App, machine: String, session: u32, opts: NewOpts
         Ok(reply) => {
             if let Some(id) = reply.pointer("/agent/id").and_then(|v| v.as_str()) {
                 if let Some(form_id) = &opts.form_id { crate::new_harness::created(app, form_id, &reply["agent"]); }
+                if opts.first_run { crate::first_run::created(app, &machine, id) }
                 app.fleet.agents.insert((machine.clone(), id.to_string()), crate::fleet::agent_from(&machine, &reply["agent"], None));
                 if reply["agent"]["engine"] == "terminal" { app.shells.insert((machine.clone(), id.to_string())); }
                 // Keep new harnesses in the current window, filling it or splitting beside
@@ -1644,12 +1641,14 @@ fn creation_finished(app: &mut App, machine: String, session: u32, opts: NewOpts
             } else {
                 if let Some(tx) = app.held_reply.take().filter(|_| opts.print.is_some()) { app.print_new = None; let _ = tx.send((Vec::new(), vec!["the machine created no harness".into()], 1)); return }
                 if let Some(form_id) = &opts.form_id { crate::new_harness::completed(app, form_id, Some("The machine created no harness — try again".into())); }
+                if opts.first_run { crate::first_run::failed(app) }
                 app.say("The machine created no harness", theme::DANGER)
             }
         }
         Err(e) => {
             if let Some(tx) = app.held_reply.take().filter(|_| opts.print.is_some()) { app.print_new = None; let _ = tx.send((Vec::new(), vec![format!("create harness failed: {e}")], 1)); return }
             if let Some(form_id) = &opts.form_id { crate::new_harness::completed(app, form_id, Some(format!("Could not start it: {e}"))); }
+            if opts.first_run { crate::first_run::failed(app) }
             app.say(format!("Could not start it: {e}"), theme::DANGER)
         }
     }
@@ -3127,6 +3126,8 @@ fn choose(app: &mut App, kind: PickerKind, mut picker: Picker, choice: Choice) {
         PickerKind::Models if id.as_deref().is_some_and(crate::models::is_row) => {
             if !matches!(choice, Choice::Enter | Choice::SplitDown) { return keep(app, kind, picker) }
             crate::models::choose(app, &mut picker, id.as_deref().unwrap_or(""), choice == Choice::SplitDown);
+            // (Set up signed out opened the account page: the sign-in is shown, not this list.)
+            if matches!(app.modal, Some(Modal::Picker { kind: PickerKind::Account, .. })) { return }
             fill(app, &kind, &mut picker);
             return keep(app, kind, picker);
         }
@@ -3520,6 +3521,8 @@ pub struct NewOpts {
     /// Additional project/permission choices from the interactive draft.
     pub extra: Option<serde_json::Value>, pub form_id: Option<String>,
     pub target: Option<LaunchTarget>,
+    /// A computer's first hn (first_run.rs): told what was made, or that nothing was.
+    pub first_run: bool,
 }
 
 #[derive(Clone, Debug)]

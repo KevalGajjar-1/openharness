@@ -273,7 +273,7 @@ describe('registry remote display names', () => {
     const sessionsDir = join(dataDir, 'sessions')
     const transcriptPath = join(sessionsDir, 'codex-session.jsonl')
     mkdirSync(sessionsDir)
-    writeFileSync(transcriptPath, '{}\n')
+    writeFileSync(transcriptPath, JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: '/tmp/codex', source: 'cli' } }) + '\n')
 
     const { registry } = await loadRegistryModule()
     registry.load()
@@ -526,7 +526,7 @@ describe('registry remote display names', () => {
     const childPath = join(sessionsDir, `rollout-${childId}.jsonl`)
     writeFileSync(parentPath, JSON.stringify({
       type: 'session_meta',
-      payload: { id: parentId, source: 'cli' },
+      payload: { id: parentId, cwd: '/fixture/work', source: 'cli' },
     }) + '\n')
     writeFileSync(childPath, JSON.stringify({
       type: 'session_meta',
@@ -557,6 +557,19 @@ describe('registry remote display names', () => {
     const { registry } = await loadRegistryModule()
     registry.load()
 
+    // Other fixtures can change a shared temporary-directory ancestor while the parent pool is
+    // enumerated. That is a supported hold: keep the saved identity, then earn fresh evidence
+    // through the same retry used by discovery, without reloading or weakening the route proof.
+    if (registry.get(parentId)?.identityHold) {
+      expect(registry.get(parentId)?.identityHold).toContain('directory or ancestor changed during enumeration')
+      expect(registry.get(parentId)?.transcriptPath).toBe(childPath)
+      expect(JSON.parse(readFileSync(join(dataDir, 'registry.json'), 'utf8'))[0]).toMatchObject({ sessionId: parentId, transcriptPath: childPath })
+      await vi.waitFor(() => {
+        registry.revalidateBinding('h1')
+        expect(registry.get(parentId)?.identityHold).toBeUndefined()
+      }, { timeout: 1_000, interval: 20 })
+    }
+    expect(registry.get(parentId)?.identityHold).toBeUndefined()
     expect(registry.get(parentId)?.transcriptPath).toBe(parentPath)
     expect(JSON.parse(readFileSync(join(dataDir, 'registry.json'), 'utf8'))[0].transcriptPath).toBe(parentPath)
     expect(registerProcess(registry, {
@@ -709,12 +722,12 @@ describe('a Command Code session without a transcript path', () => {
       engine: 'commandcode',
       sessionId: 'ae93cc89-0dff-452a-a875-33b1516bbc80',
       tmuxPane: '%9',
-      cwd: '/Users/me/Working/Tmux/Agent-6',
+      cwd: '/workspace/project',
     })
     // The file does not exist yet — that is the whole point. The watcher opens at offset 0 and chokidar
     // delivers the lines when the CLI finally writes them.
     expect(registered?.entry.transcriptPath).toBe(
-      join(dataDir, 'projects', 'users-me-working-tmux-agent-6', 'ae93cc89-0dff-452a-a875-33b1516bbc80.jsonl'),
+      join(dataDir, 'projects', 'workspace-project', 'ae93cc89-0dff-452a-a875-33b1516bbc80.jsonl'),
     )
   })
 
@@ -730,7 +743,7 @@ describe('a Command Code session without a transcript path', () => {
       engine: 'commandcode',
       sessionId: 'reported',
       tmuxPane: '%9',
-      cwd: '/Users/me/Working/Tmux/Agent-6',
+      cwd: '/workspace/project',
       transcriptPath: reported,
     })
     expect(registered?.entry.transcriptPath).toBe(reported)
@@ -1434,7 +1447,7 @@ describe('agent identity: the process owns the agent, the session is bound to it
 
       const transcriptFile = join(profile, 'sessions', 'rollout-x.jsonl')
       mkdirSync(join(transcriptFile, '..'), { recursive: true })
-      writeFileSync(transcriptFile, '{}\n')
+      writeFileSync(transcriptFile, JSON.stringify({ type: 'session_meta', payload: { id: 'sess-1', cwd: '/tmp/demo', source: 'cli' } }) + '\n')
 
       const result = registry.register({
         engine: 'codex',
@@ -1461,7 +1474,7 @@ describe('agent identity: the process owns the agent, the session is bound to it
       const rollout = (id: string, source: unknown): string => {
         const file = join(profile, 'sessions', `rollout-${id}.jsonl`)
         mkdirSync(join(file, '..'), { recursive: true })
-        writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id, source } }) + '\n')
+        writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/tmp/demo', source } }) + '\n')
         return file
       }
       const register = (sessionId: string, transcriptPath: string) => registry.register({
@@ -2231,6 +2244,56 @@ describe('lastOpenedAt: when an app last opened the agent, on the daemon clock',
   })
 })
 
+describe('who started it', () => {
+  beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'adapter-startedby-')) })
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true })
+    delete process.env.ADAPTER_DATA_DIR
+    delete process.env.CLAUDE_PROJECTS_DIR
+    delete process.env.CODEX_HOME
+    delete process.env.CURSOR_HOME
+  })
+
+  it('keeps a harness another agent started as one, on the row, on disk and after a reload; the person\'s has none', async () => {
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const byAgent = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%5' }], cwd: '/tmp/w', startedBy: 'agent' })!
+    const byPerson = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%6' }], cwd: '/tmp/w', startedBy: null })!
+    expect(byAgent.startedBy).toBe('agent')
+    expect(byPerson).not.toHaveProperty('startedBy')
+    expect(strictPersistedRow(JSON.parse(JSON.stringify(byAgent)))?.startedBy).toBe('agent')
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(byAgent.agentId)?.startedBy).toBe('agent')
+    expect(reloaded.byAgent(byPerson.agentId)).not.toHaveProperty('startedBy')
+  })
+
+  it('survives the hook that rebuilds the row, so a restart keeps the pull request line', async () => {
+    const transcriptPath = join(dataDir, 'session-started.jsonl')
+    writeFileSync(transcriptPath, '{}\n')
+    const { registry } = await loadRegistryModule()
+    registry.load()
+    const pending = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%8' }], cwd: '/tmp/demo', startedBy: 'agent' })!
+    const bound = registry.register({ sessionId: 'session-started', transcriptPath, tmuxPane: '%8', cwd: '/tmp/demo' })
+    expect(bound?.entry.agentId).toBe(pending.agentId)
+    expect(bound?.entry.startedBy).toBe('agent')
+    expect(registry.byAgent(pending.agentId)?.startedBy).toBe('agent')
+  })
+
+  it('drops anything but another agent from a hand-edited row', async () => {
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const entry = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%7' }], cwd: '/tmp/w' })!
+    const row = JSON.parse(JSON.stringify(entry))
+    expect(strictPersistedRow({ ...row, startedBy: 'person' })).not.toHaveProperty('startedBy')
+    writeFileSync(join(dataDir, 'registry.json'), JSON.stringify([{ ...row, startedBy: 'someone' }]), { mode: 0o600 })
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(entry.agentId)).toBeTruthy()
+    expect(reloaded.byAgent(entry.agentId)).not.toHaveProperty('startedBy')
+  })
+})
+
 describe('fork origin record', () => {
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'adapter-forkorigin-')) })
   afterEach(() => {
@@ -2429,3 +2492,6 @@ describe('fork origin record — persistence edges', () => {
     expect(reloaded.byAgent(entry.agentId)?.forkedFrom).toEqual({ agentId: 'p', name: 'P' })
   })
 })
+
+// Filesystem durability deadlines are exercised separately from these deterministic fixture reads.
+vi.mock('node:perf_hooks', async original => ({ ...await original<object>(), performance: { now: () => 0 } }))

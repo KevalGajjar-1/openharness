@@ -20,14 +20,24 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AgentEngine } from './types.js'
+
+vi.mock('../lib/bootId.js', async (original) => ({ ...await original<object>(), currentBootId: () => 'linux:11111111-1111-4111-8111-111111111111' }))
 
 const descriptors = vi.hoisted(() => new Map<string, string[]>())
 vi.mock('fs/promises', async (original) => {
   const fs = await original<typeof import('node:fs/promises')>()
   return { ...fs,
+    realpath: (name: string) => fs.realpath(name.startsWith('/work/') ? join(root, 'workspaces', name.slice(6)) : name),
+    // Keep a streamed descriptor listing private as well as the former readdir path.
+    opendir: async (path: string, ...args: unknown[]) => /^\/proc\/\d+\/fd$/.test(String(path))
+      ? { async *[Symbol.asyncIterator]() {
+        for (const [index] of (descriptors.get(String(path)) ?? []).entries()) yield { name: String(index) }
+      } }
+      : Reflect.apply(fs.opendir, fs, [path, ...args]),
     readdir: async (path: string, ...args: unknown[]) => /^\/proc\/\d+\/fd$/.test(String(path))
       ? (descriptors.get(String(path)) ?? []).map((_, index) => String(index))
       : Reflect.apply(fs.readdir, fs, [path, ...args]),
@@ -36,6 +46,11 @@ vi.mock('fs/promises', async (original) => {
       return match ? descriptors.get(match[1]!)?.[Number(match[2])] ?? '' : Reflect.apply(fs.readlink, fs, [path, ...args])
     },
   }
+})
+vi.mock('node:fs', async original => {
+  const fs = await original<typeof import('node:fs')>()
+  const mapped = (name: string) => name.startsWith('/work/') ? join(root, 'workspaces', name.slice(6)) : name
+  return { ...fs, realpathSync: (name: string) => fs.realpathSync(mapped(name)), statSync: (name: string) => fs.statSync(mapped(name)) }
 })
 
 const GOLDEN = fileURLToPath(new URL('./__fixtures__/other-identity.golden.json', import.meta.url))
@@ -54,11 +69,13 @@ function check(key: string, value: unknown): void {
   recorded[key] = result
   if (!RECORD) expect({ key, result }).toEqual({ key, result: golden[key] })
 }
+const writtenFiles: string[] = []
 let fileTime = T0
 /** A file, written, whose modification time is the next tick of a fixed clock: a scan's newest-first order is set. */
 function file(path: string, text = ''): string {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, text)
+  writtenFiles.push(path)
   fileTime += 1000
   utimesSync(path, fileTime / 1000, fileTime / 1000)
   return path
@@ -73,13 +90,20 @@ type Modules = {
   notify: typeof import('./kit/notifyHooks.js')
   home: typeof import('./cursor/home.js')
   hermes: typeof import('./hermes/contract.js')
+  cursorDiscovery: typeof import('../core/engines/cursorDiscovery.js')
 }
 let m: Modules
+let restoreClock = () => {}
 
 beforeAll(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'other-identity-golden-')))
+  for (const cwd of ['r', 'other']) mkdirSync(join(root, 'workspaces', cwd), { recursive: true })
   Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
   vi.useFakeTimers({ toFake: ['Date'], now: NOW })
+  // This records healthy identity wiring. Registry fsync under runner load must
+  // not spend its proof deadline; nativeEvidence.spec.ts tests elapsed budgets.
+  const monotonic = vi.spyOn(performance, 'now').mockReturnValue(0)
+  restoreClock = () => monotonic.mockRestore()
   const home = join(root, 'home')
   const env: Record<string, string | undefined> = {
     HOME: home, XDG_CONFIG_HOME: undefined, XDG_DATA_HOME: undefined, ADAPTER_DATA_DIR: join(root, 'data'), ADAPTER_RUNTIME_DIR: join(root, 'runtime'),
@@ -103,12 +127,14 @@ beforeAll(async () => {
     notify: await import('./kit/notifyHooks.js'),
     home: await import('./cursor/home.js'),
     hermes: await import('./hermes/contract.js'),
+    cursorDiscovery: await import('../core/engines/cursorDiscovery.js'),
   }
   m.registry.registry.load()
   golden = RECORD ? {} : JSON.parse(readFileSync(GOLDEN, 'utf8')) as Record<string, unknown>
 })
 
 afterAll(() => {
+  restoreClock()
   vi.useRealTimers()
   Object.defineProperty(process, 'platform', platform)
   for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value
@@ -195,7 +221,10 @@ describe('where the core finds the other engines\' conversations', () => {
     file(home('.grok', 'sessions', encodeURIComponent('/work/g'), UUID(32), 'updates.jsonl'), '{}\n')
     file(home('.gemini', 'antigravity-cli', 'brain', UUID(33), '.system_generated', 'logs', 'transcript_full.jsonl'), '{}\n')
     file(home('.copilot', 'session-state', UUID(34), 'events.jsonl'), '{}\n')
+    file(home('.copilot', 'session-state', UUID(34), 'inuse.4242.lock'))
     file(home('.copilot', 'session-state', UUID(35), 'inuse.4242.lock'))
+    file(home('.grok', 'sessions', 'hashed-group', '.cwd'), ' /work/g \n')
+    file(home('.grok', 'sessions', 'hashed-group', UUID(36), 'updates.jsonl'), '{}\n')
     file(home('.copilot', 'session-state', UUID(35), 'events.jsonl'), '{}\n')
     const registered: unknown[] = []
     const agents = new Map<string, Record<string, unknown>>()
@@ -207,7 +236,7 @@ describe('where the core finds the other engines\' conversations', () => {
       } as never,
       mirror: { inheritSummary: () => {} }, forgetSession: () => {}, clients: { send: () => {} }, attachSession: async () => true,
       announceSession: () => {}, stoppedAgents: { save: () => {}, finishResume: () => {}, get: () => null } as never, syncRecapPool: () => {},
-      teams: { forget: () => {} } as never, input: { forget: () => {} } as never, deviceInput: { forget: () => {} } as never,
+      input: { forget: () => {} } as never, deviceInput: { forget: () => {} } as never,
       homes: { copilot: home('.copilot'), grok: home('.grok'), agy: home('.gemini', 'antigravity-cli') },
     })
     const observed = (engine: string, over: Record<string, unknown>) => ({
@@ -215,7 +244,7 @@ describe('where the core finds the other engines\' conversations', () => {
       processIdentity: { pid: 4242, startMarker: 'Mon Oct  8 10:00:00 2026', executable: engine }, ...over,
     })
     const results: unknown[] = []
-    const ids: Record<string, string[]> = { cursor: [UUID(31), UUID(39)], grok: [UUID(32), UUID(39)], agy: [UUID(33), UUID(39)], copilot: [UUID(34), UUID(39)] }
+    const ids: Record<string, string[]> = { cursor: [UUID(31), UUID(39)], grok: [UUID(32), UUID(36), UUID(39)], agy: [UUID(33), UUID(39)], copilot: [UUID(34), UUID(39)] }
     for (const [engine, sessions] of Object.entries(ids)) {
       for (const resumeSessionId of sessions) {
         agents.clear(); agents.set(engine, { agentId: `agent-${engine}`, engine, sessionId: '', registeredAt: 0 })
@@ -233,6 +262,8 @@ describe('where the core finds the other engines\' conversations', () => {
 
   it('repairs a live process\'s session: by folder, by store, by its lock, and a resumed Pi conversation', async () => {
     const since = T0
+    // Resolver/binding fixtures model older conversations; repair gets a fresh corpus below.
+    for (const path of writtenFiles) utimesSync(path, (T0 - 60_000) / 1000, (T0 - 60_000) / 1000)
     // Pi, Command Code and Amp name the folder on their first line; Muse its workspace, once a run has opened.
     file(home('.pi', 'agent', 'sessions', '--work-r--', `2026_${UUID(41)}.jsonl`), `${JSON.stringify({ type: 'session', id: UUID(41), cwd: '/work/r' })}\n`)
     file(home('.commandcode', 'projects', 'work-r', `${UUID(42)}.jsonl`), `${JSON.stringify({ cwd: '/work/r', sessionId: UUID(42) })}\n`)
@@ -283,6 +314,28 @@ describe('where the core finds the other engines\' conversations', () => {
     } finally { descriptors.clear() }
     check('repair agy lock', results)
   }, 60_000)
+
+  it('locates an existing and a later Cursor transcript through core discovery, and stops pending work', async () => {
+    const { loadEngine } = await import('./inProcess.js')
+    await loadEngine('cursor')
+    const found: unknown[] = []
+    const discovery = m.cursorDiscovery.createCursorDiscovery(home('.cursor'), (id, path) => { found.push([id, path]) })
+    await discovery.start()
+    try {
+      const existing = UUID(61), later = UUID(62), removed = UUID(63)
+      file(home('.cursor', 'projects', 'golden-existing', 'agent-transcripts', existing, `${existing}.jsonl`), '{}\n')
+      await discovery.add(existing)
+      await discovery.add(later)
+      await discovery.add(removed)
+      discovery.remove(removed)
+      file(home('.cursor', 'projects', 'golden-later', 'agent-transcripts', later, `${later}.jsonl`), '{}\n')
+      file(home('.cursor', 'projects', 'golden-removed', 'agent-transcripts', removed, `${removed}.jsonl`), '{}\n')
+      await vi.waitFor(() => expect(found).toHaveLength(2), { timeout: 5000 })
+      await discovery.add('../invalid')
+      await discovery.stop()
+      check('pending cursor transcripts', found)
+    } finally { await discovery.stop() }
+  })
 
   it('has a recorded outcome for every case, and no other', () => {
     if (RECORD) return

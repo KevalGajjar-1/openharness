@@ -8,6 +8,7 @@
  * docs/design/2026-10-03-harnessd.md). The reconciler itself, with what it scans, stays there.
  */
 import { externalResumePending } from '../../lib/externalResume.js'
+import { paneReadIdentity } from '../transcripts/readIdentity.js'
 import { isTerminalEngine } from '../../engines/types.js'
 import type { AutonomousDeviceInput } from '../deviceInput.js'
 import type { QuestionWatcher } from '../../lib/questionController.js'
@@ -18,7 +19,6 @@ import type { SessionInputController } from '../../lib/sessionInput.js'
 import type { StoppedAgentStore } from '../../lib/stoppedAgents.js'
 import type { DiscoveredTerminalAgent } from '../../lib/terminalAgentDiscovery.js'
 import { bypassPermissionActive, permissionModeFromArgv, tmuxPaneState } from '../../lib/tmux.js'
-import type { SwarmPromptScopes } from '../../teams/promptScope.js'
 
 export interface DiscoveryDeps {
   registry: Pick<typeof registry,
@@ -32,7 +32,6 @@ export interface DiscoveryDeps {
   syncRecapPool: () => void
   attachSession: (session: RegisteredSession) => Promise<boolean>
   invalidateTerminalControl: (agentId: string) => void
-  teams: Pick<SwarmPromptScopes, 'forget'>
   input: Pick<SessionInputController, 'forget'>
   deviceInput: Pick<AutonomousDeviceInput, 'forget'>
   questionWatcher: Pick<QuestionWatcher, 'stop'>
@@ -46,7 +45,7 @@ export interface DiscoveryDeps {
 
 export function createDiscoveryHandlers({
   registry, attachDsh, forgetSession, announceSession, bindObservedAgent, syncRecapPool, attachSession,
-  invalidateTerminalControl, teams, input, deviceInput, questionWatcher, stopHeartbeat, retainExitedSession,
+  invalidateTerminalControl, input, deviceInput, questionWatcher, stopHeartbeat, retainExitedSession,
   stoppedAgents, restoreDegraded,
 }: DiscoveryDeps) {
   const onDiscovered = async (observed: DiscoveredTerminalAgent): Promise<void> => {
@@ -146,7 +145,7 @@ export function createDiscoveryHandlers({
     if (wasDormant || wasLaunching || adopted) {
       const active = registry.byAgent(current.agentId)
       if (!active) return
-      if (!active.sessionId) {
+      if (!active.sessionId || active.identityHold) {
         syncRecapPool()
         announceSession(active)
         return
@@ -154,7 +153,10 @@ export function createDiscoveryHandlers({
       // Not awaited: the attach reads this agent's whole history, and this callback runs inside the
       // reconcile pass whose completion is what publishes `discoveryReady`. One agent's slow store
       // must not hold the pass — or, at boot, the app. The tracker runs a few of these at a time.
+      const authority = paneReadIdentity(active)
       void attachSession(active).then((attached) => {
+        const latest = registry.byAgent(active.agentId)
+        if (paneReadIdentity(latest) !== authority || latest?.identityHold) return
         if (!attached) {
           registry.setActive(active.agentId, false)
           return
@@ -179,7 +181,6 @@ export function createDiscoveryHandlers({
   const onDormant = async (agent: RegisteredSession, reason: string): Promise<void> => {
     if (!agent.active || agent.launch?.state === 'held') return
     invalidateTerminalControl(agent.agentId)
-    teams.forget(agent.agentId)
     input.forget(agent.agentId)
     deviceInput.forget(agent.agentId)
     if (agent.sessionId) {

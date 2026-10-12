@@ -190,7 +190,7 @@ const EDGE: RegExp[] = [
   /^engines\/(claude|codex)\/(normalize|normalizer|subagent|subagentStats|rollout|lastTurn|live|attach)\.ts$/,
   /^lib\/(normalize|transcriptReader)\.ts$/, /^lib\/sessionSearch\/externals\/(claude|codex)\.ts$/,
   /^engines\/(runtime|(claude|codex)\/runtimeProfile)\.ts$/, /^lib\/runtimeProfile\.ts$/,
-  /^gateway\//, /^lib\/e2ee\//, /^cable\//, /^device\//, /^lib\/autonomous-device\//, /^sharing\//, /^teams\//, /^orchestrator\//, /^services\//,
+  /^gateway\//, /^lib\/e2ee\//, /^cable\//, /^device\//, /^lib\/autonomous-device\//, /^sharing\//, /^orchestrator\//, /^services\//,
   /^lib\/grid(Attach|Credentials|Derive|Ensure|Envelope|Exec|FleetRpc|Handoff|Install|McpUrl|Models|ModelsPayload|Picture|Presence|Reader|Target|Wake)\.ts$/,
   /^lib\/localModels\.ts$/,
   // The grid and saved-API launch builders are models': the core asks it for a launch (ModelsPort.gridLaunch) and keeps
@@ -408,7 +408,7 @@ describe('the daemon\'s shape', () => {
     // are read with the session stores' declarations (lib/engineHomes.ts), data as well.
     for (const entry of ['lib/engineLaunch.ts', 'lib/launchOverrides.ts', 'engines/launches.ts', 'engines/kit/launchArgs.ts',
       'engines/kit/launchStartup.ts', 'dsh/adapters.ts', 'engines/launchPrep.ts', 'engines/kit/folderTrust.ts',
-      'engines/kit/resumeRepair.ts', 'dsh/runtime.ts', 'lib/apiInstructions.ts']) {
+      'engines/kit/resumeRepair.ts', 'dsh/runtime.ts', 'lib/apiInstructions.ts', 'engines/kit/attribution.ts', 'lib/agentAttribution.ts']) {
       expect([...closureOf(entry).keys()].filter(file => /^engines\/(claude|codex)\//.test(file) && !contracts.has(file)
         && !SESSION_STORES.has(file) && file !== 'engines/codex/hookContract.ts'), entry).toEqual([])
     }
@@ -430,9 +430,8 @@ describe('the daemon\'s shape', () => {
     for (const [entry, batch] of FACETS_FREE_OF_THEM) {
       expect([...closureOf(entry).keys()].filter(theirs), `${entry}, free of their code since ${batch}`).toEqual([])
     }
-    // (o2) The start's hook step loads the other engines' installers through the loader; since (o6) it reaches none
-    // of their code at all (above).
-    expect(closureOf('core/engines/hooks.ts').has('lib/hooks.ts'), 'core/engines/hooks.ts loads lib/hooks.ts through engines/inProcess.ts').toBe(false)
+    // Native installation is eager, composed from declarations; the legacy entry is only an alias.
+    expect(closureOf('core/engines/hooks.ts').has('lib/hooks.ts')).toBe(false)
     // What an engine declares is data the kit reads: its own walk reaches the kit, the engines' types and the
     // environment, and nothing of any engine's code.
     const contracts = [...closure.keys()].filter((file) => /^engines\/\w+\/contract\.ts$/.test(file))
@@ -442,6 +441,39 @@ describe('the daemon\'s shape', () => {
       expect([...closureOf(contract).keys()].filter((file) => file !== contract && !environment.has(file) && !/^engines\/(kit\/|types\.ts$)/.test(file)), contract).toEqual([])
     }
   }, WALK_TIMEOUT_MS)
+
+  it('transcript location, native process evidence and profile discovery have no lazy implementation dependency', () => {
+    for (const entry of ['core/agents/bind.ts', 'core/engines/cursorDiscovery.ts', 'engines/identities.ts',
+      'engines/kit/sessionLocation.ts', 'engines/kit/transcriptDiscovery.ts', 'lib/terminalAgentDiscovery.ts', 'lib/sqliteRead.ts',
+      'lib/sessionRepair.ts', 'engines/repairIdentities.ts', 'engines/kit/sessionIdentity.ts']) {
+      const imports = importsFor(entry, readFileSync(join(SRC, entry), 'utf8'))
+      expect(imports.filter(one => one.dynamic || /inProcess\.js$/.test(one.from)), entry).toEqual([])
+    }
+  })
+
+  it('native hook installation never loads optional code and reaches only engine declarations', () => {
+    for (const entry of ['core/engines/hooks.ts', 'engines/nativeHooks.ts', 'engines/kit/nativeHookSettings.ts',
+      'engines/kit/nativeHookYaml.ts', 'engines/kit/nativeHookHomes.ts', 'engines/kit/nativePlugin.ts']) {
+      const imports = importsFor(entry, readFileSync(join(SRC, entry), 'utf8'))
+      expect(imports.filter(one => one.dynamic || /inProcess\.js$/.test(one.from)), entry).toEqual([])
+      expect([...closureOf(entry).keys()].filter(theirs), entry).toEqual([])
+    }
+  })
+
+  it('native launch control is eager and reaches only engine declarations', () => {
+    for (const entry of ['core/agents/create.ts', 'core/agents/fork.ts', 'core/agents/retarget.ts',
+      'core/agents/launch.ts', 'core/agents/launches.ts', 'core/agents/externalPreflight.ts',
+      'lib/launchOverrides.ts', 'engines/launchControl.ts', 'engines/kit/nativeVersion.ts', 'engines/kit/nativeSessionModel.ts']) {
+      const imports = importsFor(entry, readFileSync(join(SRC, entry), 'utf8'))
+      expect(imports.filter(one => one.dynamic || /inProcess\.js$/.test(one.from)), entry).toEqual([])
+    }
+    expect([...closureOf('engines/launchControl.ts').keys()].filter(theirs)).toEqual([])
+    for (const entry of ['engines/kit/nativeVersion.ts', 'engines/kit/nativeSessionModel.ts']) {
+      expect([...closureOf(entry).keys()].filter(file => /^engines\/(?!kit\/)/.test(file)), entry).toEqual([])
+    }
+    const main = readFileSync(join(SRC, 'core/main.ts'), 'utf8')
+    expect(main).not.toMatch(/\bengineNow\s*\(\s*['"]opencode['"]/)
+  })
 
   it('the gateway reaches the core only through core/api.ts: never a core module, the registry, cli.ts or the socket', () => {
     // It speaks to the core through GatewayPort and GatewayEvents alone, so that it can run in a process of

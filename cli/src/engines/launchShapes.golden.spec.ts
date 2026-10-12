@@ -39,7 +39,7 @@ vi.mock('../lib/createAgentPane.js', () => ({
   }),
 }))
 vi.mock('../lib/tmuxVersion.js', async (real) => ({ ...await real<object>(), tmuxSupportsSessionEnv: vi.fn(async () => pane.tmux) }))
-vi.mock('../engines/opencode/version.js', async (real) => ({ ...await real<object>(), opencodeMajorVersion: vi.fn(() => 2) }))
+vi.mock('../engines/launchControl.js', async (real) => ({ ...await real<object>(), opencodeMajorVersion: vi.fn(() => 2) }))
 vi.mock('../lib/engineBin.js', async (real) => ({ ...await real<object>(), enginePathOverride: vi.fn(() => null) }))
 
 const GOLDEN = fileURLToPath(new URL('./__fixtures__/launch-shapes.golden.json', import.meta.url))
@@ -182,19 +182,22 @@ const rest = () => ({
   privateGridName: async () => null,
 })
 
-async function createCase(engine: AgentEngine, grid: GridLaunchOverride | null, machine = M1): Promise<unknown> {
+async function createCase(engine: AgentEngine, grid: GridLaunchOverride | null, machine = M1, over: Record<string, unknown> = {}): Promise<unknown> {
   pane.calls.length = 0
   rmSync(configRoot(), { recursive: true, force: true })
   const cwd = work()
   const { value, lines } = await logged(() => shapes(machine).create(rest() as never)({
     engine, cwd, bypassPermission: false, permissionMode: null, grid, codexHome: null, dsh: null, prompt: null, name: null, agent: null,
-    resumeSessionId: null, takeOver: null,
+    resumeSessionId: null, takeOver: null, ...over,
   } as never))
   const call = pane.calls[0]
   const label = typeof call?.sessionLabel === 'string' ? call.sessionLabel : undefined
   return norm({
     result: value,
-    pane: call ? { argv: call.argv, script: scriptOf(call.argv, label), env: call.env, grid: call.grid, gridLaunchRecord: call.gridLaunchRecord } : null,
+    pane: call ? {
+      argv: call.argv, script: scriptOf(call.argv, label), env: call.env, grid: call.grid, gridLaunchRecord: call.gridLaunchRecord,
+      ...(call.startedBy ? { startedBy: call.startedBy } : {}),
+    } : null,
     config: tree(configRoot()),
     folder: tree(cwd),
     logged: lines.filter((line) => /grid|refused|\[apis\]/i.test(line)),
@@ -214,6 +217,11 @@ async function createCases(): Promise<Record<string, unknown>> {
   pane.tmux = true
   cases['claude · own login'] = await createCase('claude', null)
   cases['codex · own login'] = await createCase('codex', null)
+  // Started by another agent: the pull request line last (lib/agentAttribution.ts), none for an engine with no way to say it.
+  for (const engine of ['claude', 'codex', 'opencode'] as const) {
+    cases[`${engine} · own login · started by an agent`] = await createCase(engine, null, M1, { startedBy: 'agent' })
+  }
+  cases['claude · grid · started by an agent'] = await createCase('claude', GRID, M1, { startedBy: 'agent' })
   return cases
 }
 
@@ -256,6 +264,12 @@ async function relaunchCases(): Promise<Record<string, unknown>> {
   cases['codex · restart on a grid · an old tmux'] = await relaunchCase('codex', session('codex', { gridLaunch: GRID }))
   pane.tmux = true
   cases['opencode · restart as a named agent on a grid'] = await relaunchCase('opencode', session('opencode', { gridLaunch: GRID, agent: 'reviewer' }))
+  // Started by another agent: every relaunch keeps the line; a fork of it is the forker's and has none.
+  for (const engine of ['claude', 'codex'] as const) {
+    cases[`${engine} · restart, started by an agent`] = await relaunchCase(engine, session(engine, { startedBy: 'agent' }))
+    cases[`${engine} · retarget onto a grid, started by an agent`] = await relaunchCase(engine, session(engine, { startedBy: 'agent' }), { gridLaunch: GRID })
+    cases[`${engine} · fork of one an agent started`] = await relaunchCase(engine, session(engine, { startedBy: 'agent' }), { dsh: null, agent: null, startedBy: null })
+  }
   return cases
 }
 

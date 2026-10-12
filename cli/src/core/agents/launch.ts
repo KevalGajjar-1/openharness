@@ -1,3 +1,4 @@
+import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 /**
  * Relaunch helpers: what a restart, a retarget, a restore or a resume needs to bring an agent's pane
  * back. Its launch overrides, rebuilt from the row (an API's key as saved now); the web-search decision
@@ -6,7 +7,6 @@
  *
  * Moved verbatim out of `runForeground` (the core boundary, step 10: docs/design/2026-10-03-harnessd.md).
  */
-import { loadEngine } from '../../engines/inProcess.js'
 import { prepareResume, repairedItemsName } from '../../engines/launchPrep.js'
 import { dropPermissionFlagIfUnsupported } from '../../lib/engineLaunch.js'
 import { gridUnavailable, type GridLaunchAnswer, type GridLaunchRequest } from '../../lib/gridLaunchWire.js'
@@ -31,6 +31,8 @@ export function gridLaunchThrough(models: () => Pick<ModelsPort, 'gridLaunch'>) 
 }
 
 export interface LaunchHelperDeps {
+  /** Capture dispatch authority before a service can yield to Stop or a replacement binding. */
+  authority: (agentId: string) => () => boolean
   /** Writes the saved APIs' tool instructions into the agent's folder before it launches. */
   prepareApiTools: (cwd: string | null | undefined, engine: string) => void
   launchOverridesDeps: LaunchOverridesDeps
@@ -39,22 +41,27 @@ export interface LaunchHelperDeps {
   setTail: (sessionId: string, offset: number) => void
 }
 
-export function createLaunchHelpers({ prepareApiTools, launchOverridesDeps, setGridLaunch, setTail }: LaunchHelperDeps) {
+export function createLaunchHelpers({ authority, prepareApiTools, launchOverridesDeps, setGridLaunch, setTail }: LaunchHelperDeps) {
   // Whatever the source (the row itself, or a grid override the desktop just sent), the agent's DSH,
-  // workspace and named agent come from the row: a retarget must not silently drop the harness the
-  // agent is, or bring a pane opened as `harness-compute` back as a general session.
+  // workspace, named agent and who started it come from the row: a retarget must not silently drop the harness
+  // the agent is, or bring a pane opened as `harness-compute` back as a general session.
   // An agent on a saved API's model relaunches with that API's endpoint and key as saved now, so a key
   // pasted since takes effect, and a removed API is refused rather than kept on its old key: the models
   // service reads them as it builds the launch (`buildLaunchOverrides`, `refresh`).
-  const relaunchOverrides = async (session: RegisteredSession, source: LaunchSource = session): Promise<LaunchOverridesResult> => {
-    // OpenCode's version decides its relaunch's argv, read by OpenCode's own code (lib/launchOverrides.ts): loaded
-    // here, before anything is written, and the relaunch refused without it.
-    if (session.engine === 'opencode' && !await loadEngine('opencode')) {
-      return { ok: false, error: 'ENGINE_UNAVAILABLE', detail: 'OpenCode\'s code could not be loaded' }
-    }
+  const relaunchOverrides = async (session: RegisteredSession, source: LaunchSource = session, operationCurrent: () => boolean = () => true, native?: NativeLaunch, configKey = session.agentId): Promise<LaunchOverridesResult> => {
+    const dispatchCurrent = authority(session.agentId)
+    const current = () => operationCurrent() && dispatchCurrent()
+    session = structuredClone(session)
+    const changed = { ok: false, error: 'AGENT_CHANGED', detail: 'The harness changed or stopped during launch preparation.' } as const
+    if (!current()) return changed
+    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, startedBy: session.startedBy ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, configKey, current, native)
+    if (!current()) return changed
+    if (!result.ok && (result.unavailable || result.error === 'AGENT_CHANGED')) return result
+    // Saved-API instructions remain available after an ordinary semantic refusal, as before.
+    // A missing dependency or revoked operation must leave these files untouched.
     await prepareInstructionWrites(session.cwd)
+    if (!current()) return changed
     prepareApiTools(session.cwd, session.engine)
-    const result = await buildLaunchOverrides(launchOverridesDeps, session.engine, { dsh: session.dsh ?? null, dshRuntime: session.dshRuntime ?? null, cwd: session.cwd, agent: session.agent ?? null, scmLaunch: session.scmLaunch ?? null, ...source, gridLaunch: source.gridLaunch ?? null }, session.agentId)
     if (result.ok && session.externalResume?.request.engine === session.engine) {
       result.overrides.extraArgs.push(...session.externalResume.session?.launchArgs ?? [])
     }
@@ -91,16 +98,17 @@ export function createLaunchHelpers({ prepareApiTools, launchOverridesDeps, setG
     session: RegisteredSession,
     bypassPermission: boolean,
     what: string,
-  ): Promise<{ permissionMode?: string | null; bypassPermission?: boolean }> => {
-    const { choice, droppedFlag } = await dropPermissionFlagIfUnsupported(session.engine, {
+    native?: NativeLaunch,
+  ): Promise<{ permissionMode?: string | null; bypassPermission?: boolean; nativeHold?: string }> => {
+    const { choice, droppedFlag, nativeHold } = await dropPermissionFlagIfUnsupported(session.engine, {
       permissionMode: session.permissionMode ?? null,
       bypassPermission,
-    })
+    }, undefined, native)
     if (droppedFlag) {
       console.warn(`[agent] ${what} ${sid(session.agentId)} · ${session.engine} does not take ${droppedFlag}`
         + ` · starting in Ask · update ${session.engine} to get ${session.permissionMode ?? 'Auto'} back`)
     }
-    return choice
+    return { ...choice, ...(nativeHold ? { nativeHold } : {}) }
   }
 
   const prepareSessionResume = (session: RegisteredSession): void => {

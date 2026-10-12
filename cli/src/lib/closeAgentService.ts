@@ -216,14 +216,26 @@ export class CloseAgentService {
         if (result.error && result.error !== 'SESSION_NOT_IDLE') {
           const latest = this.deps.registry.byAgent(s.agentId)
           if (latest?.closePlan?.id === plan.id) {
-            const changed = this.deps.registry.setClosePlan(s.agentId, { ...plan, state: 'failed',
+            // Native identity can be between writes. Preserve the queued intent and reason
+            // so the next idle tick retries before any checkpoint or process mutation.
+            const changed = this.deps.registry.setClosePlan(s.agentId, { ...plan,
+              state: result.error === 'IDENTITY_UNAVAILABLE' ? 'waiting' : 'failed',
               detail: result.detail ?? 'Could not save and close this session. Open it to try again.' })
             if (changed) this.deps.changed(changed)
           }
         }
-      } catch {
-        // A read failure is unknown activity, never proof that the task finished.
+      } catch (error) {
+        // A missing reader is unknown activity. Keep the durable intent and expose
+        // its reason while retrying, without changing a cancelled or replaced plan.
         this.idleSince.delete(s.agentId)
+        const latest = this.deps.registry.byAgent(s.agentId)
+        if (!this.disposed && latest?.closePlan?.id === plan.id) {
+          try {
+            const changed = this.deps.registry.setClosePlan(s.agentId, { ...plan, state: 'waiting',
+              detail: error instanceof Error ? error.message : 'The conversation activity could not be confirmed.' })
+            if (changed) this.deps.changed(changed)
+          } catch { /* The preceding durable intent survives a failed reason update. Retry next tick. */ }
+        }
       }
     }
   }

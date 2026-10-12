@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harness/screens/swarm_menu_bus.dart';
 import 'package:harness/shared/theme/app_theme.dart';
+import 'package:harness/shared/widgets/app_menu.dart';
 import 'package:harness/widgets/linux_menu_bar.dart';
 
 /// The Linux menu bar's wiring.
@@ -111,6 +112,9 @@ void main() {
     expect(appActions.last, 'showAbout');
 
     await tap(tester, 'menu-bar-harness');
+    // The panel it opens is Appearance, as Settings' rail calls it; "…" like Settings… beside it.
+    expect(find.text('Appearance…'), findsOneWidget);
+    expect(find.text('Customize Harness'), findsNothing);
     await tap(tester, 'menu-bar-customize');
     expect(swarmCalls.last.method, 'customize');
 
@@ -155,6 +159,35 @@ void main() {
     await tap(tester, 'menu-bar-file');
     await tap(tester, 'menu-bar-close-tab');
     expect(swarmCalls.last.method, 'closeActive');
+  });
+
+  testWidgets('Agent Messages rows act on the active tab', (tester) async {
+    swarmMenuBus.send('update', {'enabled': true, 'activeAgentMessages': true});
+    await pumpBar(tester);
+
+    await tap(tester, 'menu-bar-file');
+    expect(
+      tester
+          .widget<AppMenuItem>(find.byKey(const Key('menu-bar-agent-messages')))
+          .selected,
+      isTrue,
+      reason: 'a checkmark while on',
+    );
+    await tap(tester, 'menu-bar-agent-messages');
+    expect(swarmCalls.last.method, 'toggleAgentMessages');
+    expect(swarmCalls.last.arguments, isNull, reason: 'the active tab');
+
+    await tap(tester, 'menu-bar-file');
+    await tap(tester, 'menu-bar-show-agent-messages');
+    expect(swarmCalls.last.method, 'showAgentMessages');
+
+    // The Store tab has no Agent Messages: both rows go quiet.
+    swarmMenuBus.send('update', {'enabled': true});
+    await tester.pump();
+    await tap(tester, 'menu-bar-file');
+    expect(find.byKey(const Key('menu-bar-agent-messages')), findsNothing);
+    expect(find.byKey(const Key('menu-bar-show-agent-messages')), findsNothing);
+    expect(find.text('Show Agent Messages'), findsOneWidget);
   });
 
   testWidgets('View reaches both channels', (tester) async {

@@ -352,6 +352,143 @@ and answered a follow-up. The new desktop accepts any CLI from 0.2.48, so updati
 the CLI asks for nothing. The released 1.2.59 still shows a new user "OpenCode is unavailable. Choose
 an agent." and Apple's developer-tools dialog; both are fixed on main.
 
+## Faster opening and the developer-tools dialog (2026-10-09)
+
+**Harness opens before Codex and Claude Code finish downloading** (PR #1090, the owner's idea after
+1.2.60). The tour now waits only for setup and OpenCode. The Codex and Claude Code panes open at once
+and show the CLI's install line and bar while the one background npm finishes, then their own
+screens:
+- Each download names its process in `~/.harness/run/downloading-<engine>`, and a pane waits for that
+  process rather than starting a second npm into the same `~/.local`.
+- OpenCode's first run (`--version`) happens during setup: 3.9 s cold, 0.4 s after.
+
+| Persona (fresh macOS VM) | Harness open | First result | Second session |
+|---|---|---|---|
+| nothing installed (two runs) | 40–41 s (was 47–59) | 54–59 s (was 64–70) | 20 s, 83 s (free-model variance) |
+| Claude Code signed in | 41 s | 46 s | 2 s |
+| both, 5 sessions, 1 running | 40 s | 46 s | 3 s |
+| real Codex, not signed in | 41 s | 59 s | 20 s |
+| real Claude Code and Codex, not signed in | 41 s | 66 s | 21 s |
+| OpenCode only | 40 s | 54 s | 16 s |
+
+The review of #1090 found three ways to install twice, all fixed before merge:
+- A Ctrl-C during the wait fell through to the pane's own npm.
+- On Linux, bash 5 replaces the download's shell with npm, so its pid lost the name the pane checks.
+- A create skipped its own wait before the marker existed.
+
+**Apple's developer-tools dialog.** On a Mac without the command line developer tools, the "Install
+Command Line Developer Tools" dialog came up during the first session. Cause, traced on the VM:
+- `/usr/bin/git`, `python3`, `make`, `cc` and 74 more are one stub that opens the dialog.
+- Agents run them unasked: OpenCode ran `python3` for the starter task, and a real Claude Code and
+  Codex pair brought it up in one run of three.
+
+Agent panes on such a Mac now get `DEVELOPER_DIR=/Library/Developer/CommandLineTools`, where the tools
+install. Measured on a fresh VM without them:
+- every stub (`git`, `python3`, `make`, `xcrun`, `xcodebuild`) fails at once with "xcrun: error:
+  missing DEVELOPER_DIR path", and no dialog;
+- the variable survives the login shells agents run commands in, and covers absolute `/usr/bin` calls;
+- once the tools are installed, the same folder works, in panes already open too.
+
+A first version put 78 stand-ins on PATH instead. Its review found two failures, both confirmed:
+- `path_helper` in a login shell put `/usr/bin` back in front of them;
+- about 40% of panes opening together came up without them.
+
+Official desktop 1.2.62 with CLI 0.3.73 on fresh VMs (faster opening released; no dialog in any run):
+
+| Persona | Workspace | First result | Second session |
+|---|---|---|---|
+| nothing installed | 41 s | 57 s | 20 s; next day, a follow-up in 25 s |
+| real Claude Code and Codex, not signed in | 40 s | 56 s | 139 s |
+| OpenCode only | 41 s | 54 s | 27 s |
+
+## Returning users, and where it stops paying (2026-10-09)
+
+Main's app and CLI on fresh VMs, with signed-in Claude Code and Codex (the e2e fake engines) and
+their recent conversations in the CLIs' own record shapes:
+
+| Persona | Workspace | First result | Second session |
+|---|---|---|---|
+| Claude Code signed in, no history | 41 s | 46 s | 3 s |
+| Claude Code signed in, Codex not | 41 s | 46 s | 2 s |
+| both, 5 recent conversations (2 tabs reopened) | 41 s | 46 s (was lost) | 2 s; the next day too |
+| Codex, 2 recent conversations | 41 s | 46 s (was lost) | 2 s |
+
+**Before #1119:**
+- The daemon held the reopened conversations a moment, then started them. The app heard of the
+  start only at its 60 s agent sync.
+- For that minute the panes said "Waiting" over running agents. Read only since #1117, they lost
+  the first task typed into them.
+
+**#1119:**
+- A held harness is read again (3 s, backing off) until the daemon starts it.
+- It stays writable.
+
+Also fixed today:
+- #1116: ⌘P Enter moves a conversation from a terminal without a dialog.
+- #1117: a held pane says "Waiting" and why.
+- #1094: no developer-tools dialog in agent panes.
+
+**Where it stops paying.** Every persona now reaches its workspace at 40–41 s. The first result
+follows at 46 s with a signed-in agent, or 52–57 s on OpenCode's free model, where the model's own
+answer is the rest. No UI step remains between opening the app and typing.
+
+What is left is first-run setup itself: the CLI, Node and tmux downloaded before the workspace
+opens. The one lever named for it (finding 23) is shipping Node and the CLI inside the app, about
+11 s, at the cost of a larger universal app and signing an embedded Node. That is a packaging
+decision, not an onboarding iteration.
+
+**The whole matrix on final main** (167001ed2, app and CLI built from it), each persona on a fresh Mac
+without developer tools. Every one finished two sessions, and no dialog appeared:
+
+| Persona | Opens on | Workspace | First result | Second session |
+|---|---|---|---|---|
+| nothing installed | OpenCode + Codex + Claude Code | 40 s | 52 s | 48 s; next day 7 s |
+| OpenCode only | OpenCode | 40 s | 56 s | 18 s |
+| real Codex, not signed in | OpenCode + Codex | 40 s | 81 s* | 163 s* |
+| real Claude Code, not signed in | OpenCode + Claude Code | 40 s | 124 s* | 90 s* |
+| real Claude Code and Codex, not signed in | all three | 41 s | 55 s | 17 s |
+| Claude Code signed in | Claude Code | 41 s | 46 s | 2 s |
+| Codex signed in | Codex | 40 s | 46 s | 3 s |
+| both signed in | Claude Code + Codex | 41 s | 46 s | 2 s |
+| both, 5 recent conversations | 2 tabs reopened | 41 s | 46 s | 2 s; next day at once |
+| Codex, 2 recent conversations | 1 tab reopened | 40 s | 46 s | 3 s |
+| Claude Code signed in, real Codex not | Claude Code + Codex | 40 s | 46 s | 3 s |
+
+\* OpenCode's free model itself: its footer read "Muse Spark 1.3 Free · 1m 17s" and "2m 38s" in
+those runs, against 8–15 s an hour earlier. The flow around it was immediate.
+
+**Would another free model help the slow runs?** No. OpenCode's ten free models were each run three
+times on the starter task (`opencode run -m <model>`, a fresh folder and home each, side by side,
+2026-10-09):
+- **The default, `muse-spark-1.3-contributor-free`:** 13.3, 11.7 and 7.1 s, the page made each time.
+  This is the model that took 77 s and 158 s in the matrix an hour earlier.
+- **`space-bunny-free`** (9–11 s) and **`big-pickle`** (8–12 s): as fast, not faster.
+- **The rest:** slower, or failed to make the page (`ling-*`, `fledge-alpha-free`,
+  `nemotron-3.5-lightning-free`).
+
+The slow runs were the default model under load at that moment. Pinning another model would risk
+a first session failing when OpenCode changes its free list, for no steady gain.
+
+**Where a new user's first 30 s go** (final main, fresh VM, from the app's and CLI's logs, 2026-10-09):
+
+| After opening | Step |
+|---|---|
+| +4 s | app launched |
+| +7 s | tmux in place (managed runtime) |
+| +7 → +20 s | Harness's Node runtime and the CLI downloaded and installed: the longest step |
+| +15 s / +18 s | OpenCode downloaded (10.4 s, in parallel) / its first run done |
+| +22 → +25 s | `harness start`: the daemon is ready |
+| +27 → +30 s | the first workspace planned (1.9 s) and its three panes opened (4.5 s) |
+
+OpenCode is off the critical path, so finishing it in its pane as Codex and Claude Code do would
+gain nothing. The one large step is the Node runtime and the CLI. Shipping them in the app would
+save about 13 s, against the documented choice that `install.sh` alone installs them
+(desktop/CLAUDE.md). That is the owner's decision. Everything else left is 1–4 s.
+
+**Rig note:** the VM has no developer tools, so it raises Apple's dialog for anything that runs
+`git`. Returning users of Claude Code or Codex have them, so a dialog seen there is the rig's, not
+theirs.
+
 ## Next
 
 - #1061 merged. #1047, #1052, #1067 and #1069 are carried by the onboarding PR (branch

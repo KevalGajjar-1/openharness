@@ -60,6 +60,11 @@ pub fn open(app: &mut App) {
     refresh(app, true);
 }
 
+/// A sign-in is under way: the browser or phone asked, or the account it chose being committed.
+pub fn signing_in(app: &App) -> bool {
+    app.account.driver.is_some() || matches!(app.account.phase, Phase::Starting | Phase::Browser(_) | Phase::Phone { .. } | Phase::Completing | Phase::Committed)
+}
+
 fn visible(app: &App) -> bool { matches!(app.modal, Some(Modal::Picker { kind: PickerKind::Account, .. })) }
 
 pub(crate) fn identity_changed(app: &mut App) {
@@ -111,6 +116,7 @@ pub fn refresh(app: &mut App, force: bool) {
                         let email = match &app.account.status { Status::SignedIn { email, .. } => email.clone(), _ => None };
                         app.account.status = Status::SignedIn { offline: status["offline"] == true, email };
                         load_email(app, generation);
+                        crate::models::signed_in(app);
                     }
                     None => {}
                 }
@@ -171,7 +177,7 @@ pub fn fill(app: &App, picker: &mut Picker) {
             _ => {
                 rows.push(Row::new("account:google", "Continue with Google"));
                 rows.push(Row::new("account:apple", "Continue with Apple"));
-                rows.push(Row::new("account:qr", "Sign in with your phone"));
+                rows.push(Row::new("account:qr", "Continue with your phone"));
             }
         },
     }
@@ -206,7 +212,7 @@ pub fn preview(app: &App, _: &str) -> Vec<Line<'static>> {
     match &app.account.phase {
         Phase::Browser(_) => {
             lines.push(Line::raw("Finish signing in in your browser."));
-            lines.push(Line::raw("Using SSH? Cancel and choose Sign in with your phone."));
+            lines.push(Line::raw("Using SSH? Cancel and choose Continue with your phone."));
         }
         Phase::Phone { expires, .. } => {
             lines.clear();
@@ -264,7 +270,7 @@ pub fn draw(buf: &mut Buffer, app: &App, body: Rect, picker: &mut Picker) -> Opt
             _ => vec![Line::raw("Connect computers and sync your workspace."), Line::raw("Use models on a linked machine. Follow work from your phone."),
                 Line::raw(""), Line::raw("Sign-in is optional. Keep working locally anytime.")],
         },
-        Phase::Browser(_) => vec![Line::raw("Finish signing in in your browser."), Line::raw("Using SSH? Cancel and choose Sign in with your phone.")],
+        Phase::Browser(_) => vec![Line::raw("Finish signing in in your browser."), Line::raw("Using SSH? Cancel and choose Continue with your phone.")],
         Phase::Failed(message) => vec![Line::raw(message.clone())],
         Phase::Phone { .. } => preview(app, ""),
         Phase::Starting => vec![Line::raw(app.account.waiting.clone().unwrap_or_else(|| "Opening sign-in…".into()))],
@@ -317,8 +323,18 @@ pub fn choose(app: &mut App, mut picker: Picker, id: &str) {
     }
 }
 
+/// hn's own sign-in, chosen and finished — what the browser and `harness login` would do.
+#[cfg(test)]
+pub(crate) fn sign_in_for_test(app: &mut App) {
+    start(app, "google");
+    let generation = app.account.generation;
+    finished(app, generation, true, None);
+}
+
 fn cancel(app: &mut App) {
     if matches!(app.account.phase, Phase::Committed | Phase::Completing) { return }
+    // A sign-in that a Set up asked for, given up: nothing waits to set grid up behind a later one.
+    if (app.account.driver.is_some() || app.account.status == Status::SignedOut) && !app.models_view.set_up_signed_in { app.models_view.set_up_after_sign_in = false }
     if let Some(driver) = app.account.driver.take() {
         let _ = driver.send(Driver::Cancel);
         app.account.generation += 1;
@@ -416,7 +432,7 @@ fn open_browser(app: &mut App, url: String) {
         tokio::time::timeout(Duration::from_secs(10), command.status()).await.is_ok_and(|s| s.is_ok_and(|s| s.success()))
     }, |app, opened| {
         if !opened { if let Some(Modal::Picker { kind: PickerKind::Account, picker }) = &mut app.modal {
-            picker.say("Could not open a browser. Copy the link, or use Sign in with your phone.");
+            picker.say("Could not open a browser. Copy the link, or use Continue with your phone.");
         } }
     });
 }
@@ -473,6 +489,8 @@ fn finished(app: &mut App, generation: u64, committed: bool, error: Option<Strin
     app.account.driver = None;
     if committed {
         app.account.phase = error.map(Phase::Failed).unwrap_or(Phase::Ready);
+        // This sign-in is hn's own: a Set up that asked for it goes on (only that one sets grid up).
+        crate::models::own_sign_in_done(app);
         // The CLI commits credentials and restarts its daemon before it exits.
         reconnect(app);
         refresh(app, true);
@@ -613,7 +631,7 @@ mod tests {
             crate::input::picker(&mut app, PickerKind::Account, "Your Harness account", "");
             let (text, _) = render(&mut app, 40, 12);
             for label in if signed_in { vec!["Connect a machine", "Add your phone", "Sign out"] }
-                else { vec!["Continue with Google", "Continue with Apple", "Sign in with your phone", "Keep using locally"] } {
+                else { vec!["Continue with Google", "Continue with Apple", "Continue with your phone", "Keep using locally"] } {
                 assert!(text.contains(label), "{label}\n{text}");
             }
             if signed_in { for gone in ["Models on your machines", "Back to workspace"] { assert!(!text.contains(gone), "{gone} is not offered\n{text}") } }
