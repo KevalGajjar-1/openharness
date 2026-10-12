@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { inspectNativeLaunch } from './nativeLaunch.js'
 
-const fixture = vi.hoisted(() => ({ calls: 0, stall: false, pipes: false, pipeCount: 0, root: '', children: [] as import('node:child_process').ChildProcess[] }))
+const fixture = vi.hoisted(() => ({ calls: 0, stall: false, pipes: false, pipeCount: 0, root: '', children: [] as import('node:child_process').ChildProcess[],
+  help: 'stdout' as 'stdout' | 'stderr' | 'broken' }))
 vi.mock('./kit/launchExecutable.js', () => ({
   captureLaunchExecutable: async () => ({ state: 'ready',
     executable: { command: '/fixture/permission-engine', identity: 'fixture', current: () => true },
@@ -28,7 +29,13 @@ vi.mock('node:child_process', async original => {
     const script = fixture.pipes ? `
       const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(inheritedPipe)}],{stdio:['ignore',1,2]});
       process.stdout.write('Usage: fixture\\n  --permission-mode\\n');process.exit(0);
-    ` : 'process.stdout.write("Usage: fixture\\n  --permission-mode\\n")'
+    ` : {
+      stdout: 'process.stdout.write("Usage: fixture\\n  --permission-mode\\n")',
+      // OpenCode 1.19.0: its whole help on standard error, nothing on standard output, exit 0.
+      stderr: 'process.stderr.write("Usage: fixture\\n  --permission-mode\\n")',
+      // An npm engine with no Node to run it: env's own complaint, exit 127.
+      broken: 'process.stderr.write("/usr/bin/env: \\u2018node\\u2019: No such file or directory\\n");process.exit(127)',
+    }[fixture.help]
     const child = actual.execFile(process.execPath, ['-e', script], options, done)
     fixture.children.push(child)
     // Same check-phase stall as e2e/stall.e2e.ts. Node's native timeout loses
@@ -38,7 +45,7 @@ vi.mock('node:child_process', async original => {
   } }
 })
 beforeEach(() => {
-  fixture.calls = 0; fixture.stall = false; fixture.pipes = false; fixture.pipeCount = 0; fixture.children = []
+  fixture.calls = 0; fixture.stall = false; fixture.pipes = false; fixture.pipeCount = 0; fixture.children = []; fixture.help = 'stdout'
   fixture.root = mkdtempSync(join(tmpdir(), 'native-probe-'))
 })
 afterEach(async () => {
@@ -76,4 +83,18 @@ it('holds inherited output pipes within a bound and recovers probe capacity afte
   fixture.pipes = false
   expect(await prepared.launch.permission({ permissionMode: 'auto' })).toBe('supported')
   expect(fixture.calls).toBe(9)
+}, 15_000)
+
+it('reads help an engine prints to standard error, as OpenCode 1.19.0 does', async () => {
+  fixture.help = 'stderr'
+  const prepared = await inspectNativeLaunch('claude', { permissionMode: 'auto' })
+  expect(prepared).toMatchObject({ ok: true })
+  if (!prepared.ok) throw Error(prepared.detail)
+  expect(await prepared.launch.permission({ permissionMode: 'auto' })).toBe('supported')
+}, 15_000)
+
+it('says in the engine\'s own words why an engine that ran and failed cannot run', async () => {
+  fixture.help = 'broken'
+  expect(await inspectNativeLaunch('codex', { permissionMode: 'auto' })).toEqual({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native',
+    detail: 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory', cannotRun: true })
 }, 15_000)

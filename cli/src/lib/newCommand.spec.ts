@@ -205,6 +205,56 @@ describe('harness new: the daemon', () => {
     expect(slept).toEqual([2_000, 2_000, 2_000])
   })
 
+  it('says what a held launch waits for and, given up on, cancels it so it never starts later', async () => {
+    const held = (detail: string) => ({ state: 'pending', held: { service: 'native', detail } })
+    let asks = 0
+    const socket = new FakeSocket((frame) => {
+      if (frame.type === 'agent_create') return { creationId: frame.payload.creationId, ...held('Installing the required engine.') }
+      if (frame.type === 'agent_create_status') return ++asks < 5 ? held('Installing the required engine.') : held('Waiting to confirm the selected executable’s permission flags.')
+      if (frame.type === 'agent_create_cancel') return { creationId: frame.payload.creationId, state: 'cancelled' }
+      return null
+    })
+    const d = deps(['opencode', '--', 'fix it'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(1)
+    // Each reason once, as it changes, then why it stopped.
+    expect(d.err).toEqual([
+      'Installing the required engine.',
+      'Waiting to confirm the selected executable’s permission flags.',
+      'Harness did not start the harness within a minute: Waiting to confirm the selected executable’s permission flags. '
+        + 'The request is cancelled, so it will not start later.',
+    ])
+    expect(asks).toBe(30)
+    const create = socket.sent.find((f) => f.type === 'agent_create')!
+    expect(socket.sent.filter((f) => f.type === 'agent_create_cancel').map((f) => f.payload.creationId)).toEqual([create.payload.creationId])
+    expect(d.out).toEqual([])
+  })
+
+  it('takes what became of a launch it could no longer cancel, and says so when it cannot cancel at all', async () => {
+    const answer = (cancel: Record<string, unknown> | null) => new FakeSocket((frame) =>
+      frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending' }
+        : frame.type === 'agent_create_cancel' ? cancel : null)
+    const started = deps(['codex'], answer({ state: 'created', agent: { id: 'h2', name: 'late' } }), { sleep: async () => {} })
+    expect(await newCommand(started)).toBe(0)
+    expect(started.out[0]).toBe('Created late on this computer in /work/repo.')
+    expect(started.err).toEqual([])
+    const refused = deps(['codex'], answer({ state: 'failed', failure: { code: 'ENGINE_CANNOT_RUN', detail: 'Codex is installed but cannot run: env: node: No such file or directory' } }), { sleep: async () => {} })
+    expect(await newCommand(refused)).toBe(1)
+    expect(refused.err).toEqual(['Codex is installed but cannot run: env: node: No such file or directory'])
+    // A daemon with no cancel (or no answer): the request is still saved, and that is said plainly.
+    const older = deps(['codex', '--json'], answer(null), { sleep: async () => {} })
+    expect(await newCommand(older)).toBe(1)
+    expect(JSON.parse(older.out[0]!)).toEqual({ ok: false, error: 'Harness did not start the harness within a minute. '
+      + 'It is still saved and may start later by itself: check with `harness ps` before starting another.' })
+    expect(older.err).toEqual([])
+  })
+
+  it('says why the machine refused an engine that cannot run, in the machine\'s words', async () => {
+    const d = deps(['codex'], new FakeSocket((frame) => frame.type === 'agent_create' ? { creationId: 'c1', state: 'failed',
+      failure: { code: 'ENGINE_CANNOT_RUN', detail: 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory' } } : null))
+    expect(await newCommand(d)).toBe(1)
+    expect(d.err).toEqual(['Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory'])
+  })
+
   it('reads the folder off the harness the machine made', async () => {
     const socket = new FakeSocket((frame) => frame.type === 'agent_create'
       ? { state: 'created', agent: { id: 'a1', name: 'fixer', project: { cwd: '/work/repo/.worktrees/x' } } } : null)
