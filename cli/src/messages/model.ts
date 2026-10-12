@@ -5,6 +5,7 @@
  * (services/AGENTS.md).
  */
 import { randomBytes } from 'node:crypto'
+import { engineLabel } from '../lib/agentNames.js'
 
 /** Who sent a message, as its header names them. */
 export interface Sender {
@@ -101,9 +102,14 @@ export function parseMessage(value: unknown): Message | null {
   return { id: v.id, tabId, from: { ...from, engine, machine }, to: to as Recipient[], text: body, at: v.at, ...(v.fyi === true ? { fyi: true as const } : {}) }
 }
 
-/** The engine's name as a person reads it. */
+/**
+ * The engine's name as a person reads it: the app's own word for each (lib/agentNames.ts), Claude Code by its whole
+ * name and pi as it writes itself. This kept a short table of its own, so `harness ps` listed a Kilo harness as
+ * "kilo", and a message from one was headed "· kilo ·" (CLI 0.3.77, a fresh Ubuntu VM, 2026-10-12); the same for
+ * Amp, Copilot, Devin, Hermes, Muse, Command Code and Antigravity ("agy").
+ */
 export function engineName(engine: string): string {
-  return ({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', pi: 'pi', grok: 'Grok', cursor: 'Cursor' } as Record<string, string>)[engine] ?? engine
+  return ({ claude: 'Claude Code', pi: 'pi' } as Record<string, string>)[engine] ?? engineLabel(engine)
 }
 
 /** The one line above a message: who sent it, so a teammate's words never pass as the person's. */
