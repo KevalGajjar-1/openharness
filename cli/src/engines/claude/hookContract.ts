@@ -28,11 +28,14 @@ export const hooks: HookContract = {
     // (a rules file of its own can be rewritten; this list is theirs). The MCP tools by name, under both names Claude
     // Code gives them: a server the person added as `harness` (`claude mcp add harness -- harness mcp`, as /agents
     // says), and the plugin's (`mcp__plugin_<plugin>_<server>__<tool>`). By name, not `mcp__harness__*`: another
-    // product's MCP server is also often added as `harness`, and its tools are not Harness's to allow.
+    // product's MCP server is also often added as `harness`, and its tools are not Harness's to allow. And
+    // `harness --help`, which every harness is told to read as it starts (lib/agentAttribution.ts): in ask mode it was
+    // the one question left in a hand-off (2026-10-12, in a clean VM). It only prints.
     allow: {
       list: ['permissions', 'allow'],
       unless: ['deny', 'ask'],
-      rules: ['Bash(harness {verb}:*)', 'Bash({launcher} {verb}:*)', 'mcp__harness__{tool}', 'mcp__plugin_harness_harness__{tool}'],
+      rules: ['Bash(harness --help)', 'Bash(harness -h)', 'Bash({launcher} --help)',
+        'Bash(harness {verb}:*)', 'Bash({launcher} {verb}:*)', 'mcp__harness__{tool}', 'mcp__plugin_harness_harness__{tool}'],
     },
     commandNamesHome: false,
     upToDate: { command: 'first-ours', matcher: false },
