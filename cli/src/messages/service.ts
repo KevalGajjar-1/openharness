@@ -58,6 +58,10 @@ export const REMOTE_STATUS_MS = 15_000
 export const WHO_MS = 60_000
 /** How old an inbox file nothing here waits on must be before a start sweeps it away. */
 export const SWEEP_AFTER_MS = 10 * 60_000
+/** How long a delivery no tab with Agent Messages on carries is held, given to no one, before it fails. */
+export const HELD_OUTSIDE_MS = 5 * 60_000
+export const HELD_OFF_REASON = 'Agent Messages are off in this tab: it waits 5 minutes for them to be on again, then fails'
+export const HELD_LEFT_REASON = 'it is not in a tab with the sender: it waits 5 minutes for that to change, then fails'
 
 const PANE = /^%\d{1,9}$/
 /** The most messages `harness send` alone gives an agent at once, unread ones first. */
@@ -115,7 +119,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       return { pane: session.tmuxPane, session: session.sessionId ?? '', available: session.active && core.agents.terminalAvailable(agentId) }
     },
     deliver: (agentId, text, deliveryId) => { core.turns.deliver(agentId, text, deliveryId); options.changed?.() },
-    refused: (delivery) => refusal(delivery),
+    refused: (delivery) => { const v = verdict(delivery); return v && 'refused' in v ? v.refused : null },
+    held: (delivery) => { const v = verdict(delivery); return v && 'held' in v ? v.held : null },
     forbidden: (delivery) => forbidden(delivery),
     ready: () => directory.current() !== null,
     text: (delivery, message) => {
@@ -137,19 +142,34 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     return store.entry(delivery.messageId)?.message.tabId === 'started' ? 'it was sent outside any tab with Agent Messages on' : null
   }
 
-  /** Why a local delivery can no longer be made, or null. Only what may never be made is refused before the
-   *  directory is read. */
-  function refusal(delivery: LocalDelivery): string | null {
+  /** When the tabs stopped carrying each local delivery (`messageId agentId`), while they do not. */
+  const outsideSince = new Map<string, number>()
+
+  /**
+   * Whether a local delivery may be made: null; held, given to no one, while no tab with Agent Messages on carries
+   * it, for HELD_OUTSIDE_MS; refused after that, or at once when it may never be made. Only what may never be made is
+   * refused before the directory is read. A tab turned off by a slip of the mouse and on again a minute later failed
+   * the message waiting in it (owner, 2026-10-12): held, it goes on once the tab is on again.
+   */
+  function verdict(delivery: LocalDelivery): { refused: string } | { held: string } | null {
     const entry = store.entry(delivery.messageId)
-    if (!entry) return 'the message is no longer kept'
+    if (!entry) return { refused: 'the message is no longer kept' }
     const never = forbidden(delivery)
-    if (never) return never
+    if (never) return { refused: never }
     if (!directory.current()) return null
+    const key = `${delivery.messageId} ${delivery.agentId}`
     const recipient = { machineId: self(), agentId: delivery.agentId }
     // Only a tab with Agent Messages on carries a message.
-    if (directory.shared(entry.message.from, recipient)) return null
+    if (directory.shared(entry.message.from, recipient)) { outsideSince.delete(key); return null }
     const tab = directory.current()!.tabs.find((t) => t.id === entry.message.tabId)
-    return tab && !tab.enabled ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender'
+    const off = Boolean(tab && !tab.enabled)
+    const since = outsideSince.get(key) ?? now()
+    if (now() - since < HELD_OUTSIDE_MS) {
+      outsideSince.set(key, since)
+      return { held: off ? HELD_OFF_REASON : HELD_LEFT_REASON }
+    }
+    outsideSince.delete(key)
+    return { refused: off ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender' }
   }
 
   function localChanged(status: DeliveryStatus, delivery: LocalDelivery): void {
