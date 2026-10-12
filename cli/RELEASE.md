@@ -27,6 +27,14 @@ last tag. Bumping from tags alone there would produce a version LOWER than what'
 every daemon refuses it (`shouldUpdate` / `semverGt` in `src/lib/selfUpdate.ts`) while the release
 still reports success.
 
+**A release contains the one before it.** The script refuses a checkout that lacks the last release's
+commit (the highest `v*_cli` tag, and the tag of the version the manifest serves): it is still on
+`origin/main`, so nothing else stopped it, and it would publish older code under a newer version to
+every daemon. `v0.3.82_cli` was tagged that way on October 12, 2026, from a checkout three commits
+behind `v0.3.81_cli`; its run was cancelled before it published. Update the checkout
+(`git fetch origin && git checkout --detach origin/main`). A rollback, which means to do exactly this,
+is `make release-cli ARGS="--allow-older"`. The desktop, backend and web release scripts check the same.
+
 Unlike `autonomous-harness-desktop`'s `make release`, there is no `--minor` flag: `shouldUpdate` is a
 plain "strictly newer" check with no major/minor-triggers-a-forced-update concept, so every release
 just needs to outrank what's live.
