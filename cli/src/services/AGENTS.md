@@ -53,7 +53,7 @@ that process. A process per risk, not per feature (`SERVICE_HOSTS` in `src/harne
 |---|---|---|---|
 | `engine-claude`, `engine-codex` | history, live parsers, runtime profiles, screens, submission readings, model control, question navigation and Codex's app-server connection (`src/engines/worker/`) | engine behavior outside core; snapshots and revocable model- and question-control grants | on demand |
 | `search` | search | native `node:sqlite`, the index's memory | always |
-| `viewers` | viewers, store | the viewer servers, the remote viewer streams and rendered surfaces, minutes-long installs | always |
+| `viewers` | viewers, store | the viewer servers, the remote viewer streams and rendered surfaces, minutes-long installs | on demand |
 | `edge` | workspaces, usage, monitor, projects, handoff, recaps, windowNames, shell, connectors, agentCleanup, messages | light pure-JS services: isolated from the core, not from each other | always |
 | `gateway` | gateway | network, crypto and pure-JS WebRTC: the attack surface | on demand |
 | `models` | models | grid's installs, downloads and commands | on demand |
@@ -202,14 +202,23 @@ like any other. Named in `HARNESSD_SERVICES`, it starts with the others.
   signed in or has anything paired or linked directly (`src/core/gatewayWake.ts`), so the relay comes up
   beside the core as before; otherwise by what needs it (`src/core/gatewayLink.ts`): a pairing, a window's
   E2EE request or session to another machine, which wait for its first start, a key or device command, or
-  the Wi-Fi device's service. `/api/status` never starts it.
+  the Wi-Fi device's service. `/api/status` never starts it. The viewers' process (the viewers and the Store)
+  is asked for by a harness here, as the core starts or as one is attached (created, forked, restored, found),
+  by a request (the Store's, a harness's create or restore, a client's viewer stream or rendered frame, which
+  wait for it), and as the core starts when the release's own harnesses are not in the installed index as this
+  build ships them (`src/dsh/builtinIds.ts` `bundledRevisions`) or the viewers' ledger names viewer servers an earlier
+  process left running (`src/core/viewersWake.ts`). A stream before it has first connected is held, bounded,
+  until it does (`src/core/viewersLink.ts`).
 - **Older cores.** `askedSince` is the core protocol (`HARNESSD_PROTOCOL`, `src/harnessd/protocol.ts`) from
   which a core asks for this process. A core that speaks an older one never asks, so the master starts the
   process as that core binds (`ServiceSupervisor.unasked`). It is 3 by default, the experiments'; the
-  devices, models and the gateway became on demand at protocol 4, which may also ask before it binds. Making another process on demand needs a protocol bump, and that
-  number in its `askedSince`.
-- **Proof.** `e2e/experiments.e2e.ts`, `e2e/devicesOnDemand.e2e.ts`, `e2e/modelsOnDemand.e2e.ts` and
-  `e2e/gatewayOnDemand.e2e.ts`: off, it has no process; asked for, it starts and answers.
+  devices, models and the gateway became on demand at protocol 4, which may also ask before it binds; the
+  viewers at protocol 5. Making another process on demand needs a protocol bump, and that number in its
+  `askedSince`. A newer core under an older master asks for a process that master started with the others,
+  which changes nothing.
+- **Proof.** `e2e/experiments.e2e.ts`, `e2e/devicesOnDemand.e2e.ts`, `e2e/modelsOnDemand.e2e.ts`,
+  `e2e/gatewayOnDemand.e2e.ts` and `e2e/viewersOnDemand.e2e.ts`: off, it has no process; asked for, it starts
+  and answers.
 
 ## Experiments
 

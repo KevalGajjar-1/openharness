@@ -19,8 +19,22 @@ class LocalModel {
     this.estTokS,
     this.paramsB,
     this.app,
+    this.servedAs = const [],
   });
   final String id, name, state;
+
+  /// The names the grid lists this model under while it runs here (`servedAs`; empty from an older
+  /// daemon). A catalog model runs under its file's name (`Qwen3.8-27B-UD-Q4_K_M`), not the catalog's
+  /// (`Qwen3.8-27B`), so its grid listing is matched to it by these.
+  final List<String> servedAs;
+
+  /// Whether the grid's [modelId] is this model: its id, its name, or a name it is served under.
+  bool answersTo(String modelId) {
+    final id = modelId.toLowerCase();
+    return this.id.toLowerCase() == id ||
+        name.toLowerCase() == id ||
+        servedAs.any((served) => served.toLowerCase() == id);
+  }
 
   /// The app this model was downloaded with and starts in (`Ollama`, `LM Studio`, `llama.cpp`): one found
   /// in that app's folder. Null for Grid's own models, and from an older daemon.
@@ -84,6 +98,10 @@ class LocalModel {
     app: switch (data['app']) {
       final String app when app.trim().isNotEmpty => app.trim(),
       _ => null,
+    },
+    servedAs: switch (data['servedAs']) {
+      final List<dynamic> names => names.whereType<String>().toList(),
+      _ => const [],
     },
   );
 }

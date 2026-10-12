@@ -197,6 +197,7 @@ import { createWifiCore, WIFI_START_MS } from './wifi.js'
 import { createDevicesWake, DEVICES_ON_DEMAND } from './devicesWake.js'
 import { wakeModels } from './modelsWake.js'
 import { wakeGateway } from './gatewayWake.js'
+import { createViewersWake, VIEWERS_ON_DEMAND, wakeViewers } from './viewersWake.js'
 import { createWifiLink } from './wifiLink.js'
 import { wifiDoors } from './wifiAgents.js'
 import { autonomousDeviceLocalRequest } from '../lib/deviceManagementHttp.js'
@@ -610,6 +611,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ports.devices?.engines(registry.active().map((session) => session.engine))
   }
   const outOfProcess = servicesTheMasterRuns(harnessd, KNOWN_SERVICES)
+  // The viewers' process (the viewers and the Store) runs once something needs it (core/viewersWake.ts).
+  const viewersWake = createViewersWake({ want: (service) => coreLink.want(service), outOfProcess })
   const liveHosted = masterRunsLiveEngines(harnessd, process.ppid)
   const runtimeHosted = liveHosted && masterRunsEngineRuntime(harnessd, process.ppid)
   // An older master's explicit capability report selects compatibility. A failed worker never does.
@@ -1258,7 +1261,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const orchestratorLink = createOrchestratorLink((frame) => serviceLinks.notify('orchestrator', frame))
   // What the core keeps of the viewers in their own process, for the frames it builds (core/viewersLink.ts).
   const viewersLink = createViewersLink(coreApi, (frame, opts) => serviceLinks.notify('viewers', frame, opts),
-    { call: (type, payload, waitMs) => serviceLinks.call('viewers', type, payload, waitMs), buffered: () => serviceLinks.buffered('viewers') })
+    { call: (type, payload, waitMs) => serviceLinks.call('viewers', type, payload, waitMs), buffered: () => serviceLinks.buffered('viewers') },
+    { wake: (why) => viewersWake.ask('viewers', why) })
   // How the core tells workspaces in their own process what to do, and answers them (core/workspacesLink.ts).
   const workspacesLink = createWorkspacesLink(coreApi, (frame) => serviceLinks.notify('workspaces', frame), forgetAgentProject)
   // Agent Messages in its own process: which of its deliveries may be written, as it last said, and what it may ask
@@ -1313,11 +1317,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     token: serviceToken,
     owned: Object.fromEntries([...outOfProcess].map((name) => [name, requestsOf[name] ?? []])),
     waits: LONG_ANSWERS,
-    // An experiment's process runs once on, the devices' once there is one, models' and the gateway's once needed: a request asks.
-    // Shell and Agent Messages are in the always-running edge host, but a first request can beat that host's
-    // connection. Hold it through the same bounded startup gate; after any disconnect, fail promptly as before.
-    // Under a master from before, Agent Messages' own process starts at its first request this way.
-    onDemand: new Set([...experiments, ...DEVICES_ON_DEMAND, ...Object.values(READER_SERVICES), 'models', 'gateway', 'shell', 'messages']),
+    // An experiment's process runs once on, the devices' once there is one, models', the gateway's and the viewers'
+    // once needed: a request asks. Shell and Agent Messages are in the always-running edge host, but a first request
+    // can beat that host's connection. Hold it through the same bounded startup gate; after any disconnect, fail
+    // promptly as before. Under a master from before, Agent Messages' own process starts at its first request this way.
+    onDemand: new Set([...experiments, ...DEVICES_ON_DEMAND, ...VIEWERS_ON_DEMAND, ...Object.values(READER_SERVICES), 'models', 'gateway', 'shell', 'messages']),
     want: (service) => experimentHooks.want(service),
     // The gateway's first: its `backend` reads (the device key log) were refused below as NOT_AN_EXPERIMENT.
     answer: async (service, query, payload, authority) => await questionControls.answer(service, query, payload) ?? await modelControls.answer(service, query, payload) ?? await nativeControls.answer(service, query, payload) ?? engineReaders.answer(service) ?? (service === 'gateway' && gatewayLink ? gatewayLink.answer(query, payload) : null) ?? deliveries.answer(service, query, payload)
@@ -1356,7 +1360,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       if (service === 'gateway') gatewayLink?.connected()
       if (service === 'devices') devicesLink.connected()
       if (service === 'wifi') wifiCore.started(appVoiceFocus ?? null)
+      if (service === 'viewers') viewersLink.connected()
       devicesWake.connected(service)
+      viewersWake.connected(service)
       // A service up again (or up at last): the agents held for it are launched (core/agents/heldLaunches.ts).
       void heldLaunches.restoreHeld(service)
     },
@@ -1862,6 +1868,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     askForMessages(outOfProcess, (service) => coreLink.want(service))
     devicesWake.start(outOfProcess)
     wakeModels({ outOfProcess, dataDir: env.ADAPTER_DATA_DIR, runtimeDir: env.ADAPTER_RUNTIME_DIR, want: (service) => coreLink.want(service) })
+    wakeViewers({ wake: viewersWake, agents: () => registry.list(), dataDir: env.ADAPTER_DATA_DIR })
   } else {
     try { writeFileSync(PID_FILE, String(process.pid) + '\n') } catch { /* best effort */ }
   }

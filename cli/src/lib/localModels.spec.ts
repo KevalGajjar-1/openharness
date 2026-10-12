@@ -150,11 +150,14 @@ describe('local model discovery and lifecycle', () => {
   })
 
   it('downloads, loads and verifies without another user step', async () => {
+    // Not running: nothing serves it, so no name a harness could be on.
+    expect((await service.list('home')).models[0]).not.toHaveProperty('servedAs')
     const ack = await service.act('home', 'org/Small-GGUF', 'start')
     expect(ack.operation?.phase).toBe('running')
     await service.settled()
     const snapshot = await service.list('home')
-    expect(snapshot.models[0]).toMatchObject({ state: 'running', canStop: true,
+    // Shown as the catalog's `Small`, served under its file's name — the one the grid lists, and a harness on it says.
+    expect(snapshot.models[0]).toMatchObject({ name: 'Small', state: 'running', canStop: true, servedAs: ['Small-Q4'],
       tokensPerSecond: 17.6, requests: 4, windowSeconds: 3600, operation: { phase: 'done', stage: 'verifying' } })
     expect(snapshot.models[0]).not.toHaveProperty('memoryBytes')
     expect(calls.find(args => args.includes('join'))).toEqual(['--remote', 'join', 'home', '--serve', 'Small-Q4.gguf', '--max-concurrency', '1', '--parallel', '1', '--ctx-size', '131072', '--endpoint-port', expect.stringMatching(/^\d+$/), '--reasoning-budget', '0'])
@@ -323,7 +326,7 @@ describe('local model discovery and lifecycle', () => {
       engines: [{ endpoint_url: null, models: ['Small-Q4.gguf'] }], advertise_as: ['Small-Q4.gguf'] }))
     await writeFile(join(records, 'remote.heartbeat'), '')
     const first = await service.list('home')
-    expect(first.models[0]).toMatchObject({ id: 'local:Small-Q4.gguf', state: 'running', canStop: true })
+    expect(first.models[0]).toMatchObject({ id: 'local:Small-Q4.gguf', state: 'running', canStop: true, servedAs: ['Small-Q4'] })
     await service.act('home', first.models[0].id, 'stop'); await service.settled()
     const fresh = modelFixture({ stateDir, processEnv: { GRID_HOME: home }, run, request: request as typeof fetch , inventory })
     expect((await fresh.list('home')).models[0]).toMatchObject({ state: 'downloaded', canStart: true })
@@ -1904,7 +1907,7 @@ describe('models other apps downloaded, started in their own app', () => {
       engine: 'ollama', served: ollama.ref, alias: ollama.name, port: 41000, binary: ollama.binary, pid: 4242 }]))
     service = appService({ appEngines: undefined })
     expect((await service.list('home')).models.find(model => model.id === ollama.id))
-      .toMatchObject({ state: 'downloaded', canStart: false, canStop: true })
+      .toMatchObject({ state: 'downloaded', canStart: false, canStop: true, servedAs: [ollama.name] })
     const result = await service.act('home', ollama.id, 'stop'); await service.settled()
     expect(result.operation?.phase).toBe('done')
     expect(calls).toContainEqual(['--remote', 'leave', 'home', '--engine', ollama.name])

@@ -276,8 +276,7 @@ class ModelSearchCatalog extends ChangeNotifier {
                 .where(
                   (local) =>
                       (local.downloaded || local.canStop) &&
-                      (local.name.toLowerCase() == model.id.toLowerCase() ||
-                          local.id.toLowerCase() == model.id.toLowerCase()),
+                      local.answersTo(model.id),
                 )
                 .toList() ??
             const <LocalModel>[];

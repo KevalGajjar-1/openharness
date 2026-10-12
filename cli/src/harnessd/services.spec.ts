@@ -458,6 +458,38 @@ describe('ServiceSupervisor', () => {
     expect(named.onDemand).toBeUndefined()
   })
 
+  it('runs the viewers and the Store only once something needs them, asked for by a core of protocol 5, and from the start when named', () => {
+    const [viewers] = serviceSpecs({}, SERVICE_HOSTS).filter((spec) => spec.name === 'viewers')
+    expect(viewers).toMatchObject({ services: ['viewers', 'store'], onDemand: true, askedSince: 5 })
+    // Named, as tests and support name it: from the start, as every master before it ran them.
+    const [named] = serviceSpecs({ HARNESSD_SERVICES: 'viewers' }, SERVICE_HOSTS)
+    expect(named.services).toEqual(['viewers', 'store'])
+    expect(named.onDemand).toBeUndefined()
+    // Asked for by either of its services.
+    const supervisor = make([search, viewers])
+    supervisor.start()
+    expect(children.map((child) => child.spec.name)).toEqual(['search'])
+    supervisor.want('store')
+    supervisor.want('viewers')
+    expect(children.map((child) => child.spec.name)).toEqual(['search', 'viewers'])
+  })
+
+  it('starts the viewers as a core of protocol 4 binds, which never asks for them, and leaves the rest to it', () => {
+    const onDemand = serviceSpecs({}, SERVICE_HOSTS).filter((spec) => spec.onDemand)
+    const four = make(onDemand)
+    four.start()
+    expect(children).toHaveLength(0)
+    // Models, the devices and the gateway it asks for itself (protocol 4); the engines' workers are new to it.
+    four.unasked(4)
+    expect(children.map((child) => child.spec.name)).toEqual(['viewers'])
+    // A core of this protocol asks for each itself.
+    children.length = 0
+    const five = make(onDemand)
+    five.start()
+    five.unasked(5)
+    expect(children).toHaveLength(0)
+  })
+
   it('knows every service each process this build runs hosts, and each in one process only', () => {
     const hosted = Object.values(SERVICE_HOSTS).flatMap((host) => host.services)
     expect(KNOWN_SERVICES).toEqual(hosted)

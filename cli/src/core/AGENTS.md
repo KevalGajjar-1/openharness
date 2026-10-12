@@ -57,7 +57,7 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
 - `api.ts`: the contract with services, their ports, fallbacks and requests. `serviceHost.ts`: services
   in this process. `serviceLinks.ts`: services in their own processes. `viewersLink.ts`: what the core
   keeps of the viewers when they run in theirs. `viewerStreams.ts`: a client's viewer stream and rendered
-  frames, handed to the viewers, and refused at once while they are down. `workspacesLink.ts`: what the core tells workspaces in
+  frames, handed to the viewers, refused at once while they are down, and held while they first start. `workspacesLink.ts`: what the core tells workspaces in
   theirs. `messagesLink.ts`: Agent Messages out of this process (the edge host): which of its deliveries may be
   written, as it last said, the few things it may ask (the agents, this daemon and its sign-in, the account's tabs,
   its log's notice for the windows), the desk's changes and Settings ▸ Agents' writes, and the ask for it as the core
@@ -86,4 +86,5 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
   that process is asked for, once there is a device (a dial's port in /dev, a paired Wi-Fi device).
   `modelsWake.ts`: when models' process is asked for as the core starts, once grid is in use here.
   `gatewayWake.ts`: when the gateway's process is asked for as the core starts, before it binds: signed in, or
-  anything paired here.
+  anything paired here. `viewersWake.ts`: when the viewers' process (the viewers and the Store) is asked for: a
+  harness here, or as the core starts, the release's own harnesses to put in place or viewer servers to stop.
