@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../auth/sign_in_provider.dart';
 import '../logging/app_log.dart';
@@ -43,6 +44,11 @@ class SignInStep extends StatelessWidget {
     this.startingProvider,
     this.finishing = false,
     this.error,
+    this.sessionExpired = false,
+    this.signingOut = false,
+    this.signOutError,
+    this.onRetrySignOut,
+    this.recovery,
   });
 
   /// Continue with Google, Continue with Apple, or — with no provider —
@@ -60,6 +66,11 @@ class SignInStep extends StatelessWidget {
 
   /// Why the last sign-in did not finish.
   final String? error;
+  final bool sessionExpired;
+  final bool signingOut;
+  final String? signOutError;
+  final VoidCallback? onRetrySignOut;
+  final Widget? recovery;
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +88,13 @@ class SignInStep extends StatelessWidget {
               Expanded(child: _stage(context, gutter)),
               _ReadyBar(
                 gutter: gutter,
-                line: finishing ? 'Signing in…' : 'Sign in to continue.',
+                line: signingOut
+                    ? 'Signing out…'
+                    : finishing
+                    ? 'Signing in…'
+                    : sessionExpired
+                    ? 'Your session ended. Sign in again to continue.'
+                    : 'Sign in to continue.',
               ),
             ],
           );
@@ -176,29 +193,44 @@ class SignInStep extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         spacing: 12,
         children: [
-          for (final provider in SignInProvider.values)
-            _stepsBack(
-              starting && startingProvider == provider,
-              SignInProviderButton(
-                provider: provider,
-                prominent: true,
-                // Return signs in with the first.
-                autofocus: provider == SignInProvider.values.first,
-                onPressed: () => onSignIn(provider),
+          if (signingOut)
+            const Center(
+              child: SizedBox.square(
+                dimension: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else if (signOutError != null)
+            FilledButton(
+              autofocus: true,
+              onPressed: onRetrySignOut,
+              child: const Text('Retry sign out'),
+            )
+          else ...[
+            for (final provider in SignInProvider.values)
+              _stepsBack(
+                starting && startingProvider == provider,
+                SignInProviderButton(
+                  provider: provider,
+                  prominent: true,
+                  // Return signs in with the first.
+                  autofocus: provider == SignInProvider.values.first,
+                  onPressed: () => onSignIn(provider),
+                ),
+              ),
+            Align(
+              alignment: Alignment.center,
+              child: _stepsBack(
+                starting && startingProvider == null,
+                QuietLink(
+                  key: const Key('sign-in-step-email'),
+                  label: 'Continue with email',
+                  onPressed: () => onSignIn(null),
+                ),
               ),
             ),
-          Align(
-            alignment: Alignment.center,
-            child: _stepsBack(
-              starting && startingProvider == null,
-              QuietLink(
-                key: const Key('sign-in-step-email'),
-                label: 'Continue with email',
-                onPressed: () => onSignIn(null),
-              ),
-            ),
-          ),
-          if (error case final error?)
+          ],
+          if ((signOutError ?? error) case final error?)
             Semantics(
               liveRegion: true,
               child: Text(
@@ -209,6 +241,7 @@ class SignInStep extends StatelessWidget {
                 ),
               ),
             ),
+          if (recovery case final recovery?) recovery,
         ],
       ),
     ),
@@ -333,11 +366,64 @@ class _SignInStepScreenState extends State<SignInStepScreen> {
   /// [AppNotifier.lastError] as it stands: that also carries what the desk
   /// behind this page has to say, which is not this page's to show.
   String? _error;
+  String? _copiedUrl;
+  String? _copyFailureUrl;
+  bool _copying = false;
 
   @override
   void initState() {
     super.initState();
+    widget.app.addListener(_observeLogin);
+    _observeLogin();
     appLog.info('onboarding', 'sign-in step: shown');
+  }
+
+  @override
+  void didUpdateWidget(SignInStepScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.app != widget.app) {
+      oldWidget.app.removeListener(_observeLogin);
+      widget.app.addListener(_observeLogin);
+      _wasSigningIn = false;
+      _error = null;
+      _observeLogin();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.app.removeListener(_observeLogin);
+    super.dispose();
+  }
+
+  // Capture both notifications when a sign-in fails before the next frame.
+  void _observeLogin() {
+    final app = widget.app;
+    if (app.signingIn) {
+      _error = null;
+    } else if (_wasSigningIn) {
+      _error = app.signedIn ? null : app.lastError;
+    }
+    _wasSigningIn = app.signingIn;
+  }
+
+  Future<void> _copyLink() async {
+    final url = widget.app.pendingAuthorizeUrl;
+    if (url == null || _copying) return;
+    setState(() => _copying = true);
+    var copied = false;
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      copied = true;
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _copying = false;
+      if (widget.app.pendingAuthorizeUrl == url) {
+        _copiedUrl = copied ? url : null;
+        _copyFailureUrl = copied ? null : url;
+      }
+    });
   }
 
   @override
@@ -346,21 +432,39 @@ class _SignInStepScreenState extends State<SignInStepScreen> {
     return ListenableBuilder(
       listenable: app,
       builder: (context, _) {
-        if (app.signingIn) {
-          _error = null;
-        } else if (_wasSigningIn) {
-          // A cancelled sign-in leaves no error; a failed one leaves its own.
-          _error = app.signedIn ? null : app.lastError;
-        }
-        _wasSigningIn = app.signingIn;
-        return SignInStep(
-          onSignIn: (provider) => unawaited(app.signInFromStep(provider)),
-          // Its browser is not open yet: the CLI has to start before it can
-          // name the page.
-          starting: app.canCancelLogin && app.pendingAuthorizeUrl == null,
-          startingProvider: app.signInProvider,
-          finishing: app.signingIn && !app.canCancelLogin,
-          error: _error,
+        return CallbackShortcuts(
+          bindings: {
+            if (app.canCancelLogin)
+              const SingleActivator(
+                LogicalKeyboardKey.escape,
+                includeRepeats: false,
+              ): app.cancelLogin,
+          },
+          child: SignInStep(
+            onSignIn: (provider) => unawaited(app.signInFromStep(provider)),
+            // Its browser is not open yet: the CLI has to start before it can
+            // name the page.
+            starting: app.canCancelLogin && app.pendingAuthorizeUrl == null,
+            startingProvider: app.signInProvider,
+            finishing: app.signingIn && !app.canCancelLogin,
+            error: app.loginBrowserError ?? _error,
+            sessionExpired: app.sessionExpired,
+            signingOut: app.signingOut,
+            signOutError: app.signOutError,
+            onRetrySignOut: () => unawaited(app.logout()),
+            recovery:
+                app.loginBrowserError != null && app.pendingAuthorizeUrl != null
+                ? QuietLink(
+                    key: const Key('sign-in-step-copy-link'),
+                    label: _copiedUrl == app.pendingAuthorizeUrl
+                        ? 'Link copied'
+                        : _copyFailureUrl == app.pendingAuthorizeUrl
+                        ? 'Could not copy. Try again'
+                        : 'Copy sign-in link',
+                    onPressed: _copying ? null : () => unawaited(_copyLink()),
+                  )
+                : null,
+          ),
         );
       },
     );

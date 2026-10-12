@@ -546,6 +546,33 @@ void main() {
         reason: 'Settings closes',
       );
 
+      // A rejected session returns to the same required page, even mid-work.
+      app.expireSessionForTest(
+        'Your session ended. Sign in again to continue.',
+      );
+      await _until(
+        tester,
+        () => find.byType(SignInStep).evaluate().isNotEmpty,
+        reason: 'session expiry requires sign-in again',
+      );
+      expect(find.byType(SwarmScreen), findsNothing);
+      expect(
+        find.text('Your session ended. Sign in again to continue.'),
+        findsOneWidget,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.byType(SignInStep), findsOneWidget);
+      await _shot(tester, 'session-expired');
+      await tester.tap(_google);
+      await tester.pump(const Duration(milliseconds: 300));
+      cli.pending!.complete();
+      await _until(
+        tester,
+        () => find.byType(SwarmScreen).evaluate().isNotEmpty,
+        reason: 'signing in again restores the workspace',
+      );
+
       // Explicit sign-out returns to the required sign-in page.
       await openMenu();
       await tester.tap(find.byKey(const ValueKey('account-menu-signOut')));

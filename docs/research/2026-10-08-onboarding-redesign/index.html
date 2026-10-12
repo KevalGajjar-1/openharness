@@ -219,7 +219,7 @@
     <a href="#setup-tour">1 · Setup &amp; tour</a> →
     <a href="#signin-step">2 · Required sign-in</a> →
     <a href="#first-workspace">3 · Your workspace</a>.<br>
-    Google, Apple or email. No Skip. Existing signed-out installations enter at sign-in;
+    Google, Apple or email. No Skip. <a href="#existing-users">Existing signed-out users</a> enter at sign-in;
     signed-in installations go straight to their workspace.</div>
   <p class="note">Desktop renders: <a href="required-sign-in.png">required sign-in</a> · <a href="command-tab-hints.png">tab shortcuts while Command is held</a>.</p>
   <div class="principles">
@@ -426,11 +426,50 @@
     <b>Ready after sign-in:</b> agent downloads finish during setup. First-arrival agents start after sign-in; saved local panes are preserved.<br>
     <b>Sign in:</b> Google or Apple, in the browser, as today. When the account arrives, Harness opens on the same first workspace, signed in.<br>
     <b>Continue with email:</b> opens the browser on the Autonomous sign-in page, which takes an email and the code sent to it. Kept small on purpose: waiting for a code is slower, and most people will use Google or Apple. New to the desktop app; the sign-in page and the phone app already work this way.<br>
-    <b>While the browser is open:</b> nothing on the page changes. No "Waiting…" on the button, no Open browser, Copy link or Cancel. Every control stays live: press a button again to open the browser again, or pick another way in to switch.<br>
-    <b>Two main buttons:</b> Google and Apple, with email centered beneath. The existing account recovery sheet keeps its additional ways to sign in.<br>
-    <b>Required:</b> there is no Skip. Cancelling or failing sign-in leaves this page available for another attempt. Explicit sign-out returns here; runtime expiry keeps local work available through the existing recovery flow.<br>
+    <b>While the browser is open:</b> nothing on the page changes. Every control stays live: press a button again to open the browser again, or pick another way in to switch. Escape cancels the attempt. If the browser cannot open, a Copy sign-in link action appears.<br>
+    <b>Two main buttons:</b> Google and Apple, with email centered beneath. Every native sign-in uses this same page; the old fleet-map card and phone-scanning option are removed.<br>
+    <b>Required:</b> there is no Skip. Cancelling or failing sign-in leaves this page available for another attempt. Explicit sign-out and a server-rejected session return here. Saved work and running harnesses survive behind the page.<br>
     <b>Before the first result:</b> an account is now required. If nobody is at the keyboard when setup ends, Harness waits here. Closing and reopening the app returns to this step.<br>
     <b>Shorter tour:</b> five slides: machines, agents, persistent sessions, the phone app and the device. The ⌘P and ⌘N slides are removed. Help ▸ Welcome Tour uses the same five slides.</p>
+
+  <h2 id="existing-users">1c. Existing users: the next launch after updating</h2>
+  <p class="lede">If you used Harness without an account, this is the screen you see when you next open the updated app.
+    You go straight here, without repeating setup or the tour. It is the same required sign-in page as a new user's.</p>
+  <img src="required-sign-in.png" alt="Desktop sign-in screen: Sign in to take Harness everywhere, with Continue with Google, Continue with Apple, and centered Continue with email. The footer says Sign in to continue."
+    style="display:block;width:100%;height:auto;border-radius:12px;border:1px solid var(--line)">
+  <p class="cap"><b>Actual Desktop render.</b> Use Google, Apple or email to sign in or create an account. There is no Skip.</p>
+  <div class="principles">
+    <div><b>Open the updated app</b>Signed out: this page. Already signed in: your workspace, including when offline.</div>
+    <div><b>Sign in once</b>Finish in your browser. Cancelling or a failed attempt keeps this page ready to try again.</div>
+    <div><b>Return to your work</b>Your saved local tabs and panes are preserved. Harnesses already running on this computer keep running during sign-in.</div>
+  </div>
+  <p class="note">After signing in, your saved workspace opens. Existing users do not repeat the first-time agent setup shown below.</p>
+
+  <h2 id="session-expired">1d. If your session expires</h2>
+  <p class="lede">The same sign-in page returns, with “Your session ended. Sign in again to continue.” in the footer. Escape cancels a sign-in attempt and keeps this page open. Your saved workspace and running harnesses survive.</p>
+  <div class="win"><img src="session-expired.png" alt="The shared required sign-in page after a session expires" style="display:block;width:100%;height:auto"></div>
+  <p class="cap"><b>Offline is different:</b> a temporary network outage keeps an already signed-in workspace available, on both Desktop and TUI. Sign-in is required when the server rejects the session or you sign out.</p>
+
+  <h2 id="tui-signin">1e. Sign in from your terminal</h2>
+  <p class="lede">The TUI requires the same account. Choose Google, Apple or email to use a browser. Over SSH, copy the browser link or use a phone already signed in to Harness. Escape cancels the attempt; Ctrl+C quits without stopping your harnesses.</p>
+  <pre id="tui-sign-in-capture" style="padding:24px;background:#171819;border-radius:14px;overflow:auto;line-height:1.5;font-size:14px">Sign in to Harness
+
+All your machines. Your tabs everywhere.
+
+Your saved tabs stay here. Running harnesses keep running.
+
+
+
+
+
+› Continue with Google
+  Continue with Apple
+  Continue with email
+  Continue with your phone
+
+↑↓ choose   enter open   esc cancel   ^C quit
+</pre>
+  <p class="cap">Captured from the native terminal fixture. Successful sign-in returns to your saved tabs. A rejected session brings this page back; a temporary network outage allows an already signed-in account to keep working.</p>
 
   <!-- ===================== 2. NEW USER ===================== -->
   <h2 id="first-workspace">2. After sign-in: someone with no agents yet</h2>
@@ -467,7 +506,7 @@
       <div class="status"><span>Harnesses 3</span><span>Machines 1</span><span>Models 0</span><span class="sp"></span><span>first-project</span></div>
     </div>
   </div>
-  <p class="cap"><b>The first screen after the tour and the sign-in page</b> (here: skipped, so Sign in is top right). All three are each agent's own screen: OpenCode's start screen with a first task typed in, Codex's and Claude Code's sign-in. Signing in is optional; × closes either pane.</p>
+  <p class="cap"><b>The first screen after signing in to Harness.</b> All three are each agent's own screen: OpenCode's start screen with a first task typed in, Codex's and Claude Code's sign-in. Each agent has its own account setup; × closes either pane.</p>
   <p class="note"><b>Logic:</b>
     <b>Downloads happen during the setup tour,</b> not here: OpenCode from the first second (its installer needs only curl), and Codex and Claude Code with one npm command as soon as
     setup's own Node is in place (both are npm packages, installed into <code>~/.local</code> exactly as the panes would). The Details line in the tour lists them.
@@ -561,7 +600,7 @@
   <!-- ===================== 5. TOP RIGHT (2026-10-11) ===================== -->
   <h2 id="top-right">5. Your account in the toolbar</h2>
   <p class="lede">Search, Devices and Harness Store are icons, followed by your avatar.
-    The workspace opens with an account. If a session expires while you are working, local panes remain available and Sign in offers recovery.</p>
+    The workspace opens with an account. If the server rejects the session, the required sign-in page returns. A temporary network outage keeps the signed-in workspace available.</p>
   <div class="stack">
   <div>
   <div class="win strip">
@@ -570,13 +609,7 @@
   </div>
   <p class="cap"><b>Previous toolbar, for reference.</b> Search, then Devices and Harness Store as pills with their names.</p>
   </div>
-  <div>
-  <div class="win strip">
-    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="signin">Sign in</span></div>
-    <div class="slice"></div>
-  </div>
-  <p class="cap"><b>Session recovery only.</b> If a session expires during use, <b>Sign in</b> opens account recovery over the existing workspace. A fresh signed-out launch uses the required page above.</p>
-  </div>
+
   <div>
   <div class="win strip">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="avatar">D</span></div>
@@ -602,14 +635,14 @@
   </div>
   </div>
   <p class="note" style="line-height:1.7"><b>Icons:</b> each keeps its own mark and its click; the name moves to the tooltip, with the shortcut where there is one ("Explore Harness Store · ⌘S").<br>
-    <b>Session recovery:</b> Sign in is available over local work after runtime expiry. Launching signed out or choosing Sign out returns to the required onboarding page.<br>
+    <b>Session recovery:</b> A rejected session returns to the same required page as onboarding. Signing in again opens the saved workspace; there is no dismissible recovery card.<br>
     <b>Avatar:</b> the first letter of your name, or of your email. Its tooltip is your name and email. Not your Google or Apple photo yet: the Mac title bar is native and does not load pictures from the web.<br>
     <b>Where:</b> Mac and Linux, same order. Linux keeps its bell between Search and Devices. The browser app is not changed.<br>
-    <b>Narrow window:</b> tabs give way first, as today; Devices is the first icon to drop; Sign in or the avatar always stays.<br>
+    <b>Narrow window:</b> tabs give way first, as today; Devices is the first icon to drop; the avatar always stays.<br>
     <b>The menu:</b> Add Phone stays available once a phone is linked. Customize Harness opens customization. Notifications opens Settings ▸ Notifications. Settings opens Settings. Sign out returns to the required sign-in page and preserves saved local panes.</p>
 
   <h2>Updated 2026-10-12</h2>
-  <p class="note"><b>Shorter flow:</b> five tour slides; ⌘P and ⌘N are removed. The sign-in buttons stand alone, with Continue with email centered below.<br><b>Required desktop account:</b> sign-in is mandatory after setup, including on existing signed-out installations. Skip is removed; successful sign-out returns to the page. Signed-in offline launches and local recovery after runtime expiry keep working. First-arrival agents start after sign-in. The browser and TUI are outside this desktop change.</p>
+  <p class="note"><b>Shorter flow:</b> five tour slides; ⌘P and ⌘N are removed. The sign-in buttons stand alone, with Continue with email centered below.<br><b>Required account on Desktop and TUI:</b> sign-in is mandatory, including on existing signed-out installations. Sign-out and rejected sessions return to required sign-in. An already signed-in account can keep working through a temporary network outage. First-arrival agents start after sign-in. Browser behavior and Harness OS installer/Wi-Fi onboarding are unchanged.</p>
 
   <details style="margin-top:32px"><summary style="color:var(--muted);cursor:pointer">Earlier design decisions · October 8–11 (superseded where noted above)</summary>
   <h2>Checked: can it be built (2026-10-08)</h2>

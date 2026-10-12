@@ -201,12 +201,15 @@ The native desktop target uses the CLI for cloud access and SSO tokens:
   standalone Google and Apple buttons, with Continue with email centered underneath;
   there is no surrounding card or Skip. It applies to existing signed-out installations and relaunches after
   setup too. A successful explicit sign-out brings it back. A signed-in offline launch
-  opens normally, and runtime expiry preserves local work through the recovery flow.
+  opens normally. A server-rejected session requires sign-in again; saved local work
+  and running harnesses survive behind the page. A temporary network outage keeps
+  an already signed-in workspace available.
   Agent downloads still run during setup; first-arrival agents wait for an account.
   The page does not change while the browser is open: the same option reopens its page,
   and another option cancels and switches. Failures and cancellation keep the required
   page visible. The workspace account menu is `widgets/account_menu.dart`
-  (`design/workspace-status-bar.md`); recovery sign-in sheets keep their existing flow.
+  (`design/workspace-status-bar.md`). Every native sign-in entry uses this same
+  page; the old fleet-map card and desktop phone-scanning choice are removed.
   Sign-out owns its CLI process, checks its exit, and terminates it on timeout. `AppNotifier` joins
   repeated sign-out requests and blocks another sign-in until credential and connection cleanup
   finish; failure offers keyboard-focused Retry sign out. Development fixture disconnects never

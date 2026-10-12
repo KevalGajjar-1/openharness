@@ -340,7 +340,7 @@ void main() {
   });
 
   test(
-    'runtime expiry keeps local work available without onboarding again',
+    'runtime expiry requires sign-in again while restoring saved local work',
     () async {
       final app = _Desktop(_Login(loggedIn: true), installed: true);
       addTearDown(app.dispose);
@@ -350,7 +350,7 @@ void main() {
       expect(app.signedIn, isFalse);
       expect(app.sessionExpired, isTrue);
       expect(app.status, AppStatus.authenticated);
-      expect(app.signInStepShowing, isFalse);
+      expect(app.signInStepShowing, isTrue);
     },
   );
 

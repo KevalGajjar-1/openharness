@@ -703,7 +703,7 @@ void main() {
 
     // The card leads with what the app does for you, not with its own name —
     // the wordmark left when the screen stopped being a logo over a button.
-    expect(find.text('Your agents, wherever they run'), findsOneWidget);
+    expect(find.byKey(const Key('sign-in-step-title')), findsOneWidget);
     expect(find.text('Continue with Google'), findsOneWidget);
     expect(find.text('Continue with Apple'), findsOneWidget);
   });

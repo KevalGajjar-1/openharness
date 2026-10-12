@@ -19,6 +19,7 @@ use crate::picker::Picker;
 use crate::theme;
 
 pub fn handle(app: &mut App, event: CEvent) {
+    if crate::account::entry_input(app, &event) { return }
     app.sync_copy_modal();
     match event {
         // A key is the session's activity (session_update_activity): a script's command with no -t

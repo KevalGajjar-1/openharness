@@ -1153,8 +1153,8 @@ class AppNotifier extends ChangeNotifier {
   // Desktop requires an account before opening the workspace, including on
   // computers that already have the CLI. The page stays until sign-in succeeds;
   // cancelling or restarting the app cannot bypass it. Explicit sign-out brings
-  // it back. Runtime expiry keeps local work available through the existing
-  // recovery flow, and a signed-in offline launch needs no new sign-in. Design:
+  // it back, as does a session the server can no longer renew. A signed-in
+  // offline launch needs no new sign-in. Design:
   // `docs/research/2026-10-08-onboarding-redesign/index.html`, section 1b.
   bool _signInStep = false;
 
@@ -5107,11 +5107,13 @@ class AppNotifier extends ChangeNotifier {
   }) async {
     _guestDeskRestorePending = true;
     signedIn = false;
+    _signInStep = true;
     currentUser = null;
     if (banner != null) {
       _lastError = banner;
       _lastErrorRetryable = true;
     }
+    notifyListeners();
     // Account teardown already removed private remote content. Finish closing
     // its transports before restoring this computer from the saved desk.
     await _workspaceCleanup;
@@ -5614,14 +5616,14 @@ class AppNotifier extends ChangeNotifier {
 
   static const _signedOutMessage =
       'You were signed out on this computer. This computer\'s agents keep '
-      'running; sign in again to reach your other machines.';
+      'running; sign in again to continue.';
 
   /// Inject the same account-expiry event the connection pool reports, without a real daemon.
   @visibleForTesting
   void expireSessionForTest(String message) => _signedOutAtRuntime(message);
 
-  /// A running session lost its account. Viewers return to login; desktop windows
-  /// keep this computer available as guests and explain how to reconnect remotely.
+  /// A running session lost its account. Return to required sign-in while
+  /// preserving this computer's saved workspace and running harnesses.
   void _signedOutAtRuntime(String message) {
     if (status == AppStatus.unauthenticated || isGuest) {
       return; // idempotent: several sources can race here
@@ -5643,10 +5645,8 @@ class AppNotifier extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // A desktop window becomes a GUEST instead: the daemon comes back signed out
-    // and goes on serving this computer, so the agents that were running are
-    // still running. This computer's tiles stay (under the id it serves now),
-    // the other machines' leave, and the banner says why the list got shorter.
+    // Restore local panes behind required sign-in. The daemon keeps serving
+    // this computer so running agents survive; old account transports close.
     //
     // The work was invalidated above, so the guest transition runs under THIS
     // revision: invalidating again would clear [sessionExpired], and the banner

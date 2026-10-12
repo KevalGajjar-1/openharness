@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/core/models.dart';
-import 'package:harness/screens/login_screen.dart';
+import 'package:harness/widgets/sign_in_step.dart';
 import 'package:harness/settings/settings_screen.dart';
 import 'package:harness/settings/settings_section.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
@@ -130,7 +130,7 @@ void main() {
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets(
-    'Sign in opens the sign-in over the desk, and closes back to it',
+    'Sign in uses the onboarding page and stays until an account arrives',
     (tester) async {
       final app = createApp()..signedIn = false;
       addTearDown(app.dispose);
@@ -139,11 +139,11 @@ void main() {
       await tester.tap(_signIn);
       await tester.pump();
       await tester.pump();
-      expect(find.byType(LoginScreen), findsOneWidget);
+      expect(find.byType(SignInStep), findsOneWidget);
       expect(find.text('Continue with Google'), findsOneWidget);
       // The quiet way in is on this sign-in too — as words, not as one more
       // button the width of the two above it.
-      final email = find.byKey(const Key('login-continue-email'));
+      final email = find.byKey(const Key('sign-in-step-email'));
       expect(email, findsOneWidget);
       expect(
         find.ancestor(
@@ -160,11 +160,15 @@ void main() {
         ),
       );
 
-      await tester.tap(find.byKey(const Key('login-close-button')));
+      expect(find.byKey(const Key('login-close-button')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.byType(SignInStep), findsOneWidget);
+      app.signedIn = true;
+      app.notifyListeners();
       await tester.pump();
       await tester.pump();
-      expect(find.byType(LoginScreen), findsNothing);
-      expect(_signIn, findsOneWidget);
+      expect(find.byType(SignInStep), findsNothing);
     },
   );
 

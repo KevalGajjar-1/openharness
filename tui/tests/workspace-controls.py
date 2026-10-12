@@ -65,6 +65,8 @@ elif args[:2] in (['remote-password', 'set'], ['remote-password', 'clear']):
     emit({'ok': True})
 elif args == ['link', 'list']:
     print('No machines linked yet.')
+elif args == ['logout']:
+    (home / 'account.json').write_text(json.dumps({'loggedIn': False}))
 elif args and args[0] == 'login':
     record('start')
     if '--qr' in args: emit({'type': 'qr', 'url': 'https://example.test/login/fixture', 'expiresIn': 120})
@@ -579,15 +581,65 @@ try:
                          '--port', str(PORT), '-f', str(CONF)])
     tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'test', '-x', '170', '-y', '44', command)
     started = True
+    shown('Sign in to Harness')
+    shown('Continue with email')
+    assert 'Alpha task terminal' not in screen(), 'required sign-in covers saved work'
+    assert 'Keep using locally' not in screen()
+    keys('Escape', 'C-b', 'c')
+    shown('Sign in to Harness')
+    snapshot('required-sign-in')
+    for cols, rows in [(80, 24), (40, 12), (170, 44)]:
+        tmux('resize-window', '-t', 'test', '-x', str(cols), '-y', str(rows))
+        wait(lambda: value('#{client_width}x#{client_height}') == f'{cols}x{rows}', 'sign-in follows terminal resize')
+        # The resize is acknowledged before the frame is painted. Let the redraw
+        # settle before reading mouse coordinates or recording the terminal.
+        time.sleep(.25)
+        shown('Sign in to Harness')
+        shown('Continue with Google')
+        shown('Continue with your phone')
+        snapshot(f'required-sign-in-{cols}x{rows}')
+    click_text('Continue with Google')
+    shown('Finish signing in in your browser')
+    keys('Escape')
+    shown('Continue with Google')
+    wait(lambda: login_events() == ['start', 'cancel'], 'Escape cancels the attempt, not required sign-in')
+    click_text('Continue with email')
+    shown('Finish signing in in your browser')
+    snapshot('required-sign-in-browser')
+    (BASE / 'approve').touch()
+    wait(lambda: 'commit' in login_events(), 'successful required sign-in')
     shown('Alpha task terminal')
     shown('Beta task terminal')
-    shown('Sign in')
+    (BASE / 'approve').unlink()
+    (BASE / 'login-events').unlink()
+    print('PASS required sign-in: saved work stays covered; cancel retries; email returns to saved panes', flush=True)
     local, remote = api()['local'], api()['remote']
     panes = hn('list-panes', '-F', '#{pane_id}').splitlines()
     assert len(panes) == 2, panes
     alpha, beta = panes
     workspace = value('#{window_id}')
     snapshot('workspace')
+    if '--required-sign-in' in sys.argv:
+        hn('signout', '-y')
+        shown('Sign in to Harness')
+        shown('Continue with Google')
+        keys('Escape')
+        shown('Sign in to Harness')
+        snapshot('required-sign-in-after-signout')
+        tmux('set-window-option', '-t', TARGET, 'remain-on-exit', 'on')
+        keys('C-c')
+        wait(lambda: tmux('display-message', '-p', '-t', TARGET, '#{pane_dead}').strip() == '1', 'Ctrl+C detaches from sign-in')
+        tmux('respawn-pane', '-k', '-t', 'test', command)
+        shown('Sign in to Harness')
+        snapshot('required-sign-in-on-relaunch')
+        # An account established outside this TUI, with no network available, also opens work.
+        (BASE / 'account.json').write_text(json.dumps({'loggedIn': True, 'offline': True}))
+        tmux('respawn-pane', '-k', '-t', 'test', command)
+        shown('Alpha task terminal')
+        assert 'Sign in to Harness' not in screen()
+        snapshot('signed-in-offline-relaunch')
+        print('PASS required sign-in: sign-out, quit/relaunch, saved local work, and signed-in offline launch', flush=True)
+        sys.exit(0)
     if '--machine-prompts' in sys.argv:
         machine_prompt_journey()
         sys.exit(0)
@@ -617,15 +669,13 @@ try:
     machine_prompt_journey()
     side_bar_machines_journey()
 
-    # Local use is complete before any sign-in. The tiny footer entry explains the benefit,
-    # then lets the user return without starting an authentication request.
-    click_text('Sign in', row=43)
-    shown('Connect computers')
-    shown('Keep using locally')
-    snapshot('optional-sign-in')
-    click_text('Keep using locally')
+    # Once signed in, Account is a dismissible management panel.
+    hn('account')
+    shown('Connect a machine')
+    snapshot('account')
+    keys('Escape')
     assert not login_events()
-    wait(lambda: 'Continue with Google' not in screen(), 'back to local workspace')
+    wait(lambda: 'Connect a machine' not in screen(), 'back to workspace')
 
     # The title's agent and model labels act on the captured pane even if external focus changes.
     x, y = map(int, value('#{pane_left} #{pane_top}', alpha).split())
@@ -723,7 +773,9 @@ try:
     assert next(t for t in api()['desk']['tabs'] if t['id'] == 'remote')['name'] == 'Remote'
     hn('select-window', '-t', workspace)
 
-    # A phone approval is explicit. Closing its UI cancels the driver, and reopening never
+    # Runtime expiry requires sign-in again, as Desktop does. A phone approval is explicit.
+    (BASE / 'account.json').write_text(json.dumps({'loggedIn': False}))
+    # Closing its UI cancels the driver, and reopening never
     # accepts a previously selected row as consent to a different account.
     hn('account')
     click_text('Continue with your phone')
@@ -737,6 +789,8 @@ try:
     (BASE / 'approve').touch()
     # The phone that approved is signed in to the account: no second question here.
     wait(lambda: 'commit' in login_events(), 'a phone approval commits without another step')
+    wait(lambda: 'Sign in to Harness' not in screen(), 'sign-in restores the workspace')
+    hn('account')
     shown('Connect a machine')
     assert json.loads((BASE / 'account.json').read_text())['loggedIn']
     snapshot('signed-in')
