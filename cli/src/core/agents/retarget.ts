@@ -171,8 +171,14 @@ export function createAgentRetargeter({
     // so, for every engine; the screen is not read. It used to be, to keep an unsent draft, and an
     // engine whose placeholder colour moved (OpenCode 2) then read as holding one and refused every
     // switch until its first chat. A draft is lost to the respawn; that is the person's call.
-    if (session.sessionId && sessionTurnOpen(session.sessionId)) {
-      return { ok: false, error: 'AGENT_BUSY', detail: 'This harness is in a turn. Stop it, then switch the model.' }
+    const inTurn = { ok: false as const, error: 'AGENT_BUSY', detail: 'This harness is in a turn. Stop it, then switch the model.' }
+    if (session.sessionId && sessionTurnOpen(session.sessionId)) return inTurn
+    // OpenCode 2 keeps its turns where that state does not read (`opencodeV2TurnOpen`), so its own
+    // record is asked. A store it cannot read is no evidence of a turn, as for an engine with none.
+    if (session.sessionId && opencode?.isOpencodeV2(opencodeMajor)) {
+      const open = await opencode.opencodeV2TurnOpen(native ? nativeOpencodeStore(native.environment) : opencodeDb, session.sessionId)
+      if (!current()) return changed()
+      if (open) return inTurn
     }
     // Nothing may type into the pane while it is being replaced.
     if (purgeBusy(session.agentId) || restartJobs.busy(session.agentId)) return { ok: false, error: 'AGENT_BUSY' }

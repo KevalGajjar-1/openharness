@@ -4,6 +4,7 @@ import { OPENCODE_SESSION_MODEL, OPENCODE_VERSION } from './opencode/contract.js
 import { executableSnapshot, majorVersion, nativeVersionProbe, parseMajor, type NativeExecutableSnapshot, type VersionProbe } from './kit/nativeVersion.js'
 import { createSessionModelControl, type NativeApiRun, type NativeModelResult, type NativeSessionModel, type NativeModelAuthority } from './kit/nativeSessionModel.js'
 export { isOpencodeV2 } from './opencode/contract.js'
+export { opencodeV2TurnOpen } from './opencode/reader.js'
 
 export type OpencodeVersionProbe = VersionProbe
 const versionMemo = new Map<string, number | null>()

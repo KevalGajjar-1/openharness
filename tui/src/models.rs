@@ -1928,6 +1928,10 @@ pub fn tick(app: &mut App) {
     // Opened over a harness still starting: it is the one meant once its engine is seen, while that
     // pane keeps the focus. (A selection already made is never replaced: "This session changed".)
     if open && app.models_view.selection.is_none() && app.models_view.selection_pane.is_some() && app.focused() == app.models_view.selection_pane { select(app) }
+    // Its first conversation, once it has one, is the one it is held to from then on.
+    let first = app.models_view.selection.as_ref().filter(|s| s.session.is_empty() && same_harness(app, s))
+        .and_then(|s| app.fleet.agent(&s.machine, &s.agent)).map(|a| a.session_id.clone()).filter(|id| !id.is_empty());
+    if let (Some(session), Some(s)) = (first, app.models_view.selection.as_mut()) { s.session = session }
     follow(app);
     app.models_view.starts.retain(|_, at| at.elapsed() < START_CAP);
     if app.models_view.switching.as_ref().is_some_and(|s| switched(app, s)) { app.models_view.switching = None }
@@ -2336,7 +2340,6 @@ mod tests {
         // Its first conversation a moment later is the same harness; another one after it is not.
         app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_1" }), None));
         assert_eq!(target(&app).map(|t| t.agent).as_deref(), Some("t1"), "{}", no_target_why(&app));
-        app.models_view.selection = None;
         tick(&mut app);
         app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_2" }), None));
         assert!(target(&app).is_none());

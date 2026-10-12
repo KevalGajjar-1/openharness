@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { applyOpencodeSessionModel, parseOpencodeModelId, opencodeMajorVersion } from '../../engines/launchControl.js'
+import { applyOpencodeSessionModel, parseOpencodeModelId, opencodeMajorVersion, opencodeV2TurnOpen } from '../../engines/launchControl.js'
 import { isOpencodeV2 } from '../../engines/launchControl.js'
 import { binaryOnPath } from '../../lib/binaryOnPath.js'
 import { validateLaunchOverrides } from '../../lib/launchOverrides.js'
@@ -18,6 +18,7 @@ vi.mock('../../engines/launchControl.js', async (real) => ({
   ...await real<object>(),
   isOpencodeV2: vi.fn(() => false), opencodeMajorVersion: vi.fn(() => 1),
   applyOpencodeSessionModel: vi.fn(async () => ({ ok: true })),
+  opencodeV2TurnOpen: vi.fn(async () => false),
   parseOpencodeModelId: vi.fn((id: string) => ({ providerID: id.split('/')[0], modelID: id.split('/')[1] })),
 }))
 // Optional readers cannot gate a native launch decision.
@@ -264,6 +265,37 @@ describe('retargeting an agent', () => {
       expect(turn.deps.sessionTurnOpen).toHaveBeenCalledWith('s1')
       expect(turn.deps.acquireTerminalControl).not.toHaveBeenCalled()
       expect(restartAgent).not.toHaveBeenCalled()
+    })
+
+    it('for an OpenCode 2 turn, read from its own store since the turn state does not see it', async () => {
+      const oc2 = agent({ engine: 'opencode' } as Partial<RegisteredSession>)
+      vi.mocked(isOpencodeV2).mockReturnValue(true)
+      try {
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(true)
+        const busy = setup(oc2)
+        expect(await busy.retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY',
+          detail: 'This harness is in a turn. Stop it, then switch the model.' })
+        expect(opencodeV2TurnOpen).toHaveBeenCalledWith('/db/opencode.db', 's1')
+        expect(busy.deps.acquireTerminalControl).not.toHaveBeenCalled()
+        // A native OpenCode's store is the one its own HOME holds.
+        const launch = { current: () => true, executable: '/fixture/native/opencode', environment: { HOME: '/fixture/home' }, opencodeMajor: 2 } as unknown as NativeLaunch
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(true)
+        expect(await setup(oc2, { launchOverridesDeps: { native: async () => ({ ok: true, launch }) } as never }).retarget({ agentId: 'a1', grid }))
+          .toMatchObject({ ok: false, error: 'AGENT_BUSY' })
+        expect(opencodeV2TurnOpen).toHaveBeenLastCalledWith('/fixture/home/.local/share/opencode/opencode.db', 's1')
+        // Between turns, or a store it cannot read: no turn known, so it moves.
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(false).mockResolvedValueOnce(null)
+        expect(await setup(oc2).retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+        expect(await setup(oc2).retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+        // A harness replaced while the store is read is not moved.
+        const row = agent({ engine: 'opencode' } as Partial<RegisteredSession>)
+        vi.mocked(opencodeV2TurnOpen).mockImplementationOnce(async () => { row.sessionId = 'replacement'; return false })
+        expect(await setup(row).retarget({ agentId: 'a1', grid })).toMatchObject({ ok: false, error: 'AGENT_CHANGED' })
+      } finally { vi.mocked(isOpencodeV2).mockReturnValue(false) }
+      // OpenCode 1 is read by the turn state itself.
+      vi.mocked(opencodeV2TurnOpen).mockClear()
+      await setup(oc2).retarget({ agentId: 'a1', grid })
+      expect(opencodeV2TurnOpen).not.toHaveBeenCalled()
     })
 
     it('moves an agent between turns whatever its prompt shows, and one with no conversation to ask about', async () => {
