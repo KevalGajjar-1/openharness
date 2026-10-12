@@ -5,10 +5,11 @@ import 'package:flutter/foundation.dart';
 
 /// Agent Messages (docs/design/2026-10-10-agent-messages.md) as this window
 /// sees them: harnesses in the same tab message each other with `harness send`,
-/// and the daemons deliver. Whether they may is each computer's own setting
-/// (Settings ▸ Agents, `agentMessages`, on unless a person turned it off), not
-/// the tab's: a tab's switch, a 💬 beside its ×, was easy to hit by mistake and
-/// turned the tab off, failing a message that was waiting (owner, 2026-10-12).
+/// and the daemons deliver. Whether they may is the account's experiment
+/// (Settings ▸ Experimental, `agent_messages`, off until a person turns it on),
+/// not the tab's: a tab's switch, a 💬 beside its ×, was easy to hit by mistake
+/// and turned the tab off, failing a message that was waiting (owner,
+/// 2026-10-12).
 /// The window only shows what moved — the traffic the daemons report as
 /// `messages_changed`, a tab's log, and the marks a message leaves on its
 /// panes. Nothing here composes, sends or turns anything on.

@@ -12,11 +12,17 @@ import type { Rpc } from './rpc.js'
 import { HELD_OFF_REASON, HELD_OUTSIDE_MS, MESSAGES_OFF_TEXT, REMOTE_STATUS_MS, SETTING_FRESH_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS, WHO_MS } from './service.js'
 import { MessageStore } from './store.js'
 import { Ledger, ledgerPath } from '../agentClient/ledger.js'
-import { writeAgentSettings } from '../lib/agentSettings.js'
+import { agentSettingsPath } from '../lib/agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 
 let root: string
-beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'agent-messages-')) })
-afterEach(() => { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }) })
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'agent-messages-'))
+  // The account has turned Agent Messages on: off by default (lib/agentSettings.ts), and these are about what they do
+  // once on. A test of the default removes the file.
+  setAgentSettingsForTest(root, { agentMessages: true })
+})
+afterEach(() => { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); signedOutForTest() })
 
 const OWNER_LOCAL = { local: true, owner: true }
 const OWNER_REMOTE = { local: false, owner: true }
@@ -72,9 +78,9 @@ function setup(over: Setup = {}) {
     service, ask, delivered, windows, backend, rpcCalls, agents, tabs, directory, changed,
     inbox: new PaneInbox(join(root, 'inbox-root')),
     tick: (ms: number) => { clock += ms },
-    /** Settings ▸ Agents on this computer, as the person turns Agent Messages on or off: read at the service's next
+    /** The account's switch as this computer keeps it, as the person turns Agent Messages on or off: read at the service's next
      *  look, once what it read last is no longer fresh. */
-    setting: (on: boolean) => { writeAgentSettings(root, { agentMessages: on }); clock += SETTING_FRESH_MS },
+    setting: (on: boolean) => { setAgentSettingsForTest(root, { agentMessages: on }); clock += SETTING_FRESH_MS },
     deliveryEvent: (event: TurnDelivery) => { for (const l of deliveryListeners) l(event) },
     notice: (notice: BackendNotice) => { for (const l of noticeListeners) l(notice) },
   }
@@ -262,10 +268,17 @@ describe('harness send', () => {
   })
 
   it('refuses while Agent Messages are off on this computer, saying where to turn them on, and when the directory cannot be read', async () => {
-    // One Settings ▸ Agents switch replaced each tab's chat icon, which the owner hit by mistake (2026-10-12).
+    // One switch of the account replaced each tab's chat icon, which the owner hit by mistake (2026-10-12).
+    const refused = { error: 'MESSAGES_OFF', detail: 'Agent Messages are off. The person turns on "Agents in the same tab can message each other" in Settings ▸ Experimental, or runs `harness settings agent-messages on`.' }
+    // An account that never said: off by default, so nothing is sent and no one is told of teammates.
+    rmSync(agentSettingsPath(root))
+    const fresh = setup()
+    expect(await fresh.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
+    expect(await fresh.ask({ action: 'send', pane: '%1' })).toEqual(refused)
+    expect(fresh.delivered).toEqual([])
     const off = setup()
+    off.setting(true)
     off.setting(false)
-    const refused = { error: 'MESSAGES_OFF', detail: 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.' }
     expect(await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
     expect(MESSAGES_OFF_TEXT).toBe(refused.detail)
     // Nor does `harness send` alone list anyone.
@@ -662,7 +675,7 @@ describe('the roster note and the directory', () => {
 
   it('holds a waiting delivery while Agent Messages are off, goes on once they are on again, and fails it later', async () => {
     // Turned off by a slip of the mouse and on again a minute later, a tab's switch failed the message waiting in it
-    // (2026-10-12). The switch is Settings ▸ Agents now, and a slip there must cost nothing either.
+    // (2026-10-12). The switch is the account's now (Settings ▸ Experimental), and a slip there must cost nothing either.
     vi.useFakeTimers()
     const t = setup()
     t.service.start()

@@ -338,8 +338,8 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
     add(file, "New Tab", "t", "new")
     add(file, "Rename Tab", "r", "renameActive", [.command, .shift])
     add(file, "Close Tab", "w", "closeActive")
-    // The active tab's Agent Messages log. No on/off row: whether agents may message is Settings ▸ Agents',
-    // for the whole computer, since the tab's own switch was easy to hit by mistake (owner, 2026-10-12).
+    // The active tab's Agent Messages log. No on/off row: whether agents may message is the account's, in
+    // Settings ▸ Experimental, since the tab's own switch was easy to hit by mistake (owner, 2026-10-12).
     add(file, "Show Agent Messages", "", "showAgentMessages")
     file.addItem(.separator())
     add(file, "Split Right", "r", "splitRight")
@@ -2734,7 +2734,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   // and status have the whole tab. A 20pt target: 16pt was "really easy to
   // click by mistake" (owner, 2026-10-12). Agent Messages' 💬 that sat left of
   // it went the same day: easy to hit by mistake, it turned the tab off and
-  // failed a message that was waiting. Settings ▸ Agents holds that switch now.
+  // failed a message that was waiting. Settings ▸ Experimental holds that switch now.
   private static let trailingInset: CGFloat = 8
   private static let accessoryHeight: CGFloat = 32
   private static let closeWidth: CGFloat = 20
@@ -2879,7 +2879,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     _ = item("Rename Tab…", #selector(renameSwarm))
     let separator = NSMenuItem.separator()
     menu.addItem(separator)
-    // The tab's Agent Messages log, where it has one. No on/off row: that is Settings ▸ Agents'.
+    // The tab's Agent Messages log, where it has one. No on/off row: that is Settings ▸ Experimental's.
     messagesItems = [separator, item("Show Agent Messages", #selector(showMessages))]
     menu.addItem(.separator())
     _ = item("Close Tab", #selector(closeSwarm))

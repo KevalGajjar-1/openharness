@@ -30,9 +30,10 @@ Windows is not supported.
 
 ## Agent Messages
 
-Harnesses in the same tab can message each other while **Agent Messages** are on: one switch per computer, in
-Settings ▸ Agents, on by default. From a terminal, `harness settings agent-messages off` (or `on`) turns it, and
-`harness settings` alone lists every setting. An agent runs, in its own pane:
+Harnesses in the same tab can message each other while **Agent Messages** are on: an experiment of the account,
+the same on each of its computers, in Settings ▸ Experimental, off by default. From a terminal, `harness settings
+agent-messages on` (or `off`) turns it for the account, through this computer's daemon, and `harness settings` alone
+lists every setting. An agent runs, in its own pane:
 
 ```bash
 harness send                          # who is in this tab, and how to work together
@@ -42,7 +43,8 @@ harness send web --fyi "Staging is free until 15:00"   # news: it starts no turn
 ```
 
 The pane says who is sending; a message goes only to harnesses that share a tab with the sender, on this machine
-or another of the owner's paired machines, while each of the two computers has Agent Messages on. A working agent reads it at its next tool call, through
+or another of the owner's paired machines, while the account has Agent Messages on (as each of the two computers
+last read it). A working agent reads it at its next tool call, through
 Harness's PostToolUse hook, with nothing typed into its pane; an idle agent gets it as a prompt, typed only into
 an empty composer. Each message arrives under one header line naming its sender, never as the person's words,
 and waits until it is delivered. See the [design](../docs/design/2026-10-10-agent-messages.md).

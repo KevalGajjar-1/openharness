@@ -6,7 +6,9 @@
  * - `GET /api/machines`: the account's machines, each `running` or `offline` as the test says.
  * - `GET /api/agent-messages`: the account's tabs and who is in each, as the test sets them.
  * - `PATCH /api/agent-messages/tabs/:id`: one tab's old Agent Messages flag turned, as an older window turns it
- *   through its daemon; no daemon reads it now (Settings ▸ Agents decides).
+ *   through its daemon; no daemon reads it now (the account's experiment decides).
+ * - `GET`/`PATCH /api/experimental-settings`: the account's experiments, every one off until turned on, as the test
+ *   or a daemon turns them; a change is `desk_changed` to every node, as the real backend publishes it.
  * - `/api/adapter-ws`: each daemon's own socket, as the node of its machine. Frames for it arrive as
  *   `{t:'down', connId, frame}`; what it sends comes back as `{t:'up', targetConnId?, commanderEligible?, frame}`.
  * - `/api/device-ws`: a daemon's lane to its owner's other machines, as a device holding a commander
@@ -84,6 +86,10 @@ export class FakeBackend {
   readonly seen: string[] = []
   /** What `GET /api/agent-messages` answers: the account's tabs and who is in each; null, a 404. */
   agentMessages: Record<string, unknown> | null = null
+  /** The account's experiments (backend lib/experimentalSettings.ts): off until turned on. `setExperiment` turns one as
+   *  another computer would, telling every node. */
+  readonly experiments: Record<string, boolean> = {}
+  private experimentsRevision = 0
   private readonly machines = new Map<string, FakeMachine>()
   private readonly online = new Map<string, boolean>()
   private readonly nodes = new Map<string, WebSocket>()
@@ -144,6 +150,19 @@ export class FakeBackend {
           if (!tab || typeof enabled !== 'boolean') { res.statusCode = 404; res.end(json({ success: false, error: { code: 'NOT_FOUND' } })); return }
           tab.enabled = enabled
           res.end(json({ success: true, data: { tabId: tab.id, enabled } }))
+        })
+        return
+      }
+      if (req.url?.split('?')[0] === '/api/experimental-settings' && (req.method === 'GET' || req.method === 'PATCH')) {
+        if (req.method === 'GET') { res.end(json({ success: true, data: backend.experimentalSettings() })); return }
+        let raw = ''
+        req.on('data', (chunk) => { raw += chunk })
+        req.on('end', () => {
+          const body = JSON.parse(raw || '{}') as { accountId?: unknown; feature?: unknown; enabled?: unknown }
+          if (body.accountId !== FAKE_ACCOUNT) { res.statusCode = 409; res.end(json({ success: false, error: { code: 'ACCOUNT_CHANGED', message: 'Your account changed.' } })); return }
+          if (typeof body.feature !== 'string' || typeof body.enabled !== 'boolean') { res.statusCode = 400; res.end(json({ success: false, error: { code: 'BAD_REQUEST', message: 'bad body' } })); return }
+          backend.setExperiment(body.feature, body.enabled)
+          res.end(json({ success: true, data: backend.experimentalSettings() }))
         })
         return
       }
@@ -430,6 +449,19 @@ export class FakeBackend {
     if (client) this.relay(() => {
       if (client.ws.readyState === WebSocket.OPEN) client.ws.send(hop.clientFrame)
     })
+  }
+
+  /** The account's experiments as `GET /api/experimental-settings` answers them. */
+  experimentalSettings(): Record<string, unknown> {
+    const features = { focus_bar_creature: false, share_button: false, devices_tab: false, agents_start_agents: false, agent_pull_request_line: false, agent_messages: false, ...this.experiments }
+    return { accountId: FAKE_ACCOUNT, revision: this.experimentsRevision, features, available: Object.fromEntries(Object.keys(features).map((name) => [name, true])) }
+  }
+
+  /** Turns an experiment of the account, as Settings ▸ Experimental on any computer does: every node hears `desk_changed`. */
+  setExperiment(feature: string, enabled: boolean): void {
+    this.experiments[feature] = enabled
+    this.experimentsRevision++
+    for (const machineId of this.nodes.keys()) this.sendNode(machineId, '', { type: 'desk_changed', payload: { revision: 0 } })
   }
 
   private sendNode(machineId: string, connId: string, frame: Frame): boolean {

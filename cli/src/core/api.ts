@@ -576,7 +576,7 @@ export const MESSAGES_REQUESTS = ['agent_messages'] as const
  * "Experimental features: move only"). Each runs in a process of its own that the master starts only once the
  * core asks for it (harnessd/services.ts `onDemand`): when one of its `requests` arrives, or at start when its
  * saved `state` is in the data folder (paths under it; `dir/*.ext` for a file of that kind in that folder), or
- * while its Settings ▸ Agents `setting` is on (lib/agentSettings.ts).
+ * while its account `setting` is on, as this computer keeps it (lib/agentSettings.ts).
  * Off, it has no process and none of its code is loaded anywhere. Each may act on the core through the hooks
  * an experiment has (core/experimentQueries.ts, core/deliveries.ts), and no other process may.
  *
@@ -588,7 +588,8 @@ export const MESSAGES_REQUESTS = ['agent_messages'] as const
 export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[]; state: readonly string[]; setting?: keyof AgentSettings }>> = {
   orchestrator: { requests: ORCHESTRATOR_REQUESTS, state: ['orchestrator/*.json'] },
   // Agent Messages. Its history and waiting deliveries: a message was sent from here or delivered to an agent here.
-  // On by default (Settings ▸ Agents), so it starts with the core: its agents hear of `harness send` from it.
+  // While its account switch is on (Settings ▸ Experimental, off by default) it starts with the core: its agents hear of
+  // `harness send` from it.
   messages: { requests: MESSAGES_REQUESTS, state: ['agent-messages'], setting: 'agentMessages' },
   // Its invitations and links: a harness was shared from here.
   sharing: { requests: SHARE_REQUESTS, state: ['harness-shares.json', 'harness-collaboration.json'] },

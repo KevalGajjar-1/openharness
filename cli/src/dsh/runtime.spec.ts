@@ -14,6 +14,8 @@ import { storeLaunchPort } from '../services/storeLaunch.js'
 import { forkRuntimeKey, harnessRuntimeDir, migrateHarnessInstructions, prepareHarnessLaunch } from './runtime.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
 import { HARNESS_INSTRUCTIONS, joinedInstructions } from '../lib/agentAttribution.js'
+import { env } from '../config/env.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 
 let root: string
 let ws: string
@@ -34,7 +36,7 @@ beforeEach(() => {
       agent: { instructions: 'AGENTS.md', skills: ['skills'], args: ['--add-dir', '${workspace}/input'],
         env: { TOOLCHAIN: '${dsh}/tools', OLD_SKILLS: '${workspace}/.claude/skills', OTHER_SKILLS: '${workspace}/.agents/skills', HARNESS_DSH: 'spoofed' } } } }
 })
-afterEach(() => rmSync(root, { recursive: true, force: true }))
+afterEach(() => { rmSync(root, { recursive: true, force: true }); signedOutForTest() })
 
 describe('portable harness adapters', () => {
   it('has a contract for every process engine, with no package allowlist', () => {
@@ -133,6 +135,8 @@ describe('session isolation and lifecycle', () => {
   })
 
   it('resumes and forks the original engine/content/env/args despite package changes, refreshing account facts', async () => {
+    // With what every harness is told once the account lets agents start agents (off by default), joined with its own.
+    setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { agentsStartAgents: true })
     const first = prepareHarnessLaunch(pkg, ws, 'claude', 'original', { privateGrid: 'old-grid' })
     pkg.manifest.engine = 'codex'
     pkg.manifest.agent!.args = ['--new-flag']

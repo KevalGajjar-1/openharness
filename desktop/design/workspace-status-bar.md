@@ -127,7 +127,7 @@ hovered: traffic between its agents shows nothing on it, since messages arrive
 when they arrive, and there is no on/off on the tab. Its 💬 beside × was easy to
 hit by mistake and turned the tab off, failing a message that was waiting
 (owner, 2026-10-12); whether agents in the same tab may message each other is
-now one switch per computer, Settings ▸ Agents, on by default. Hovering never
+now one switch of the account, Settings ▸ Experimental, off by default. Hovering never
 changes the tab width. At rest the name and status have the whole tab, so a
 128-point tab shows an ordinary name whole beside its status; hovered, a name
 that would run into × moves left only as far as it needs, then gives up its

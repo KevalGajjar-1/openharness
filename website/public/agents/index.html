@@ -78,10 +78,14 @@
   <h2 id="install">Install</h2>
   <pre><code>curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start</code></pre>
-  <p>macOS and Linux. <code>harness start</code> starts Harness on this computer. No account is needed for
-    harnesses on this computer; <code>harness login</code> signs in, which the person needs only for their other
-    machines and the phone app. The agents you start must be installed and signed in to their own providers:
-    <code>claude</code> for Claude Code, <code>codex</code> for Codex.</p>
+  <p>macOS and Linux. <code>harness start</code> starts Harness on this computer. No account is needed for the
+    harnesses the person starts on this computer; <code>harness login</code> signs in, which the person needs for
+    their other machines, the phone app, and what they let agents do. The agents you start must be installed and
+    signed in to their own providers: <code>claude</code> for Claude Code, <code>codex</code> for Codex.</p>
+  <p>An agent starts harnesses only once the person turns on <strong>Agents can start other agents</strong>, an
+    experiment of their Harness account (Settings ▸ Experimental, or <code>harness settings agents-start-agents
+    on</code>), off by default. Until then <code>harness new</code> refuses and says how: tell the person, and do the
+    work yourself.</p>
   <p>On Linux the installer installs tmux and curl with <code>apt-get</code>, which asks for the person's password.
     Without one, ask the person to run <code>sudo apt-get install -y tmux curl</code> first.</p>
   <p>Ask the person before you install software on their computer. To check whether Harness is already there:
@@ -131,7 +135,7 @@ curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plug
       <tr><td><code>harness show NAME [--chars N]</code></td><td>Its state, the last thing it was asked, and its answer:
         the text after its last tool call, the first 4,000 characters by default.</td></tr>
       <tr><td><code>harness send NAME "text"</code></td><td>A message to a teammate in your tab, while Agent Messages
-        are on (Settings ▸ Agents, on by default). A harness you started is no exception. Works from inside a
+        are on (Settings ▸ Experimental, off by default). A harness you started is no exception. Works from inside a
         harness.</td></tr>
       <tr><td><code>harness close NAME [--now]</code></td><td>Save its screen and stop it. Its conversation is kept, and
         the person can resume it. Refused while it is working, unless <code>--now</code>.</td></tr>
@@ -212,7 +216,7 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
   <h2 id="where">Inside a harness, or outside Harness</h2>
   <ul>
     <li><strong>In a harness</strong> (Harness made your terminal pane): <code>harness send</code> works only to
-      teammates in your tab, while Agent Messages are on (Settings ▸ Agents, on by default). A harness you started,
+      teammates in your tab, while Agent Messages are on (Settings ▸ Experimental, off by default). A harness you started,
       or the one that started you, is no exception.</li>
     <li><strong>Outside Harness</strong> (Claude Code or Codex in a terminal app, an editor or the person's own tmux):
       Harness tells you by your session, from what your agent sets in its shell. <code>harness ps</code> says

@@ -169,8 +169,8 @@ void main() {
     await pumpBar(tester);
 
     await tap(tester, 'menu-bar-file');
-    // Whether agents may message is Settings ▸ Agents': the tab's on/off was
-    // easy to hit by mistake (owner, 2026-10-12).
+    // Whether agents may message is the account's (Settings ▸ Experimental):
+    // the tab's on/off was easy to hit by mistake (owner, 2026-10-12).
     expect(find.byKey(const Key('menu-bar-agent-messages')), findsNothing);
     expect(find.text('Agent Messages'), findsNothing);
     await tap(tester, 'menu-bar-show-agent-messages');

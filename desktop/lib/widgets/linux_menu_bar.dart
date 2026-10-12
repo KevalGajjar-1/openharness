@@ -348,8 +348,9 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
         label: 'Close Tab',
         action: 'closeActive',
       ),
-      // The active tab's Agent Messages log. Whether agents may message is
-      // Settings ▸ Agents', not a tab's, so there is no on/off row here.
+      // The active tab's Agent Messages log. Whether agents may message is the
+      // account's (Settings ▸ Experimental), not a tab's, so there is no on/off
+      // row here.
       _swarmRow(
         key: 'menu-bar-show-agent-messages',
         icon: AppIcons.messageSquareText,

@@ -318,10 +318,13 @@ identifies the account, clears on sign-out/account change, and rejects stale res
 `/api/experimental-settings`, refreshes on account invalidations and a 30-second fallback poll, and
 shows changes only after server acknowledgement. Do not restore the old unscoped local keys at startup.
 Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collaboration. Whether
-agents may message is each computer's Settings ▸ Agents switch (`agentMessages`, on by default,
-kept by its daemon), not a tab's and not an Experimental one: the tab's own 💬 beside its × was
-easy to hit by mistake and turned the tab off, failing a waiting message (owner, 2026-10-12), so
-the tab, its menu, File and ⇧⌘P have no on/off. The app reads `GET /api/agent-messages` through
+agents may message is the account's Experimental switch (`agent_messages`, off by default; each
+daemon keeps a copy for its agents), not a tab's: the tab's own 💬 beside its × was easy to hit by
+mistake and turned the tab off, failing a waiting message (owner, 2026-10-12), so the tab, its
+menu, File and ⇧⌘P have no on/off. So are the other two things agents may do with Harness,
+starting agents (`agents_start_agents`) and the pull request line (`agent_pull_request_line`):
+they were each computer's Settings ▸ Agents until the owner made all three account experiments,
+off for all (2026-10-12). The app reads `GET /api/agent-messages` through
 the CLI like the desk only to learn that the daemon and backend have Agent Messages — once the desk
 is joined, from the desk safety-net poll until one has answered, and when the backend comes back;
 each tab's `enabled` in the answer is not read. A 404 (an older CLI or backend) offers no Show
@@ -454,8 +457,8 @@ add a kind there, not at the call site.
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
   Tabs center their name/status group and show no shortcut hint (Command changes nothing on
   them). Hovering a tab shows only its ×. Agent Messages has nothing on a tab: no 💬 (it was
-  easy to hit by mistake and turned the tab off, owner 2026-10-12; Settings ▸ Agents holds the
-  switch) and no traffic, so its status slot keeps its own status (messages arrive when they
+  easy to hit by mistake and turned the tab off, owner 2026-10-12; Settings ▸ Experimental holds
+  the account's switch) and no traffic, so its status slot keeps its own status (messages arrive when they
   arrive). A tab's log is its menu's and File's Show Agent Messages (`lib/agent_messages/`,
   `AgentMessagesController` on `AppNotifier.agentMessages`, its own notifier so traffic never
   rebuilds the workspace; `SwarmTabButton` mirrors the tab natively).
@@ -674,18 +677,17 @@ add a kind there, not at the call site.
   `DropdownButton`/`IconButton` do not match anything else in the app.
   **Settings holds settings only** (owner, 2026-10-11): Account alone at the top, then General
   (Appearance — the `customize` row, which opens the Appearance panel over the workspace —
-  Notifications, Keyboard shortcuts), Agents (Agents, Connectors, Usage), Labs (Experimental) and
+  Notifications, Keyboard shortcuts), Agents (Connectors, Usage), Labs (Experimental) and
   Help (About, Debug in dev builds). A thing is managed where it lives: the Autonomous robots —
   Wi-Fi code pairing, Revoke, Still companion — in the Devices tab (`devices/wifi_robots.dart`);
   the account's computers, phones and apps, each device's code, Remove (a computer: sign out AND
   delete its machine record), History… and Show in this window in the Machines picker
   (`state/machine_devices.dart`, `widgets/machine_picker_extras.dart`). A way in from outside the
   workspace asks for Machines with `AppNotifier.requestMachines` (`openMachines` in
-  `widgets/new_device_notice.dart`). Settings ▸ Agents reads and writes this computer's daemon
-  (`/api/agent-settings`, bare JSON, not `{success, data}`); a setting the daemon's answer does
-  not name is not shown. `harness settings` changes the same file and the daemon sends no event,
-  so the open page reads again every 5 s while the window can be seen and once when it comes back
-  to the front (`AgentSettingsStore.recheck`): quiet, and never across a change being saved.
+  `widgets/new_device_notice.dart`). What agents may do with Harness is in Experimental, the
+  account's (owner, 2026-10-12): Settings ▸ Agents, which read and wrote this computer's daemon,
+  is gone. An experiment an older backend does not name is shown off and unavailable, never a
+  failed read (`ExperimentalFeaturesStore._apply`).
 - **The log is written to files, and Settings ▸ Debug reads them back** (`lib/logging/`,
   `settings/sections/debug_*.dart`). `appLog` (`app-YYYYMMDD.log`) is the narrative — `app`, `ws`,
   `api`, `flutter` — and `cliLog` (`cli-YYYYMMDD.log`) is a transcript of every child process, both

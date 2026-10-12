@@ -11,8 +11,8 @@ import 'agent_messages.dart';
 
 /// Show Agent Messages: [tabId]'s log, newest last. The person reads it here
 /// and types into panes as always; there is nothing to compose, and nothing to
-/// turn on: whether agents may message is Settings ▸ Agents' (owner,
-/// 2026-10-12).
+/// turn on: whether agents may message is the account's, in Settings ▸
+/// Experimental (owner, 2026-10-12).
 Future<void> showAgentMessages(
   BuildContext context,
   AppNotifier app, {

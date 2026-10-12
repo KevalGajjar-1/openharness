@@ -159,7 +159,7 @@ function touches(theirs: string, ours: string): boolean {
 /** The head of Harness's rules file: what it is for, and that Harness keeps it. */
 const RULES_HEADER = `# Written by Harness, which rewrites it: do not edit. Its agent commands (harness ${HARNESS_AGENT_VERBS.join(', ')})\n`
   + "# need Harness's daemon, which Codex's sandbox cannot reach, so they run outside it without asking. What each\n"
-  + '# may do is for Harness to decide: Settings > Agents, and an agent gives work to and closes only what it started.\n'
+  + '# may do is for Harness to decide: Settings > Experimental, and an agent gives work to and closes only what it started.\n'
 
 /** A rules file Harness owns whole: written atomically, and only when it does not already say exactly this. */
 function writeRulesFile(file: string, rules: string): void {

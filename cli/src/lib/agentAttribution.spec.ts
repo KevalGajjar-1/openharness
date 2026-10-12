@@ -3,11 +3,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AGENT_ATTRIBUTION_LINE, agentLaunchArgs, HARNESS_INSTRUCTIONS, joinedInstructions } from './agentAttribution.js'
-import { writeAgentSettings } from './agentSettings.js'
+import { agentSettingsPath } from './agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 
 let dataDir = ''
-beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'agent-attribution-')) })
-afterEach(() => rmSync(dataDir, { recursive: true, force: true }))
+beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), 'agent-attribution-'))
+  // The account has turned both on: off by default (lib/agentSettings.ts). A test of the default removes the file.
+  setAgentSettingsForTest(dataDir, { agentsStartAgents: true, pullRequestLine: true })
+})
+afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); signedOutForTest() })
 
 /** A launch that reads no settings: nothing the person set. */
 const place = { cwd: null, read: () => null }
@@ -42,16 +47,27 @@ describe('what Harness tells an agent as it starts', () => {
     expect(agentLaunchArgs('opencode', 'agent', place, dataDir)).toEqual([])
   })
 
+  it('tells an agent nothing of Harness, and adds no line, for an account that never turned either on, or signed out', () => {
+    rmSync(agentSettingsPath(dataDir))
+    for (const startedBy of ['agent', null] as const) {
+      expect(agentLaunchArgs('claude', startedBy, place, dataDir)).toEqual([])
+      expect(agentLaunchArgs('codex', startedBy, place, dataDir)).toEqual([])
+    }
+    setAgentSettingsForTest(dataDir, { agentsStartAgents: true, pullRequestLine: true })
+    signedOutForTest()
+    expect(agentLaunchArgs('claude', 'agent', place, dataDir)).toEqual([])
+  })
+
   it('follows the person\'s switches: no instructions once agents may not start agents, no line once that is off', () => {
-    writeAgentSettings(dataDir, { agentsStartAgents: false })
+    setAgentSettingsForTest(dataDir, { agentsStartAgents: false })
     expect(agentLaunchArgs('claude', null, place, dataDir)).toEqual([])
     // The pull request line, and its instruction, without Harness's own instructions.
     expect(agentLaunchArgs('claude', 'agent', place, dataDir)).toEqual([...claudeLine, '--append-system-prompt', claudePrTold])
     expect(agentLaunchArgs('claude', 'agent', place, dataDir)[3].startsWith('When you create or update a pull request')).toBe(true)
     expect(agentLaunchArgs('codex', null, place, dataDir)).toEqual([])
-    writeAgentSettings(dataDir, { agentsStartAgents: true, pullRequestLine: false })
+    setAgentSettingsForTest(dataDir, { agentsStartAgents: true, pullRequestLine: false })
     expect(agentLaunchArgs('claude', 'agent', { cwd: '/w', read: () => null }, dataDir)).toEqual(claudeTold)
-    writeAgentSettings(dataDir, { agentsStartAgents: false })
+    setAgentSettingsForTest(dataDir, { agentsStartAgents: false })
     expect(agentLaunchArgs('claude', 'agent', { cwd: '/w', read: () => { throw new Error('read nothing') } }, dataDir)).toEqual([])
   })
 

@@ -1479,8 +1479,8 @@ class AppNotifier extends ChangeNotifier {
   /// Agent Messages (docs/design/2026-10-10-agent-messages.md): whether the
   /// account has them, the traffic the daemons push as `messages_changed`, and
   /// the marks it leaves on panes. Its own notifier, so traffic never rebuilds
-  /// the workspace. Whether agents may message is each computer's setting
-  /// (Settings ▸ Agents), not a tab's.
+  /// the workspace. Whether agents may message is the account's experiment
+  /// (Settings ▸ Experimental), not a tab's.
   late final agentMessages = AgentMessagesController(
     read: () => api.readAgentMessageTabs(),
     request: (machineId, payload) => _conn(machineId).request(
@@ -1547,8 +1547,8 @@ class AppNotifier extends ChangeNotifier {
   /// than this computer: their daemons' `messages_changed` reaches only their
   /// own computer's windows, so [agentMessagesRemote] asks them instead. In a
   /// browser every machine is another computer. No tab has a switch to wait
-  /// for: a computer whose Settings ▸ Agents turned messaging off just answers
-  /// with nothing new.
+  /// for: a computer whose account has messaging off just answers with nothing
+  /// new.
   List<AgentMessagesRemoteTab> agentMessagesRemoteTabs() {
     final local = localMachineState?.machine.machineId;
     return [

@@ -1,13 +1,13 @@
 /**
  * Agent Messages on the real daemon (docs/design/2026-10-10-agent-messages.md): its own process, started with the
- * core while Settings ▸ Agents has it on (the default), and otherwise only once it is used; a message typed into an
- * idle agent through the core's safe input; and a message reaching a working agent through its PostToolUse hook at
- * its next tool call, with nothing typed into its pane. The fake engines run the hooks the daemon installed, as both
- * CLIs do (harness/fakeEngine.mjs, `!work`).
+ * core while the account has it on (Settings ▸ Experimental, off by default), and otherwise only once it is used; a
+ * message typed into an idle agent through the core's safe input; and a message reaching a working agent through its
+ * PostToolUse hook at its next tool call, with nothing typed into its pane. The fake engines run the hooks the daemon
+ * installed, as both CLIs do (harness/fakeEngine.mjs, `!work`).
  *
- * The directory of tabs comes from the account: the daemon is signed in to the fake backend, which answers it. Each
- * tab's own flag, which older windows still turn, is no part of it: one switch per computer decides (owner,
- * 2026-10-12).
+ * The directory of tabs and the switch come from the account: the daemon is signed in to the fake backend, which
+ * answers both. Each tab's own flag, which older windows still turn, is no part of it: one switch of the account
+ * decides (owner, 2026-10-12).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -15,7 +15,6 @@ import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient, type Frame } from './harness/client.js'
 import { IsolatedDaemon, until } from './harness/daemon.js'
 import { FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
-import { writeAgentSettings } from '../src/lib/agentSettings.js'
 
 /** Signed in to the fake backend, which answers the account's tabs (`GET /api/agent-messages`). */
 const ME: FakeMachine = { machineId: 'a7'.repeat(16), computerId: 'e2e-computer-0000-0000-0000000000a7', name: 'studio', token: 'e2e-token-messages' }
@@ -38,9 +37,17 @@ async function create(d: IsolatedDaemon, client: LocalClient, folder: string, en
   }, 60_000, 500)
 }
 const starts = (d: IsolatedDaemon) => [...d.log().matchAll(/\[harnessd\] service messages started/g)].length
-/** Settings ▸ Agents, as the window turns a switch: through the daemon, which wakes what it turned on. */
+/** `harness settings`, as the person turns a switch: through the daemon to the account, and kept here at once, which
+ *  wakes what it turned on. */
 const settings = (d: IsolatedDaemon, body: Record<string, boolean>) => fetch(`http://127.0.0.1:${d.port}/api/agent-settings`, {
   method: 'PATCH', headers: { 'x-adapter-local': '1', 'content-type': 'application/json' }, body: JSON.stringify(body) })
+/** The account's agent experiments as this daemon keeps them (lib/agentSettings.ts), once it has read them. */
+const kept = (d: IsolatedDaemon, want: (settings: Record<string, unknown>) => boolean = () => true) => until('the account\'s experiments to be kept', () => {
+  try {
+    const settings = JSON.parse(readFileSync(join(d.dataDir, 'agent-settings.json'), 'utf8')) as Record<string, unknown>
+    return want(settings) ? settings : null
+  } catch { return null }
+}, 30_000, 200)
 /** The notes waiting in the agents' inboxes, by agent, once there are [count]. */
 const notesFor = (d: IsolatedDaemon, count: number) => until(`${count} agents' notes`, () => {
   try {
@@ -72,11 +79,16 @@ describe('Agent Messages, end to end', () => {
     return d
   }
 
-  it('turned off in Settings ▸ Agents, it has no process; its first request starts it, and is answered', async () => {
-    const d = await fresh((daemon) => writeAgentSettings(daemon.dataDir, { agentMessages: false }))
+  it('off, as it is signed out, it has no process; its first request starts it, and is answered', async () => {
+    const d = await fresh()
     const client = await LocalClient.connect(d)
     await until('the services to connect', () => d.log().includes('[services] search connected') || null, 30_000, 200)
     expect(starts(d), 'an experiment no one used').toBe(0)
+    // Signed out there is no account to turn it on for.
+    const refused = await settings(d, { agentMessages: true })
+    expect(refused.status).toBe(409)
+    expect(await refused.json()).toMatchObject({ error: { code: 'SIGNED_OUT', message: expect.stringContaining('Settings ▸ Experimental') } })
+    expect(starts(d)).toBe(0)
     expect(await client.request('agent_messages', { action: 'history' }, 40_000)).toMatchObject({ messages: [] })
     expect(starts(d)).toBe(1)
     await until('Agent Messages to connect', () => d.log().includes('[services] messages connected') || null, 30_000, 200)
@@ -84,22 +96,21 @@ describe('Agent Messages, end to end', () => {
     client.close()
   })
 
-  it('its saved state turns it on as the daemon starts, even turned off in Settings ▸ Agents', async () => {
+  it('its saved state turns it on as the daemon starts, even with it off', async () => {
     // What waits there is held, then failed, rather than left behind.
-    const d = await fresh((daemon) => {
-      mkdirSync(join(daemon.dataDir, 'agent-messages'), { recursive: true })
-      writeAgentSettings(daemon.dataDir, { agentMessages: false })
-    })
+    const d = await fresh((daemon) => { mkdirSync(join(daemon.dataDir, 'agent-messages'), { recursive: true }) })
     await until('Agent Messages to start for its saved state', () => d.log().includes('[services] messages connected') || null, 30_000, 200)
     expect(starts(d)).toBe(1)
   })
 
-  /** Signed in to the fake backend, with lead and api in one tab. */
+  /** Signed in to the fake backend, whose account has Agent Messages on, with lead and api in one tab. */
   const team = async (engine = 'claude') => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
+    relay.experiments.agent_messages = true
     const d = await fresh(signIn, { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
+    await kept(d, (settings) => settings.agentMessages === true)
     const client = await LocalClient.connect(d, { machineId: ME.machineId })
     const lead = await create(d, client, 'lead')
     const api = await create(d, client, `api-${engine}`, engine)
@@ -112,22 +123,26 @@ describe('Agent Messages, end to end', () => {
     return { d, relay, client, lead, api, apiName, send }
   }
 
-  it('on by default, it starts with a fresh daemon, with no request and no saved state, and gives two agents in one tab their note', async () => {
-    // Each tab had a switch of its own, off by default, which the owner hit by mistake: one setting replaced it, on by
-    // default (2026-10-12). Started only by a request or saved state, on one machine nothing started it, and no agent
-    // heard of `harness send` (a fresh Mac, 2026-10-12).
+  it('off by default, a fresh daemon starts nothing; turned on from another computer, it starts with no request and gives two agents in one tab their note', async () => {
+    // Each tab had a switch of its own, which the owner hit by mistake: one setting of the account replaced it, off for
+    // all until it is announced (2026-10-12). Started only by a request or saved state, on one machine nothing started
+    // it, and no agent heard of `harness send` (a fresh Mac, 2026-10-12): turned on, it starts at once.
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
     const d = await fresh(signIn, { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
-    expect(existsSync(join(d.dataDir, 'agent-settings.json')), 'the default, never written').toBe(false)
-    await until('Agent Messages to start for its setting', () => starts(d) === 1 || null, 30_000, 200)
+    expect(existsSync(join(d.dataDir, 'agent-settings.json')), 'nothing kept before the account is read').toBe(false)
+    expect(await kept(d)).toMatchObject({ accountId: 'e2e-user', machineId: ME.machineId, agentsStartAgents: false, pullRequestLine: false, agentMessages: false })
     const client = await LocalClient.connect(d, { machineId: ME.machineId })
     const lead = await create(d, client, 'lead')
     const api = await create(d, client, 'api')
     // The tab as a window that never turned anything on writes it: no flag, or one left off, is all the same.
     relay.agentMessages = { revision: 1, machines: [{ machineId: ME.machineId, name: 'studio' }],
       tabs: [{ id: 'app', name: 'app', enabled: false, panes: [lead, api].map((agent) => ({ machineId: ME.machineId, agentId: agent.id })) }] }
+    expect(starts(d), 'off by default: no process').toBe(0)
+    // Settings ▸ Experimental on another computer: the backend tells this one with desk_changed.
+    relay.setExperiment('agent_messages', true)
+    await until('Agent Messages to start for the account turning it on', () => starts(d) === 1 || null, 30_000, 200)
     // Each agent's note waits in its inbox for its next tool call; read again at its 15-second look.
     const notes = await notesFor(d, 2)
     expect(Object.keys(notes).sort()).toEqual([lead.id, api.id].sort())
@@ -135,12 +150,12 @@ describe('Agent Messages, end to end', () => {
     client.close()
   })
 
-  it('starts once Settings ▸ Agents turns it on, with no other request; an older window\'s tab switch starts nothing', async () => {
+  it('starts once `harness settings` turns it on for the account, with no other request; an older window\'s tab switch starts nothing', async () => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
-    const d = await fresh((daemon) => { signIn(daemon); writeAgentSettings(daemon.dataDir, { agentMessages: false }) },
-      { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
+    const d = await fresh(signIn, { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
+    await kept(d)
     const client = await LocalClient.connect(d, { machineId: ME.machineId })
     const lead = await create(d, client, 'lead')
     const api = await create(d, client, 'api')
@@ -152,10 +167,12 @@ describe('Agent Messages, end to end', () => {
       method: 'PATCH', headers: { 'x-adapter-local': '1', 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true }) })
     expect(tab.status).toBe(200)
     expect((await settings(d, { pullRequestLine: true })).status).toBe(200)
+    expect(relay.experiments).toEqual({ agent_pull_request_line: true })
     await new Promise((settle) => setTimeout(settle, 1_000))
-    expect(starts(d), 'off in Settings ▸ Agents, nothing starts').toBe(0)
+    expect(starts(d), 'off for the account, nothing starts').toBe(0)
     const on = await settings(d, { agentMessages: true })
-    expect(await on.json()).toMatchObject({ agentMessages: true })
+    expect(await on.json()).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true, signedIn: true })
+    expect(relay.experiments).toEqual({ agent_pull_request_line: true, agent_messages: true })
     await until('Agent Messages to start for the setting turned on', () => starts(d) === 1 || null, 30_000, 200)
     const notes = await notesFor(d, 2)
     expect(Object.keys(notes).sort()).toEqual([lead.id, api.id].sort())
@@ -214,11 +231,11 @@ describe('Agent Messages, end to end', () => {
     // Its last messages come back with the roster.
     const roster = await client.request('agent_messages', { action: 'send', pane: api.tmuxPane }, 40_000)
     expect(roster.recent).toEqual([expect.objectContaining({ id: sent.id, from: expect.any(String), state: 'delivered' })])
-    // A pane that is no harness says so; and with Agent Messages turned off in Settings ▸ Agents, nothing is sent.
+    // A pane that is no harness says so; and with Agent Messages turned off for the account, nothing is sent.
     expect(await client.request('agent_messages', { action: 'send', pane: '%999', to: [apiName], text: 'x' }, 40_000)).toMatchObject({ error: 'NOT_A_HARNESS' })
     expect((await settings(d, { agentMessages: false })).status).toBe(200)
     await new Promise((settle) => setTimeout(settle, 2_500))
-    expect(await send('still there?')).toMatchObject({ error: 'MESSAGES_OFF', detail: expect.stringContaining('Settings ▸ Agents') })
+    expect(await send('still there?')).toMatchObject({ error: 'MESSAGES_OFF', detail: expect.stringContaining('Settings ▸ Experimental') })
     client.close()
   })
 })

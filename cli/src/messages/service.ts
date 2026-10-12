@@ -1,6 +1,6 @@
 /**
  * Agent Messages (docs/design/2026-10-10-agent-messages.md): harnesses in one tab message each other with `harness
- * send`, while this computer has Agent Messages on (Settings ▸ Agents, on by default). This is the whole service,
+ * send`, while the account has Agent Messages on (Settings ▸ Experimental, off by default). This is the whole service,
  * on the core's API, in the core's process or in its own (services/messages.ts, services/messagesProcess.ts):
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
@@ -64,11 +64,11 @@ export const SWEEP_AFTER_MS = 10 * 60_000
 export const HELD_OUTSIDE_MS = 5 * 60_000
 export const HELD_OFF_REASON = 'Agent Messages are off on its computer: it waits 5 minutes for them to be on again, then fails'
 export const HELD_LEFT_REASON = 'it is not in a tab with the sender: it waits 5 minutes for that to change, then fails'
-/** How long this computer's Agent Messages setting (Settings ▸ Agents) is taken as read: the mailbox's pump asks
+/** How long the Agent Messages setting, as this computer keeps it, is taken as read: the mailbox's pump asks
  *  every 2 s (mailbox.ts PUMP_MS), and a send or a hand-over asks too. */
 export const SETTING_FRESH_MS = 2_000
 /** What `harness send` says while this computer has Agent Messages off: where the person turns them on again. */
-export const MESSAGES_OFF_TEXT = 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.'
+export const MESSAGES_OFF_TEXT = 'Agent Messages are off. The person turns on "Agents in the same tab can message each other" in Settings ▸ Experimental, or runs `harness settings agent-messages on`.'
 
 const PANE = /^%\d{1,9}$/
 /** The most messages `harness send` alone gives an agent at once, unread ones first. */
@@ -102,9 +102,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   let timer: ReturnType<typeof setInterval> | null = null
   let lastRemoteStatus = -Infinity
 
-  // Settings ▸ Agents, kept by the core in the data folder (lib/agentSettings.ts) and written by `harness settings`
-  // too, which tells no one: a small file, read again at most every SETTING_FRESH_MS, so a switch turned off takes
-  // effect at the next look.
+  // The account's experiment, kept by the core in the data folder (lib/agentSettings.ts) as it changes, which tells no
+  // one: a small file, read again at most every SETTING_FRESH_MS, so a switch turned off takes effect at the next look.
   let setting = { on: true, at: -Infinity }
   const messagingOn = (): boolean => {
     if (now() - setting.at >= SETTING_FRESH_MS) setting = { on: readAgentSettings(options.dataDir ?? core.dataDir).agentMessages, at: now() }

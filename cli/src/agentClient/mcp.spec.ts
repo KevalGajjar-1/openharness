@@ -32,10 +32,10 @@ describe('harness mcp', () => {
     expect(outside.every((t) => t.argv === undefined)).toBe(true)
     expect((await names(true)).map((t) => t.name)).toContain('harness_send')
     expect(await answer(call('harness_send', { to: 'x', text: 'y' }), deps())).toMatchObject({ error: { code: -32602 } })
-    // It reaches teammates in the agent's tab while Agent Messages are on (Settings ▸ Agents, owner 2026-10-12), and
+    // It reaches teammates in the agent's tab while Agent Messages are on (Settings ▸ Experimental, owner 2026-10-12), and
     // nothing else: not a harness the agent started (owner, 2026-10-11: Agent Messages off means off).
     const send = (await names(true)).find((t) => t.name === 'harness_send') as unknown as { description: string }
-    expect(send.description).toMatch(/teammate: a harness in the same tab as you, while Agent Messages are on \(Settings ▸ Agents, on by default\)\. Refused anywhere else, even to a harness you started/)
+    expect(send.description).toMatch(/teammate: a harness in the same tab as you, while Agent Messages are on \(Settings ▸ Experimental, off by default\)\. Refused anywhere else, even to a harness you started/)
     expect(INSTRUCTIONS).toContain('A follow-up goes by harness_send only to a teammate in your tab, while Agent Messages are on')
     expect(INSTRUCTIONS).toContain('starting a harness does not let you message it')
     expect(INSTRUCTIONS).not.toContain('Send follow-ups for the same work to the harness you started')

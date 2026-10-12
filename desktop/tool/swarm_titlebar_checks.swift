@@ -2419,7 +2419,7 @@ private extension SwarmTitlebar {
     canFind = true
     try checkTitlebar(validateMenuItem(movePane), "Move Pane to Tab is available with a focused pane")
     try checkTitlebar(agent.items.contains { $0.title == "Close Tab" && $0.representedObject as? String == "closeActive" }, "Close Tab preserves its command")
-    // The active tab's Agent Messages log. No on/off row: that is Settings ▸ Agents'.
+    // The active tab's Agent Messages log. No on/off row: that is Settings ▸ Experimental's.
     try checkTitlebar(!agent.items.contains { $0.title == "Agent Messages" },
       "File has no Agent Messages on/off row")
     let showMessagesRow = agent.items.first { $0.representedObject as? String == "showAgentMessages" }!

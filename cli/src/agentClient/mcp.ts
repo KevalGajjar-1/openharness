@@ -70,7 +70,7 @@ export const TOOLS: Tool[] = [
     // that says nothing counts as destructive and open-world there, so `codex exec` refused every start ("MCP tool
     // call requires approval, but approval policy is never") and interactive Codex asked each time (codex-rs
     // core/src/mcp_tool_call.rs `requires_mcp_tool_approval`, 0.162.1). What an agent may start is Harness's to
-    // decide (Settings ▸ Agents, the spawn limits).
+    // decide (Settings ▸ Experimental, the spawn limits).
     annotations: { destructiveHint: false, openWorldHint: false },
     argv: (a, cwd) => {
       // A folder was required, and a relative one was resolved against this server's folder, so an MCP agent could not
@@ -107,7 +107,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_send',
-    description: 'Send a message to a teammate: a harness in the same tab as you, while Agent Messages are on (Settings ▸ Agents, on by default). Refused anywhere else, even to a harness you started.',
+    description: 'Send a message to a teammate: a harness in the same tab as you, while Agent Messages are on (Settings ▸ Experimental, off by default). Refused anywhere else, even to a harness you started.',
     inputSchema: schema({ to: { type: 'string', description: 'The teammate\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
     // A message adds to a teammate's inbox in this tab and nothing more; as harness_start, said so Codex does not ask.
     annotations: { destructiveHint: false, openWorldHint: false },
