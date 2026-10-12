@@ -485,13 +485,15 @@ describe('a close of a harness still starting', () => {
     service = new CloseAgentService(deps)
   })
   const stops = () => vi.mocked(deps.stop).mock.calls.map(([, options]) => options)
+  /** As a hook binds it (registry.register): its first conversation, and no `launch` any more. */
+  const bind = (extra: Partial<RegisteredSession> = {}) => { Object.assign(row, { sessionId: 'first', boundAt: time, ...extra }); delete row.launch }
 
   it('waits for its first conversation to bind, then closes it with that conversation', async () => {
     const asked = request('now')
     vi.mocked(deps.stop).mockRejectedValueOnce(held())
     vi.mocked(deps.sleep!).mockImplementationOnce(async ms => {
       time += ms
-      Object.assign(row, { sessionId: 'first', boundAt: time, transcriptPath: '/fixture/first.jsonl' })
+      bind({ transcriptPath: '/fixture/first.jsonl' })
     })
     expect(await service.request(asked)).toEqual({ closed: true })
     expect(stops()).toHaveLength(2)
@@ -508,7 +510,7 @@ describe('a close of a harness still starting', () => {
     })
     expect(await service.request(request('now'))).toEqual({ closed: true, withoutConversation: true })
     expect(unbound).toBe(1)
-    expect(slept.reduce((a, b) => a + b, 0)).toBe(10_000)
+    expect(slept.reduce((a, b) => a + b, 0)).toBe(8_000)
     expect(stops().at(-1)?.withoutConversation).toBeTypeOf('function')
     expect(stops().slice(0, -1).every(options => !options.withoutConversation)).toBe(true)
   })
@@ -525,7 +527,7 @@ describe('a close of a harness still starting', () => {
   })
   it('a conversation bound while a try ran is closed with it at once, which that try read as a change', async () => {
     vi.mocked(deps.stop).mockImplementationOnce(async () => {
-      Object.assign(row, { sessionId: 'first', boundAt: time })
+      bind()
       throw Object.assign(new Error('Harness changed while saving its conversation. Try stopping again.'), { code: 'STOP_UNCONFIRMED' })
     })
     expect(await service.request(request('now'))).toEqual({ closed: true })
@@ -535,13 +537,13 @@ describe('a close of a harness still starting', () => {
   it('bound by the last try of the wait: tried once more with its conversation, not let go', async () => {
     let calls = 0
     vi.mocked(deps.stop).mockImplementation(async (id, options) => {
-      if (++calls === 11) Object.assign(row, { sessionId: 'first', boundAt: time })
-      if (calls < 12) throw held()
+      if (++calls === 9) bind()
+      if (calls < 10) throw held()
       expect(options.withoutConversation).toBeUndefined()
       registry.removeAgent(id)
     })
     expect(await service.request(request('now'))).toEqual({ closed: true })
-    expect(calls).toBe(12)
+    expect(calls).toBe(10)
   })
   it('a refusal of its own is answered at once', async () => {
     vi.mocked(deps.stop).mockRejectedValue(Object.assign(new Error('Disk full'), { code: 'HISTORY_NOT_SAVED' }))
@@ -550,10 +552,7 @@ describe('a close of a harness still starting', () => {
   })
   it('a conversation that binds and still cannot be read is never stopped without it', async () => {
     vi.mocked(deps.stop).mockRejectedValue(held())
-    vi.mocked(deps.sleep!).mockImplementationOnce(async ms => {
-      time += ms
-      Object.assign(row, { sessionId: 'first', boundAt: time })
-    })
+    vi.mocked(deps.sleep!).mockImplementationOnce(async ms => { time += ms; bind() })
     expect(await service.request(request('now'))).toMatchObject({ error: 'IDENTITY_UNAVAILABLE', detail: expect.stringContaining('descriptor') })
     expect(stops().every(options => !options.withoutConversation)).toBe(true)
     expect(registry.byAgent(row.agentId)).toBe(row)
@@ -563,6 +562,8 @@ describe('a close of a harness still starting', () => {
     ['an engine typed into a terminal', () => { row.terminalHost = true }],
     ['a resume', () => { row.resumeOnly = true }],
     ['one discovery found', () => { delete row.launch }],
+    ['a fork, which starts on a copy of another conversation', () => { row.forkedFrom = { agentId: 'parent', name: 'parent', sessionId: 'theirs' } }],
+    ['whose engine started over a minute ago', () => { row.processIdentity!.startMarker = new Date(row.registeredAt - 1_000).toString(); time = row.registeredAt + 60_000 }],
     ['seen through a clock that went back', () => { time = row.registeredAt - 1 }],
   ] as const)('a harness %s is refused at once, as before', async (_, arrange) => {
     arrange()
@@ -593,14 +594,22 @@ describe('a close of a harness still starting', () => {
     vi.mocked(deps.stop).mockRejectedValue(held())
     vi.mocked(deps.sleep!).mockImplementation(async ms => {
       time += ms
-      if (slept.push(ms) === 10) row.processIdentity = { pid: 778, startMarker: 'reborn', executable: 'codex' }
+      if (slept.push(ms) === 8) row.processIdentity = { pid: 778, startMarker: 'reborn', executable: 'codex' }
     })
     expect(await service.request(request('now'))).toEqual({ error: 'AGENT_CHANGED' })
     expect(stops().every(options => !options.withoutConversation)).toBe(true)
   })
+  it('a harness whose engine installed first is starting from its engine\'s own start', async () => {
+    time = row.registeredAt + 5 * 60_000
+    row.processIdentity!.startMarker = new Date(time - 2_000).toString()
+    vi.mocked(deps.stop).mockImplementationOnce(async () => { throw held() })
+    vi.mocked(deps.sleep!).mockImplementationOnce(async ms => { time += ms; bind() })
+    expect(await service.request(request('now'))).toEqual({ closed: true })
+    expect(deps.sleep).toHaveBeenCalledOnce()
+  })
   it('a close asked of it before its first conversation bound still names it', async () => {
     const asked = request('now')
-    Object.assign(row, { sessionId: 'first', boundAt: time })
+    bind()
     expect(await service.request(asked)).toEqual({ closed: true })
     // Not once it is past starting, nor for a conversation it moved on from.
     const later = registry.openPendingAgent({ engine: 'codex', runtimes: [{ backend: 'tmux', paneId: '%89' }], cwd: '/tmp' })!

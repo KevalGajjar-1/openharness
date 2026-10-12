@@ -8,7 +8,7 @@ import { checkPidRuntime, terminateDeletedAgent } from './deleteAgentFallback.js
 import { createForgetSession } from '../core/agents/forget.js'
 import { env } from '../config/env.js'
 import { controlTranscriptEvidence } from '../engines/transcriptBindings.js'
-import { IdentityReadUnavailable } from '../engines/kit/identityScan.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 vi.mock('./captureResumeIdentity.js', () => ({ captureResumeIdentity: vi.fn(async session => session) }))
 vi.mock('../engines/transcriptBindings.js', async original => ({ ...await original<object>(),
   controlTranscriptEvidence: vi.fn(),
@@ -108,10 +108,12 @@ it('stops a harness that never bound a conversation without one, only when its c
   expect(stoppedAgents.get(row.agentId)).toMatchObject({ active: false, sessionId: '' })
   expect(registry.byAgent(row.agentId)).toBeUndefined()
 })
-it.each(['a bound conversation', 'a known transcript', 'a bind time', 'another failure'] as const)('never lets go of %s that cannot be read', async kind => {
+it.each(['a bound conversation', 'a known transcript', 'a bind time', 'a conversation seen live', 'another failure'] as const)('never lets go of %s that cannot be read', async kind => {
   Object.assign(row, { sessionId: kind === 'a bound conversation' ? 'saved' : '', transcriptPath: kind === 'a known transcript' ? '/fixture/t.jsonl' : null,
     boundAt: kind === 'a bind time' ? 1 : null })
-  vi.mocked(captureResumeIdentity).mockRejectedValue(kind === 'another failure' ? new Error('disk gone') : new IdentityReadUnavailable('the transcript is unreadable'))
+  vi.mocked(captureResumeIdentity).mockRejectedValue(kind === 'another failure' ? new Error('disk gone')
+    : kind === 'a conversation seen live' ? new ObservedConversationUnavailable('Conversation identity is held: the observed conversation file is unavailable.')
+    : new IdentityReadUnavailable('the transcript is unreadable'))
   const unkept = vi.fn()
   await expect(createStopAgentService(deps)(row.agentId, { withoutConversation: unkept })).rejects.toThrow()
   expect(unkept).not.toHaveBeenCalled()

@@ -408,6 +408,11 @@ describe('harness wait', () => {
     expect(other.out).toEqual(['kid: stopped · it was stopped'])
     const person = harness(d, { pane: undefined })
     expect(await waitCommand(['kid'], person.deps)).toBe(EXIT.stopped)
+    // Reopened after it closed it, worked on and stopped again: not its close any more.
+    d.frames = [frame('lead'), frame('kid', { status: 'stopped', updatedAt: '2026-10-11T12:05:00Z' })]
+    const reopened = harness(d)
+    expect(await waitCommand(['kid'], reopened.deps)).toBe(EXIT.stopped)
+    expect(reopened.out).toEqual(['kid: stopped · it was stopped'])
   })
 
   it('waits for all of several, listing once a round, or the first with --any; a name twice is one harness', async () => {

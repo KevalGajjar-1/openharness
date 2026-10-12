@@ -72,12 +72,13 @@ harness close <name> [--now]                        # when you are done with one
   rather than a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 - Put the whole task in `-- <task>`: what to do, where, what done looks like, and what to answer with. A task
   holds 2,000 characters; for a longer one, write it to a file and name the file in the task.
-- `wait` exits 0 when it is idle, 3 when it needs the person (a question or a permission: only the person
-  answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0` waits as long as
-  it takes.
+- `wait` exits 0 when it is idle (or you closed it), 3 when it needs the person (a question or a permission:
+  only the person answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0`
+  waits as long as it takes.
 - Read the result with `show` instead of asking for a summary.
 - `close` what you started once you have what you need. It keeps the conversation; the person can resume it.
-  It refuses while the harness is working, unless `--now`.
+  It refuses while the harness is working, unless `--now`. One closed while still starting may have no
+  conversation to keep yet, and `close` says so.
 - Add `--json` to any verb for JSON. Every error says what to run next.
 
 ## Inside a harness, or outside

@@ -59,7 +59,7 @@ waited on it, as it had queued, was told it had failed (October 12).
 **Close, not stop** (owner, October 11): `harness stop` stops the daemon, and an agent typing it with a name
 left empty would have stopped Harness. `close` is the app's close (`agent_close`): it saves the screen, stops the
 harness and keeps its conversation, and refuses while the harness is working unless `--now`. A harness still starting
-is closed once its first conversation binds; one that has bound none within ten seconds is closed without one, and
+is closed once its first conversation binds; one that has bound none within eight seconds is closed without one, and
 says so (October 12: Codex 0.162.1 closed a second after its start was refused, its conversation not yet readable).
 
 The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):

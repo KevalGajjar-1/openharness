@@ -2,7 +2,7 @@
 import { externalResumePending } from './externalResume.js'
 import { captureResumeIdentity } from './captureResumeIdentity.js'
 import { isTerminalEngine } from '../engines/types.js'
-import { IdentityReadUnavailable } from '../engines/kit/identityScan.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 import { controlTranscriptEvidence, engineKeepsTranscriptFile } from '../engines/transcriptBindings.js'
 import type { registry as liveRegistry, RegisteredSession } from './registry.js'
 import type { StoppedAgentStore } from './stoppedAgents.js'
@@ -100,7 +100,7 @@ export function createStopAgentService(deps: StopAgentServiceDeps) {
       }
       const captured = await captureResumeIdentity({ ...live }).catch((error: unknown) => {
         if (!options.withoutConversation || conversation || live.transcriptPath || live.boundAt != null
-          || !(error instanceof IdentityReadUnavailable)) throw error
+          || !(error instanceof IdentityReadUnavailable) || error instanceof ObservedConversationUnavailable) throw error
         options.withoutConversation()
         return { ...live }
       })

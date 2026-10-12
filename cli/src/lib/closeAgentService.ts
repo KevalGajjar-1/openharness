@@ -26,7 +26,7 @@ export type AgentCloseResult = { closed?: true; withoutConversation?: true; defe
  * native control descriptor type is unavailable"), so `harness close --now` a second after `harness new` was refused
  * with that phrase and the harness kept working; four seconds in, the same close worked.
  */
-export const CLOSE_BIND_WAIT_MS = 10_000
+export const CLOSE_BIND_WAIT_MS = 8_000
 const CLOSE_BIND_RETRY_MS = 1_000
 /**
  * A harness Harness launched less than this long ago, with no conversation bound yet, is still starting: one that never
@@ -68,14 +68,24 @@ function harnessIdentity(s: RegisteredSession): string {
   return JSON.stringify([s.agentId, s.engine, s.registeredAt, s.processIdentity?.pid,
     s.processIdentity?.startMarker, s.processIdentity?.executable, s.runtimes.map(terminalRouteKey).sort()])
 }
-/** Launched by Harness as this engine less than CLOSE_STARTING_MS before [at]: not a terminal an engine was typed into,
- *  not a resume or an adoption, which carry a conversation of their own. A clock that went back says nothing. */
-function recentLaunch(s: RegisteredSession, at: number): boolean {
-  const age = at - s.registeredAt
-  return !!s.launch && !s.terminalHost && !s.resumeOnly && !s.externalResume && age >= 0 && age < CLOSE_STARTING_MS
+/** How long before [at] the harness started: its engine's own start when that is later than the row's (an engine
+ *  installed in its pane first starts minutes after the pane opened), its row's otherwise. A clock that went back
+ *  says nothing: never young. */
+function age(s: RegisteredSession, at: number): number {
+  const born = Date.parse(s.processIdentity?.startMarker ?? '')
+  const since = Number.isFinite(born) && born > s.registeredAt ? Math.min(born, at) : s.registeredAt
+  return at - s.registeredAt < 0 ? -1 : at - since
 }
+/** Started less than CLOSE_STARTING_MS before [at], and not a terminal an engine was typed into, a resume or an adoption. */
+function young(s: RegisteredSession, at: number): boolean {
+  const old = age(s, at)
+  return !s.terminalHost && !s.resumeOnly && !s.externalResume && old >= 0 && old < CLOSE_STARTING_MS
+}
+/** Launched by Harness, young, and with no conversation bound yet. A fork is not: it starts on a copy of another's
+ *  conversation. Nor is a row a hook has bound, which loses its `launch` then (registry.register): once bound, never
+ *  starting again. */
 function stillStarting(s: RegisteredSession, at: number): boolean {
-  return recentLaunch(s, at) && !s.sessionId && !s.transcriptPath && s.boundAt == null
+  return !!s.launch && !s.forkedFrom && young(s, at) && !s.sessionId && !s.transcriptPath && s.boundAt == null
 }
 /** What makes two requests the same one: the agent, the mode, and whether it holds only while no tab
  *  shows the agent. A cleanup that finds the agent on screen again must not answer the person's own close. */
@@ -87,7 +97,7 @@ function matches(s: RegisteredSession | undefined, request: AgentCloseRequest, a
   // Asked of a harness still starting, which has bound its first conversation since the list the request was made
   // from: the same harness, and the close keeps that conversation. Refused as changed, a close sent in the seconds a
   // Codex binds was answered "changed while closing".
-  return s.sessionId === request.sessionId || (request.sessionId === '' && recentLaunch(s, at))
+  return s.sessionId === request.sessionId || (request.sessionId === '' && young(s, at))
 }
 
 export interface CloseAgentServiceDeps {

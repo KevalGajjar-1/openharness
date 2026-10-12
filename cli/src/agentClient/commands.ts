@@ -468,6 +468,9 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
 
 // ── wait ───────────────────────────────────────────────────────────────────────────────────────────
 
+/** How far another machine's clock may be off from this one's, for what happened before or after a close. */
+const CLOCK_SLACK_MS = 60_000
+
 /** `closed`: stopped or gone because the caller closed it (`harness close`, the ledger's `Closed` line). */
 type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'closed' | 'timeout' | 'failed'
 
@@ -522,9 +525,13 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       /** Idle looks in a row, on the same turn. */
       const idle = new Map<Target, { turn: string; looks: number }>()
       // Ended because the caller closed it: what it asked for, not a failure. A real Codex lead closed its harness and
-      // then waited on it, as it had queued, and was answered "Failed (exit 4) · stopped · it was stopped".
-      const ended = (t: Target, state: 'stopped' | 'gone'): Settled =>
-        o.caller && o.ledger.closedBy(o.caller, { machineId: t.machineId, agentId: t.frame.id }) !== null ? 'closed' : state
+      // then waited on it, as it had queued, and was answered "Failed (exit 4) · stopped · it was stopped". Not when its
+      // conversation went on after that close (the person reopened it), or a minute past it on another machine's clock.
+      const ended = (t: Target, state: 'stopped' | 'gone'): Settled => {
+        const closedAt = o.caller ? o.ledger.closedBy(o.caller, { machineId: t.machineId, agentId: t.frame.id }) : null
+        const active = Date.parse(t.frame.updatedAt ?? '')
+        return closedAt !== null && !(active > closedAt + CLOCK_SLACK_MS) ? 'closed' : state
+      }
       const look = async (t: Target, frames: Frame[]): Promise<Settled | null> => {
         const frame = frames.find((f) => f.id === t.frame.id)
         // Not live: stopped, or gone. Asked of the full list only then.
