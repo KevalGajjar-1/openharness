@@ -1,11 +1,14 @@
 import type { EngineLaunch } from '../facets/launch.js'
 
-// The existing CLI contracts: auto still runs Claude Code's safety checks; full is explicit.
+// The existing CLI contracts: auto still runs Claude Code's safety checks; full is explicit. Ask names its mode:
+// Claude Code 2.1.296 started a session given no flag in auto mode, so an Ask harness never asked (a fresh Mac,
+// 2026-10-12). `default` is the asking mode's name in every version with the flag; 2.1.296 calls it manual, still
+// takes `default`, and shows "manual mode on".
 const permissionModes = {
   auto: ['--permission-mode', 'auto'],
   acceptEdits: ['--permission-mode', 'acceptEdits'],
   plan: ['--permission-mode', 'plan'],
-  ask: [],
+  ask: ['--permission-mode', 'default'],
   full: ['--dangerously-skip-permissions'],
 }
 export const launch: EngineLaunch = {

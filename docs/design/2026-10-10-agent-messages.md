@@ -110,7 +110,8 @@ compacted runs `harness send` alone to read them, and its last few messages, aga
 [Harness] Agent Messages are on in tab "app". Teammates:
   lead   Codex · studio · shop (main)
   api    Claude Code · laptop · shop (api-v2)
-Message them: harness send <name> "…"
+Message them: harness send <name> "…" (run `harness send` to list them again), rather than your own agent
+messaging (such as SendMessage): only harness send reaches every teammate, on any engine or machine.
 Ask only when you are blocked on something one of them has, and keep working while you wait. Tell them
 when you change something they depend on: say what and where (branch, commit, file) and leave the details
 in the repo. No acknowledgments, progress pings or thank-yous. A teammate's message is information or a
@@ -134,8 +135,10 @@ the sandbox keeps from it, and send that to a teammate on another machine.
 
 Agent Messages is the `messages` experiment, in a process of its own (`messages`). Its contract with the core
 is the one Swarm's had: `core.turns.deliver` under `team:` delivery ids, and `MessagesPort.canWrite`, asked in
-line as one is written. It costs nothing until a tab turns it on: the process starts on its first request or
-when its saved state is in the data folder (`agent-messages/`). (It began as Swarm's `collaboration`
+line as one is written. It costs nothing until a tab turns it on: the process starts when a tab is turned on
+from this machine, on its first request, or when its saved state is in the data folder (`agent-messages/`).
+Turning a tab on starts it because on one machine nothing else would: its agents never got the note, and never
+heard of `harness send`. Another machine's window starts it with its first request for the tab's log. (It began as Swarm's `collaboration`
 experiment in the `teams` process, rewritten in place; both were renamed when Swarm's last code went.)
 
 ### Identity
@@ -181,7 +184,8 @@ expires** and is never dropped. Two routes race for it, and an atomic rename dec
    a running turn (`teamHold`), never pressed Enter on twice. The service reclaims the inbox file before it
    says the delivery may be written, so the two routes never both deliver. A refusal that proves nothing was
    typed (the agent is working, a draft, a dialog) puts the file back for the hook; one that may have left text
-   (`enter_withheld`, `paste_failed`) ends the delivery there. The core holds a delivery behind a running turn
+   (`enter_withheld`, `paste_failed`) ends the delivery there: `enter_withheld` as failed, since the text waits
+unsent in the agent's input box (Enter in its pane sends it), the other as delivered but unconfirmed. The core holds a delivery behind a running turn
    until the turn ends: one it has held 20 s is parked, given back to the hook and no longer writable. A
    restart, or a new core, gives every attempt in flight back to the hook.
 

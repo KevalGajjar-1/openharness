@@ -5,6 +5,7 @@
  *
  * - `GET /api/machines`: the account's machines, each `running` or `offline` as the test says.
  * - `GET /api/agent-messages`: the account's tabs and their Agent Messages flag, as the test sets them.
+ * - `PATCH /api/agent-messages/tabs/:id`: one tab's flag turned, as a window turns it through its daemon.
  * - `/api/adapter-ws`: each daemon's own socket, as the node of its machine. Frames for it arrive as
  *   `{t:'down', connId, frame}`; what it sends comes back as `{t:'up', targetConnId?, commanderEligible?, frame}`.
  * - `/api/device-ws`: a daemon's lane to its owner's other machines, as a device holding a commander
@@ -129,6 +130,20 @@ export class FakeBackend {
       }
       if (req.method === 'GET' && req.url?.split('?')[0] === '/api/agent-messages' && backend.agentMessages) {
         res.end(json({ success: true, data: backend.agentMessages }))
+        return
+      }
+      // A tab's switch, as the window turns it through its daemon: that tab's flag in what the test set.
+      const tabSwitch = req.method === 'PATCH' ? /^\/api\/agent-messages\/tabs\/([^/?]+)$/.exec(req.url?.split('?')[0] ?? '') : null
+      if (tabSwitch && backend.agentMessages) {
+        let raw = ''
+        req.on('data', (chunk) => { raw += chunk })
+        req.on('end', () => {
+          const tab = (backend.agentMessages!.tabs as Array<Record<string, unknown>>).find((t) => t.id === tabSwitch[1])
+          const enabled = (JSON.parse(raw || '{}') as { enabled?: unknown }).enabled
+          if (!tab || typeof enabled !== 'boolean') { res.statusCode = 404; res.end(json({ success: false, error: { code: 'NOT_FOUND' } })); return }
+          tab.enabled = enabled
+          res.end(json({ success: true, data: { tabId: tab.id, enabled } }))
+        })
         return
       }
       if ((req.method === 'PUT' || req.method === 'DELETE') && /^\/api\/harness-(links|shares)\/[^/?]+$/.test(req.url?.split('?')[0] ?? '')) {

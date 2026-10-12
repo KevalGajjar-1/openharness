@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAccountNotices, createExperimentHooks, stateIsThere, wakeExperiments } from './experiments.js'
+import { createAccountNotices, createExperimentHooks, stateIsThere, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
 
 describe('the experiments on as the core starts', () => {
   let dataDir: string
@@ -83,5 +83,18 @@ describe('the experiments on as the core starts', () => {
     expect(heard).toHaveBeenCalledWith({ type: 'desk_changed', revision: 5 })
     expect(notify.mock.calls).toEqual([['messages', { type: 'service_event', payload: { kind: 'notice', notice: { type: 'desk_changed', revision: 5 } } }]])
     createExperimentHooks({ want: vi.fn(), notify, outOfProcess: new Set(), experiments: [] }).want('x')
+  })
+
+  it('asks for Agent Messages once a tab is turned on, and not when one is turned off or the backend refuses', async () => {
+    // On one machine nothing else starts it: no agent heard of `harness send` (a fresh Mac, 2026-10-12).
+    const want = vi.fn()
+    const ok = { status: 200, body: { success: true } }
+    expect(await writeAgentMessagesTab(async () => ok, { enabled: true }, want)).toBe(ok)
+    expect(want).toHaveBeenCalledTimes(1)
+    await writeAgentMessagesTab(async () => ok, { enabled: false }, want)
+    await writeAgentMessagesTab(async () => ok, null, want)
+    await writeAgentMessagesTab(async () => ({ status: 404, body: {} }), { enabled: true }, want)
+    await writeAgentMessagesTab(async () => ({ status: 199, body: {} }), { enabled: true }, want)
+    expect(want).toHaveBeenCalledTimes(1)
   })
 })

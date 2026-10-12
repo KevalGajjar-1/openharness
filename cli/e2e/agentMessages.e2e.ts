@@ -6,7 +6,7 @@
  *
  * The directory of tabs comes from the account: the daemon is signed in to the fake backend, which answers it.
  */
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient, type Frame } from './harness/client.js'
@@ -94,6 +94,34 @@ describe('Agent Messages, end to end', () => {
     const send = (text: string) => client.request('agent_messages', { action: 'send', pane: lead.tmuxPane, to: [apiName], text }, 40_000)
     return { d, relay, client, lead, api, apiName, tabs, send }
   }
+
+  it('starts once a tab is turned on here, with no other request, and gives the tab\'s agents their note', async () => {
+    // On one machine nothing else started it, and no agent heard of `harness send` (a fresh Mac, 2026-10-12).
+    const relay = await FakeBackend.start()
+    backend = relay
+    relay.addMachine(ME)
+    const d = await fresh(signIn, { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId })
+    const client = await LocalClient.connect(d, { machineId: ME.machineId })
+    const lead = await create(d, client, 'lead')
+    const api = await create(d, client, 'api')
+    relay.agentMessages = { revision: 1, machines: [{ machineId: ME.machineId, name: 'studio' }],
+      tabs: [{ id: 'app', name: 'app', enabled: false, panes: [lead, api].map((agent) => ({ machineId: ME.machineId, agentId: agent.id })) }] }
+    await until('the services to connect', () => d.log().includes('[services] search connected') || null, 30_000, 200)
+    const turn = (enabled: boolean) => fetch(`http://127.0.0.1:${d.port}/api/agent-messages/tabs/app`, {
+      method: 'PATCH', headers: { 'x-adapter-local': '1', 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) })
+    expect((await turn(false)).status).toBe(200)
+    await new Promise((settle) => setTimeout(settle, 1_000))
+    expect(starts(d), 'turned off, nothing starts').toBe(0)
+    expect((await turn(true)).status).toBe(200)
+    await until('Agent Messages to start for the tab turned on', () => starts(d) === 1 || null, 30_000, 200)
+    // Each agent's note waits in its inbox for its next tool call.
+    const notes = await until('both agents\' notes', () => {
+      const state = JSON.parse(readFileSync(join(d.dataDir, 'agent-messages', 'state.json'), 'utf8')) as { notes: Record<string, unknown> }
+      return Object.keys(state.notes).length === 2 ? state.notes : null
+    }, 30_000, 500)
+    expect(Object.keys(notes).sort()).toEqual([lead.id, api.id].sort())
+    client.close()
+  })
 
   it('types a message into an idle agent, under its sender\'s header, through the core\'s safe input', async () => {
     const { client, api, send } = await team()

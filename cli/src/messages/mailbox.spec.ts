@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaneInbox } from './inbox.js'
-import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, type MailboxAgent, type MailboxDeps } from './mailbox.js'
+import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
 import type { DeliveryStatus, Message } from './model.js'
 import { MessageStore } from './store.js'
 
@@ -117,7 +117,9 @@ describe('Agent Messages\' mailbox', () => {
     const t = setup()
     const withheld = t.accept()
     t.event(withheld.attempt!.id, 'rejected', 'enter_withheld')
-    expect(withheld).toMatchObject({ state: 'delivered', via: 'prompt', reason: 'typed into its composer; a dialog opened before Enter' })
+    // Left in its input box unsent: failed, never delivered, and the person is told how to send it.
+    expect(withheld).toMatchObject({ state: 'failed', reason: WITHHELD })
+    expect(t.statuses.at(-1)).toMatchObject({ state: 'failed', reason: WITHHELD })
     expect(t.inbox.waiting('%3', withheld.key)).toBe(false)
     for (const [id, state, reason] of [['m0000002', 'rejected', 'paste_failed'], ['m0000003', 'rejected', undefined], ['m0000004', 'unknown', undefined]] as const) {
       const delivery = t.accept(message(id))

@@ -78,6 +78,9 @@ const NOT_TYPED: ReadonlySet<string> = new Set(['agent_gone', 'runtime_gone_pre_
 const notTyped = (reason: string | undefined): boolean =>
   !!reason && (reason.startsWith('team_waiting_') || NOT_TYPED.has(reason) || isMessageHold(reason))
 
+/** Why a typed message was not sent, for the person: it is in the input box, and Enter in the pane sends it. */
+export const WITHHELD = 'typed into its input box but not sent: something opened over it first; press Enter in its pane to send it'
+
 export const deliveryKey = (messageId: string, agentId: string): string =>
   `${messageId}-${createHash('sha256').update(agentId).digest('hex').slice(0, 8)}`
 
@@ -157,10 +160,10 @@ export class Mailbox {
     if (event.state === 'delivered' || event.state === 'started') return this.finish(delivery, 'prompt')
     // It may have reached the engine: never typed again.
     if (event.state === 'unknown') return this.finish(delivery, 'prompt', 'unconfirmed: inspect its pane')
-    if (!notTyped(event.reason)) {
-      return this.finish(delivery, 'prompt', event.reason === 'enter_withheld'
-        ? 'typed into its composer; a dialog opened before Enter' : 'unconfirmed: inspect its pane')
-    }
+    // Typed, its Enter held back: the text waits in the agent's input box, unread, so it is not called delivered.
+    // Its sender saw "delivered" while a Codex agent never read it (a fresh Mac, 2026-10-12).
+    if (event.reason === 'enter_withheld') return this.fail(delivery, WITHHELD)
+    if (!notTyped(event.reason)) return this.finish(delivery, 'prompt', 'unconfirmed: inspect its pane')
     // Refused before anything was written: back to the hook, and the next attempt waits longer. A parked one is
     // the hook's already, and its turn has ended: the next attempt finds the agent idle.
     delivery.attempt = undefined
