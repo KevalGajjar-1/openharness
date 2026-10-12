@@ -9,7 +9,8 @@ import { PaneInbox } from './inbox.js'
 import { deliveryKey } from './mailbox.js'
 import { LIMITS, MessageError } from './model.js'
 import type { Rpc } from './rpc.js'
-import { REMOTE_STATUS_MS, startAgentMessages, STARTED_TAB, SWEEP_AFTER_MS, TICK_MS } from './service.js'
+import { REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
+import { MessageStore } from './store.js'
 import { Ledger, ledgerPath } from '../agentClient/ledger.js'
 
 let root: string
@@ -213,6 +214,22 @@ describe('harness send', () => {
     expect(await down.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toMatchObject({ error: 'DIRECTORY_UNAVAILABLE' })
   })
 
+  it('sends nothing when the tab turns Agent Messages off while it asks another machine for names', async () => {
+    let t: ReturnType<typeof setup>
+    t = setup({ rpc: async (_target, payload) => {
+      if (payload.action === 'who') {
+        t.tabs[0].enabled = false
+        t.notice({ type: 'desk_changed', revision: 5 })
+        await new Promise((settle) => setTimeout(settle, 0))
+        return { agents: [{ agentId: 'phone', name: 'phone', engine: 'claude' }] }
+      }
+      return { statuses: [] }
+    } })
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual({ error: 'MESSAGES_OFF', detail: 'api is no longer in a tab with you that has Agent Messages on. Nothing was sent.' })
+    expect(t.delivered).toEqual([])
+    expect((await t.ask({ action: 'history' })).messages).toEqual([])
+  })
+
   it('limits how often one harness sends, and tells the windows', async () => {
     const t = setup()
     for (let i = 0; i < LIMITS.perSender; i++) await t.ask({ action: 'send', pane: '%1', to: 'api', text: `n${i}` })
@@ -246,29 +263,75 @@ describe('harness send', () => {
 })
 
 describe('a harness and the harnesses it started', () => {
+  // Agent Messages off means off (owner, 2026-10-11): being started by a harness is no way to message it. Since #1180
+  // the two messaged each other with no tab at all, and the owner found agents talking before turning any tab on.
   const start = (by: string, child: string, childMachine = 'm1') => new Ledger(ledgerPath(root)).append({
     at: 1, depth: 1, by: { machineId: 'm1', agentId: by, name: by, engine: 'codex' }, child: { machineId: childMachine, agentId: child, name: child },
   })
 
-  it('message each other with no tab, both ways; others stay out of reach', async () => {
-    const t = setup({ tabs: [{ id: 'app', name: 'app', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }] }] })
-    expect((await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })).error).toBe('MESSAGES_OFF')
+  it('may not message each other where no tab has Agent Messages on, either way', async () => {
+    const t = setup({ tabs: [{ id: 'app', name: 'app', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'web' }] }] })
     start('lead', 'web')
-    const down = await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'Also check the footer.' })
-    expect(down).toMatchObject({ tab: STARTED_TAB.name, recipients: [{ name: 'web', state: 'queued' }] })
-    expect(t.delivered.at(-1)).toEqual(['web', `[${String(down.id)} from lead · Codex · studio]\nAlso check the footer.`, expect.any(String)])
-    const up = await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'Done: 3 fixes.' })
-    expect(up.recipients).toEqual([{ name: 'lead', state: 'queued' }])
-    expect((await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).error).toBe('UNKNOWN_RECIPIENT')
-    expect((await t.ask({ action: 'send', pane: '%2', to: 'web', text: 'x' })).error).toBe('MESSAGES_OFF')
-    const roster = await t.ask({ action: 'send', pane: '%1' })
-    expect(roster.roster).toBe('[Harness] The harness that started you, and those you started:\n  web  Claude Code · studio · web\nMessage them: harness send <name> "…"')
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'Also check the footer.' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    expect(await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'Done: 3 fixes.' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    // Nor does `harness send` alone list them.
+    expect(await t.ask({ action: 'send', pane: '%1' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    const none = setup({ tabs: [] })
+    expect(await none.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    expect(t.delivered).toEqual([])
+    expect(none.delivered).toEqual([])
   })
 
-  it('reach one another by the start of an id, for a harness whose name is a sentence', async () => {
+  it('are refused as any other recipient outside the sender\'s tabs, and listed only as tab teammates', async () => {
+    // lead and api share a tab with Agent Messages on; web, which lead started, is in none.
+    const t = setup()
+    start('lead', 'web')
+    start('lead', 'api')
+    const refused = await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })
+    expect(refused).toEqual({ error: 'UNKNOWN_RECIPIENT', detail: 'No teammate named "web" in this tab. Teammates: api, phone.' })
+    expect(await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    const roster = await t.ask({ action: 'send', pane: '%1' })
+    expect(roster.roster).toContain('Teammates:')
+    expect(roster.roster).not.toMatch(/\bweb\b/)
+    expect(roster.roster).not.toContain('started you')
+    // A child in the tab is a teammate like any other: reached through the tab, and logged there.
+    const both = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'sync' })
+    expect(both).toMatchObject({ tab: 'app', recipients: [{ name: 'api', state: 'queued' }] })
+    expect(t.delivered.map(([agentId]) => agentId)).toEqual(['api'])
+  })
+
+  it('a message an older version queued between them under no tab is refused, not delivered', async () => {
+    vi.useFakeTimers()
+    // Queued by 0.3.75 under its `started` log, waiting in web's inbox for its hook.
+    const store = new MessageStore(join(root, 'state'))
+    const message = { id: 'm0000old', tabId: 'started', at: 1, text: 'Also check the footer.',
+      from: { machineId: 'm1', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' }, to: [{ machineId: 'm1', agentId: 'web', name: 'web' }] }
+    store.record(message)
+    store.status({ messageId: message.id, machineId: 'm1', agentId: 'web', state: 'queued', at: 1 })
+    const key = deliveryKey(message.id, 'web')
+    store.state.local.push({ key, messageId: message.id, agentId: 'web', pane: '%3', session: 's-web', state: 'queued', tries: 0, nextTryAt: 0, at: 1 })
+    store.save()
+    new PaneInbox(join(root, 'inbox-root')).put('%3', key, { session: 's-web', text: 'Also check the footer.' })
+    start('lead', 'web')
+    const t = setup()
+    expect(t.inbox.waiting('%3', key)).toBe(true)
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.inbox.waiting('%3', key)).toBe(false)
+    expect(t.delivered).toEqual([])
+    const history = await t.ask({ action: 'history', tabId: 'started' })
+    expect((history.messages as Array<{ statuses: unknown[] }>)[0].statuses).toEqual([
+      expect.objectContaining({ machineId: 'm1', agentId: 'web', state: 'failed', reason: 'it is no longer in a tab with the sender' }),
+    ])
+    await vi.advanceTimersByTimeAsync(TICK_MS * 2)
+    expect(t.delivered).toEqual([])
+    t.service.stop()
+  })
+
+  it('reach a tab teammate by the start of its id, for a harness whose name is a sentence', async () => {
     const titled = { ...session('abcdef99-1', '%3'), title: 'so we have built it, then' } as unknown as RegisteredSession
-    const t = setup({ tabs: [], agents: [session('lead', '%1', 'codex'), titled] })
-    start('abcdef99-1', 'lead')
+    const t = setup({ agents: [session('lead', '%1', 'codex'), titled],
+      tabs: [{ id: 'app', name: 'app', enabled: true, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'abcdef99-1' }] }] })
     expect((await t.ask({ action: 'send', pane: '%1', to: 'abcdef', text: 'x' })).recipients).toEqual([{ name: 'so we have built it, then', state: 'queued' }])
     // Too short to be an id's start.
     expect((await t.ask({ action: 'send', pane: '%1', to: 'abcde', text: 'x' })).error).toBe('UNKNOWN_RECIPIENT')
@@ -284,22 +347,17 @@ describe('a harness and the harnesses it started', () => {
     expect((await t.ask({ action: 'started', row: { ...row, by: { ...row.by, machineId: 'm1' } } }, OWNER_REMOTE)).error).toBe('INVALID_RECORD')
     expect((await t.ask({ action: 'started' }, OWNER_REMOTE)).error).toBe('INVALID_RECORD')
     expect((await t.ask({ action: 'started', row: { ...row, child: { ...row.child, agentId: 'nobody' } } }, OWNER_REMOTE)).error).toBe('UNKNOWN_HARNESS')
+    // The record lets neither message the other: phone is no teammate of web's.
+    const delivered = await t.ask({ action: 'deliver', message: { id: 'm00000bb', tabId: 'started', text: 'hi', at: 5,
+      from: { machineId: 'm2', agentId: 'phone', name: 'phone', engine: 'claude', machine: 'laptop' }, to: [{ machineId: 'm1', agentId: 'web', name: 'web' }] } }, OWNER_REMOTE)
+    expect(delivered.statuses).toEqual([expect.objectContaining({ agentId: 'web', state: 'failed' })])
+    expect(t.delivered).toEqual([])
   })
 
   it('stay apart across machines: another machine checks against its own tabs', async () => {
     const t = setup({ tabs: [] })
     start('lead', 'phone', 'm2')
     expect((await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'x' })).error).toBe('MESSAGES_OFF')
-  })
-
-  it('appear once beside their tab teammates, and the roster shows both', async () => {
-    const t = setup()
-    start('lead', 'api')
-    start('lead', 'web')
-    const roster = await t.ask({ action: 'send', pane: '%1' })
-    expect(roster.roster).toMatch(/Teammates:[\s\S]*api[\s\S]*\n\n\[Harness\] The harness that started you, and those you started:\n  web /)
-    const both = await t.ask({ action: 'send', pane: '%1', to: 'api,web', text: 'sync' })
-    expect(both).toMatchObject({ tab: 'app', recipients: [{ name: 'api' }, { name: 'web' }] })
   })
 })
 

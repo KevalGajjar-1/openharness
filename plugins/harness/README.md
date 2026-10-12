@@ -1,7 +1,7 @@
 # Harness plugin for Claude Code, Codex and Cursor
 
 Lets a coding agent use [Harness](https://harness.autonomous.ai/agents): start Claude Code, Codex and other agents
-as harnesses the person can watch, wait for them, read their answers, message them and close them.
+as harnesses the person can watch, wait for them, read their answers and close them.
 
 It holds two things:
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { newAgentPayload, newCommand, NewUsageError, parseNewArgs, resolveNewMachine, type NewCommandDeps, type NewSocket } from './newCommand.js'
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { newAgentPayload, newCommand, NewUsageError, parseNewArgs, resolveNewMachine, trustAsked, type NewCommandDeps, type NewSocket } from './newCommand.js'
 
 const env = { cwd: '/work/repo', home: '/home/me' }
 
@@ -131,6 +134,8 @@ function deps(argv: string[], socket: FakeSocket, over: Partial<NewCommandDeps> 
     ],
     connect: () => socket,
     output: (line) => out.push(line), error: (line) => err.push(line),
+    // Never the engines' settings of whoever runs the tests.
+    env: { HOME: '/nonexistent/home', CODEX_HOME: '/nonexistent/codex' },
     timeoutMs: 200, out, err, ...over,
   }
 }
@@ -325,5 +330,176 @@ describe('harness new: the daemon', () => {
     const stopped = deps(['codex'], socket, { daemonRunning: () => false })
     expect(await newCommand(stopped)).toBe(1)
     expect(stopped.err[0]).toMatch(/harness start/)
+  })
+})
+
+/** A computer's folders and its engines' settings under a throwaway root: Claude Code's `.claude.json` in its home and
+ *  Codex's config.toml in its CODEX_HOME, as each has them once it has run. */
+function computer() {
+  const root = mkdtempSync(join(tmpdir(), 'new-trust-'))
+  const home = join(root, 'home'), codex = join(root, 'codex')
+  mkdirSync(join(home, 'harnesses'), { recursive: true })
+  mkdirSync(codex)
+  const claudeTrusts = (...folders: string[]) => writeFileSync(join(home, '.claude.json'),
+    JSON.stringify({ projects: Object.fromEntries(folders.map((folder) => [folder, { hasTrustDialogAccepted: true }])) }))
+  const codexTrusts = (...folders: string[]) => writeFileSync(join(codex, 'config.toml'),
+    folders.map((folder) => `[projects.${JSON.stringify(folder)}]\ntrust_level = "trusted"\n`).join('\n'))
+  claudeTrusts()
+  codexTrusts()
+  const folder = (name: string, ...files: string[]) => {
+    const dir = join(root, name)
+    mkdirSync(dir, { recursive: true })
+    for (const file of files) writeFileSync(join(dir, file), '')
+    return dir
+  }
+  return { root, home, env: { HOME: home, CODEX_HOME: codex }, claudeTrusts, codexTrusts, folder }
+}
+
+/** An agent starting harnesses, as agentClient/commands.ts `agentOrigin` is to `harness new`. */
+const agentStarting = () => {
+  const created: string[] = []
+  return {
+    created,
+    origin: {
+      check: async () => {},
+      prompt: (text: string) => text,
+      created: async (_machineId: string, agent: Record<string, unknown>) => { created.push(String(agent.id)); return null },
+      next: () => 'Read it: harness show it',
+    },
+  }
+}
+
+const creating = (agent: Record<string, unknown>) => new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent } : null)
+
+describe('harness new: a folder the engine would ask about', () => {
+  it('reads whether Claude Code or Codex will ask the person to trust a folder before it starts', async () => {
+    const c = computer()
+    const scratch = c.folder('scratch')
+    const work = c.folder('work', 'README.md')
+    for (const engine of ['claude', 'codex']) {
+      expect(await trustAsked(engine, scratch, c.home, c.env)).toBe('empty')
+      expect(await trustAsked(engine, work, c.home, c.env)).toBe('content')
+      // Empty and directly inside the projects root: Harness answers for it as the engine starts.
+      expect(await trustAsked(engine, c.folder('home/harnesses/review'), c.home, c.env)).toBeNull()
+    }
+    // Further down, it is the engine's question again.
+    expect(await trustAsked('claude', c.folder('home/harnesses/review/deeper'), c.home, c.env)).toBe('empty')
+    // Nothing to ask: an engine with no such question, a store harness's name, a folder that is not there (the machine says).
+    expect(await trustAsked('opencode', scratch, c.home, c.env)).toBeNull()
+    expect(await trustAsked('owner/kit', scratch, c.home, c.env)).toBeNull()
+    expect(await trustAsked('claude', join(c.root, 'missing'), c.home, c.env)).toBeNull()
+  })
+
+  it('takes the trust an engine has: by the path typed or the one it resolves to, from above, and by the repository', async () => {
+    const c = computer()
+    // macOS's /tmp is /private/tmp: a folder reached through a link, trusted as it resolves, or as it was typed.
+    const real = c.folder('real-scratch')
+    const typed = join(c.root, 'typed-scratch')
+    symlinkSync(real, typed)
+    c.claudeTrusts(realpathSync(real))
+    c.codexTrusts(typed)
+    expect(await trustAsked('claude', typed, c.home, c.env)).toBeNull()
+    expect(await trustAsked('codex', typed, c.home, c.env)).toBeNull()
+    // Claude Code's trust covers every folder below; Codex's is the folder's own, or its repository's.
+    c.claudeTrusts(realpathSync(c.root))
+    expect(await trustAsked('claude', c.folder('anywhere/below'), c.home, c.env)).toBeNull()
+    expect(await trustAsked('codex', c.folder('anywhere/else'), c.home, c.env)).toBe('empty')
+    const repo = c.folder('repo/.git').replace(/\/\.git$/, '')
+    const src = c.folder('repo/src', 'a.ts')
+    const worktree = c.folder('wt', 'a.ts')
+    writeFileSync(join(worktree, '.git'), `gitdir: ${realpathSync(repo)}/.git/worktrees/wt\n`)
+    const relative = c.folder('wt2', 'a.ts')
+    writeFileSync(join(relative, '.git'), 'gitdir: ../repo/.git/worktrees/wt2\n')
+    const submodule = c.folder('sub', 'a.ts')
+    writeFileSync(join(submodule, '.git'), 'gitdir: ../repo/.git/modules/sub\n')
+    for (const folder of [src, worktree, relative, submodule]) expect(await trustAsked('codex', folder, c.home, c.env)).toBe('content')
+    c.codexTrusts(realpathSync(repo))
+    for (const folder of [src, worktree, relative]) expect(await trustAsked('codex', folder, c.home, c.env)).toBeNull()
+    expect(await trustAsked('codex', submodule, c.home, c.env)).toBe('content')
+  })
+
+  it('refuses an agent an empty folder of its own, in words it can act on, before anything is started', async () => {
+    // A Codex harness asked for a second opinion from Claude Code made `mktemp -d /tmp/shell-opinion.XXXX` and started
+    // Claude Code there, which stopped on its trust question (a clean VM, CLI 0.3.75, 2026-10-11).
+    const c = computer()
+    const scratch = c.folder('shell-opinion.e0ynGN')
+    const { origin, created } = agentStarting()
+    const socket = new FakeSocket(() => null)
+    const shell = deps(['claude', scratch, '--name', 'opinion', '--', 'a second opinion'], socket, { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(shell)).toBe(1)
+    expect(shell.err).toEqual([`Claude Code would ask the person to trust ${scratch} before it starts, and it is empty: for scratch or new work `
+      + 'give a project name instead — harness new claude opinion --name opinion -- …  (Harness makes ~/harnesses/opinion, which needs no '
+      + 'approval). Nothing was started.'])
+    expect(socket.sent.map((frame) => frame.type)).toEqual(['machine_select'])
+    expect(created).toEqual([])
+    // Through `harness mcp`: its tool, by the name it gave.
+    const viaMcp = deps(['codex', scratch, '--name', 'Second opinion', '--', 'a second opinion'], new FakeSocket(() => null),
+      { origin: async () => origin, env: { ...c.env, HARNESS_VIA_MCP: '1' }, home: c.home })
+    expect(await newCommand(viaMcp)).toBe(1)
+    expect(viaMcp.err).toEqual([`Codex would ask the person to trust ${scratch} before it starts, and it is empty: for scratch or new work `
+      + 'give a project name instead — harness_start (project: "Second-opinion", …)  (Harness makes ~/harnesses/Second-opinion, which '
+      + 'needs no approval). Nothing was started.'])
+    // Unnamed, and asked for JSON.
+    const json = deps(['codex', scratch, '--json', '--', 'go'], new FakeSocket(() => null), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(json)).toBe(1)
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: false, error: expect.stringContaining('— harness new codex review -- …  (Harness makes ~/harnesses/review,') })
+    // Trusted already, it starts.
+    c.claudeTrusts(realpathSync(scratch))
+    const trusted = deps(['claude', scratch, '--', 'go'], creating({ id: 'a1', name: 'opinion' }), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(trusted)).toBe(0)
+    expect(trusted.out).toEqual([`Created opinion on this computer in ${scratch}.`, 'Read it: harness show it'])
+  })
+
+  it('starts an agent\'s harness in a folder with content, and says it will wait for the person to trust it', async () => {
+    const c = computer()
+    const work = c.folder('work', 'README.md')
+    const { origin, created } = agentStarting()
+    const shell = deps(['codex', work, '--name', 'reviewer', '--', 'review it'], creating({ id: 'a1', name: 'reviewer' }), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(shell)).toBe(0)
+    expect(shell.out).toEqual([
+      `Created reviewer on this computer in ${work}.`,
+      `Codex will ask the person to trust ${work} before it starts, so it waits for them until they answer (harness wait exits 3). `
+        + 'For new work, a project name avoids this: harness new codex reviewer --name reviewer -- …',
+      'Read it: harness show it',
+    ])
+    expect(created).toEqual(['a1'])
+    const viaMcp = deps(['claude', work, '--name', 'reviewer', '--', 'review it'], creating({ id: 'a2', name: 'reviewer' }),
+      { origin: async () => origin, env: { ...c.env, HARNESS_VIA_MCP: '1' }, home: c.home })
+    expect(await newCommand(viaMcp)).toBe(0)
+    expect(viaMcp.out[1]).toBe(`Claude Code will ask the person to trust ${work} before it starts, so it waits for them until they answer `
+      + '(harness_wait says needs-input). For new work, a project name avoids this: harness_start (project: "reviewer", …)')
+    const json = deps(['codex', work, '--json', '--', 'go'], creating({ id: 'a3', name: 'x' }), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(json)).toBe(0)
+    expect(JSON.parse(json.out[0]!)).toMatchObject({ ok: true, agent: { id: 'a3' }, note: expect.stringContaining('Codex will ask the person to trust') })
+    // Trusted: nothing to say.
+    c.codexTrusts(realpathSync(work))
+    const trusted = deps(['codex', work, '--', 'go'], creating({ id: 'a4', name: 'x' }), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(trusted)).toBe(0)
+    expect(trusted.out).toEqual([`Created x on this computer in ${work}.`, 'Read it: harness show it'])
+  })
+
+  it('leaves the person at a terminal, another machine, and a store harness\'s empty folder as they were', async () => {
+    const c = computer()
+    const scratch = c.folder('scratch')
+    const work = c.folder('work', 'README.md')
+    const { origin } = agentStarting()
+    // The person is there to answer the question.
+    const person = deps(['claude', scratch], creating({ id: 'p1', name: 'mine' }), { origin: async () => null, env: c.env, home: c.home })
+    expect(await newCommand(person)).toBe(0)
+    expect(person.out).toEqual([`Created mine on this computer in ${scratch}.`, 'Open it in Harness with ⌘O.'])
+    // Another machine's folders and settings are not here to read.
+    const far = deps(['claude', '@mini', scratch], creating({ id: 'f1', name: 'far' }), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(far)).toBe(0)
+    expect(far.out).toEqual([`Created far on Mac mini in ${scratch}.`, 'Read it: harness show it'])
+    // A store harness lays its template into an empty folder, which is then trusted; one with content is still asked about.
+    const store = (folder: string) => new FakeSocket((frame) => frame.type === 'dsh_list' ? { dsh: [{ id: 'owner/kit', engine: 'claude', installed: true }] }
+      : frame.type === 'agent_create' ? { state: 'created', agent: { id: 's1', name: 'kit' } } : null)
+    const empty = deps(['owner/kit', scratch], store(scratch), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(empty)).toBe(0)
+    expect(empty.out).toEqual([`Created kit on this computer in ${scratch}.`, 'Read it: harness show it'])
+    const full = deps(['owner/kit', work], store(work), { origin: async () => origin, env: c.env, home: c.home })
+    expect(await newCommand(full)).toBe(0)
+    expect(full.out[1]).toBe(`Claude Code will ask the person to trust ${work} before it starts, so it waits for them until they answer `
+      + '(harness wait exits 3). For new work, a project name avoids this: harness new owner/kit review -- …')
   })
 })

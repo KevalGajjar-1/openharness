@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join, resolve } from 'node:path'
+import { readdir, readFile, realpath } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { VIA_MCP_ENV } from '../agentClient/commands.js'
+import { folderTrust } from '../engines/launchPrep.js'
 import { ENGINES, type AgentEngine } from '../engines/types.js'
+import { engineName } from '../messages/model.js'
 import { projectFolderSlug } from './agentNames.js'
 import { permissionModeFlags } from './engineLaunch.js'
+import { projectsRoot } from './projectFolder.js'
 
 /** Engine names, so an unknown word is judged rather than cast (the shape `registry.ts` uses). */
 const ENGINE_NAMES: ReadonlySet<string> = new Set(ENGINES)
@@ -51,7 +56,9 @@ export const NEW_USAGE = [
   '  folder         a path (/abs, ~/x, ./x, .): work there. Left out: the current directory.',
   '                 With @machine, a path under THIS home is read as the same path under its home,',
   '                 because the shell has already turned ~/x into /Users/you/x by the time it gets here',
-  '  project-name   any other second word: a new project ~/harnesses/<name> on that machine',
+  '  project-name   any other second word: a new project ~/harnesses/<name> on that machine.',
+  '                 For scratch or new work give one (harness new codex review -- …), not a folder',
+  '                 of your own: Claude Code and Codex ask the person to trust a folder Harness did not make',
   '',
   '  --new [name]   a new project, named <name> or after the agent and the time',
   '  --mode <mode>  auto (default), ask, plan or full, where the agent has it',
@@ -229,6 +236,9 @@ export interface NewCommandDeps {
   /** Who is starting it, when an agent runs this from its pane (agentClient/commands.ts `agentOrigin`). */
   origin?: () => Promise<NewOrigin | null>
   sleep?: (ms: number) => Promise<void>
+  /** The caller's environment: whether `harness mcp` runs this, and where its engines keep their folder trust.
+   *  This process's when left out. */
+  env?: NodeJS.ProcessEnv
 }
 
 /** An agent starting a harness (docs/design/2026-10-11-agent-client.md): its limits, the header its task carries,
@@ -260,6 +270,60 @@ const ERRORS: Record<string, string> = {
 function holdReason(result: Record<string, unknown>): string {
   const held = result.held as { detail?: unknown } | undefined
   return typeof held?.detail === 'string' ? held.detail.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 500) : ''
+}
+
+/**
+ * The other folders an engine may hold [real]'s trust under: the root of the git repository it is in, and a worktree's
+ * main repository. Codex keys a folder in a repository by that root, and a worktree by its main repository; read by the
+ * folder alone, every worktree of a repository Codex trusts would be said to be one it asks about.
+ */
+async function repositoryRoots(real: string): Promise<string[]> {
+  for (let dir = real; ; dir = dirname(dir)) {
+    // A directory is a repository's own `.git`; a file is a worktree's, naming its main repository's.
+    const dotGit = await readFile(join(dir, '.git'), 'utf8').catch((error: NodeJS.ErrnoException) => error.code === 'EISDIR' ? '' : null)
+    if (dotGit !== null) {
+      const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit)?.[1]
+      const main = gitdir ? /^(.+)\/\.git\/worktrees\/[^/]+\/?$/.exec(resolve(dir, gitdir))?.[1] : undefined
+      return main ? [dir, main] : [dir]
+    }
+    if (dirname(dir) === dir) return []
+  }
+}
+
+/**
+ * Whether [engine] will stop on its "Do you trust this folder?" question before it starts in [cwd] on this computer:
+ * 'empty' for an empty folder, 'content' for one with something in it. Null when it will not ask (it trusts the folder,
+ * asks no such question, or Harness answers it as the engine starts) and when the folder cannot be read, which the
+ * machine then says.
+ *
+ * Harness answers the question only for a folder it made empty, directly inside its projects root (core/agents/
+ * launches.ts): never for a folder anyone merely named, since Claude Code's trust is inherited downward and an empty
+ * `~/code` trusted once would cover every repository cloned under it later (OH-14). So an agent that made a scratch
+ * folder of its own (`mktemp -d`) started Claude Code on a question only the person could answer, and could only
+ * report that it was waiting (a clean VM, CLI 0.3.75, 2026-10-11).
+ */
+export async function trustAsked(engine: string, cwd: string, home: string, environment: NodeJS.ProcessEnv): Promise<'empty' | 'content' | null> {
+  const trust = ENGINE_NAMES.has(engine) ? folderTrust(engine as AgentEngine, null, environment) : null
+  if (!trust) return null
+  let real: string
+  let names: string[]
+  try { real = await realpath(cwd); names = await readdir(real) } catch { return null }
+  // By the path it is sent, as the daemon judges it.
+  if (names.length === 0 && dirname(cwd) === projectsRoot(home)) return null
+  // Typed or resolved: on macOS /tmp is /private/tmp, and an engine may hold either.
+  const keys = new Set([cwd, real, ...await repositoryRoots(real)])
+  if ([...keys].some((key) => trust.trusts(key))) return null
+  return names.length === 0 ? 'empty' : 'content'
+}
+
+/** [path] under [home] as `~/…`. */
+const tildeOf = (path: string, home: string): string => (path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path)
+
+/** How the caller starts [args] in a new project [project] instead: the shell's words, or the tool `harness mcp` offers. */
+function projectStep(args: NewArgs, project: string, env: NodeJS.ProcessEnv): string {
+  if (env[VIA_MCP_ENV] === '1') return `harness_start (project: "${project}", …)`
+  const name = args.name === null ? '' : ` --name ${/^[\w.-]+$/.test(args.name) ? args.name : JSON.stringify(args.name)}`
+  return `harness new ${args.agent} ${project}${name} -- …`
 }
 
 /** One loopback session with the daemon: select the machine, then ask, one request at a time. */
@@ -327,15 +391,18 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
     deps.error('Harness is not running on this computer. Start it with `harness start`.')
     return 1
   }
+  const env = deps.env ?? process.env
   try {
     const origin = (await deps.origin?.()) ?? null
     await origin?.check()
     let machineId = deps.localMachineId
     let machineLabel = 'this computer'
+    let local = true
     if (args.machine !== null) {
       const machine = resolveNewMachine(args.machine, await deps.listMachines())
       machineId = machine.machineId
       machineLabel = machine.current ? 'this computer' : machine.label
+      local = machine.current
     }
     if (!machineId) {
       deps.error('This computer is not signed in to Harness. Run `harness login`.')
@@ -360,6 +427,30 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
         if (!entry) throw new Error(`No harness called “${args.agent}” in that machine's catalog. See \`harness dsh list\`.`)
         if (entry.installed === false) throw new Error(`Install it first: harness dsh install ${args.agent}`)
         if (typeof entry.engine === 'string' && entry.engine) baseEngine = entry.engine
+      }
+      // An agent naming a folder Harness did not make: its engine may stop on a question only the person can answer.
+      // Read here, where the engine's settings are; another machine's are not, and the person at a terminal is there
+      // to answer it.
+      let trustNote: string | null = null
+      if (origin && local && cwd !== null) {
+        const store = args.agent.includes('/')
+        const engine = store ? baseEngine : args.agent
+        const asks = await trustAsked(engine, cwd, deps.home, env)
+        const project = projectFolderSlug(args.name ?? '') ?? 'review'
+        const instead = projectStep(args, project, env)
+        // Empty, it holds nothing the new harness needs: a project of its own does the same with no one asked. A store
+        // harness lays its template into an empty folder, and the folder is then trusted as it starts.
+        if (asks === 'empty' && !store) {
+          throw new Error(`${engineName(engine)} would ask the person to trust ${cwd} before it starts, and it is empty: `
+            + `for scratch or new work give a project name instead — ${instead}  (Harness makes `
+            + `${tildeOf(join(projectsRoot(deps.home), project), deps.home)}, which needs no approval). Nothing was started.`)
+        }
+        // With content it may be just what the work needs, so it starts; the agent is told it will wait for the person.
+        if (asks === 'content') {
+          trustNote = `${engineName(engine)} will ask the person to trust ${cwd} before it starts, so it waits for them until `
+            + `they answer (${env[VIA_MCP_ENV] === '1' ? 'harness_wait says needs-input' : 'harness wait exits 3'}). `
+            + `For new work, a project name avoids this: ${instead}`
+        }
       }
       const asked = origin && args.prompt ? { ...args, prompt: origin.prompt(args.prompt, machineId) } : args
       // Started by an agent: the machine records it, and the pull requests it opens say so (lib/agentAttribution.ts).
@@ -409,12 +500,13 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       const agent = (result.agent ?? {}) as Record<string, unknown>
       const warning = await origin?.created(machineId, agent)
       if (warning) deps.error(warning)
-      if (args.json) deps.output(JSON.stringify({ ok: true, machineId, agent }))
+      if (args.json) deps.output(JSON.stringify({ ok: true, machineId, agent, ...(trustNote ? { note: trustNote } : {}) }))
       else {
         const project = (agent.project ?? {}) as Record<string, unknown>
         const where = typeof project.cwd === 'string' ? ` in ${project.cwd}` : cwd ? ` in ${cwd}` : ''
         const name = String(agent.name ?? agent.id ?? 'a harness')
         deps.output(`Created ${name} on ${machineLabel}${where}.`)
+        if (trustNote) deps.output(trustNote)
         deps.output(origin ? origin.next(agent) : 'Open it in Harness with ⌘O.')
       }
       return 0

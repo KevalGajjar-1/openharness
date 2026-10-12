@@ -26,17 +26,11 @@ Future<AccountMenuChoice?> showAccountMenu(
   BuildContext context, {
   required String name,
   required String email,
-  bool showAddPhone = true,
   double topInset = 0,
 }) => showAppDialog<AccountMenuChoice>(
   context: context,
   veilTint: Colors.transparent,
-  builder: (_) => AccountMenu(
-    name: name,
-    email: email,
-    showAddPhone: showAddPhone,
-    topInset: topInset,
-  ),
+  builder: (_) => AccountMenu(name: name, email: email, topInset: topInset),
 );
 
 class AccountMenu extends StatefulWidget {
@@ -44,16 +38,12 @@ class AccountMenu extends StatefulWidget {
     super.key,
     required this.name,
     required this.email,
-    this.showAddPhone = true,
     this.topInset = 0,
   });
 
   /// As the account gives it; empty when it has only an email.
   final String name;
   final String email;
-
-  /// Whether Add Phone is offered: not once the account has a phone.
-  final bool showAddPhone;
   final double topInset;
 
   static const width = 264.0;
@@ -65,9 +55,11 @@ class AccountMenu extends StatefulWidget {
 class _AccountMenuState extends State<AccountMenu> {
   final _focus = FocusNode(debugLabel: 'Account menu');
 
-  late final _rows = [
-    if (widget.showAddPhone)
-      (AccountMenuChoice.addPhone, AppIcons.smartphone, 'Add Phone'),
+  // Add Phone stays once the account has a phone: a second one is added the
+  // same way, and a row that was there at the first opening and gone at the
+  // next read as a fault (1.2.64 learned of the phone only when the menu opened).
+  static const _rows = [
+    (AccountMenuChoice.addPhone, AppIcons.smartphone, 'Add Phone'),
     (AccountMenuChoice.customize, AppIcons.palette, 'Appearance'),
     (AccountMenuChoice.notifications, AppIcons.bell, 'Notifications'),
     (AccountMenuChoice.settings, AppIcons.settings, 'Settings'),

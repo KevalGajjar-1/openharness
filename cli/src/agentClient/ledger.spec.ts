@@ -26,7 +26,7 @@ describe('the ledger of who started which harness', () => {
     expect(ledger.depthOf({ machineId: 'm', agentId: 'x' })).toBe(0)
   })
 
-  it('answers parents, children, depth and links from what was appended', () => {
+  it('answers parents, children and depth from what was appended', () => {
     const ledger = fresh()
     ledger.append(row('lead', 'a'))
     ledger.append(row('lead', 'b'))
@@ -34,11 +34,9 @@ describe('the ledger of who started which harness', () => {
     expect(ledger.childrenOf({ machineId: 'm', agentId: 'lead' }).map((r) => r.child.agentId)).toEqual(['a', 'b'])
     expect(ledger.parentOf({ machineId: 'm', agentId: 'a1' })?.by.agentId).toBe('a')
     expect(ledger.depthOf({ machineId: 'm', agentId: 'a1' })).toBe(2)
-    expect(ledger.linked({ machineId: 'm', agentId: 'a' }, { machineId: 'm', agentId: 'lead' })).toBe(true)
-    expect(ledger.linked({ machineId: 'm', agentId: 'b' }, { machineId: 'm', agentId: 'a' })).toBe(false)
-    expect(ledger.links({ machineId: 'm', agentId: 'a' })).toEqual([{ machineId: 'm', agentId: 'lead' }, { machineId: 'm', agentId: 'a1' }])
     // Another machine's harness with the same id is another harness.
-    expect(ledger.links({ machineId: 'other', agentId: 'a' })).toEqual([])
+    expect(ledger.childrenOf({ machineId: 'other', agentId: 'lead' })).toEqual([])
+    expect(ledger.parentOf({ machineId: 'other', agentId: 'a1' })).toBeNull()
     expect(statSync(ledger.path).mode & 0o777).toBe(0o600)
   })
 
