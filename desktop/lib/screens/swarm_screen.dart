@@ -1819,6 +1819,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'reduceMotion': _reduceMotion,
       'activeId': app.activeSwarmId,
       'searchTooltip': _commandTooltip('Open Harness', 'harnesses.list'),
+      'addPhoneTooltip': _addPhoneTooltip,
       'storeTooltip': _commandTooltip('Explore Harness Store', 'app.store'),
       'devicesVisible': app.devicesEnabled,
       // The row's last control: Sign in, or whose account this is.
@@ -7127,6 +7128,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       children: [
         _searchButton(theme),
         _notificationsButton(theme),
+        _addPhoneButton(theme),
         if (app.devicesEnabled) _devicesButton(context),
         WorkspaceStoreButton(
           key: const ValueKey('swarm-store-button'),
@@ -7963,16 +7965,24 @@ class _SwarmScreenState extends State<SwarmScreen> {
       // Devices only where Store keeps its full width beside it. A narrow
       // window drops it from the bar first; Harness Store still opens it.
       final devicesWidth = WorkspaceStoreButton.widthOf(context, devices: true);
-      final showDevices =
-          app.devicesEnabled &&
-          constraints.maxWidth - cell.width * 22 - accountWidth >=
-              WorkspaceStoreButton.widthOf(context) + devicesWidth;
-      // Search, notifications, Devices, Store and the account — none of it
-      // here when the title bar holds them.
+      final room =
+          constraints.maxWidth -
+          cell.width * 22 -
+          accountWidth -
+          WorkspaceStoreButton.widthOf(context);
+      final showDevices = app.devicesEnabled && room >= devicesWidth;
+      // Add Phone likewise, and it goes before Devices: a phone is added once,
+      // and the account menu, the Harness menu and `> add phone` still open it.
+      final addPhoneWidth = cell.width * 4;
+      final showAddPhone =
+          room >= addPhoneWidth + (showDevices ? devicesWidth : 0);
+      // Search, notifications, Add Phone, Devices, Store and the account —
+      // none of it here when the title bar holds them.
       final actionsWidth = _titleBarActions
           ? 0.0
           : storeWidth +
                 cell.width * 8 +
+                (showAddPhone ? addPhoneWidth : 0) +
                 (showDevices ? devicesWidth : 0) +
                 accountWidth;
       final leadingWidth = chrome?.leadingWidth(context) ?? 0.0;
@@ -8151,6 +8161,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
               if (!_titleBarActions) ...[
                 _searchButton(theme),
                 _notificationsButton(theme),
+                if (showAddPhone) _addPhoneButton(theme),
                 if (showDevices) _devicesButton(context),
                 WorkspaceStoreButton(
                   key: const ValueKey('swarm-store-button'),
@@ -8199,6 +8210,31 @@ class _SwarmScreenState extends State<SwarmScreen> {
       height: workspaceBarControlHeight(context),
       child: Icon(
         AppIcons.search,
+        size: 16,
+        color: theme.foreground.withValues(
+          alpha: !_shortcutsEnabled
+              ? .28
+              : emphasized
+              ? 1
+              : .75,
+        ),
+      ),
+    ),
+  );
+
+  String get _addPhoneTooltip => _commandTooltip('Add Phone', 'app.add_phone');
+
+  /// Harness ▸ Add Phone…, as a glyph just before Devices ([_addPhone]).
+  Widget _addPhoneButton(TerminalTheme theme) => WorkspaceBarControl(
+    key: const ValueKey('swarm-add-phone-button'),
+    label: 'Add Phone',
+    tooltip: _addPhoneTooltip,
+    onPressed: _shortcutsEnabled ? () => unawaited(_addPhone()) : null,
+    builder: (context, emphasized) => SizedBox(
+      width: workspaceBarCellSizeOf(context).width * 4,
+      height: workspaceBarControlHeight(context),
+      child: Icon(
+        AppIcons.smartphoneNfc,
         size: 16,
         color: theme.foreground.withValues(
           alpha: !_shortcutsEnabled

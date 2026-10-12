@@ -1927,6 +1927,7 @@ private final class SwarmTabStrip: NSView {
   fileprivate let pullRequestButton = SwarmContextButton()
   fileprivate let shareButton = SwarmShareButton()
   fileprivate let searchButton = SwarmPlainIconButton()
+  fileprivate let phoneButton = SwarmPlainIconButton()
   fileprivate let storeButton = SwarmStoreButton()
   fileprivate let devicesButton = SwarmStoreButton()
   fileprivate let accountButton = SwarmAccountButton()
@@ -2061,6 +2062,17 @@ private final class SwarmTabStrip: NSView {
     searchButton.action = #selector(openSearch)
     searchButton.setAccessibilityLabel("Open Harness")
     addSubview(searchButton)
+    // Add Phone, the glyph just before Devices (Harness ▸ Add Phone…).
+    phoneButton.isBordered = false
+    phoneButton.focusRingType = .none
+    phoneButton.title = ""
+    phoneButton.image = HarnessControlSymbols.image("iphone.radiowaves.left.and.right")
+    phoneButton.imagePosition = .imageOnly
+    phoneButton.isEnabled = false
+    phoneButton.target = self
+    phoneButton.action = #selector(openAddPhone)
+    phoneButton.setAccessibilityLabel("Add Phone")
+    addSubview(phoneButton)
     devicesButton.isBordered = false
     devicesButton.title = "Devices"
     devicesButton.font = navigationFont
@@ -2111,7 +2123,7 @@ private final class SwarmTabStrip: NSView {
     statusBar.setAccessibilityRole(.group)
     statusBar.setAccessibilityLabel("Focused pane status")
     statusBar.setAccessibilityParent(self)
-    setAccessibilityChildren([scroll, newButton, searchButton, storeButton, statusBar])
+    setAccessibilityChildren([scroll, newButton, searchButton, phoneButton, storeButton, statusBar])
     statusBar.setAccessibilityChildren([harnessMonitorButton, machinesButton, modelsButton, machineResourcesLabel, subscriptionUsageButton, daemonButton, shareButton, voiceLabel, contextButton, pullRequestButton])
     registerForDraggedTypes([swarmPasteboardType])
     scroll.contentView.postsBoundsChangedNotifications = true
@@ -2231,7 +2243,7 @@ private final class SwarmTabStrip: NSView {
       accountButton.setAccessibilityLabel(accountKind == .signIn ? SwarmAccountButton.label : "Account")
       accountButton.setAccessibilityHelp(accountButton.toolTip)
     }
-    var children: [Any] = [scroll, newButton, searchButton]
+    var children: [Any] = [scroll, newButton, searchButton, phoneButton]
     if !devicesButton.isHidden { children.append(devicesButton) }
     children.append(storeButton)
     if !accountButton.isHidden { children.append(accountButton) }
@@ -2260,6 +2272,10 @@ private final class SwarmTabStrip: NSView {
     searchButton.isEnabled = actionsEnabled
     searchButton.toolTip = state["searchTooltip"] as? String ?? "Open Harness"
     searchButton.setAccessibilityHelp(searchButton.toolTip)
+    phoneButton.foreground = palette.navigationForeground
+    phoneButton.isEnabled = actionsEnabled
+    phoneButton.toolTip = state["addPhoneTooltip"] as? String ?? "Add Phone"
+    phoneButton.setAccessibilityHelp(phoneButton.toolTip)
     storeButton.toolTip = state["storeTooltip"] as? String ?? "Explore Harness Store"
     storeButton.setAccessibilityHelp(storeButton.toolTip)
     subscriptionUsageButton.font = barFont
@@ -2497,7 +2513,7 @@ private final class SwarmTabStrip: NSView {
     let toolHeight: CGFloat = 32
     let capsuleHeight: CGFloat = 28 // AppControl.heightSmall.
     let iconWidth = cell * 4
-    // Search, Devices and Store are icons side by side; then, after
+    // Search, Add Phone, Devices and Store are icons side by side; then, after
     // AppDesktop.controlGap, Sign in or the account ends the row.
     let accountWidth = accountButton.isHidden ? 0 : accountButton.preferredWidth
     accountButton.frame = NSRect(x: bounds.width - trailing - accountWidth,
@@ -2509,8 +2525,10 @@ private final class SwarmTabStrip: NSView {
     let devicesWidth = devicesButton.isHidden ? 0 : devicesButton.preferredWidth
     devicesButton.frame = NSRect(x: storeButton.frame.minX - devicesWidth,
       y: (bounds.height - toolHeight) / 2, width: devicesWidth, height: toolHeight)
-    let searchEdge = devicesButton.isHidden ? storeButton.frame.minX : devicesButton.frame.minX
-    searchButton.frame = NSRect(x: searchEdge - iconWidth,
+    let phoneEdge = devicesButton.isHidden ? storeButton.frame.minX : devicesButton.frame.minX
+    phoneButton.frame = NSRect(x: phoneEdge - iconWidth,
+      y: (bounds.height - toolHeight) / 2, width: iconWidth, height: toolHeight)
+    searchButton.frame = NSRect(x: phoneButton.frame.minX - iconWidth,
       y: (bounds.height - toolHeight) / 2, width: iconWidth, height: toolHeight)
     // Only navigation actions share the tab row. Context has the full footer.
     let tabBudget = max(0, searchButton.frame.minX - cell * 6)
@@ -2660,6 +2678,9 @@ private final class SwarmTabStrip: NSView {
   }
   @objc private func openSearch() {
     if actionsEnabled && searchButton.isEnabled { emit?("sessions", nil) }
+  }
+  @objc private func openAddPhone() {
+    if actionsEnabled && phoneButton.isEnabled { emit?("addPhone", nil) }
   }
   @objc private func openStore() {
     if actionsEnabled && storeButton.isEnabled { emit?("store", nil) }

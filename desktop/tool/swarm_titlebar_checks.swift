@@ -1313,7 +1313,7 @@ private extension SwarmTabStrip {
 
   func checkTopActions() throws {
     var state: [String: Any] = ["enabled": true,
-      "searchTooltip": "Open Harness · ⌘P", "storeTooltip": "Explore Harness Store · ⌘S",
+      "searchTooltip": "Open Harness · ⌘P", "addPhoneTooltip": "Add Phone", "storeTooltip": "Explore Harness Store · ⌘S",
       "tabs": [["id": "work", "name": "Desktop"]], "activeId": "work",
       "focusedContext": ["text": "Office project", "segments": [["text": "Office project"]]]]
     var calls: [String] = []
@@ -1322,12 +1322,14 @@ private extension SwarmTabStrip {
       setFrameSize(NSSize(width: width, height: 40))
       update(state)
       try checkTitlebar(searchButton.isEnabled && searchButton.frame.width > 0 &&
-        searchButton.frame.maxX == storeButton.frame.minX &&
+        phoneButton.isEnabled && phoneButton.frame.width == searchButton.frame.width &&
+        searchButton.frame.maxX == phoneButton.frame.minX &&
+        phoneButton.frame.maxX == storeButton.frame.minX &&
         storeButton.frame.width == searchButton.frame.width &&
         storeButton.frame.maxX == bounds.width - 12 &&
         newButton.frame.maxX < searchButton.frame.minX &&
         contextButton.superview === statusBar,
-        "Search and Store are icons side by side after the tabs at width \(width)")
+        "Search, Add Phone and Store are icons side by side after the tabs at width \(width)")
       try checkTitlebar(accountButton.isHidden && !accountButton.isEnabled &&
         accessibilityChildren()?.contains(where: { $0 as? NSView === accountButton }) == false,
         "No account control is drawn until the app says which")
@@ -1338,44 +1340,50 @@ private extension SwarmTabStrip {
         "Devices stays hidden and outside accessibility navigation until opted in")
       try checkTitlebar(searchButton.toolTip == state["searchTooltip"] as? String &&
         searchButton.accessibilityHelp() == searchButton.toolTip &&
+        phoneButton.toolTip == state["addPhoneTooltip"] as? String &&
+        phoneButton.accessibilityHelp() == phoneButton.toolTip &&
+        phoneButton.accessibilityLabel() == "Add Phone" &&
         storeButton.toolTip == state["storeTooltip"] as? String &&
         storeButton.accessibilityHelp() == storeButton.toolTip,
         "Top actions retain supplied shortcut hints and accessible help after layout")
     }
     searchButton.performClick(nil)
+    phoneButton.performClick(nil)
     storeButton.performClick(nil)
-    try checkTitlebar(calls == ["sessions", "store"],
-      "Top actions open the existing search and Store surfaces")
+    try checkTitlebar(calls == ["sessions", "addPhone", "store"],
+      "Top actions open search, Add Phone (the app menu's own action) and Store")
     state["devicesVisible"] = true
     for width in [CGFloat(360), CGFloat(640), CGFloat(1280)] {
       setFrameSize(NSSize(width: width, height: 40))
       update(state)
       try checkTitlebar(!devicesButton.isHidden && devicesButton.isEnabled &&
-        searchButton.frame.maxX == devicesButton.frame.minX &&
+        searchButton.frame.maxX == phoneButton.frame.minX &&
+        phoneButton.frame.maxX == devicesButton.frame.minX &&
         devicesButton.frame.maxX == storeButton.frame.minX &&
         devicesButton.frame.width == searchButton.frame.width &&
         newButton.frame.maxX < searchButton.frame.minX &&
         devicesButton.font == storeButton.font &&
         accessibilityChildren()?.contains(where: { $0 as? NSView === devicesButton }) == true,
-        "Opted-in navigation reads Search, Devices, Store at width \(width)")
+        "Opted-in navigation reads Search, Add Phone, Devices, Store at width \(width)")
       try captureTabPresentation("native-tabs-tools-\(Int(width))")
     }
     devicesButton.performClick(nil)
-    try checkTitlebar(calls == ["sessions", "store", "devices"],
+    try checkTitlebar(calls == ["sessions", "addPhone", "store", "devices"],
       "Devices opens its workspace through the native action")
     state["enabled"] = false
     update(state)
     searchButton.performClick(nil)
+    phoneButton.performClick(nil)
     storeButton.performClick(nil)
     devicesButton.performClick(nil)
-    try checkTitlebar(!searchButton.isEnabled && !storeButton.isEnabled &&
-      !devicesButton.isEnabled && calls.count == 3,
+    try checkTitlebar(!searchButton.isEnabled && !phoneButton.isEnabled && !storeButton.isEnabled &&
+      !devicesButton.isEnabled && calls.count == 4,
       "A modal prevents toolbar actions")
     state["enabled"] = true
     state["devicesVisible"] = false
     update(state)
     devicesButton.performClick(nil)
-    try checkTitlebar(devicesButton.isHidden && !devicesButton.isEnabled && calls.count == 3,
+    try checkTitlebar(devicesButton.isHidden && !devicesButton.isEnabled && calls.count == 4,
       "Turning the experiment off removes and disables the native entry")
     // The row's last control: Sign in while this computer holds no account,
     // and the account's initial once it does.
@@ -1389,17 +1397,18 @@ private extension SwarmTabStrip {
         accountButton.frame.width == accountButton.preferredWidth &&
         accountButton.frame.maxX == bounds.width - 12 &&
         storeButton.frame.maxX + 8 == accountButton.frame.minX &&
-        searchButton.frame.maxX == devicesButton.frame.minX &&
+        searchButton.frame.maxX == phoneButton.frame.minX &&
+        phoneButton.frame.maxX == devicesButton.frame.minX &&
         devicesButton.frame.maxX == storeButton.frame.minX &&
         newButton.frame.maxX < searchButton.frame.minX &&
         accountButton.accessibilityLabel() == "Sign in" &&
         accountButton.toolTip == "Sign in to Harness" &&
         accessibilityChildren()?.contains(where: { $0 as? NSView === accountButton }) == true,
-        "Sign in ends the row after Search, Devices and Store at width \(width)")
+        "Sign in ends the row after Search, Add Phone, Devices and Store at width \(width)")
       try captureTabPresentation("native-tabs-sign-in-\(Int(width))")
     }
     accountButton.performClick(nil)
-    try checkTitlebar(calls == ["sessions", "store", "devices", "signIn"],
+    try checkTitlebar(calls == ["sessions", "addPhone", "store", "devices", "signIn"],
       "Sign in opens the sign-in through the native action")
     state["account"] = ["kind": "avatar", "initial": "Dee", "tooltip": "Dee · dee@example.com"]
     for width in [CGFloat(360), CGFloat(640), CGFloat(1280)] {
@@ -1416,7 +1425,7 @@ private extension SwarmTabStrip {
       try captureTabPresentation("native-tabs-account-\(Int(width))")
     }
     accountButton.performClick(nil)
-    try checkTitlebar(calls == ["sessions", "store", "devices", "signIn", "account"],
+    try checkTitlebar(calls == ["sessions", "addPhone", "store", "devices", "signIn", "account"],
       "The avatar opens the account menu through the native action")
     state["account"] = ["kind": "avatar", "initial": ""]
     update(state)
@@ -1425,12 +1434,12 @@ private extension SwarmTabStrip {
     state["enabled"] = false
     update(state)
     accountButton.performClick(nil)
-    try checkTitlebar(!accountButton.isEnabled && calls.count == 5, "A modal prevents the account control")
+    try checkTitlebar(!accountButton.isEnabled && calls.count == 6, "A modal prevents the account control")
     state["enabled"] = true
     state["account"] = ["kind": "billing"]
     update(state)
     accountButton.performClick(nil)
-    try checkTitlebar(accountButton.isHidden && !accountButton.isEnabled && calls.count == 5 &&
+    try checkTitlebar(accountButton.isHidden && !accountButton.isEnabled && calls.count == 6 &&
       storeButton.frame.maxX == bounds.width - 12,
       "A kind this build does not know draws nothing, and Store ends the row")
     state["account"] = nil
@@ -1873,7 +1882,8 @@ private extension SwarmTabStrip {
       newButton.frame.maxX < searchButton.frame.minX, "Tabs precede the search and Store controls")
     try checkTitlebar(tabs[0].frame.width < 136 && tabs[0].displayLabel == "code",
       "Overflow tabs keep readable names without persistent number prefixes")
-    try checkTitlebar(subviews.filter { !$0.isHidden }.count == 4 && devicesButton.isHidden && statusBar.subviews.count == 10 && machineResourcesLabel.isHidden && machinesButton.isHidden && modelsButton.isHidden && pullRequestButton.isHidden && subscriptionUsageButton.isHidden && harnessMonitorButton.isHidden && daemonButton.isHidden && voiceLabel.isHidden && shareButton.isHidden,
+    // Tabs, New Tab, search, Add Phone and Store; Devices and the account are hidden here.
+    try checkTitlebar(subviews.filter { !$0.isHidden }.count == 5 && devicesButton.isHidden && statusBar.subviews.count == 10 && machineResourcesLabel.isHidden && machinesButton.isHidden && modelsButton.isHidden && pullRequestButton.isHidden && subscriptionUsageButton.isHidden && harnessMonitorButton.isHidden && daemonButton.isHidden && voiceLabel.isHidden && shareButton.isHidden,
       "Navigation lives in the titlebar and focused context lives in the footer")
     let controls = [newButton]
     for control in controls {

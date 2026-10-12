@@ -7677,6 +7677,14 @@ class AppNotifier extends ChangeNotifier {
   /// Devices that joined the account and this end had never trusted, not yet dismissed.
   final List<NewDeviceNotice> newDevices = [];
 
+  /// Each device [_announceDevice] says joined the account, as it is said — never the pending list
+  /// rebuilt from the log ([_syncPendingDevices]), which is old news by then. Add Phone listens here
+  /// for the phone it is adding (`widgets/add_phone_dialog.dart`). Broadcast: with nobody listening,
+  /// a join is dropped, like [spokenTasks].
+  final StreamController<NewDeviceNotice> _deviceJoins =
+      StreamController<NewDeviceNotice>.broadcast();
+  Stream<NewDeviceNotice> get deviceJoins => _deviceJoins.stream;
+
   /// Devices taken out of the account by another device, not yet dismissed. Not persisted: the
   /// history is the durable record.
   final List<DeviceRemovalNotice> deviceRemovals = [];
@@ -7897,7 +7905,10 @@ class AppNotifier extends ChangeNotifier {
     final shown = newDevices.any((d) => d.pub == notice.pub);
     // A daemon's frame can repeat; the viewer's log says each key once ([always]).
     if (shown && !always) return;
-    if (!shown) newDevices.add(notice);
+    if (!shown) {
+      newDevices.add(notice);
+      if (!_disposed) _deviceJoins.add(notice);
+    }
     devicesRevision++;
     systemNotifications.postNotice(
       id: 'harness-device:${notice.pub}',
@@ -17831,6 +17842,7 @@ class AppNotifier extends ChangeNotifier {
     }
     unawaited(_spokenTasks.close());
     unawaited(_deviceWindowRequests.close());
+    unawaited(_deviceJoins.close());
     unawaited(_zooPushes.close());
     unawaited(_daemonFrames.close());
     unawaited(_modelsRequests.close());

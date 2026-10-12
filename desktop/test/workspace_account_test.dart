@@ -29,6 +29,7 @@ Future<void> _capture(WidgetTester tester, String name) =>
 
 final _search = find.byKey(const ValueKey('swarm-search-button'));
 final _bell = find.byKey(const ValueKey('workspace-notifications-button'));
+final _phone = find.byKey(const ValueKey('swarm-add-phone-button'));
 final _devices = find.byKey(const ValueKey('swarm-devices-button'));
 final _store = find.byKey(const ValueKey('swarm-store-button'));
 final _signIn = find.byKey(const ValueKey('swarm-sign-in-button'));
@@ -79,7 +80,7 @@ Future<void> _mountMenu(
 void main() {
   setUpAll(() => loadCaptureFonts(_captureDir));
 
-  testWidgets('not signed in, the row ends in Sign in, after three icons', (
+  testWidgets('not signed in, the row ends in Sign in, after its icons', (
     tester,
   ) async {
     final app = createApp()..signedIn = false;
@@ -91,20 +92,20 @@ void main() {
     // Where this app draws the row it carries the bell too; on a Mac that is
     // in the menu bar.
     final order = [
-      for (final control in [_search, _bell, _devices, _store, _signIn])
+      for (final control in [_search, _bell, _phone, _devices, _store, _signIn])
         tester.getCenter(control).dx,
     ];
     expect(
       order,
       [...order]..sort(),
-      reason: 'Search, Devices, Store, Sign in',
+      reason: 'Search, Add Phone, Devices, Store, Sign in',
     );
     // The only control in the row with a word on it.
     expect(
       find.descendant(of: _signIn, matching: find.text('Sign in')),
       findsOneWidget,
     );
-    for (final icon in [_search, _devices, _store]) {
+    for (final icon in [_search, _phone, _devices, _store]) {
       expect(
         find.descendant(of: icon, matching: find.byType(Text)),
         findsNothing,
@@ -112,7 +113,8 @@ void main() {
     }
     // Icons sit side by side; nothing is drawn between them and Sign in.
     expect(tester.getRect(_search).right, tester.getRect(_bell).left);
-    expect(tester.getRect(_bell).right, tester.getRect(_devices).left);
+    expect(tester.getRect(_bell).right, tester.getRect(_phone).left);
+    expect(tester.getRect(_phone).right, tester.getRect(_devices).left);
     expect(tester.getRect(_devices).right, tester.getRect(_store).left);
     expect(
       tester.getRect(_signIn).left - tester.getRect(_store).right,
