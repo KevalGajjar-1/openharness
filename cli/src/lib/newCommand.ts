@@ -252,6 +252,8 @@ const ERRORS: Record<string, string> = {
   PROMPT_UNSUPPORTED: 'That agent cannot be started with a first message.',
   PROMPT_TOO_LONG: 'A first message holds at most 2,000 characters. Put the rest in a file and name the file in it.',
   SPAWN_FAILED: 'The agent could not be started.',
+  // Recorded as a refusal only where a launch cannot be held (a new project's folder): its detail says what it waited for.
+  NATIVE_LAUNCH_HELD: 'The agent\'s engine was not ready to start.',
 }
 
 /** What a held launch waits for, in the daemon's words (`held.detail` of a pending creation), or ''. */
@@ -385,11 +387,13 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
           throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
             + 'The request is cancelled, so it will not start later.')
         }
-        if (cancelled?.state === 'created' || cancelled?.state === 'failed') result = cancelled
-        else {
+        // No answer (a daemon that predates the cancel): the request is still saved, and may start later.
+        if (typeof cancelled?.state !== 'string' || cancelled.state === 'pending') {
           throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
             + 'It is still saved and may start later by itself: check with `harness ps` before starting another.')
         }
+        // Too late to cancel: what became of it (created, refused, or claimed and starting now) is the answer.
+        result = cancelled
       }
       // With a creation id the daemon answers what became of the launch: only `created` made a harness. A refusal
       // it recorded (`failed`) and an outcome it could not confirm used to print "Created" all the same.

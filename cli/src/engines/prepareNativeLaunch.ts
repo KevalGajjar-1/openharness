@@ -15,9 +15,11 @@ export function createNativeLaunchPreparer({ installations, inspect = inspectNat
     if (!authority.current()) return held('Waiting for the original launch request’s authority.')
     const found = await inspect(engine, source)
     if (!authority.current()) return held('Waiting for the original launch request’s authority.')
-    if (found.ok) {
+    if (found.ok || found.cannotRun) {
       // A helper can create the executable before finishing its other writes.
       // Consult durable history on every ready path, including after a core crash.
+      // An executable that fails meanwhile may be one such half-written install:
+      // held while its installer is unsettled, refused (cannotRun) only after.
       const obligation = await installations.status(engine, authority.id, authority.current)
       if (!authority.current()) return held('Waiting for the original launch request’s authority.')
       return obligation && !obligation.complete ? held(obligation.detail) : found

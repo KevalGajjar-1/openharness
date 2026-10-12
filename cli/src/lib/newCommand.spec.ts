@@ -240,6 +240,13 @@ describe('harness new: the daemon', () => {
     const refused = deps(['codex'], answer({ state: 'failed', failure: { code: 'ENGINE_CANNOT_RUN', detail: 'Codex is installed but cannot run: env: node: No such file or directory' } }), { sleep: async () => {} })
     expect(await newCommand(refused)).toBe(1)
     expect(refused.err).toEqual(['Codex is installed but cannot run: env: node: No such file or directory'])
+    // Claimed just before the cancel: starting now, not later, and not cancelled.
+    const claimed = deps(['codex'], answer({ state: 'unconfirmed' }), { sleep: async () => {} })
+    expect(await newCommand(claimed)).toBe(1)
+    expect(claimed.err).toEqual(['Harness could not confirm the harness started (unconfirmed). Check with `harness ps` before starting another.'])
+    const held = deps(['codex', 'my-game'], answer({ state: 'failed', failure: { code: 'NATIVE_LAUNCH_HELD', detail: 'Waiting to confirm native engine locations.' } }), { sleep: async () => {} })
+    expect(await newCommand(held)).toBe(1)
+    expect(held.err).toEqual(['The agent\'s engine was not ready to start. (Waiting to confirm native engine locations.)'])
     // A daemon with no cancel (or no answer): the request is still saved, and that is said plainly.
     const older = deps(['codex', '--json'], answer(null), { sleep: async () => {} })
     expect(await newCommand(older)).toBe(1)
