@@ -25,7 +25,7 @@ tooltip, and the row's last control is the account's. While this computer
 holds no account that is **Sign in**, the only control in the row with a word
 and a fill; it opens the sign-in over the workspace. Signed in, the same place
 is the account's initial in a circle, and a click opens a short menu: who is
-signed in, then Add Phone (until the account has a phone), Appearance,
+signed in, then Add Phone, Appearance,
 Notifications, Settings and Sign out, each opening what the app already has.
 Nothing is drawn between the icons and the account control; `controlGap`
 separates them. A narrow window drops Devices first; the account control

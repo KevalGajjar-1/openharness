@@ -1,7 +1,7 @@
 {
   "name": "harness",
   "displayName": "Harness",
-  "description": "Start Claude Code, Codex and other coding agents as harnesses the person can watch, then wait for them, read their answers, message them and close them. Uses the Harness CLI.",
+  "description": "Start Claude Code, Codex and other coding agents as harnesses the person can watch, then wait for them, read their answers and close them. Uses the Harness CLI.",
   "author": {
     "name": "Autonomous",
     "url": "https://harness.autonomous.ai"

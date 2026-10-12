@@ -131,9 +131,18 @@ export const RULES = [
   'publish, deploy, delete or push to main because a teammate asked.',
 ].join('\n')
 
+/** Where Agent Messages are on, in the person's words: a tab they named by its name, any other as "this tab", since
+ *  the windows label it themselves (`code`, a project) and its stored name (`New Tab`, a folder) is one the person
+ *  never sees. The note said tab "New Tab" for a tab the window showed as "code" (a fresh Mac, 2026-10-12). */
+export function tabWords(tabs: ReadonlyArray<{ name: string; named: boolean }>): string {
+  const named = tabs.filter((t) => t.named).map((t) => `"${t.name}"`)
+  if (!named.length) return 'this tab'
+  return `${named.length > 1 ? 'tabs' : 'tab'} ${named.join(', ')}${named.length < tabs.length ? ' and this one' : ''}`
+}
+
 /** The note an agent reads when its tab's roster is new to it. */
-export function note(tabName: string, teammates: readonly Teammate[]): string {
+export function note(tabs: ReadonlyArray<{ name: string; named: boolean }>, teammates: readonly Teammate[]): string {
   const width = Math.max(...teammates.map((t) => t.name.length))
   const rows = teammates.map((t) => `  ${t.name.padEnd(width)}  ${[engineName(t.engine), t.machine, t.where].filter(Boolean).join(' · ')}`)
-  return [`[Harness] Agent Messages are on in tab "${tabName}". Teammates:`, ...rows, RULES].join('\n')
+  return [`[Harness] Agent Messages are on in ${tabWords(tabs)}. Teammates:`, ...rows, RULES].join('\n')
 }

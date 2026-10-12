@@ -54,7 +54,7 @@
   <h1>Harness for agents</h1>
   <p class="lead">This page is for coding agents, and for the people who set them up. Harness runs coding agents
     (Claude Code, Codex and others) in terminal sessions called harnesses. From its own shell, an agent can start
-    harnesses, wait for them, read their answers, message them and close them. The person sees every harness in
+    harnesses, wait for them, read their answers and close them. The person sees every harness in
     the Harness app on their desktop, on the web and on their phone, and can watch it, answer it or stop it.</p>
   <p class="note">A shorter, plain-text version is at <a href="/llms.txt">/llms.txt</a>.</p>
 
@@ -119,16 +119,19 @@ curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plug
       <tr><td><code>harness ps [--all]</code></td><td>The harnesses on this machine: name, agent, state, who started it,
         when it was last active, its folder and what it is about. <code>--all</code> adds the ones stopped in the
         last week.</td></tr>
-      <tr><td><code>harness new [agent] [@machine] [folder] --name NAME -- TASK</code></td><td>Start a harness and give
+      <tr><td><code>harness new [agent] [@machine] [folder | project] --name NAME -- TASK</code></td><td>Start a harness and give
         it a task. <code>agent</code> is <code>claude</code> (the default), <code>codex</code>, or another agent
-        installed there. The folder is the current directory when left out.</td></tr>
+        installed there. The folder is the current directory when left out. For scratch or new work, give a project
+        name (<code>harness new codex review -- …</code>) rather than a folder of your own: Claude Code and Codex ask
+        the person to trust a folder Harness did not make.</td></tr>
       <tr><td><code>harness wait NAME[,NAME…] [--any] [--timeout 30m]</code></td><td>Wait until each harness stops
         working. <code>--any</code> returns when the first one does. The timeout takes <code>90s</code>,
         <code>30m</code> or <code>2h</code> (30 minutes by default); <code>0</code> waits as long as it
         takes.</td></tr>
       <tr><td><code>harness show NAME [--chars N]</code></td><td>Its state, the last thing it was asked, and its answer:
         the text after its last tool call, the first 4,000 characters by default.</td></tr>
-      <tr><td><code>harness send NAME "text"</code></td><td>A follow-up message to a harness you started. Works from
+      <tr><td><code>harness send NAME "text"</code></td><td>A message to a teammate in your tab, only when the person
+        has turned Agent Messages on there (the tab's chat icon). A harness you started is no exception. Works from
         inside a harness.</td></tr>
       <tr><td><code>harness close NAME [--now]</code></td><td>Save its screen and stop it. Its conversation is kept, and
         the person can resume it. Refused while it is working, unless <code>--now</code>.</td></tr>
@@ -191,8 +194,9 @@ harness close reviewer</code></pre>
 # … go on with your own work; harness new returned as soon as the harness started …
 harness ps                                   # is it still working?
 harness wait reviewer &amp;&amp; harness show reviewer</code></pre>
-  <p>To ask the same reviewer a follow-up from inside a harness, <code>harness send reviewer "…"</code>, then wait and
-    show again: it still has the context. Otherwise start a new harness with the fuller task.</p>
+  <p>Starting a harness does not let you message it, so put everything in the task. For a follow-up, start a new
+    harness with the fuller task. Only where the person has turned Agent Messages on in the tab you share can you
+    ask it from inside a harness, with <code>harness send reviewer "…"</code>, then wait and show again.</p>
 
   <h2 id="machines">Run on another machine</h2>
   <pre><code>harness machines
@@ -202,9 +206,9 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
 
   <h2 id="where">Inside a harness, or outside Harness</h2>
   <ul>
-    <li><strong>In a harness</strong> (Harness made your terminal pane): <code>harness send</code> works, to what you
-      started and to teammates in a tab with Agent Messages on, and each harness you start is told how to message
-      you.</li>
+    <li><strong>In a harness</strong> (Harness made your terminal pane): <code>harness send</code> works only to
+      teammates in a tab where the person turned Agent Messages on. A harness you started, or the one that started
+      you, is no exception.</li>
     <li><strong>Outside Harness</strong> (Claude Code or Codex in a terminal app, an editor or the person's own tmux):
       Harness tells you by your session, from what your agent sets in its shell. <code>harness ps</code> says
       "You are Claude Code, outside Harness." and marks what this session started as <code>you</code>; the limits
@@ -224,14 +228,15 @@ harness new codex @mini ~/code/app --name train -- "Run the training script and 
     <thead><tr><th>Tool</th><th>Arguments</th><th>Same as</th></tr></thead>
     <tbody>
       <tr><td><code>harness_list</code></td><td><code>all?</code></td><td><code>harness ps</code></td></tr>
-      <tr><td><code>harness_start</code></td><td><code>task</code>, <code>folder</code>, <code>name</code>,
-        <code>agent?</code> (<code>claude</code> or <code>codex</code>), <code>machine?</code></td><td><code>harness new</code></td></tr>
+      <tr><td><code>harness_start</code></td><td><code>task</code>, <code>name</code>, <code>folder?</code> or
+        <code>project?</code> (a new project for scratch or new work), <code>agent?</code> (<code>claude</code> or
+        <code>codex</code>), <code>machine?</code></td><td><code>harness new</code></td></tr>
       <tr><td><code>harness_wait</code></td><td><code>names</code>, <code>any?</code>, <code>timeout_seconds?</code>
         (120 by default, 600 at most; if they are still working, call it again)</td><td><code>harness wait</code></td></tr>
       <tr><td><code>harness_read</code></td><td><code>name</code>, <code>chars?</code></td><td><code>harness show</code></td></tr>
       <tr><td><code>harness_close</code></td><td><code>name</code>, <code>now?</code></td><td><code>harness close</code></td></tr>
       <tr><td><code>harness_send</code></td><td><code>to</code>, <code>text</code>; offered only when the server runs
-        inside a harness</td><td><code>harness send</code></td></tr>
+        inside a harness, and only to teammates in a tab with Agent Messages on</td><td><code>harness send</code></td></tr>
     </tbody>
   </table>
   </div>
