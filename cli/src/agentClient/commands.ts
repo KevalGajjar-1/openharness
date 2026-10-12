@@ -59,6 +59,21 @@ It is refused while the harness is working, unless --now. An agent may close onl
 
 export const EXIT = { ok: 0, failed: 1, usage: 2, needsInput: 3, stopped: 4, timeout: 124 } as const
 
+/** Set by `harness mcp` (mcp.ts) for the verbs it runs: their next steps are then named as its tools. */
+export const VIA_MCP_ENV = 'HARNESS_VIA_MCP'
+const TOOL_OF = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait', send: 'harness_send', close: 'harness_close' } as const
+
+/**
+ * A next step as the caller can take it: the shell's `harness show x`, or the tool `harness mcp` offers for it. An MCP
+ * client may have no shell at all (Claude Desktop), and its agent was told to run `harness show x` (2026-10-11, in a
+ * clean VM). [option] is a flag and its MCP argument: `--chars 9000` / `chars: 9000`.
+ */
+export function step(env: NodeJS.ProcessEnv, verb: keyof typeof TOOL_OF, name = '', option?: { flag: string; arg: string }): string {
+  if (env[VIA_MCP_ENV] !== '1') return ['harness', verb, name, option?.flag, verb === 'send' ? '"…"' : ''].filter(Boolean).join(' ')
+  const args = [name && `${verb === 'send' ? 'to' : verb === 'wait' ? 'names' : 'name'}: "${name}"`, option?.arg].filter(Boolean)
+  return `${TOOL_OF[verb]}${args.length ? ` (${args.join(', ')})` : ''}`
+}
+
 const DEFAULT_CHARS = 4_000
 const DEFAULT_TIMEOUT_MS = 30 * 60_000
 const DEFAULT_INTERVAL_MS = 3_000
@@ -178,7 +193,7 @@ async function target(s: Setup, o: Opened, name: string): Promise<Target> {
     if (!frame) { daemon.close(); throw new AgentClientError('GONE', `${elsewhere[0].name} is no longer on its machine.`) }
     return { daemon, frame, machineId: row.child.machineId, machine: row.child.machineId.slice(0, 8), yours: true, remote: true }
   }
-  throw new AgentClientError('UNKNOWN_HARNESS', `No harness named "${name}" on this machine. \`harness ps\` lists them.`)
+  throw new AgentClientError('UNKNOWN_HARNESS', `No harness named "${name}" on this machine. \`${step(s.env, 'ps')}\` lists them.`)
 }
 
 type Screen = 'working' | 'needs-input' | 'idle' | 'draft'
@@ -340,7 +355,7 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           s.out(`asked: ${clip(result.ask ?? '', 600)}`)
           s.out(`answer${result.tools ? ` (after ${result.tools} tool calls)` : ''}:`)
           s.out(result.answer || '(no text)')
-          if (result.truncated) s.out(`… ${answer.length - chars} more characters: harness show ${result.name} --chars ${answer.length}`)
+          if (result.truncated) s.out(`… ${answer.length - chars} more characters: ${step(s.env, 'show', result.name, { flag: `--chars ${answer.length}`, arg: `chars: ${answer.length}` })}`)
         }
         if (state === 'needs-input') s.out(`It is waiting for the person (a question or a permission). Only the person answers it.`)
       }
@@ -418,9 +433,9 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       const results = targets.filter((t) => settled.has(t)).map((t) => ({ name: t.frame.name ?? t.frame.id.slice(0, 8), id: t.frame.id, state: settled.get(t)! }))
       if (flags.has('--json')) s.out(JSON.stringify({ harnesses: results }, null, 1))
       else for (const r of results) {
-        const next = r.state === 'idle' ? `read it: harness show ${r.name}`
+        const next = r.state === 'idle' ? `read it: ${step(s.env, 'show', r.name)}`
           : r.state === 'needs-input' ? 'it waits for the person (a question or a permission); only the person answers it'
-          : r.state === 'timeout' ? `still working; wait again or read it: harness show ${r.name}`
+          : r.state === 'timeout' ? `still working; wait again or read it: ${step(s.env, 'show', r.name)}`
           : r.state === 'stopped' ? 'it was stopped' : 'it is gone'
         s.out(`${r.name}: ${r.state} · ${next}`)
       }
@@ -455,9 +470,9 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
         agentId: t.frame.id, sessionId: t.frame.sessionId ?? '', createdAt: t.frame.createdAt ?? '', mode: flags.has('--now') ? 'now' : 'idle',
       }, 60_000)
       if (reply.error === 'SESSION_NOT_IDLE') {
-        throw new AgentClientError('WORKING', `${name} is ${reply.activity === 'needs_input' ? 'waiting for the person' : 'working'}. Wait for it (harness wait ${name}), or close it anyway with --now.`)
+        throw new AgentClientError('WORKING', `${name} is ${reply.activity === 'needs_input' ? 'waiting for the person' : 'working'}. Wait for it (${step(s.env, 'wait', name)}), or close it anyway with ${s.env[VIA_MCP_ENV] === '1' ? 'now: true' : '--now'}.`)
       }
-      if (reply.error === 'AGENT_CHANGED') throw new AgentClientError('AGENT_CHANGED', `${name} changed while closing. Check it with harness show ${name}, then try again.`)
+      if (reply.error === 'AGENT_CHANGED') throw new AgentClientError('AGENT_CHANGED', `${name} changed while closing. Check it with ${step(s.env, 'show', name)}, then try again.`)
       if (reply.error) throw new AgentClientError(String(reply.error), typeof reply.detail === 'string' && reply.detail ? reply.detail : `Could not close ${name}.`)
       s.out(flags.has('--json') ? JSON.stringify({ name, id: t.frame.id, closed: true }) : `Closed ${name}. Its conversation is kept.`)
       return EXIT.ok
@@ -609,7 +624,7 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     },
     next: (agent) => {
       const at = addressOf({ machineId: '', agentId: String(agent.id ?? ''), name: String(agent.name ?? ''), engine: '' })
-      return `Read it: harness show ${at} · wait for it: harness wait ${at}${caller.outside ? '' : ` · message it: harness send ${at} "…"`}`
+      return `Read it: ${step(s.env, 'show', at)} · wait for it: ${step(s.env, 'wait', at)}${caller.outside ? '' : ` · message it: ${step(s.env, 'send', at)}`}`
     },
   }
 }

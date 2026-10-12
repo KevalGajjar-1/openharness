@@ -7,20 +7,65 @@ import '../../shared/widgets/setting_row.dart';
 import '../agent_settings.dart';
 
 /// Settings ▸ Agents: what the agents on this computer may do with Harness itself.
+///
+/// The daemon keeps these, and `harness settings` changes them from a terminal without telling
+/// anyone, so the page reads them again while it can be seen: every [recheckEvery], and as soon as
+/// the window comes back to the front. A hidden or minimised window asks nothing.
 class AgentsSection extends StatefulWidget {
-  const AgentsSection({super.key, required this.store});
+  const AgentsSection({
+    super.key,
+    required this.store,
+    this.recheckEvery = const Duration(seconds: 5),
+  });
 
   final AgentSettingsStore store;
+
+  /// How often the open page reads the settings again while the window can be seen.
+  final Duration recheckEvery;
 
   @override
   State<AgentsSection> createState() => _AgentsSectionState();
 }
 
 class _AgentsSectionState extends State<AgentsSection> {
+  late final AppLifecycleListener _lifecycle;
+  Timer? _recheck;
+
   @override
   void initState() {
     super.initState();
     unawaited(widget.store.refresh());
+    _lifecycle = AppLifecycleListener(
+      // Back in front: whatever changed meanwhile, at once.
+      onResume: () => unawaited(widget.store.recheck()),
+      onStateChange: _watch,
+    );
+    _watch(WidgetsBinding.instance.lifecycleState);
+  }
+
+  /// Rechecks on a timer while the window can be seen — in front, or beside the terminal
+  /// the change is typed in (inactive) — and not while it is hidden. An unknown state is seen.
+  void _watch(AppLifecycleState? state) {
+    final seen =
+        state == null ||
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    if (!seen || widget.store.unavailable != null) {
+      _recheck?.cancel();
+      _recheck = null;
+    } else {
+      _recheck ??= Timer.periodic(
+        widget.recheckEvery,
+        (_) => unawaited(widget.store.recheck()),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _recheck?.cancel();
+    _lifecycle.dispose();
+    super.dispose();
   }
 
   @override

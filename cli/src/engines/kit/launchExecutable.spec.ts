@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 let root = ''
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); if (root) rmSync(root, { recursive: true, force: true }); root = '' })
@@ -49,4 +49,31 @@ it('permits complete absence through a valid search-directory alias', async () =
   const { bin, captureLaunchExecutable } = await fixture()
   const alias = join(root, 'path-alias'); symlinkSync(bin, alias); vi.stubEnv('PATH', alias)
   expect(await captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'install' })
+})
+
+it('gives an npm engine Harness\'s Node, after the PATH, when the launch PATH has none', async () => {
+  // Codex installed by the daemon with Harness's Node on a computer without one (fresh Ubuntu VM, 2026-10-11):
+  // `#!/usr/bin/env node` found no node, so its probe and its pane both failed.
+  const { bin, captureLaunchExecutable } = await fixture()
+  const { managedNodePath } = await import('../../lib/nodeRuntime.js')
+  writeFileSync(join(bin, 'opencode'), '#!/usr/bin/env node\nrequire("./opencode.js")\n', { mode: 0o700 })
+  const result = await captureLaunchExecutable('opencode', '')
+  expect(result).toMatchObject({ state: 'ready', environment: { PATH: `${bin}:${dirname(managedNodePath())}` } })
+})
+it('leaves the launch PATH alone for a Node the person has, and for an engine that is not a Node script', async () => {
+  const { bin, withNodeForScript } = await fixture()
+  const script = join(bin, 'codex'), node = join(root, 'harness-node', 'bin', 'node')
+  const environment = { HOME: root, PATH: bin }
+  writeFileSync(script, '#!/usr/bin/env -S node --no-warnings\n', { mode: 0o700 })
+  expect(withNodeForScript(script, environment, node).PATH).toBe(`${bin}:${dirname(node)}`)
+  expect(withNodeForScript(script, environment, 'node')).toBe(environment)
+  expect(withNodeForScript(script, { ...environment, PATH: Array(256).fill(bin).join(':') }, node).PATH).toBe(Array(256).fill(bin).join(':'))
+  writeFileSync(join(bin, 'node'), '', { mode: 0o700 })
+  expect(withNodeForScript(script, environment, node)).toBe(environment)
+  rmSync(join(bin, 'node'))
+  for (const head of ['#!/bin/sh\nexec node "$0"\n', '#!/usr/bin/env nodejs\n', '\x7fELF']) {
+    writeFileSync(script, head)
+    expect(withNodeForScript(script, environment, node), head).toBe(environment)
+  }
+  expect(withNodeForScript(join(root, 'absent'), environment, node)).toBe(environment)
 })

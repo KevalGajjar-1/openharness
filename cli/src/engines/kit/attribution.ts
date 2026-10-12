@@ -30,7 +30,7 @@ export function attributionArgsIn(contract: AttributionContract, line: string, f
 export interface Instruction { text: string; mark: string }
 
 /** The pull request line as an instruction engine is told it. */
-export const attributionInstruction = (contract: InstructionAttribution, line: string): Instruction => ({ text: fill(contract.instruction, 'line', line), mark: line })
+export const attributionInstruction = (contract: { instruction: string }, line: string): Instruction => ({ text: fill(contract.instruction, 'line', line), mark: line })
 
 /** The argv that gives an instruction engine [instructions] after the person's own value, in one config value. */
 export function instructionsArgsIn(contract: InstructionAttribution, instructions: readonly Instruction[], files: AttributionFiles): string[] {

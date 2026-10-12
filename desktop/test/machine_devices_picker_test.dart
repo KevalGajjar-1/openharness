@@ -233,6 +233,38 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Add machine says what to do in its one line; the preview keeps the steps',
+    (tester) async {
+      const line = 'Install Harness there and sign in to the same account';
+      await mount(tester);
+      await openPicker(tester);
+      final add = resourceSearch(tester).rows
+          .singleWhere((row) => row.isCreate);
+      expect(add.title, 'Add machine');
+      // Not "On the other computer:", the first line of the steps, cut off there.
+      expect(add.detail, line);
+      expect(add.terminalDetail, line);
+      expect(
+        find.descendant(
+          of: find.byKey(ValueKey(add.id)),
+          matching: find.text(line, findRichText: true),
+        ),
+        findsWidgets,
+      );
+      await selectResource(tester, add.id);
+      await tester.pumpAndSettle();
+      for (final step in [
+        'On the other computer:',
+        '1. Install the app or CLI.',
+        '2. Sign in to the same account.',
+        'It appears here and connects on its own.',
+      ]) {
+        expect(find.text(step), findsOneWidget, reason: step);
+      }
+    },
+  );
+
   testWidgets('a sign-out that fails leaves the machine record alone', (
     tester,
   ) async {

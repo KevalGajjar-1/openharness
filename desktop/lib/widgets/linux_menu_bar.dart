@@ -245,7 +245,7 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
       _swarmRow(
         key: 'menu-bar-customize',
         icon: AppIcons.palette,
-        label: 'Customize Harness',
+        label: 'Appearance…',
         action: 'customize',
       ),
       _swarmRow(

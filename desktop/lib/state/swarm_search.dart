@@ -1081,6 +1081,8 @@ class SwarmSearchController extends ChangeNotifier {
       : isModelMode
       ? '[ Add ]'
       : 'New Harness';
+
+  /// What the create row's preview says, in full: the steps, for Add machine.
   String get createDescription => isMachineMode
       ? 'On the other computer:\n\n1. Install the app or CLI.\n2. Sign in to the same account.\n\nIt appears here and connects on its own.'
       : isModelMode
@@ -1089,6 +1091,13 @@ class SwarmSearchController extends ChangeNotifier {
             'fal.ai or Replicate: harness agents can call it as a tool.\n\n'
             'The key stays on this computer.'
       : 'Choose a harness, machine, and project.';
+
+  /// The create row's own subtitle, one line that says something by itself: a row shows only its
+  /// first line, and Add machine's first line of [createDescription] is only "On the other
+  /// computer:". The steps stay in the preview beside it.
+  String get createDetail => isMachineMode
+      ? 'Install Harness there and sign in to the same account'
+      : createDescription;
   SwarmGroupScope? _groupScope;
   bool get canGoBack => _groupScope != null;
   String? get scopedBranch => _groupScope?.branch;
@@ -1348,8 +1357,8 @@ class SwarmSearchController extends ChangeNotifier {
           ? 'create:$scopePrefix'
           : kSwarmCreateRowId,
       title: title,
-      detail: name ?? createDescription,
-      terminalDetail: createDescription,
+      detail: name ?? createDetail,
+      terminalDetail: createDetail,
       swarmId: null,
       current: false,
       isCreate: true,

@@ -172,6 +172,12 @@ export interface SettingAttribution {
   own: string
   /** The argv; `{settings}` is the settings object, as JSON. */
   args: readonly string[]
+  /**
+   * The same line as an instruction (`{line}`), told with Harness's instructions (`harnessInstructions` `append`)
+   * whenever the setting is given: a setting is only a default, which the agent drops once its task spells out the
+   * pull request's body.
+   */
+  instruction?: string
 }
 
 /**

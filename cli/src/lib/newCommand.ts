@@ -252,6 +252,14 @@ const ERRORS: Record<string, string> = {
   PROMPT_UNSUPPORTED: 'That agent cannot be started with a first message.',
   PROMPT_TOO_LONG: 'A first message holds at most 2,000 characters. Put the rest in a file and name the file in it.',
   SPAWN_FAILED: 'The agent could not be started.',
+  // Recorded as a refusal only where a launch cannot be held (a new project's folder): its detail says what it waited for.
+  NATIVE_LAUNCH_HELD: 'The agent\'s engine was not ready to start.',
+}
+
+/** What a held launch waits for, in the daemon's words (`held.detail` of a pending creation), or ''. */
+function holdReason(result: Record<string, unknown>): string {
+  const held = result.held as { detail?: unknown } | undefined
+  return typeof held?.detail === 'string' ? held.detail.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 500) : ''
 }
 
 /** One loopback session with the daemon: select the machine, then ask, one request at a time. */
@@ -359,19 +367,43 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       let result = await session.request('agent_create', payload)
       // A launch the daemon holds (a native launch waiting its turn) is still on its way: asked after until it is not,
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it
-      // (the review of #1180).
+      // (the review of #1180). What it waits for is said as it changes: the daemon's own words, which used to stay in
+      // the daemon while this said only "could not confirm" (OpenCode and Codex held for good in clean VMs, 2026-10-11).
+      let said = ''
       for (let i = 0; i < 30 && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+        const reason = holdReason(result)
+        if (reason && reason !== said && !args.json) deps.error(reason)
+        said = reason || said
         await (deps.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))))(2_000)
         result = await session.request('agent_create_status', { creationId: payload.creationId })
+      }
+      // Still held after a minute: cancelled, so it never starts later, task and all, with nobody waiting for it.
+      // The daemon takes a cancel only before the launch is claimed (lib/agentCreationReceipt.ts `cancelIntent`) and
+      // otherwise answers what became of it, which is then the answer here.
+      if (result.state === 'pending') {
+        const reason = holdReason(result) || said
+        const cancelled = await session.request('agent_create_cancel', { creationId: payload.creationId }).catch(() => null)
+        if (cancelled?.state === 'cancelled') {
+          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
+            + 'The request is cancelled, so it will not start later.')
+        }
+        // No answer (a daemon that predates the cancel): the request is still saved, and may start later.
+        if (typeof cancelled?.state !== 'string' || cancelled.state === 'pending') {
+          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
+            + 'It is still saved and may start later by itself: check with `harness ps` before starting another.')
+        }
+        // Too late to cancel: what became of it (created, refused, or claimed and starting now) is the answer.
+        result = cancelled
       }
       // With a creation id the daemon answers what became of the launch: only `created` made a harness. A refusal
       // it recorded (`failed`) and an outcome it could not confirm used to print "Created" all the same.
       if (result.state !== undefined && result.state !== 'created') {
         const failure = (result.failure ?? {}) as Record<string, unknown>
         const code = typeof failure.code === 'string' ? failure.code : ''
-        const detail = typeof failure.detail === 'string' && failure.detail ? ` (${failure.detail})` : ''
+        const detail = typeof failure.detail === 'string' && failure.detail ? failure.detail : ''
         throw new Error(result.state === 'failed'
-          ? `${ERRORS[code] ?? (code || 'The harness could not be started.')}${detail}`
+          // A code this has no words for is shown by the daemon's own detail, which names the engine and why.
+          ? (ERRORS[code] ? `${ERRORS[code]}${detail ? ` (${detail})` : ''}` : detail || code || 'The harness could not be started.')
           : `Harness could not confirm the harness started (${String(result.state)}). Check with \`harness ps\` before starting another.`)
       }
       const agent = (result.agent ?? {}) as Record<string, unknown>

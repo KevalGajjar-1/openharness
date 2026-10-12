@@ -533,7 +533,7 @@ void main() {
       );
       for (final row in const [
         'Add Phone',
-        'Customize Harness',
+        'Appearance',
         'Notifications',
         'Settings',
         'Sign out',

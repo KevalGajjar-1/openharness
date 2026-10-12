@@ -133,13 +133,22 @@ void main() {
         find.byKey(const Key('terminal-font-family-dropdown')),
         findsNothing,
       );
-      // Appearance (was Customize) still opens the workspace's Customize Harness panel.
+      // Appearance (was Customize) opens the workspace's panel, which is called Appearance too.
       await tester.tap(find.text('Appearance'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsNothing);
       expect(find.byType(Placeholder), findsOneWidget);
       expect(find.byType(HarnessCustomizePane), findsOneWidget);
-      for (final label in ['Status', 'Appearance', 'Terminal']) {
+      expect(
+        find.descendant(
+          of: find.byType(HarnessCustomizePane),
+          matching: find.text('Appearance'),
+        ),
+        findsOneWidget,
+        reason: 'its title, and no tab of the same name under it',
+      );
+      expect(find.text('Customize Harness'), findsNothing);
+      for (final label in ['Status', 'Workspace', 'Terminal']) {
         expect(find.text(label), findsOneWidget);
       }
       await tester.tap(find.byKey(const ValueKey('customize-appearance')));
@@ -385,6 +394,24 @@ void main() {
     // Its run's caption stays over it; the runs with no match go.
     expect(find.text('GENERAL'), findsOneWidget);
     expect(find.text('AGENTS'), findsNothing);
+
+    // Appearance by what its panel holds, and by its old name.
+    for (final query in ['wallpaper', 'customize']) {
+      await tester.enterText(
+        find.byKey(const Key('settings-search-field')),
+        query,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(SettingsNav),
+          matching: find.text('Appearance'),
+        ),
+        findsOneWidget,
+        reason: query,
+      );
+      expect(find.text('Keyboard shortcuts'), findsNothing, reason: query);
+    }
 
     await tester.enterText(
       find.byKey(const Key('settings-search-field')),

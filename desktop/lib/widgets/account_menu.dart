@@ -13,8 +13,8 @@ import 'workspace_account_button.dart';
 /// What the account menu was asked for.
 enum AccountMenuChoice { addPhone, customize, notifications, settings, signOut }
 
-/// The menu under the avatar: who is signed in, then Add Phone, Customize
-/// Harness, Notifications, Settings and Sign out. Each opens something the app
+/// The menu under the avatar: who is signed in, then Add Phone, Appearance,
+/// Notifications, Settings and Sign out. Each opens something the app
 /// already has; the caller does that once this has closed, so the two never
 /// stand on screen together. Kept to these five (owner, 2026-10-11).
 ///
@@ -68,7 +68,7 @@ class _AccountMenuState extends State<AccountMenu> {
   late final _rows = [
     if (widget.showAddPhone)
       (AccountMenuChoice.addPhone, AppIcons.smartphone, 'Add Phone'),
-    (AccountMenuChoice.customize, AppIcons.palette, 'Customize Harness'),
+    (AccountMenuChoice.customize, AppIcons.palette, 'Appearance'),
     (AccountMenuChoice.notifications, AppIcons.bell, 'Notifications'),
     (AccountMenuChoice.settings, AppIcons.settings, 'Settings'),
     (AccountMenuChoice.signOut, AppIcons.logOut, 'Sign out'),

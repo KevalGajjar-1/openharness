@@ -112,6 +112,9 @@ void main() {
     expect(appActions.last, 'showAbout');
 
     await tap(tester, 'menu-bar-harness');
+    // The panel it opens is Appearance, as Settings' rail calls it; "…" like Settings… beside it.
+    expect(find.text('Appearance…'), findsOneWidget);
+    expect(find.text('Customize Harness'), findsNothing);
     await tap(tester, 'menu-bar-customize');
     expect(swarmCalls.last.method, 'customize');
 

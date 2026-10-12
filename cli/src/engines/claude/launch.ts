@@ -42,6 +42,12 @@ export const launch: EngineLaunch = {
     key: 'attribution', field: 'pr', legacy: { key: 'includeCoAuthoredBy', until: ['commit', 'pr'] },
     own: '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
     args: ['--settings', '{settings}'],
+    // Told as well: Claude Code 2.1.296, started by another agent and asked for "a short body saying it fixes a typo",
+    // opened the pull request with that body and neither line (2026-10-11, in a clean VM). Codex, told in these words,
+    // kept ours.
+    instruction: 'When you create or update a pull request, its body must include this exact line once, near the end and '
+      + 'after any other attribution line: `{line}` It says another agent started this session in Harness. Do not add it '
+      + 'to commit messages.',
   },
   // Recorded with the rest of the system prompt on the conversation's first request and kept on every resume
   // (`--system-prompt-snapshot`, on by default), so it is given at each launch and read once.

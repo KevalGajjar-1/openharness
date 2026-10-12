@@ -8,6 +8,7 @@ import 'package:harness/screens/login_screen.dart';
 import 'package:harness/settings/settings_screen.dart';
 import 'package:harness/settings/settings_section.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
+import 'package:harness/shared/widgets/setting_row.dart';
 import 'package:harness/state/app_state.dart';
 import 'package:harness/widgets/account_menu.dart';
 import 'package:harness/widgets/workspace_account_button.dart';
@@ -261,6 +262,48 @@ void main() {
     }
   });
 
+  testWidgets('Settings says who is signed in, and an email only once', (
+    tester,
+  ) async {
+    for (final (name, lines) in [
+      ('Dee Example', ['Dee Example', 'dee@example.com']),
+      // Signed up by email: the account is called by its address, which is
+      // the line under the title already.
+      (null, ['Signed in', 'dee@example.com']),
+    ]) {
+      final app = createApp()
+        ..currentUser = CurrentUserProfile(
+          name: name,
+          email: 'dee@example.com',
+        );
+      await mount(tester, app);
+      await tester.tap(_avatar);
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('account-menu-settings')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      Finder said(String text) => find.descendant(
+        of: find.byType(SettingsScreen),
+        matching: find.text(text),
+      );
+      for (final line in lines) {
+        expect(said(line), findsOneWidget, reason: '$name: $line');
+      }
+      // Both are the same raised row: one with no second line is drawn bare.
+      expect(
+        tester.widget<SettingRow>(find.byType(SettingRow)).detail,
+        'dee@example.com',
+      );
+      Navigator.of(tester.element(find.byType(SettingsScreen))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpWidget(const SizedBox());
+      app.dispose();
+    }
+  });
+
   testWidgets('the native tab row is told which of the two to draw', (
     tester,
   ) async {
@@ -317,7 +360,7 @@ void main() {
     expect(find.text('dee@example.com'), findsOneWidget);
     final rows = [
       'Add Phone',
-      'Customize Harness',
+      'Appearance',
       'Notifications',
       'Settings',
       'Sign out',
@@ -409,7 +452,7 @@ void main() {
       'no name says its email once', (tester) async {
     await _mountMenu(tester, name: '', showAddPhone: false);
     expect(find.text('Add Phone'), findsNothing);
-    expect(find.text('Customize Harness'), findsOneWidget);
+    expect(find.text('Appearance'), findsOneWidget);
     expect(find.text('dee@example.com'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
