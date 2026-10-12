@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createNativeHookJournal, type NativeHookIntake } from './nativeHookJournal.js'
+import { fixtureNativeGenerationFact as generationFact } from '../../testing/nativeGenerationFactFixture.js'
 
 const fault = vi.hoisted(() => ({ fail: false, onSync: undefined as ((fd: number) => void) | undefined,
   beforeOpen: undefined as ((path: string) => void) | undefined,
@@ -39,6 +40,109 @@ beforeEach(() => {
 afterEach(() => {
   fault.fail = false; fault.onSync = undefined; fault.beforeOpen = undefined; fault.openDirectory = undefined; fault.deferSync = undefined; fault.afterMkdir = undefined
   rmSync(root, { recursive: true, force: true })
+})
+
+it('retains immutable generation facts without granting or clearing effect ownership', async () => {
+  const owner = journal(), body = intake(), fact = generationFact('activity')
+  await owner.retain(body)
+  const claim = await owner.claim(body.id, body.agentId), before = await owner.snapshot()
+  const saving = owner.recordGeneration(fact)
+  fact.generationId = 'caller changed its generation'
+  await saving
+  const recovered = await journal().snapshot()
+  expect(recovered.processKey).toBe(processKey)
+  expect(recovered.generations.get(fact.id)?.generationId).toBe('generation-one')
+  expect(recovered.active?.token).toBe(claim.token)
+  expect(recovered.lastResult).toBe(before.lastResult)
+  expect(() => before.verify()).toThrow('changed during recovery')
+  expect(() => claim.verify()).not.toThrow()
+  await expect(journal().claim(body.id, body.agentId)).rejects.toThrow('earlier native hook effect')
+  await claim.finish({ status: 200 })
+  expect((await owner.snapshot()).generations.size).toBe(1)
+})
+
+it('deduplicates exact generation phases and refuses changed content under their original identity', async () => {
+  const owner = journal(), first = generationFact('submitted', 'fixture-shared-delivery')
+  const stop = generationFact('stopped', 'fixture-shared-delivery')
+  expect(first.id).not.toBe(stop.id)
+  await owner.recordGeneration(first)
+  await owner.recordGeneration(stop)
+  await journal().recordGeneration(stop)
+  expect((await owner.snapshot()).length).toBe(2)
+  await expect(owner.recordGeneration({ ...stop, generationId: 'replacement' })).rejects.toThrow('NATIVE_GENERATION_CONFLICT')
+  if (stop.kind !== 'stopped') throw Error('fixture source')
+  await expect(owner.recordGeneration({ ...stop, source: { ...stop.source, wire: { ...stop.source.wire, bodySha256: hash('replacement') } } }))
+    .rejects.toThrow('NATIVE_GENERATION_CONFLICT')
+})
+
+it('reserves Stop capacity only for actual execution, not rejected submissions', async () => {
+  const owner = journal({ maxBytes: 90_000 })
+  for (let index = 0; index < 30; index++) await owner.recordGeneration(generationFact('submitted', `fixture-submitted-${index}`, `generation-${index}`))
+  await expect(owner.recordGeneration(generationFact('activity'))).resolves.toBeUndefined()
+  await expect(owner.recordGeneration(generationFact('activity', 'fixture-activity-second', 'generation-two'))).rejects.toThrow('terminal outcomes')
+  await owner.recordGeneration(generationFact('stopped'))
+  await expect(owner.recordGeneration(generationFact('activity', 'fixture-activity-second', 'generation-two'))).resolves.toBeUndefined()
+})
+
+it('shares record and byte reservations between legacy effects and native generations', async () => {
+  const owner = journal({ maxRecords: 7, maxBytes: 90_000 }), body = intake()
+  await owner.retain(body)
+  await owner.recordGeneration(generationFact('activity'))
+  await expect(owner.retain(intake('fixture-second-intake'))).rejects.toThrow('terminal outcomes')
+  await expect(owner.recordGeneration(generationFact('activity', 'fixture-activity-second', 'generation-two'))).rejects.toThrow('terminal outcomes')
+  await (await owner.claim(body.id, body.agentId)).finish({ status: 200 })
+  await owner.recordGeneration(generationFact('stopped'))
+  const after = await owner.snapshot()
+  expect(after.deliveries.get(body.id)?.result).toEqual({ status: 200 })
+  expect(after.generations.get(generationFact('stopped').id)?.kind).toBe('stopped')
+})
+
+it('does not acknowledge an unconfirmed visible generation fact', async () => {
+  const owner = journal(), fact = generationFact('stopped')
+  await owner.snapshot()
+  fault.onSync = fd => {
+    if (fstatSync(fd).isDirectory() && existsSync(join(directory, '00000000.json'))) fault.fail = true
+  }
+  await expect(owner.recordGeneration(fact)).rejects.toThrow('fixture disk confirmation unavailable')
+  fault.onSync = undefined
+  expect((await journal().snapshot()).generations.get(fact.id)).toEqual(fact)
+  await expect(journal().recordGeneration(fact)).rejects.toThrow('fixture disk confirmation unavailable')
+  fault.fail = false
+  await journal().recordGeneration(fact)
+  expect((await journal().snapshot()).length).toBe(1)
+})
+
+it('keeps native input from manufacturing core Cancel authority', async () => {
+  const owner = journal(), fact = generationFact('activity')
+  await expect(owner.recordGeneration({ ...fact, kind: 'cancelled' } as any)).rejects.toThrow('invalid native generation fact')
+  const cancelled = generationFact('cancelled')
+  await expect(owner.recordGeneration({ ...cancelled, kind: 'activity' } as any)).rejects.toThrow('invalid native generation fact')
+  await expect(owner.recordGeneration({ ...fact, id: generationFact('stopped').id })).rejects.toThrow('invalid native generation fact')
+  expect((await owner.snapshot()).generations.size).toBe(0)
+})
+
+it('retains one core Cancel request for each independently scoped generation', async () => {
+  const owner = journal(), first = generationFact('cancelled', 'fixture-shared-cancel', 'generation-one')
+  const second = generationFact('cancelled', 'fixture-shared-cancel', 'generation-two')
+  expect(first.id).not.toBe(second.id)
+  await owner.recordGeneration(first)
+  await owner.recordGeneration(second)
+  expect([...((await journal().snapshot()).generations.values())].map(fact => fact.generationId)).toEqual(['generation-one', 'generation-two'])
+})
+
+it('enforces the generation projection limit before retaining a new identity', async () => {
+  const owner = journal()
+  await owner.snapshot()
+  let previous: string | null = null
+  for (let index = 0; index < 512; index++) {
+    const fact = generationFact('submitted', `fixture-generation-${index}`, `generation-${index}`)
+    const text = JSON.stringify({ version: 1, processKey, index, previous, event: { kind: 'generation', fact } })
+    for (const dir of [directory, `${directory}.witnesses`]) writeFileSync(join(dir, `${String(index).padStart(8, '0')}.json`), text, { mode: 0o600 })
+    previous = hash(text)
+  }
+  await expect(owner.recordGeneration(generationFact('activity'))).rejects.toThrow('generation capacity')
+  await owner.recordGeneration(generationFact('stopped', 'fixture-existing-stop', 'generation-0'))
+  expect((await owner.snapshot()).generations.size).toBe(513)
 })
 
 it('retains immutable intake and completed receipts across reconstructed cores', async () => {

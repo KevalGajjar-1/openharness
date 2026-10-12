@@ -118,6 +118,43 @@ generation-specific effects, native-client migration and the private Stop
 acceptance remain unfinished. This checkpoint is not a completed Stop fix or PR
 approval. Validation and review overlap implementation; no merge or publication.
 
+The October 12, 00:38 UTC durable-generation checkpoint retains native observations
+and core Cancel facts in the existing process journal. Endpoint and exact received
+bytes identify native facts; core cancellation additionally binds each target
+generation, so one Cancel can revoke several ambiguous targets. Facts never grant
+an effect claim or settle a legacy claim. Reconstruction preserves Stop/Cancel
+tombstones, and the core adapter copies bounded scalar facts before asynchronous
+confirmation and checks the complete original frontier at every effect boundary.
+
+An executing generation reserves the same conservative 40,960 bytes and two records
+as an unresolved legacy intake. Both share the existing namespace and catalog
+limits. Submitted, queued or rejected prompts do not reserve execution; late
+activity cannot reopen a terminal reservation. Matching first Stop/Cancel can use
+reserved terminal staging when normal staging is exhausted. Mirror repair cannot
+lend that lease to a new unreserved fact. Each retention has one original
+4.5-second operation budget, including repair and append. The existing staging
+ceiling remains conservative: each outstanding legacy or generation obligation
+already allows two terminal publication/repair pairs, and normal leases bound
+late unreserved observations. Integration must synchronously revoke old effect
+authority on terminal facts; persisted observations alone do not settle callbacks.
+
+Receipt `20261012T003531.934891Z-48442` passes types, 144 journal/source/projection/
+architecture/unchanged-golden cases, 100% statements/branches/functions/lines for
+both new core modules, three exhaustion/repair cases, all fourteen real-process
+crash/contention cases, and all nineteen assertion mutation oracles. Source stayed
+unchanged throughout the 121.7-second run. Independent review approved this scoped
+slice over `637296613`, conditional on those completed checks. The earlier
+`20261012T003152.481367Z-33490` is not passing evidence: sandbox restrictions denied
+the wrapper's process-group inspection, and a foreign-fact mutant exposed an
+incomplete test oracle. Exact fact counts and foreign Stop cases now catch it.
+Earlier attempts also exposed a type error, an incorrect PATH and an obsolete
+two-operation test expectation; their failed receipts remain preserved locally.
+
+HTTP producers, generation-specific effects, durable Cancel wiring, native-client
+migration and the actual private Stop acceptance remain open. This checkpoint
+does not fix the live Cursor regression or approve the complete PR. Implementation,
+validation and independent review overlap; no merge or publication has occurred.
+
 Client coordination checkpoint (October 11, 20:16 UTC): all linked phases are
 retained before the first send. Retries preserve their original bytes, ID and
 native time, and use versioned mutation routes that an older core rejects before

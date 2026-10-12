@@ -11,6 +11,7 @@ import { createNativeHookReplay } from './nativeHookReplay.js'
 import { nativeHookAcknowledgement } from './nativeHookClientProtocol.js'
 import * as files from './nativeHookFiles.js'
 import type { NativeHookClientRequest } from './nativeHookClient.js'
+import { fixtureNativeGenerationFact as generationFact } from '../../testing/nativeGenerationFactFixture.js'
 
 const fault = vi.hoisted(() => ({ fail: false,
   beforePublish: undefined as ((text: string, path: string, publish: (text: string, path: string) => void) => void) | undefined,
@@ -385,6 +386,45 @@ it('holds new intake at normal exhaustion while every previously accepted effect
   expect([...recovered.deliveries.values()].map(delivery => delivery.result?.status)).toEqual([200, 200])
   await expect(journal.retain(intake('fixture-delivery-0003'))).rejects.toThrow('generation capacity')
   expect(readdirSync(root, { recursive: true }).map(String).filter(name => name.endsWith('.tmp'))).toEqual([])
+}, 30_000)
+
+it('keeps matching native Stop and Cancel possible after normal staging fills', async () => {
+  await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
+  const journal = await catalog().effects(processKey)
+  await journal.recordGeneration(generationFact('activity'))
+  await journal.recordGeneration(generationFact('activity', 'fixture-second-activity', 'generation-two'))
+  for (let index = 2; index < 8; index++) { const lease = await pool.acquire(); await lease.close() }
+  await expect(journal.recordGeneration(generationFact('activity', 'fixture-third-activity', 'generation-three'))).rejects.toThrow('generation capacity')
+  // An unrelated Stop cannot borrow either running generation's terminal lane.
+  await expect(journal.recordGeneration(generationFact('stopped', 'fixture-unseen-stop', 'unseen-generation'))).rejects.toThrow('generation capacity')
+  await journal.recordGeneration(generationFact('stopped'))
+  await journal.recordGeneration(generationFact('cancelled', 'fixture-second-cancel', 'generation-two'))
+  const snapshot = await journal.snapshot()
+  expect([...snapshot.generations.values()].map(fact => fact.kind)).toEqual(['activity', 'activity', 'stopped', 'cancelled'])
+  // The late event cannot reopen the completed generation or take its former
+  // reservation; only duplicate confirmation needs no new scratch generation.
+  await expect(journal.recordGeneration(generationFact('activity', 'fixture-late-activity'))).rejects.toThrow('generation capacity')
+  await journal.recordGeneration(generationFact('stopped'))
+}, 30_000)
+
+it('cannot reuse a terminal mirror-repair lease for an unreserved generation fact', async () => {
+  await pool.close(); pool = stagingPool({ maxGenerations: 4, terminalGenerations: 3 })
+  const journal = await catalog().effects(processKey)
+  await journal.recordGeneration(generationFact('activity'))
+  await journal.recordGeneration(generationFact('activity', 'fixture-second-activity', 'generation-two'))
+  const directory = allocated() + '.history'
+  // Reproduce the outside-selected tail of an interrupted writer. Only this
+  // fixture's journal mirror is removed; recovery must restore the same bytes.
+  unlinkSync(join(directory, '00000001.json'))
+  for (let index = 2; index < 8; index++) { const lease = await pool.acquire(); await lease.close() }
+  await expect(journal.recordGeneration(generationFact('submitted', 'fixture-unreserved-prompt', 'generation-three')))
+    .rejects.toThrow('terminal capacity cannot initialize a journal')
+  expect(existsSync(join(directory, '00000001.json'))).toBe(true)
+  expect(existsSync(join(directory, '00000002.json'))).toBe(false)
+  expect(existsSync(join(directory + '.witnesses', '00000002.json'))).toBe(false)
+  expect((await journal.snapshot()).generations.size).toBe(2)
+  await journal.recordGeneration(generationFact('stopped'))
+  expect((await journal.snapshot()).generations.get(generationFact('stopped').id)?.kind).toBe('stopped')
 }, 30_000)
 
 it('keeps the original first-version publication identity until its flat proof is retained', async () => {

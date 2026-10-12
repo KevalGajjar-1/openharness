@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { buildSync } from 'esbuild'
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest'
 import type { NativeHookIntake } from './nativeHookJournal.js'
+import { fixtureNativeGenerationFact as generationFact } from '../../testing/nativeGenerationFactFixture.js'
 
 const processKey = 'linux:fixture-boot\u0000codex\u00005100\u0000t:1234'
 const intake = (id = 'fixture-delivery-0001', agentId = 'agent-one'): NativeHookIntake => ({
@@ -65,6 +66,11 @@ beforeAll(() => {
         if (operation === 'retain') {
           const delivery = await journal.retain(value)
           result = { intake: delivery.intake, result: delivery.result, acknowledgements: delivery.acknowledgements && [...delivery.acknowledgements] }
+        } else if (operation === 'generation') {
+          await journal.recordGeneration(value)
+        } else if (operation === 'generation-snapshot') {
+          const snapshot = await journal.snapshot(); await snapshot.confirm(); snapshot.verify()
+          result = { generations: [...snapshot.generations.values()], active: snapshot.active, lastResult: snapshot.lastResult }
         } else if (operation === 'snapshot') {
           const snapshot = await journal.snapshot(); snapshot.verify()
           result = { previous: snapshot.previous, active: snapshot.active,
@@ -80,6 +86,8 @@ beforeAll(() => {
         } else if (operation === 'verify') { claims.get(value.id).verify(); result = true
         } else if (operation === 'pause') { pauseKind = 'claim'
         } else if (operation === 'pause-ack') { pauseKind = 'ack'
+        } else if (operation === 'pause-generation') { pauseKind = 'generation'
+        } else if (operation === 'pause-confirmation') { pauseNextSync = true
         } else if (operation === 'consume-normal') {
           for (let index = 0; index < value; index++) { const lease = await pool.acquire(); await lease.close() }
         } else if (operation === 'dead') { for (const pid of value) dead.add(pid)
@@ -300,4 +308,57 @@ it('restores an outbox registration ACK after SIGKILL without acknowledging link
   expect((await accepted(recovered, 'snapshot')).length).toBe(2)
   await accepted(recovered, 'ack', { ...body, phase: 'stop' })
   expect((await accepted(recovered, 'snapshot')).deliveries[0].acknowledgements).toEqual(['registration', 'stop'])
+}, 30_000)
+
+it('restores a native Stop after SIGKILL without inventing an effect result', async () => {
+  const first = worker(), activity = generationFact('activity'), stopped = generationFact('stopped')
+  await accepted(first, 'generation', activity)
+  await accepted(first, 'pause-generation')
+  const paused = first.event('paused'), stopping = first.call('generation', stopped)
+  await paused; await first.kill()
+  expect(await stopping).toMatchObject({ ok: false })
+  const recovered = worker()
+  const snapshot = await accepted(recovered, 'generation-snapshot')
+  expect(snapshot.generations).toEqual([activity, stopped])
+  expect(snapshot.active).toBeUndefined()
+  expect(snapshot.lastResult).toBeNull()
+  await accepted(recovered, 'generation', stopped)
+  expect((await accepted(recovered, 'generation-snapshot')).generations).toHaveLength(2)
+}, 30_000)
+
+it('cannot spend one generation terminal reservation twice across live processes', async () => {
+  const options = { catalog: true, maxGenerations: 4, terminalGenerations: 3 }
+  const first = worker(options), peer = worker(options), activity = generationFact('activity'), stopped = generationFact('stopped')
+  await accepted(first, 'generation', activity)
+  await accepted(first, 'consume-normal', 7)
+  await accepted(first, 'pause-generation')
+  const paused = first.event('paused'), stopping = first.call('generation', stopped)
+  await paused
+  try {
+    // The peer may complete the live publisher's exact mirror. It cannot use
+    // that now-terminal generation to enter reserved scratch for a new Cancel.
+    expect(await peer.call('generation', generationFact('cancelled')))
+      .toMatchObject({ ok: false, error: expect.stringContaining('terminal capacity cannot initialize a journal') })
+    expect((await accepted(peer, 'generation-snapshot')).generations).toEqual([activity, stopped])
+  } finally { await accepted(first, 'release') }
+  expect(await stopping).toMatchObject({ ok: true })
+}, 30_000)
+
+it('revokes a Stop selected before a peer spends its same-generation Cancel reservation', async () => {
+  const options = { catalog: true, maxGenerations: 4, terminalGenerations: 3 }
+  const first = worker(options), peer = worker(options), activity = generationFact('activity'), cancelled = generationFact('cancelled')
+  await accepted(first, 'generation', activity)
+  await accepted(first, 'consume-normal', 7)
+  await accepted(first, 'pause-confirmation')
+  const paused = first.event('paused'), stopping = first.call('generation', generationFact('stopped'))
+  await paused
+  try {
+    await accepted(peer, 'generation', cancelled)
+    expect((await accepted(peer, 'generation-snapshot')).generations).toEqual([activity, cancelled])
+  } finally { await accepted(first, 'release') }
+  expect(await stopping).toMatchObject({ ok: false, error: expect.stringContaining('changed') })
+  // A new read sees terminal ownership. It cannot retain the old classification
+  // merely because this process selected Stop before the other process won.
+  expect(await first.call('generation', generationFact('stopped')))
+    .toMatchObject({ ok: false, error: expect.stringContaining('generation capacity') })
 }, 30_000)
