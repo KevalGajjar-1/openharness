@@ -19,11 +19,20 @@ export const hooks: HookContract = {
     events: [{ event: 'SessionStart' }, { event: 'SessionEnd' }, { event: 'UserPromptSubmit' }, { event: 'Stop' }, { event: 'StopFailure' }],
     timeout: 5,
     // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
-    // Its reply, `harness send`, is allowed in the person's permission rules: auto mode's check refused a
-    // Harness command outright, and a person away from the pane cannot answer a question.
-    // The launcher's full path too; not `{node} {cli}`, whose versioned path would leave a stale rule in the
-    // person's list at every runtime update (a rules file of its own can be rewritten; this list is theirs).
-    inbox: { event: 'PostToolUse', allow: { list: ['permissions', 'allow'], rules: ['Bash(harness send:*)', 'Bash({launcher} send:*)'] } },
+    inbox: { event: 'PostToolUse' },
+    // Harness's agent commands and MCP tools, in the person's permission rules (facets/hooks.ts HarnessAllowance):
+    // auto mode's check refused a Harness command outright, and a person away from the pane cannot answer a
+    // question. Claude Code checks deny, then ask, then allow, so the person's own deny or ask still wins.
+    // The launcher's full path too: Claude Code does not match `/…/harness ps` to `harness ps`. Not `{node} {cli}`,
+    // whose versioned path would leave a stale rule in the person's list at every runtime update (a rules file of
+    // its own can be rewritten; this list is theirs). The MCP tools by both names Claude Code gives them: a server
+    // the person added as `harness` (`claude mcp add harness -- harness mcp`, as /agents says), and the plugin's
+    // (`mcp__plugin_<plugin>_<server>__<tool>`).
+    allow: {
+      list: ['permissions', 'allow'],
+      unless: ['deny', 'ask'],
+      rules: ['Bash(harness {verb}:*)', 'Bash({launcher} {verb}:*)', 'mcp__harness__*', 'mcp__plugin_harness_harness__*'],
+    },
     commandNamesHome: false,
     upToDate: { command: 'first-ours', matcher: false },
     messages: {

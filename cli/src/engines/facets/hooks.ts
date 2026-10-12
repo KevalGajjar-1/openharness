@@ -45,9 +45,11 @@ export interface HookSettings {
   /**
    * Agent Messages' own block (kit/messagesHook.ts), apart from notify.mjs's: at this event the waiting messages
    * of the agent's pane become the model's context. One block, for every tool, in the person's settings beside
-   * the others; absent for an engine with no such event. `allow` lets the agent reply with `harness send`.
+   * the others; absent for an engine with no such event.
    */
-  inbox?: { event: string; allow?: SendAllowance }
+  inbox?: { event: string }
+  /** Harness's agent commands and MCP tools, allowed in the engine's own permission rules (HarnessAllowance). */
+  allow?: HarnessAllowance
   /** The command names this home as the engine's (`--codex-home`): a profile's sessions are in its own store. */
   commandNamesHome: boolean
   /**
@@ -81,19 +83,34 @@ export interface HookSettings {
 }
 
 /**
- * `harness send` allowed in the engine's own permission rules, so a teammate's reply never waits on a
- * permission question. Three agents on two machines, 2026-10-11: one's replies to the lead sat in a local
- * file for hours because Claude Code's permission check refused the command that would have carried them. Either a rule
- * added to a list in the settings file (`list`, the person's other rules kept), or a rules file of the
- * engine's that Harness owns whole (`file`, in the settings' home).
+ * The commands an agent runs to hand work to other agents and read it back (agentClient/commands.ts). Each needs
+ * Harness's daemon, so in Codex each one asked to leave the sandbox: four questions for one hand-off (new, wait,
+ * show, close), or, in auto mode, a failed sandboxed try first. `harness settings` is not one of them: it changes
+ * what agents may do, so it still asks.
  */
+export const HARNESS_AGENT_VERBS = ['ps', 'show', 'wait', 'new', 'close', 'send'] as const
+
 /**
+ * Harness's agent commands (HARNESS_AGENT_VERBS) and its MCP tools allowed in the engine's own permission rules, so
+ * an agent hands work to another without a permission question and without a sandboxed attempt that cannot reach
+ * the daemon. What each may do is Harness's to decide, and it does: the person's switch for agents starting agents,
+ * the rule that an agent gives work to and closes only what it started, the spawn limits, and Agent Messages per tab
+ * (the owner, 2026-10-12: "no asking. just do. the best ux."). It began with `harness send` alone: three agents on
+ * two machines, 2026-10-11, one's replies to the lead sat in a local file for hours because Claude Code's permission
+ * check refused the command that would have carried them.
+ *
+ * Either rules added to a list in the settings file (`list`, the person's other rules kept; none is added that the
+ * person's own lists named in `unless` hold, which the engine would rank above it anyway), or a rules file of the
+ * engine's that Harness owns whole (`file`, in the settings' home).
+ *
  * A rule may name `{launcher}` (the `harness` in `~/.local/bin`), `{node}` and `{cli}` (the managed Node and the CLI's
- * bundle), filled in with this computer's paths as it is installed: an agent runs `harness send` by its full path too,
- * where a rule for `harness send` alone does not apply. A Codex lead sent that way, so each send asked to leave the
- * sandbox (2026-10-12).
+ * bundle), filled in with this computer's paths as it is installed: an agent runs `harness` by its full path too,
+ * where a rule for the bare name does not apply. A Codex lead sent that way, so each send asked to leave the sandbox
+ * (2026-10-12). `{verb}` makes one rule for each agent verb; `{verbs}` names them all as one list.
  */
-export type SendAllowance = { list: readonly [string, string]; rules: readonly string[] } | { file: string; rules: readonly string[] }
+export type HarnessAllowance =
+  | { list: readonly [string, string]; unless?: readonly string[]; rules: readonly string[] }
+  | { file: string; rules: readonly string[] }
 
 /**
  * An engine's record of hooks a person reviewed: in its config file in the same home, a table per hook keyed

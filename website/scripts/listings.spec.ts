@@ -109,9 +109,22 @@ describe("the files directories list Harness from", () => {
     // Cursor resolves a relative logo inside the repository and refuses `..` and absolute paths.
     expect(plugin.logo).not.toMatch(/^\/|\.\./);
     expect(existsSync(join(repo, entry.source, plugin.logo))).toBe(true);
-    // Cursor reads mcp.json, Claude Code and Codex .mcp.json: one server, written twice.
+    // Cursor reads mcp.json, Claude Code .mcp.json: one server, written twice.
     expect(json(entry.source, "mcp.json")).toEqual(json(entry.source, ".mcp.json"));
     expect(existsSync(join(repo, entry.source, "skills", "harness", "SKILL.md"))).toBe(true);
+  });
+
+  it("the Codex manifest is the same plugin, with the same MCP server, its tools approved", () => {
+    const source = json(".claude-plugin", "marketplace.json").plugins[0].source;
+    const claude = json(source, ".claude-plugin", "plugin.json");
+    const codex = json(source, ".codex-plugin", "plugin.json");
+    // Codex reads .codex-plugin/plugin.json before .claude-plugin/plugin.json, and its server from there.
+    for (const key of ["name", "description", "keywords", "homepage", "repository", "license"]) expect(codex[key]).toEqual(claude[key]);
+    expect(codex.interface.displayName).toBe(claude.displayName);
+    // The server Claude Code and Cursor run, and Codex's own setting that it runs Harness's tools without asking:
+    // Harness decides what an agent may do with them. A setting the person makes for it in config.toml still wins.
+    const { harness } = json(source, ".mcp.json").mcpServers;
+    expect(codex.mcpServers).toEqual({ harness: { ...harness, default_tools_approval_mode: "approve" } });
   });
 
   it("glama.json names maintainers, and the image Glama builds runs harness mcp from the installer", () => {

@@ -161,7 +161,8 @@ cannot reach the daemon. By its full path too, where `harness` is not on an agen
 (`~/.local/bin/harness`) for both, and for Codex, whose rules file Harness rewrites whole, the managed Node with the
 CLI's bundle (the lead sent that way, and each send asked to leave the sandbox). Claude Code's list is the person's,
 so a versioned Node path, which would go stale at every runtime update, is not added there. One of those agents could not reply for hours because its permission check refused
-the command it would have replied with. A person's deny rule still wins. Because it runs unasked, `--text-file` reads only a
+the command it would have replied with. A person's deny rule still wins. Since October 12 the same rules cover every agent verb,
+not only `send` (docs/design/2026-10-11-agent-client.md, No permission prompts). Because it runs unasked, `--text-file` reads only a
 file in the temporary folder (its real path, one name): otherwise it could read for an agent what a deny rule or
 the sandbox keeps from it, and send that to a teammate on another machine.
 

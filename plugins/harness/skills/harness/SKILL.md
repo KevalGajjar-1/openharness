@@ -25,9 +25,14 @@ these verbs: `harness update`. The agent you start must be installed as well (`c
 for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
 asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
 
-In Codex, run `harness` commands outside your sandbox: they talk to Harness's local daemon, which the sandbox
-blocks, so ask for escalated permissions the first time. A sandbox in the way is not a stopped Harness: do not run
-`harness start` unless a command run outside the sandbox says Harness is not running.
+Once Harness runs on this computer, Claude Code and Codex run its commands (`ps`, `new`, `wait`, `show`, `send`,
+`close`) and its MCP tools without asking: Harness adds them to their permission rules, and Codex runs them outside
+its sandbox. What you may do with them is still Harness's to decide (below). Run each `harness` command by itself,
+or join `harness` commands with `&&`: piped into another command, after `;`, or with a variable set in front, the
+rule no longer matches, so it asks, and in Codex it runs in the sandbox, which cannot reach Harness's local daemon.
+Where Harness has not set your agent up, run `harness` outside your sandbox, asking for escalated permissions. A
+sandbox in the way is not a stopped Harness: do not run `harness start` unless a command run outside the sandbox says
+Harness is not running.
 
 ## When to start a harness
 

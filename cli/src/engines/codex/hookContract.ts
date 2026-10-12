@@ -14,19 +14,20 @@ export const hooks: HookContract = {
     events: [{ event: 'SessionStart', matcher: 'startup|resume|clear|compact' }, { event: 'UserPromptSubmit' }],
     timeout: 5,
     // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
-    // Its reply, `harness send`, needs the daemon, which Codex's sandbox cannot reach: measured with
-    // `codex sandbox` (codex-cli 0.162.1), neither 127.0.0.1:18473 nor the daemon's socket answered. An `allow`
-    // rule runs it outside without asking; Codex reads every `.rules` file in its `rules` folder.
-    inbox: {
-      event: 'PostToolUse',
-      allow: {
-        file: 'rules/harness.rules',
-        rules: [
-          'prefix_rule(pattern=["harness", "send"], decision="allow")',
-          'prefix_rule(pattern=["{launcher}", "send"], decision="allow")',
-          'prefix_rule(pattern=["{node}", "{cli}", "send"], decision="allow")',
-        ],
-      },
+    inbox: { event: 'PostToolUse' },
+    // Harness's agent commands (facets/hooks.ts HarnessAllowance) need the daemon, which Codex's sandbox cannot
+    // reach: measured with `codex sandbox` (codex-cli 0.162.1), neither 127.0.0.1:18473 nor the daemon's socket
+    // answered. An `allow` rule runs a command outside the sandbox on its first try, without asking, when every
+    // command in it matches one (codex-rs core/src/exec_policy.rs, `Skip { bypass_sandbox }`, 0.162.1). Codex reads
+    // every `.rules` file in its `rules` folder and ranks forbidden over prompt over allow, so the person's own rules
+    // still win. A list in a pattern is a choice of words: one rule a spelling covers every verb.
+    allow: {
+      file: 'rules/harness.rules',
+      rules: [
+        'prefix_rule(pattern=["harness", {verbs}], decision="allow")',
+        'prefix_rule(pattern=["{launcher}", {verbs}], decision="allow")',
+        'prefix_rule(pattern=["{node}", "{cli}", {verbs}], decision="allow")',
+      ],
     },
     commandNamesHome: true,
     upToDate: { command: 'first', matcher: true },

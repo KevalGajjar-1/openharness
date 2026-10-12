@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { env } from '../../config/env.js'
-import type { HookSettings } from '../facets/hooks.js'
+import { HARNESS_AGENT_VERBS, type HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
 import { isMessagesBlock, messagesCommand, writeMessagesHook } from './messagesHook.js'
@@ -36,7 +36,7 @@ export async function installHookSettings(engine: HookEngine, settings: HookSett
       await installNotifyHooks(engine, settings, port, home, options, attempt)
       const required = files.map(file => inspectHookFile(file))
       const verifyRequired = () => { attempt.verify(); for (const file of required) file.verify() }
-      if (settings.inbox) await installMessagesBlock(settings, home, attempt, verifyRequired)
+      if (settings.inbox || settings.allow) await installMessagesBlock(settings, home, attempt, verifyRequired)
       return true
     }, { ...options, identity: JSON.stringify([engine, settings, port, home, cmd, env.HARNESS_AGENT_MESSAGES_DIR]) })
   } catch (err) {
@@ -49,82 +49,100 @@ export async function installHookSettings(engine: HookEngine, settings: HookSett
 /**
  * Agent Messages' block (kit/messagesHook.ts) in the engine's settings: exactly one, in its event, running the
  * current command, every other block as it was; its script beside the inboxes; and for Codex, the block
- * recorded as reviewed like Harness's others. It shares their reservation and deadline. An optional
- * failure is harmless only while the required hooks remain exactly as confirmed; an uncertain partial
- * write holds launch. A message can still reach an idle agent, typed.
+ * recorded as reviewed like Harness's others. Harness's allowance goes in the same write where it is a list in
+ * the same file, or in its own rules file. It shares their reservation and deadline. An optional failure is
+ * harmless only while the required hooks remain exactly as confirmed; an uncertain partial write holds launch.
+ * A message can still reach an idle agent, typed, and a command not allowed asks, as before.
  */
 async function installMessagesBlock(settings: HookSettings, home: string, attempt: HookPreparationAttempt, verifyRequired: () => void): Promise<void> {
   const file = join(home, settings.file)
   const root = env.HARNESS_AGENT_MESSAGES_DIR
   const inboxCommand = messagesCommand(root)
-  const { event, allow } = settings.inbox!
-  let blockChanged = true
+  const { inbox, allow } = settings
+  let blockChanged = inbox !== undefined
   try {
     verifyRequired()
     const observed = inspectHookFile(file)
     const current = (observed.content === null ? {} : JSON.parse(observed.content)) as Settings
     if (!current || typeof current !== 'object' || Array.isArray(current) || !current.hooks || typeof current.hooks !== 'object'
-      || Array.isArray(current.hooks) || (current.hooks[event] !== undefined && !Array.isArray(current.hooks[event]))) {
+      || Array.isArray(current.hooks) || (inbox && current.hooks[inbox.event] !== undefined && !Array.isArray(current.hooks[inbox.event]))) {
       throw new HookPreparationHeld('the hook settings do not have the declared object shape')
     }
-    const blocks = current.hooks[event] ?? []
-    const ours = blocks.filter(isMessagesBlock)
-    blockChanged = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
-      || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
     let allowed = false
-    if (allow && 'list' in allow) for (const rule of allow.rules) allowed = withRule(current, allow.list, sendRule(rule)) || allowed
+    if (allow && 'list' in allow) for (const rule of harnessRules(allow.rules)) allowed = withRule(current, allow.list, rule, allow.unless) || allowed
+    if (inbox) {
+      const blocks = current.hooks[inbox.event] ?? []
+      const ours = blocks.filter(isMessagesBlock)
+      blockChanged = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
+        || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
+      current.hooks[inbox.event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
+    }
     const changed = allowed || blockChanged
-    current.hooks[event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
     const next = changed ? JSON.stringify(current, null, 2) + '\n' : observed.content!
     const reviewed = settings.reviewed ? prepareReviewed(settings.reviewed, home, file, JSON.parse(next) as Settings) : null
     reviewed?.verify()
     const published = await observed.replace(next, attempt)
     const approval = await reviewed?.commit(attempt)
     published.verify(); approval?.verify()
-    writeMessagesHook(root)
+    if (inbox) writeMessagesHook(root)
   } catch (err) {
     const reason = err instanceof Error ? err.message : err
     if (blockChanged) console.warn(`[hooks] Agent Messages' hook not installed in ${file} (messages reach its agents once they are idle):`, reason)
     else {
       // The hook was already in place and only the allowance was refused (a read-only file): its script is
       // still kept current, and the log names what failed rather than calling the hook missing.
-      console.warn(`[hooks] could not allow harness send in ${file} (the engine asks before each one):`, reason)
-      try { writeMessagesHook(root) } catch { /* the hook runs nothing it cannot find; messages wait for idle */ }
+      console.warn(`[hooks] could not allow Harness's agent commands in ${file} (the engine asks before each one):`, reason)
+      if (inbox) try { writeMessagesHook(root) } catch { /* the hook runs nothing it cannot find; messages wait for idle */ }
     }
     verifyRequired()
   }
   if (allow && 'file' in allow) {
     // Each path written as a Starlark string's contents: the file's rules are `prefix_rule(pattern=["…"])`.
-    try { writeRulesFile(join(home, allow.file), allow.rules.map((rule) => sendRule(rule, (path) => JSON.stringify(path).slice(1, -1))).join('\n')) } catch (err) {
-      console.warn(`[hooks] could not allow harness send in ${join(home, allow.file)} (the engine asks before each one):`, err instanceof Error ? err.message : err)
+    try { writeRulesFile(join(home, allow.file), harnessRules(allow.rules, (path) => JSON.stringify(path).slice(1, -1)).join('\n')) } catch (err) {
+      console.warn(`[hooks] could not allow Harness's agent commands in ${join(home, allow.file)} (the engine asks before each one):`, err instanceof Error ? err.message : err)
     }
   }
 }
 
-/** A declared allowance with this computer's paths in place of `{launcher}`, `{node}` and `{cli}` (SEND_RULE_PATHS). */
-function sendRule(rule: string, quote: (path: string) => string = (path) => path): string {
+/**
+ * The declared rules as this computer has them (facets/hooks.ts HarnessAllowance): its paths in place of
+ * `{launcher}`, `{node}` and `{cli}`, one rule for each agent verb in place of `{verb}`, and every verb as one
+ * Starlark list in place of `{verbs}`.
+ */
+function harnessRules(rules: readonly string[], quote: (path: string) => string = (path) => path): string[] {
   const paths: Record<string, string> = {
     launcher: join(env.HARNESS_BIN_DIR, 'harness'), node: managedNodePath(), cli: join(env.ADAPTER_CLI_DIR, 'cli.js'),
   }
-  return rule.replace(/\{(launcher|node|cli)\}/g, (_, name: string) => quote(paths[name]))
+  const verbs = `[${HARNESS_AGENT_VERBS.map((verb) => JSON.stringify(verb)).join(', ')}]`
+  return rules.flatMap((rule) => rule.includes('{verb}') ? HARNESS_AGENT_VERBS.map((verb) => rule.split('{verb}').join(verb)) : [rule])
+    .map((rule) => rule.replace(/\{(launcher|node|cli|verbs)\}/g, (_, name: string) => name === 'verbs' ? verbs : quote(paths[name])))
 }
 
 /**
  * Add `rule` to the list at `[table, list]` (`permissions.allow`), creating what is missing and keeping every
  * other rule. A shape Harness does not know is left as it is: the person's rules are never rewritten to fit.
+ * Not where the person put the same rule in one of the `unless` lists (`deny`, `ask`): the engine ranks theirs
+ * first anyway, and an allow beside it would only read as Harness overruling them.
  */
-function withRule(settings: Settings, [table, list]: readonly [string, string], rule: string): boolean {
+function withRule(settings: Settings, [table, list]: readonly [string, string], rule: string, unless: readonly string[] = []): boolean {
   const at = settings[table] ?? {}
   if (!at || typeof at !== 'object' || Array.isArray(at)) return false
-  const rules = (at as Record<string, unknown>)[list] ?? []
+  const lists = at as Record<string, unknown>
+  const rules = lists[list] ?? []
   if (!Array.isArray(rules) || rules.includes(rule)) return false
+  if (unless.some((name) => Array.isArray(lists[name]) && (lists[name] as unknown[]).includes(rule))) return false
   settings[table] = { ...at, [list]: [...rules, rule] }
   return true
 }
 
+/** The head of Harness's rules file: what it is for, and that Harness keeps it. */
+const RULES_HEADER = `# Written by Harness, which rewrites it: do not edit. Its agent commands (harness ${HARNESS_AGENT_VERBS.join(', ')})\n`
+  + "# need Harness's daemon, which Codex's sandbox cannot reach, so they run outside it without asking. What each\n"
+  + '# may do is for Harness to decide: Settings > Agents, and an agent gives work to and closes only what it started.\n'
+
 /** A rules file Harness owns whole: written atomically, and only when it does not already say exactly this. */
 function writeRulesFile(file: string, rules: string): void {
-  const text = `# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n${rules}\n`
+  const text = `${RULES_HEADER}${rules}\n`
   try { if (readFileSync(file, 'utf8') === text) return } catch { /* not written yet */ }
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const temporary = `${file}.${process.pid}.tmp`

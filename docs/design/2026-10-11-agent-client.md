@@ -244,6 +244,38 @@ with a clear error; nothing is dropped silently.
   agents-start-agents off`; `<data>/agent-settings.json`): then every agent's `harness new` and `harness_start` is
   refused there, and reading, waiting and closing what it started still work. On by default.
 
+### No permission prompts (owner, October 12, 2026)
+
+"No asking. Just do. The best UX." Every verb needs the daemon, which Codex's sandbox cannot reach, so Codex asked
+the person before each one: about four questions for one hand-off (new, wait, show, close). In its auto mode it
+answered itself, but only after a failed try inside the sandbox. The safety is Harness's own, above: the switch for
+agents starting agents, the limits, closing only what you started, and Agent Messages per tab. So the engines run
+the verbs without asking.
+
+- **Codex, shell.** `<CODEX_HOME>/rules/harness.rules`, which Harness owns whole (written at every daemon start and
+  before a launch in another profile): `prefix_rule(pattern=["harness", ["ps", "show", "wait", "new", "close",
+  "send"]], decision="allow")`, again for the launcher's full path and for the managed Node with the CLI's bundle.
+  An `allow` match runs the command outside the sandbox on its first try when every command in the line matches one
+  (codex-rs `exec_policy.rs`, `Skip { bypass_sandbox }`, 0.162.1). Codex ranks forbidden over prompt over allow,
+  so a person's own rule wins. `harness settings` is not in it: it changes what agents may do, and still asks.
+- **Codex, MCP.** `harness_start` and `harness_send` say they are neither destructive nor open-world, so Codex's
+  auto rule no longer asks, and `codex exec` no longer refuses them ("MCP tool call requires approval, but approval
+  policy is never"). The plugin's own Codex manifest, `.codex-plugin/plugin.json`, sets
+  `default_tools_approval_mode = "approve"` for its server, which covers `harness_close` too; a setting the person
+  makes in `config.toml` for that server wins.
+- **Claude Code.** `Bash(harness <verb>:*)` and `Bash(<launcher> <verb>:*)` for each verb, `mcp__harness__*` (a
+  server the person added as `harness`) and `mcp__plugin_harness_harness__*` (the plugin's), added to
+  `permissions.allow` in `settings.json` beside the hooks, never one the person put in `deny` or `ask`. Claude Code
+  checks deny, then ask, then allow, and resolves a narrow allow rule before auto mode's classifier.
+- **Verified** with the real engines in a throwaway home against a local mock model (Codex 0.162.1, Claude Code
+  2.1.296): without the rules `harness ps` ran in Codex's sandbox and could not reach the stand-in daemon, and Claude
+  Code answered "This command requires approval"; with them both ran it at once, `harness new … && harness wait …`
+  too. `harness settings` stayed sandboxed; a person's deny and ask still refused; Codex's `harness_start` and
+  `harness_close` ran under `approval_policy = "never"`, and a person's `default_tools_approval_mode = "prompt"`
+  refused close again.
+- **What still asks.** A `harness` command piped or joined with another one (`| head`, `; echo $?`, a variable set
+  in front): the rule matches commands, not lines. The CLI's sandbox error says to run it by itself.
+
 ## How it works
 
 `cli/src/agentClient/`, a CLI module outside the core, composed only of requests the daemon already answers.

@@ -9,7 +9,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
@@ -336,6 +336,36 @@ describe('Harness for agents, end to end', () => {
     expect(closed).toEqual({ text: 'Closed mcpkid. Its conversation is kept.', isError: false })
     server.close()
     client.close()
+  })
+
+  it('once Harness runs, Claude Code and Codex here run its commands and MCP tools without asking, the person\'s own rules kept', async () => {
+    // Owner, 2026-10-12: "no asking. just do. the best ux." Codex asked before every verb (its sandbox cannot reach
+    // the daemon), about four times a hand-off. The daemon writes the rules into the person's own settings at start
+    // (docs/design/2026-10-11-agent-client.md, No permission prompts); what an agent may do stays Harness's to decide.
+    const d = await IsolatedDaemon.create()
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    const settings = join(d.env.HOME!, '.claude', 'settings.json'), rules = join(d.env.CODEX_HOME!, 'rules', 'harness.rules')
+    mkdirSync(join(d.env.HOME!, '.claude'), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'], deny: ['Bash(harness close:*)'] } }))
+    await d.start()
+    await until('Harness to allow its commands in Claude Code and Codex', () => existsSync(rules)
+      && readFileSync(settings, 'utf8').includes('mcp__plugin_harness_harness__*'), 30_000)
+    const verbs = ['ps', 'show', 'wait', 'new', 'close', 'send'], launcher = join(d.env.HOME!, '.local', 'bin', 'harness')
+    // The person's deny of `harness close` is theirs: no allow is written beside it, and Claude Code ranks deny first.
+    expect(JSON.parse(readFileSync(settings, 'utf8')).permissions).toEqual({
+      allow: ['Bash(npm test:*)', ...verbs.filter((verb) => verb !== 'close').map((verb) => `Bash(harness ${verb}:*)`),
+        ...verbs.map((verb) => `Bash(${launcher} ${verb}:*)`), 'mcp__harness__*', 'mcp__plugin_harness_harness__*'],
+      deny: ['Bash(harness close:*)'],
+    })
+    // Codex: one allow rule a spelling, so each verb runs outside the sandbox on its first try; a file Harness owns.
+    const list = JSON.stringify(verbs).replace(/,/g, ', ')
+    const written = readFileSync(rules, 'utf8').split('\n').filter((line) => line.startsWith('prefix_rule('))
+    expect(written).toHaveLength(3)
+    expect(written[0]).toBe(`prefix_rule(pattern=["harness", ${list}], decision="allow")`)
+    expect(written[1]).toBe(`prefix_rule(pattern=[${JSON.stringify(launcher)}, ${list}], decision="allow")`)
+    expect(written[2]).toMatch(new RegExp(`^prefix_rule\\(pattern=\\["[^"]+", "[^"]+/cli\\.js", ${list.replace(/[[\]]/g, '\\$&')}\\], decision="allow"\\)$`))
+    expect(statSync(rules).mode & 0o777).toBe(0o600)
   })
 
   it('an agent is told, not left waiting, when Claude Code or Codex would ask the person to trust its folder', async () => {

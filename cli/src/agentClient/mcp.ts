@@ -66,6 +66,12 @@ export const TOOLS: Tool[] = [
       agent: { type: 'string', enum: ['claude', 'codex'], description: 'Claude Code (default) or Codex.' },
       machine: { type: 'string', description: 'Another of the person\'s machines, by name, to run it there.' },
     }, ['task', 'name']),
+    // Starting a harness only adds one, on the person's own machines. Said so, Codex runs it without asking: a tool
+    // that says nothing counts as destructive and open-world there, so `codex exec` refused every start ("MCP tool
+    // call requires approval, but approval policy is never") and interactive Codex asked each time (codex-rs
+    // core/src/mcp_tool_call.rs `requires_mcp_tool_approval`, 0.162.1). What an agent may start is Harness's to
+    // decide (Settings ▸ Agents, the spawn limits).
+    annotations: { destructiveHint: false, openWorldHint: false },
     argv: (a, cwd) => {
       // A folder was required, and a relative one was resolved against this server's folder, so an MCP agent could not
       // ask for a project Harness makes: Codex started Claude Code in an empty ~/work, which waited on its trust question
@@ -103,6 +109,8 @@ export const TOOLS: Tool[] = [
     name: 'harness_send',
     description: 'Send a message to a teammate: a harness in the same tab as you, where the person turned Agent Messages on (the tab\'s chat icon). Refused anywhere else, even to a harness you started.',
     inputSchema: schema({ to: { type: 'string', description: 'The teammate\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
+    // A message adds to a teammate's inbox in this tab and nothing more; as harness_start, said so Codex does not ask.
+    annotations: { destructiveHint: false, openWorldHint: false },
     argv: (a) => ['send', str(a.to), typeof a.text === 'string' ? a.text : ''],
   },
   {
