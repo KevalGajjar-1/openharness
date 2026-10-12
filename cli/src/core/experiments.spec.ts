@@ -12,9 +12,6 @@ describe('the experiments on as the core starts', () => {
   let dataDir: string
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'experiments-')) })
   afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); signedOutForTest() })
-  /** Agent Messages as core/api.ts declares it: on by its account switch (off by default), or by its saved state. */
-  const experiments = { messages: { state: ['agent-messages'], setting: 'agentMessages' as const }, orchestrator: { state: ['orchestrator/*.json'] } }
-
   it('finds saved state by path, or by a file of its kind in its folder', () => {
     expect(stateIsThere(dataDir, ['agent-messages'])).toBe(false)
     expect(stateIsThere(dataDir, ['orchestrator/*.json'])).toBe(false)
@@ -45,37 +42,17 @@ describe('the experiments on as the core starts', () => {
     expect(want.mock.calls).toEqual([['orchestrator']])
   })
 
-  it('asks for no experiment on a fresh data folder: Agent Messages is off until the account turns it on', () => {
-    // Off by default, like the account's other agent experiments (owner, 2026-10-12): a fresh computer starts no
-    // process for it.
-    const want = vi.fn()
-    expect(wakeExperiments({ dataDir, experiments: EXPERIMENTS, outOfProcess: new Set(Object.keys(EXPERIMENTS)), want })).toEqual([])
-    expect(want).not.toHaveBeenCalled()
-  })
-
-  it('asks for an experiment whose account switch is on, with no saved state, and not once it is off', () => {
-    // Once on, its agents hear of `harness send` only from its process, which nothing else starts on a machine where no
-    // one has sent yet (owner, 2026-10-12).
-    setAgentSettingsForTest(dataDir, { agentMessages: true })
-    const wake = (outOfProcess = new Set(['messages', 'orchestrator'])) => {
+  it('asks for none on a fresh data folder, whatever the account\'s switches say: no switch starts an experiment', () => {
+    // Agent Messages was the one a switch started, and left the experiments for the edge host (2026-10-12): its
+    // agents' note no longer needs a process of its own started for it.
+    expect(Object.keys(EXPERIMENTS)).not.toContain('messages')
+    const outOfProcess = new Set([...Object.keys(EXPERIMENTS), 'messages'])
+    for (const agentMessages of [true, false]) {
+      setAgentSettingsForTest(dataDir, { agentMessages })
       const want = vi.fn()
-      return { woken: wakeExperiments({ dataDir, experiments, outOfProcess, want }), want }
+      expect(wakeExperiments({ dataDir, experiments: EXPERIMENTS, outOfProcess, want })).toEqual([])
+      expect(want).not.toHaveBeenCalled()
     }
-    const first = wake()
-    expect(first.woken).toEqual(['messages'])
-    expect(first.want.mock.calls).toEqual([['messages']])
-    // As core/api.ts declares the experiments: with it on and no saved state, Agent Messages alone.
-    const outOfProcess = new Set(Object.keys(EXPERIMENTS))
-    expect(wakeExperiments({ dataDir, experiments: EXPERIMENTS, outOfProcess, want: vi.fn() })).toEqual(['messages'])
-    // In the core's process it is started there, not asked for.
-    expect(wake(new Set()).woken).toEqual([])
-    setAgentSettingsForTest(dataDir, { agentMessages: false })
-    const off = wake()
-    expect(off.woken).toEqual([])
-    expect(off.want).not.toHaveBeenCalled()
-    // Off, its saved state still wakes it: what waits there is held, then failed, rather than left behind.
-    mkdirSync(join(dataDir, 'agent-messages'))
-    expect(wake().woken).toEqual(['messages'])
   })
 
   it('hands the account\'s notices to each listener here, guarded, and to the experiments\' processes', () => {
@@ -111,16 +88,16 @@ describe('the experiments on as the core starts', () => {
     const order: string[] = []
     const notify = vi.fn(() => true)
     const hooks = createExperimentHooks({
-      want: (service) => order.push(`want ${service}`), notify, outOfProcess: new Set(['messages']), experiments: ['orchestrator', 'messages'],
+      want: (service) => order.push(`want ${service}`), notify, outOfProcess: new Set(['sharing']), experiments: ['orchestrator', 'sharing'],
     })
-    hooks.want('messages')
+    hooks.want('sharing')
     hooks.want('orchestrator')
-    expect(order).toEqual(['want messages', 'want orchestrator'])
+    expect(order).toEqual(['want sharing', 'want orchestrator'])
     const heard = vi.fn()
     hooks.onNotice(heard)
     hooks.notice({ type: 'desk_changed', revision: 5 })
     expect(heard).toHaveBeenCalledWith({ type: 'desk_changed', revision: 5 })
-    expect(notify.mock.calls).toEqual([['messages', { type: 'service_event', payload: { kind: 'notice', notice: { type: 'desk_changed', revision: 5 } } }]])
+    expect(notify.mock.calls).toEqual([['sharing', { type: 'service_event', payload: { kind: 'notice', notice: { type: 'desk_changed', revision: 5 } } }]])
     createExperimentHooks({ want: vi.fn(), notify, outOfProcess: new Set(), experiments: [] }).want('x')
   })
 })
@@ -140,7 +117,6 @@ describe('the account\'s agent experiments, kept for this computer', () => {
   /** The account's answer, as backend routes/experimentalSettings.ts gives it. */
   const account = (features: Record<string, boolean>, accountId = 'acct') =>
     ({ status: 200, body: { success: true, data: { accountId, revision: 1, features: { share_button: false, ...features }, available: {} } } })
-  const experiments = { messages: { state: ['agent-messages'], setting: 'agentMessages' as const }, orchestrator: { state: [] } }
 
   function setup(over: { log?: (line: string) => void; dataDir?: string; everyMs?: number | null } = {}) {
     let listener: ((notice: BackendNotice) => void) | null = null
@@ -153,7 +129,7 @@ describe('the account\'s agent experiments, kept for this computer', () => {
     })
     const want = vi.fn()
     const sync = createAgentSettingsSync({
-      dataDir: over.dataDir ?? dataDir, backend, session: () => session, want, experiments,
+      dataDir: over.dataDir ?? dataDir, backend, session: () => session, messagesChanged: want,
       ...(over.everyMs === null ? {} : { everyMs: over.everyMs ?? 1_000 }),
       onNotice: (l) => { listener = l; return unsubscribe },
       ...(over.log ? { log: over.log } : {}),
@@ -175,10 +151,11 @@ describe('the account\'s agent experiments, kept for this computer', () => {
     expect(t.backend).toHaveBeenCalledExactlyOnceWith('GET', '/api/experimental-settings')
     expect(kept()).toEqual({ ...OFF, agentMessages: true })
     expect(JSON.parse(readFileSync(agentSettingsPath(dataDir), 'utf8'))).toMatchObject({ accountId: 'acct', machineId: 'm1', agentMessages: true })
-    // Asked for now, so its agents get its note without waiting for a request or the next start (a fresh Mac, 2026-10-12).
-    expect(t.want.mock.calls).toEqual([['messages']])
+    // Agent Messages is told now, so its agents get its note without waiting for a request or the next start (a fresh
+    // Mac, 2026-10-12).
+    expect(t.want).toHaveBeenCalledOnce()
     t.sync.start()
-    // Another notice is not one of theirs; desk_changed is. Left on: not asked for again.
+    // Another notice is not one of theirs; desk_changed is. Left on: not told again.
     t.notice({ type: 'zoo_changed', revision: 2 })
     answer(account({ agent_messages: true, agents_start_agents: true }))
     t.notice({ type: 'desk_changed', revision: 0 })
@@ -186,12 +163,12 @@ describe('the account\'s agent experiments, kept for this computer', () => {
     expect(t.backend).toHaveBeenCalledTimes(2)
     expect(kept()).toEqual({ ...OFF, agentMessages: true, agentsStartAgents: true })
     expect(t.want).toHaveBeenCalledTimes(1)
-    // The safety net: turned off, it stays unasked for.
+    // The safety net: turned off, and told so, so it withdraws its notes.
     answer(account({}))
     await vi.advanceTimersByTimeAsync(1_000)
     expect(t.backend).toHaveBeenCalledTimes(3)
     expect(kept()).toEqual(OFF)
-    expect(t.want).toHaveBeenCalledTimes(1)
+    expect(t.want).toHaveBeenCalledTimes(2)
     t.sync.stop()
     t.sync.stop()
     expect(t.unsubscribe).toHaveBeenCalledOnce()
@@ -291,7 +268,7 @@ describe('the account\'s agent experiments, kept for this computer', () => {
     })
     expect((await t.sync.experimentalWrite({ accountId: 'acct', feature: 'agent_messages', enabled: true })).status).toBe(200)
     expect(kept()).toEqual({ ...OFF, pullRequestLine: true, agentMessages: true })
-    expect(t.want.mock.calls).toEqual([['messages']])
+    expect(t.want).toHaveBeenCalledOnce()
     // A refusal is passed on as it is, and changes nothing here.
     const refused = { status: 409, body: { success: false, error: { code: 'ACCOUNT_CHANGED', message: 'Your account changed.' } } }
     answer(refused)
@@ -318,7 +295,7 @@ describe('the account\'s agent experiments, kept for this computer', () => {
     expect(await t.sync.settingsWrite({ agentMessages: true, agentsStartAgents: true, other: true, pullRequestLine: 'on' }))
       .toEqual({ status: 200, body: { ...OFF, agentMessages: true, agentsStartAgents: true, signedIn: true } })
     expect(patches).toEqual([{ accountId: 'acct', feature: 'agent_messages', enabled: true }, { accountId: 'acct', feature: 'agents_start_agents', enabled: true }])
-    expect(t.want.mock.calls).toEqual([['messages']])
+    expect(t.want).toHaveBeenCalledOnce()
   })
 
   it('refuses a write with nothing in it, signed out, or with the account out of reach, and says why', async () => {

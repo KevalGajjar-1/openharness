@@ -1,10 +1,12 @@
 /**
  * Which experiments are on as the core starts (core/api.ts `EXPERIMENTS`): one whose saved state is in the
  * data folder is asked for at once, so that what it does on its own (a saved project's queued work) goes on
- * after a restart, as it did when it ran in the core's process; so is one whose account switch is on, as this
- * computer last kept it (Agent Messages, off by default; lib/agentSettings.ts). One with neither waits for its first
- * request: off, it has no process. Read once, at start, and bounded: a name or a folder listing, and the one small
- * settings file. The account's agent experiments are kept here as they change (`createAgentSettingsSync`).
+ * after a restart, as it did when it ran in the core's process. One without waits for its first request: off,
+ * it has no process. Read once, at start, and bounded: a name or a folder listing.
+ *
+ * Agent Messages was the one experiment a Settings ▸ Agents switch started, and it is no longer one: it runs in the
+ * edge host and sleeps while it is off (messages/service.ts, 2026-10-12). Its switch, with the agents' other two, is
+ * now an experiment of the account, kept for this computer here (`createAgentSettingsSync`).
  */
 import { readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -12,7 +14,7 @@ import { AGENT_SETTING_EXPERIMENTS, agentSettingsFromAnswer, ownsAgentSettings, 
 import type { AuthSession } from '../lib/authSession.js'
 import type { BackendNotice } from './api.js'
 
-type Experiments = Readonly<Record<string, { state: readonly string[]; setting?: keyof AgentSettings }>>
+type Experiments = Readonly<Record<string, { state: readonly string[] }>>
 
 /** Whether any of `state` is in `dataDir`: a path under it, or `dir/*.ext` for a file of that kind in that folder. */
 export function stateIsThere(dataDir: string, state: readonly string[]): boolean {
@@ -28,18 +30,15 @@ export function stateIsThere(dataDir: string, state: readonly string[]): boolean
   })
 }
 
-/** Ask for each experiment that runs in its own process and has saved state here, or whose account switch is on
- *  (Agent Messages, off by default: once on, its agents hear of `harness send` only from its process). */
+/** Ask for each experiment that runs in its own process and has saved state here. */
 export function wakeExperiments(options: {
   dataDir: string
   experiments: Experiments
   outOfProcess: ReadonlySet<string>
   want: (service: string) => void
 }): string[] {
-  const settings = readAgentSettings(options.dataDir)
   const woken = Object.entries(options.experiments)
-    .filter(([name, experiment]) => options.outOfProcess.has(name)
-      && (stateIsThere(options.dataDir, experiment.state) || (experiment.setting !== undefined && settings[experiment.setting])))
+    .filter(([name, experiment]) => options.outOfProcess.has(name) && stateIsThere(options.dataDir, experiment.state))
     .map(([name]) => name)
   for (const name of woken) options.want(name)
   return woken
@@ -64,9 +63,9 @@ const ACCOUNT_UNAVAILABLE = 'Harness could not reach your account to change this
  * this daemon (`/api/experimental-settings`), so a switch turned here holds here at once. Signed out it reads nothing,
  * and the copy reads as the defaults.
  *
- * An experiment whose switch an answer turns on is asked for at once, so it acts now (Agent Messages' agents get its
- * note) rather than at its first request or the next start: on one machine neither came, and no agent heard of
- * `harness send` (a fresh Mac, 2026-10-12).
+ * Agent Messages, in the edge host, is told at once when an answer changes its switch (`MessagesPort.settingsChanged`),
+ * so turned on it acts now (its agents get its note) and turned off it withdraws them: it sleeps while it is off, and
+ * on one machine nothing else woke it, so no agent heard of `harness send` (a fresh Mac, 2026-10-12).
  *
  * `harness settings` and an older window's Settings ▸ Agents write through it (`/api/agent-settings`) to the account.
  */
@@ -76,8 +75,8 @@ export function createAgentSettingsSync(deps: {
   backend: (method: string, path: string, body?: unknown) => Promise<Answer>
   session: () => AuthSession | null
   onNotice: (listener: (notice: BackendNotice) => void) => () => void
-  experiments: Experiments
-  want: (service: string) => void
+  /** Agent Messages' switch changed here (core/api.ts `MessagesPort.settingsChanged`). */
+  messagesChanged: () => void
   everyMs?: number
   log?: (line: string) => void
 }) {
@@ -100,9 +99,7 @@ export function createAgentSettingsSync(deps: {
       log(`[experiments] the agents' settings could not be kept · ${String(error)}`)
       return answer
     }
-    for (const [name, experiment] of Object.entries(deps.experiments)) {
-      if (experiment.setting && said.settings[experiment.setting] && !before[experiment.setting]) deps.want(name)
-    }
+    if (said.settings.agentMessages !== before.agentMessages) deps.messagesChanged()
     return answer
   }
 
@@ -183,9 +180,9 @@ export function createAgentSettingsSync(deps: {
 }
 
 /**
- * The account's notices the backend announces (`desk_changed`, …), for the experiments that hear them: each
- * listener in this process (`core.account.onNotice`), guarded, and each experiment's process (`tell`). Agent
- * Messages reads its tabs again at `desk_changed`.
+ * The account's notices the backend announces (`desk_changed`, …), for the services that hear them: each
+ * listener in this process (`core.account.onNotice`, Agent Messages' among them when it runs here, which reads its
+ * tabs again at `desk_changed`), guarded, and each experiment's process (`tell`).
  */
 export function createAccountNotices(tell: (notice: BackendNotice) => void, log: (line: string) => void = (line) => console.warn(line)) {
   const listeners = new Set<(notice: BackendNotice) => void>()

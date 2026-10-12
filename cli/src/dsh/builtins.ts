@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { DEVICES_BUILTIN_SOURCE, DEVICES_HARNESS_ID, HARNESS_MONITOR_BUILTIN_SOURCE, HARNESS_MONITOR_ID, MEMORIES_BUILTIN_SOURCE, MEMORIES_ID, MODEL_MANAGER_ID } from './builtinIds.js'
+import { DEVICES_BUILTIN_SOURCE, DEVICES_HARNESS_ID, HARNESS_MONITOR_BUILTIN_SOURCE, HARNESS_MONITOR_ID, MEMORIES_BUILTIN_SOURCE, MEMORIES_ID, MODEL_MANAGER_BUILTIN_SOURCE, MODEL_MANAGER_ID } from './builtinIds.js'
 import { dshRootDir, isBrokenDsh, readInstalledIndex, resolveInstalled, upsertInstalledRecord } from './installed.js'
 import { lockDsh } from './lock.js'
 import { readDshManifest } from './manifest.js'
@@ -21,7 +21,7 @@ export type BundledFiles = Record<string, { content: string; executable: boolean
 export function ensureBundledModelManager(files?: BundledFiles): boolean {
   files ??= builtinFiles('models')
   if (!files || !files['harness.json']) return false
-  return installBuiltin({ id: MODEL_MANAGER_ID, source: 'builtin:model-manager', folder: 'model-manager', files, what: 'Model Manager', legacyPath: 'store/agents/autonomous-grid' })
+  return installBuiltin({ id: MODEL_MANAGER_ID, source: MODEL_MANAGER_BUILTIN_SOURCE, folder: 'model-manager', files, what: 'Model Manager', legacyPath: 'store/agents/autonomous-grid' })
 }
 
 /** An unlisted first-party DSH. Its viewer is native; its agent uses the same daemon API. */

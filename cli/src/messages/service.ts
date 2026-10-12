@@ -9,13 +9,24 @@
  *   (agentClient/ledger.ts). It lets no one message anyone: only sharing a tab does.
  * Deliveries to this machine's agents are the mailbox's (mailbox.ts); a message for another machine's agent is
  * handed to that machine's daemon, which owns its delivery and is asked what became of it.
+ *
+ * Off costs nothing. It runs in the edge host on every computer, and only while this computer is signed in and has
+ * Agent Messages on does it read the account's tabs (every 15 s), look at its deliveries (every 2 s) and at its notes,
+ * its outbox and other machines' deliveries (every 5 s). Turned off, it withdraws the notes, holds what waits here out
+ * of the hook's reach and fails it once it has waited HELD_OUTSIDE_MS, as while on, and then runs nothing until it is
+ * turned on again: the core tells it when its copy of the account's switch changes (`settingsChanged`, from
+ * core/experiments.ts `createAgentSettingsSync`), and a watch on the setting's file hears the same write
+ * (settingWatch.ts); what this computer sent that waits for another machine is
+ * handed over once it is on again. Signed out it runs nothing: there is no account to read tabs from, and signing in
+ * starts a new core, which it reconnects to (`reconnected`). Its requests are answered either way, and read the switch
+ * again as they come.
  */
 import { createHash } from 'node:crypto'
 import { hostname } from 'node:os'
 import { basename, join } from 'node:path'
 import type { CoreApi, ServiceRequests, TurnDelivery } from '../core/api.js'
 import { env } from '../config/env.js'
-import { readAgentSettings } from '../lib/agentSettings.js'
+import { agentSettingsPath, readAgentSettings } from '../lib/agentSettings.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
@@ -23,6 +34,7 @@ import { Mailbox, type MailboxAgent } from './mailbox.js'
 import { type DeliveryStatus, LIMITS, LONG_TEXT, longAdvice, type Message, MessageError, messageId, note, parseMessage, type Recipient, rendered, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
 import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
+import { watchSettingFile } from './settingWatch.js'
 import { MessageStore, type LocalDelivery } from './store.js'
 
 export interface MessagesOptions {
@@ -38,6 +50,8 @@ export interface MessagesOptions {
   ledgerFile?: string
   /** Something that decides whether a typed delivery may be written changed: the process tells the core. */
   changed?: () => void
+  /** How it hears the setting's file change while Agent Messages are off (settingWatch.ts); a test's own. */
+  watchSetting?: (path: string, changed: () => void) => () => void
   now?: () => number
 }
 
@@ -45,8 +59,11 @@ export interface AgentMessages {
   requests: ServiceRequests
   /** Whether the core may write a typed delivery now: the mailbox's word, in line. */
   canWrite(deliveryId: string): boolean
-  /** The service reached a core again, perhaps a new one: typed attempts in flight go back to the hook. */
+  /** The service reached a core again, perhaps a new one: typed attempts in flight go back to the hook, and what
+   *  runs follows whether this computer is signed in now. */
   reconnected?(): void
+  /** The core's copy of the account's switch changed: it is read again, and it wakes if it is on now. */
+  settingsChanged(): void
   start(): void
   stop(): void
 }
@@ -101,13 +118,38 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   const sent = new Map<string, number[]>()
   let timer: ReturnType<typeof setInterval> | null = null
   let lastRemoteStatus = -Infinity
+  /**
+   * What runs (`wake`): everything while this computer is signed in and has Agent Messages on (`awake`); while they are
+   * off, only the mailbox's look until what waited has settled, and the watch on the setting's file; signed out,
+   * nothing. Null before it starts and once it stops.
+   */
+  let mode: 'awake' | 'off' | 'signedOut' | null = null
+  const asleep = (): boolean => mode === 'off' || mode === 'signedOut'
+  let running = false
+  let unwatch: (() => void) | null = null
+  const settingsFile = agentSettingsPath(options.dataDir ?? core.dataDir)
 
-  // The account's experiment, kept by the core in the data folder (lib/agentSettings.ts) as it changes, which tells no
-  // one: a small file, read again at most every SETTING_FRESH_MS, so a switch turned off takes effect at the next look.
+  // The account's experiment, kept by the core in the data folder (lib/agentSettings.ts) as it changes: a small file,
+  // read again at most every SETTING_FRESH_MS, so a switch turned off takes effect at the next look; while off,
+  // nothing looks, and the core's word (`settingsChanged`) or the file's watch wakes it (settingWatch.ts).
   let setting = { on: true, at: -Infinity }
-  const messagingOn = (): boolean => {
-    if (now() - setting.at >= SETTING_FRESH_MS) setting = { on: readAgentSettings(options.dataDir ?? core.dataDir).agentMessages, at: now() }
+  const readSetting = (): boolean => {
+    setting = { on: readAgentSettings(options.dataDir ?? core.dataDir).agentMessages, at: now() }
     return setting.on
+  }
+  const messagingOn = (): boolean => {
+    if (now() - setting.at >= SETTING_FRESH_MS) {
+      const was = setting.on
+      // Turned on or off since the last look: what runs follows, once whatever asked has its answer.
+      if (readSetting() !== was) later()
+    }
+    return setting.on
+  }
+  let waking = false
+  const later = (): void => {
+    if (waking) return
+    waking = true
+    queueMicrotask(() => { waking = false; wake() })
   }
 
   const directory = new MessageDirectory({
@@ -138,7 +180,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     refused: (delivery) => { const v = verdict(delivery); return v && 'refused' in v ? v.refused : null },
     held: (delivery) => { const v = verdict(delivery); return v && 'held' in v ? v.held : null },
     forbidden: (delivery) => forbidden(delivery),
-    ready: () => directory.current() !== null,
+    // Off, no tab carries a message, whatever the tabs say: known without reading them.
+    ready: () => directory.current() !== null || !directory.on(),
+    asleep,
     text: (delivery, message) => {
       const roster = rosterOf(delivery.agentId)
       return roster && store.state.noted[delivery.agentId] !== roster.signature ? `${roster.text}\n\n${rendered(message)}` : rendered(message)
@@ -173,7 +217,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!entry) return { refused: 'the message is no longer kept' }
     const never = forbidden(delivery)
     if (never) return { refused: never }
-    if (!directory.current()) return null
+    if (!directory.current() && directory.on()) return null
     const key = `${delivery.messageId} ${delivery.agentId}`
     const recipient = { machineId: self(), agentId: delivery.agentId }
     // Only a tab the two share carries a message, and none while Agent Messages are off here.
@@ -310,9 +354,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     saveQuietly()
   }
 
-  /** Give each local agent the roster note it has not read: through its hook only, never typed. */
+  /** Give each local agent the roster note it has not read: through its hook only, never typed. Off, take each back. */
   function notesPump(): void {
-    if (!directory.current()) return
+    if (!directory.current() && directory.on()) return
     const unknown: Member[] = []
     const alive = new Set(live().map((s) => s.agentId))
     // A note for a harness that is gone or stopped is withdrawn: its pane number may be another's next.
@@ -502,7 +546,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!message) throw new MessageError('INVALID_MESSAGE', 'That is not a message.')
     // This machine's own harnesses send through `send`, which names them by their pane: never as another's.
     if (message.from.machineId === self()) throw new MessageError('NOT_FROM_THERE', 'A message from this machine is sent here, not handed over.')
-    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read who is in which tab. It is handed over again later.')
+    // Off here, it fails below whatever the tabs say: they are not read for it.
+    if (directory.on() && !await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read who is in which tab. It is handed over again later.')
     if (store.state.local.filter((d) => d.state === 'queued').length >= LIMITS.waiting) {
       throw new MessageError('MAILBOX_FULL', 'Too many messages are waiting on that machine. It is handed over again later.')
     }
@@ -568,7 +613,59 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   }
 
   const stopHearing = core.turns.onDelivery((event: TurnDelivery) => mailbox.observe(event))
-  const stopNotices = core.account.onNotice((notice) => { if (notice.type === 'desk_changed') void directory.refresh(true) })
+  // Asleep, a changed desk is read when it wakes, not now.
+  const stopNotices = core.account.onNotice((notice) => { if (notice.type === 'desk_changed' && !asleep()) void directory.refresh(true) })
+
+  // Started only as it wakes, when it is stopped: never twice.
+  const startTick = (): void => {
+    timer = setInterval(() => {
+      notesPump()
+      void handOver()
+      if (now() - lastRemoteStatus >= REMOTE_STATUS_MS) { lastRemoteStatus = now(); void remoteStatus() }
+    }, TICK_MS)
+    timer.unref?.()
+  }
+  const stopTick = (): void => {
+    if (timer) clearInterval(timer)
+    timer = null
+  }
+
+  /**
+   * Run what this computer calls for now: everything while it is signed in with Agent Messages on; while they are off,
+   * the notes withdrawn, what waits held and then failed by the mailbox's look, which stops once nothing waits, and
+   * a watch on the setting's file to wake it; signed out, nothing. Every computer runs this service: one with it off,
+   * or never signed in, paid a read of the account's tabs every 15 s and three timers for messages it could never
+   * carry (2026-10-12).
+   */
+  function wake(): void {
+    if (!running) return
+    const next = !core.account.signedIn() ? 'signedOut' : readSetting() ? 'awake' : 'off'
+    if (next === mode) return
+    mode = next
+    if (next === 'awake') {
+      unwatch?.()
+      unwatch = null
+      directory.start()
+      mailbox.resume()
+      startTick()
+      return
+    }
+    directory.stop()
+    stopTick()
+    if (next === 'signedOut') {
+      unwatch?.()
+      unwatch = null
+      mailbox.pause()
+      return
+    }
+    // Never watching yet: it was awake, signed out or not running, and none of those watches.
+    unwatch = (options.watchSetting ?? watchSettingFile)(settingsFile, later)
+    mailbox.refuseAll()
+    notesPump()
+    // The mailbox looks on only while something here waits to be held and then failed; it stops itself after.
+    if (mailbox.waiting()) mailbox.resume()
+    else mailbox.pause()
+  }
 
   return {
     requests: {
@@ -594,21 +691,23 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         : { error: 'MESSAGES_UNAVAILABLE', detail: 'Agent Messages are unavailable right now. Nothing was sent.' })),
     },
     canWrite: (deliveryId) => mailbox.canWrite(deliveryId),
-    reconnected: () => mailbox.takeBackAttempts(),
+    reconnected: () => {
+      mailbox.takeBackAttempts()
+      wake()
+    },
+    settingsChanged: later,
     start: () => {
-      directory.start()
+      running = true
       mailbox.start()
       sweep()
-      timer = setInterval(() => {
-        notesPump()
-        void handOver()
-        if (now() - lastRemoteStatus >= REMOTE_STATUS_MS) { lastRemoteStatus = now(); void remoteStatus() }
-      }, TICK_MS)
-      timer.unref?.()
+      wake()
     },
     stop: () => {
-      if (timer) clearInterval(timer)
-      timer = null
+      running = false
+      mode = null
+      unwatch?.()
+      unwatch = null
+      stopTick()
       stopHearing()
       stopNotices()
       mailbox.stop()
