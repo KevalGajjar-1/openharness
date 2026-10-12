@@ -146,6 +146,8 @@ void main() {
               signInCode: () async =>
                   (code: 'synthetic-code', ttl: const Duration(seconds: 90)),
               onManageDevices: () {},
+              // The code is hidden unless asked; this review draws it too.
+              offerScanCode: true,
             ),
           );
           await tester.pumpAndSettle();

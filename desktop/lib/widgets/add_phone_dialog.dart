@@ -33,7 +33,10 @@ import 'terminal_prompt.dart';
 ///
 /// **The QR is the way in for what that does not cover** — a phone app from
 /// before the onboarding, or a phone that does not turn up — put away under
-/// "Not showing up? Scan a code instead", and armed only while it is up:
+/// "Not showing up? Scan a code instead", and armed only while it is up.
+/// ⚠️ **Hidden for now** ([AddPhoneDialog.offerScanCode]): the phone
+/// onboarding design pairs nothing — signing in is the whole of it (owner,
+/// 2026-10-12). The code stays so it can come back. When offered:
 ///
 /// 1. **The QR** ([phonePairLink]) tells the phone who to sign in as, which
 ///    machine to pair with, and the one-time pairing code.
@@ -59,6 +62,7 @@ Future<void> showAddPhoneDialog(
   PhoneSignInCodeCall? signInCode,
   VoidCallback? onConnectMachine,
   VoidCallback? onManageDevices,
+  bool offerScanCode = false,
 }) => showTerminalPrompt<void>(
   context,
   keymap: keymap,
@@ -68,6 +72,7 @@ Future<void> showAddPhoneDialog(
     signInCode: signInCode ?? app.api.phoneSignInCode,
     onConnectMachine: onConnectMachine,
     onManageDevices: onManageDevices,
+    offerScanCode: offerScanCode,
   ),
 );
 
@@ -252,12 +257,19 @@ class AddPhoneDialog extends StatefulWidget {
     required this.signInCode,
     this.onConnectMachine,
     this.onManageDevices,
+    this.offerScanCode = false,
   });
 
   final AppNotifier app;
   final PhonePairCall? pair;
   final PhoneSignInCodeCall signInCode;
   final VoidCallback? onConnectMachine;
+
+  /// Offers "Not showing up? Scan a code instead" — the pairing QR — under
+  /// the steps. Off by default: in the phone onboarding design a phone joins
+  /// by signing in with the same account, with no pairing anywhere (owner,
+  /// 2026-10-12). Kept for a phone app from before that onboarding.
+  final bool offerScanCode;
 
   /// Was "Manage devices…" — Machines — under the code. No longer drawn: a
   /// second way out, in the middle of adding a phone, that nobody adding one
@@ -517,8 +529,8 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
         context,
         app,
         reason:
-            'Sign in to add your phone. Your phone signs in to the same '
-            'account.',
+            'Sign in to add your phone. Your phone will use this account '
+            'too.',
         offerPhone: false,
       );
     } finally {
@@ -795,7 +807,8 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
 
   /// What this is for, the picture with how it is going under it, then the
   /// steps — on this computer first while it has no account, then on the
-  /// phone — and the code, put away under them.
+  /// phone — and, when offered ([AddPhoneDialog.offerScanCode]), the code,
+  /// put away under them.
   ///
   /// ```
   /// Add your phone
@@ -804,14 +817,15 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
   ///            Looking for your phone▌
   /// ON THIS MAC                              (no account when it opened)
   /// (1) Sign in                              → (✓) Signed in
-  ///     Your phone signs in with the same        As ada@gmail.com.
-  ///     account.
+  ///     Your phone will use this account         As ada@gmail.com.
+  ///     too.
   /// ON YOUR PHONE
   /// (2) Install Harness
   ///     App Store · Google Play
   /// (3) Sign in
-  ///     With ada@gmail.com.
-  /// ─────────────────────────────────────────
+  ///     With ada@gmail.com.                  (signed out: With the same
+  ///                                           account as this Mac.)
+  /// ─────────────────────────────────────────    (offerScanCode only)
   /// › Not showing up? Scan a code instead
   ///                                 [Cancel] [Sign in…]
   /// ```
@@ -856,9 +870,7 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
             title: [TextSpan(text: asking ? 'Sign in' : 'Signed in')],
             note: asking || email == null
                 ? const [
-                    TextSpan(
-                      text: 'Your phone signs in with the same account.',
-                    ),
+                    TextSpan(text: 'Your phone will use this account too.'),
                   ]
                 : [
                     const TextSpan(text: 'As '),
@@ -888,7 +900,11 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
           mark: phoneMark,
           title: const [TextSpan(text: 'Sign in')],
           note: asking || email == null
-              ? const [TextSpan(text: 'With the same account.')]
+              ? [
+                  TextSpan(
+                    text: 'With the same account as this ${_thisComputer()}.',
+                  ),
+                ]
               : [
                   const TextSpan(text: 'With '),
                   _strong(email),
@@ -896,7 +912,7 @@ class _AddPhoneDialogState extends State<AddPhoneDialog>
                 ],
           last: true,
         ),
-        if (!asking && !ready) ...[
+        if (widget.offerScanCode && !asking && !ready) ...[
           _disclosure(),
           if (_showingCode) ...[
             const SizedBox(height: 12),

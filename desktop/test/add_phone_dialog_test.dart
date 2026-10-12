@@ -97,6 +97,9 @@ Future<void> _open(
       signInCode: signInCode ?? _FakeSignIn().call,
       onConnectMachine: onConnectMachine,
       onManageDevices: onManageDevices,
+      // Most of this file is about the code, which Add Phone hides unless
+      // asked.
+      offerScanCode: true,
     ),
   );
   await tester.pump();
@@ -293,10 +296,14 @@ void main() {
       await _open(tester, app, daemon.call, signInCode: signIn.call);
       expect(find.textContaining('ON THIS '), findsOneWidget);
       expect(
-        find.text('Your phone signs in with the same account.'),
+        find.text('Your phone will use this account too.'),
         findsOneWidget,
       );
-      expect(find.text('With the same account.'), findsOneWidget);
+      // "this Mac" on macOS, "this computer" elsewhere.
+      expect(
+        find.textContaining('With the same account as this '),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('add-phone-sign-in')), findsOneWidget);
       expect(find.byKey(const ValueKey('add-phone-looking')), findsNothing);
       expect(find.byKey(const ValueKey('add-phone-show-code')), findsNothing);
