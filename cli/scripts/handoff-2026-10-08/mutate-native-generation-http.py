@@ -24,7 +24,7 @@ mutations = [
          '    const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)\n    ready(context, !pending)')], http, 'native Stop before binding'),
     ('missing eager consumer still accepts generation intake', server, [
         ("if (!handlers.onNativeGenerations) throw Error('Native generation control is unavailable.')", '')], http, 'generation input before effects'),
-    ('legacy endpoint accepts unowned generation fields', server, [
+    ('legacy endpoint accepts unowned generation fields', 'src/engines/kit/nativeHookBody.ts', [
         ('if (body.generationId !== undefined && !native) return false', '')], http, 'generation input before effects'),
     ('effect proof omits the complete frontier', server, [
         ('        source.verify()\n        verifyNativeOwner()', '        verifyNativeOwner()')], http, 'restored source when'),

@@ -41,6 +41,7 @@ import { homedir, uptime } from 'node:os'
 
 const BOOT_TOLERANCE_SEC = 120
 const HOOK_STARTED_AT = performance.now()
+const ORIGINAL_CALLER_PID = process.ppid
 // Self-imposed budget, well under the 10s timeout the vendor hook entries carry: a hook that overruns
 // stalls the user's turn, so every optional step checks `remainingBudget()` and gives up rather than
 // block. The override exists because that budget is a wall-clock assumption — on a loaded machine (a
@@ -242,15 +243,37 @@ function isDevinSession(input, p) {
   try { return statSync(join(p.devinLocksDir, `${id}.lock`)).isFile() } catch { return false }
 }
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = ''
-    process.stdin.setEncoding('utf8')
-    process.stdin.on('data', (c) => (data += c))
-    process.stdin.on('end', () => resolve(data))
-    process.stdin.on('error', () => resolve(data))
+function readStdin(bounded = false) {
+  return new Promise((resolve, reject) => {
+    let data = '', bytes = 0, settled = false, timer
+    const chunks = []
+    const finish = (complete = false, detail = 'Native hook input did not finish within its deadline.') => {
+      if (settled) return
+      settled = true; clearTimeout(timer)
+      process.stdin.off('data', chunk); process.stdin.off('end', ended); process.stdin.off('error', failed)
+      process.stdin.pause()
+      if (bounded && !complete) {
+        process.stdin.destroy()
+        reject(Error(detail))
+      } else if (bounded) {
+        try { resolve(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks))) }
+        catch { reject(Error('Native hook input is not complete UTF-8.')) }
+      } else resolve(data)
+    }
+    const chunk = value => {
+      bytes += Buffer.byteLength(value)
+      if (bounded && (bytes > 256 * 1024 || chunks.length >= 4096)) finish(false, 'Native hook input exceeds its complete-input limit.')
+      else if (bounded) chunks.push(value)
+      else data += value
+    }
+    const ended = () => finish(true)
+    const failed = () => finish(false, 'Native hook input could not be read completely.')
+    if (!bounded) process.stdin.setEncoding('utf8')
+    process.stdin.on('data', chunk)
+    process.stdin.on('end', ended)
+    process.stdin.on('error', failed)
     // Safety: if stdin never ends, don't hang.
-    setTimeout(() => resolve(data), 1000)
+    timer = setTimeout(() => finish(), 1000)
   })
 }
 
@@ -1572,24 +1595,40 @@ async function fallbackSessionEnd(sessionId, reason, engine, tmuxPane) {
   void sessionId; void reason; void engine; void tmuxPane
 }
 
-async function main() {
+async function main(options = {}) {
   let port = argPort()
   const engine = argEngine()
-  const raw = await readStdin()
+  const tmuxPane = process.env.TMUX_PANE
+  const initialDataDir = paths().dataDir
+  // Cursor can report from outside the engine ancestry. Pin that optional
+  // runtime before stdin/routing yields; a changed route has no such exception.
+  const originalRuntime = engine === 'cursor' && tmuxPane
+    ? options.captureNativeRuntime?.(initialDataDir, tmuxPane) : undefined
+  const raw = await readStdin(!!options.nativeCursor)
   let input = {}
   try {
     input = JSON.parse(raw)
   } catch {
+    if (options.nativeCursor) throw Error('Native hook input is not complete JSON.')
     return
   }
+  if (options.nativeCursor && (!input || typeof input !== 'object' || Array.isArray(input))) throw Error('Native hook input is not an event object.')
 
   const event = input.hook_event_name || input.hookEventName
-  const tmuxPane = process.env.TMUX_PANE
   if (!tmuxPane) return
   // Before anything reads the data folder or posts: which daemon this pane is (routeToPaneOwner).
   if (await routeToPaneOwner(tmuxPane)) port = argPort()
   const mutationFields = { engine, ...terminalHookFields(tmuxPane) }
   if (engine === 'cursor' && input.is_background_agent === true) return
+  if (engine === 'cursor' && options.nativeCursor) {
+    // The native client owns its retained bytes and cleanup. Never continue
+    // into the old second Stop, task deletion or offline registry mutation.
+    await options.nativeCursor({ input, event, port, tmuxPane, dataDir: paths().dataDir,
+      credential: readHookCredential(), id: DELIVERY_ID, firedAt: FIRED_AT,
+      callerPid: ORIGINAL_CALLER_PID, timeoutMs: remainingBudget(),
+      runtime: paths().dataDir === initialDataDir ? originalRuntime : undefined })
+    return
+  }
   if (engine === 'codex' && isCodexSubagent(input, paths())) return
   // Devin's documented user-level hook locations include ~/.claude.json and ~/.claude/settings.json, so a
   // Devin session can fire the machine's CLAUDE hook and register itself as claude (wrong engine, and a
@@ -1882,9 +1921,10 @@ async function main() {
   if (ok === false && !held) await fallbackRegister(input, engine, tmuxPane)
 }
 
-main()
-  .catch(() => {})
-  .finally(() => {
+export async function runNotify(options = {}) {
+  try { await main(options) } catch (error) {
+    if (options.nativeCursor) process.stderr.write(`[harness] Native hook held: ${String(error?.message ?? error).slice(0, 1024)}\n`)
+  } finally {
     // Cursor and Hermes parse the hook's stdout as JSON; `{}` is the explicit no-op (for Hermes it also
     // guarantees a pre_llm_call hook never injects context). Claude/Codex want no stdout at all.
     const e = argEngine()
@@ -1893,6 +1933,16 @@ main()
     // — there `decision` is required, and `{}` reads as a denial (measured: every tool call of the turn
     // came back "Tool call denied by pre-tool hook").
     // Copilot parses stdout as JSON too; `{}` is the documented no-op for every event installed here.
-    if (e === 'cursor' || e === 'hermes' || e === 'agy' || e === 'copilot') process.stdout.write('{}\n', () => process.exit(0))
+    if (options.nativeCursor) {
+      // A bounded delivery reply can precede actual filesystem cleanup. Let
+      // its handles settle; a forced exit would abandon the writer's lease.
+      process.exitCode = 0
+      if (e === 'cursor' || e === 'hermes' || e === 'agy' || e === 'copilot') process.stdout.write('{}\n')
+    } else if (e === 'cursor' || e === 'hermes' || e === 'agy' || e === 'copilot') process.stdout.write('{}\n', () => process.exit(0))
     else process.exit(0)
-  })
+  }
+}
+
+// The source runner remains available to legacy protocol fixtures. The built
+// entry supplies its coordinator explicitly, so importing this never runs twice.
+if (typeof __HARNESS_BUNDLED_HOOK__ === 'undefined' || !__HARNESS_BUNDLED_HOOK__) void runNotify()

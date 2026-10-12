@@ -11,10 +11,11 @@
  * `require` via the banner so ws's try/catch fallback works without them.
  */
 import * as esbuild from 'esbuild'
-import { appendFileSync, readFileSync, copyFileSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { readDshRegistry } from './scripts/lib/dshRegistry.mjs'
 import { readBuiltinBundle, readHarnessMonitorBundle, readMemoriesBundle, readModelManagerBundle } from './scripts/lib/modelManagerBundle.mjs'
 import { readProcessImageBundle } from './scripts/lib/processImageBundle.mjs'
+import { buildNativeHook } from './scripts/lib/nativeHookBundle.mjs'
 import { leanBlock } from './scripts/lib/leanBlock.mjs'
 import { asciiOnly } from './scripts/lib/asciiOnly.mjs'
 import { fileURLToPath } from 'node:url'
@@ -132,6 +133,6 @@ await esbuild.build({
 writeFileSync(`${outDir}/cli.js`, asciiOnly(readFileSync(`${outDir}/cli.js`, 'utf8')))
 appendFileSync(`${outDir}/cli.js`, leanBlock(leanFiles))
 
-copyFileSync('hook/notify.mjs', `${outDir}/notify.mjs`)
+await buildNativeHook({ outDir, processImages, version })
 
 console.log(`✓ Bundled ${outDir}/cli.js (v${version}) + ${outDir}/notify.mjs`)

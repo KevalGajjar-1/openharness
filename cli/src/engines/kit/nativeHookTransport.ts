@@ -9,8 +9,9 @@ export async function sendNativeHookRequest(request: NativeHookClientRequest, cr
   timeoutMs = 500,
 ): Promise<unknown> {
   // A background retry may spend the remainder of its original attempt here.
-  // Short-lived hook clients retain the 500 ms default; neither gets a new
-  // attempt deadline when a slow local receipt finally arrives.
+  // Native clients also pass their original remaining allowance: unlike the
+  // legacy 500 ms post, a retained delivery can wait for durable core ownership.
+  // Neither path gets a new attempt deadline when a slow receipt finally arrives.
   if (!Number.isFinite(timeoutMs)) return undefined
   const deadline = performance.now() + Math.max(1, Math.min(4500, timeoutMs))
   const active = () => current() && performance.now() < deadline

@@ -28,7 +28,8 @@ import { env } from './config/env.js'
 import { hookCredentialMatches, loadOrCreateHookCredential } from './lib/hookAuth.js'
 import { routeStoreRequest, type StoreHandler } from './lib/storeProxy.js'
 import type { HookTerminalHint } from './lib/terminalTypes.js'
-import { ENGINES, type AgentEngine } from './engines/types.js'
+import type { AgentEngine } from './engines/types.js'
+import { validNativeHookBody } from './engines/kit/nativeHookBody.js'
 import { isLoopbackRequest, loopbackHosts } from './lib/loopbackRequest.js'
 import { isTrustedLocal, listenLocalSocket, type LocalSocketServer } from './lib/localSocket.js'
 import { currentBootId } from './lib/bootId.js'
@@ -210,22 +211,6 @@ export interface HookServerHandlers {
 export { STORE_PATH_RE } from './lib/storeProxy.js'
 
 const MAX_HOOK_BODY_BYTES = 256 * 1024
-const HOOK_BODY_FIELDS = new Set([
-  'engine', 'launcherId', 'sessionId', 'transcriptPath', 'cwd', 'source', 'tmuxPane', 'title', 'model',
-  'cliVersion', 'runtimeHints', 'callerPid', 'hookEvent', 'pluginVersion', 'reason', 'status', 'toolUseId',
-  'toolName', 'input', 'prompt', 'nativeOrigin', 'generationId',
-])
-
-function optionalBoundedString(value: unknown, max: number): boolean {
-  return value === undefined || value === null || (typeof value === 'string'
-    && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value))
-}
-
-function optionalBoundedJson(value: unknown, max: number): boolean {
-  if (value === undefined) return true
-  try { return Buffer.byteLength(JSON.stringify(value)) <= max } catch { return false }
-}
-
 /**
  * When the engine ran a hook: the hook process's own start (hook/notify.mjs sends it as a header, which a
  * daemon that does not read it ignores, where an unknown body field is refused). Undefined from a client too
@@ -237,54 +222,7 @@ export function hookFiredAt(req: Pick<http.IncomingMessage, 'headers'>): number 
   return Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
-function validHookBody(value: unknown, native = false): value is BoundHookBody {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const body = value as Record<string, unknown>
-  if (body.generationId !== undefined && !native) return false
-  if (body.prompt !== undefined && (typeof body.prompt !== 'string' || Buffer.byteLength(body.prompt) > 128 * 1024)) return false
-  if (!optionalBoundedJson(body.nativeOrigin, 8_192)) return false
-  if (Object.keys(body).some((field) => !HOOK_BODY_FIELDS.has(field))) return false
-  if (body.engine !== undefined && (typeof body.engine !== 'string' || !ENGINES.includes(body.engine as AgentEngine))) return false
-  if (!optionalBoundedString(body.launcherId, 200)
-    || !optionalBoundedString(body.sessionId, 200)
-    || !optionalBoundedString(body.generationId, 200)
-    || !optionalBoundedString(body.transcriptPath, 4_096)
-    || !optionalBoundedString(body.cwd, 4_096)
-    || !optionalBoundedString(body.source, 1_000)
-    || !optionalBoundedString(body.tmuxPane, 32)
-    || !optionalBoundedString(body.title, 1_000)
-    || !optionalBoundedString(body.model, 200)
-    || !optionalBoundedString(body.cliVersion, 200)
-    || !optionalBoundedString(body.hookEvent, 100)
-    || !optionalBoundedString(body.pluginVersion, 100)
-    || !optionalBoundedString(body.reason, 500)
-    || !optionalBoundedString(body.status, 100)
-    || !optionalBoundedString(body.toolUseId, 200)
-    || !optionalBoundedString(body.toolName, 200)
-    || !optionalBoundedJson(body.input, 128 * 1024)) return false
-  if (body.callerPid !== undefined
-    && (!Number.isSafeInteger(body.callerPid) || (body.callerPid as number) <= 0)) return false
-  if (body.runtimeHints !== undefined) {
-    if (!Array.isArray(body.runtimeHints) || body.runtimeHints.length > 4) return false
-    for (const value of body.runtimeHints) {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-      const hint = value as Record<string, unknown>
-      if (hint.backend === 'tmux') {
-        if (Object.keys(hint).some((field) => field !== 'backend' && field !== 'paneId')
-          || typeof hint.paneId !== 'string' || !/^%\d+$/.test(hint.paneId)) return false
-      } else if (hint.backend === 'herdr') {
-        // A hook script installed by an earlier build still sends these from inside a Herdr pane. The
-        // backend is retired and `normalizedRuntimeHints` drops the hint, but the rest of the body is
-        // still good evidence, so the shape stays accepted rather than failing the whole request.
-        if (Object.keys(hint).some((field) => !['backend', 'paneId', 'sessionName', 'socketPath'].includes(field))
-          || !optionalBoundedString(hint.paneId, 200) || !hint.paneId
-          || !optionalBoundedString(hint.sessionName, 64)
-          || !optionalBoundedString(hint.socketPath, 4_096)) return false
-      } else return false
-    }
-  }
-  return true
-}
+const validHookBody = (value: unknown, native = false): value is BoundHookBody => validNativeHookBody(value, native)
 
 function readBody(req: http.IncomingMessage, exact = false): Promise<string> {
   return new Promise((resolve) => {

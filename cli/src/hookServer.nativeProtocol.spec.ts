@@ -150,6 +150,18 @@ it('holds native generation input before effects if eager generation control is 
   expect(await f.post(raw, {}, '/api/hook/session-start')).toMatchObject({ status: 400 })
 })
 
+it('retains the exact native response with its generation while legacy response fields are refused', async () => {
+  const responseText = 'First line\nSecond line é📘'
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'afterAgentResponse', responseText }))
+  const observed = vi.fn(), f = await fixture({ onNativeGenerations: observed })
+  await f.settle(raw)
+  expect(records().find(record => record.event.kind === 'intake').event.intake.payload)
+    .toMatchObject({ generationId: 'generation-one', responseText })
+  expect(records().find(record => record.event.kind === 'generation').event.fact.kind).toBe('activity')
+  expect(await f.post(raw, {}, '/api/hook/session-start')).toMatchObject({ status: 400 })
+  expect(await f.post(JSON.stringify(cursorBody({ hookEvent: 'afterAgentResponse', responseText: 'é'.repeat(65537) })))).toMatchObject({ status: 400 })
+}, 15000)
+
 it('keeps an interrupted generation write pending and reconstructs it from its original intake', async () => {
   const raw = JSON.stringify(cursorBody()), observed = vi.fn(), f = await fixture({ onNativeGenerations: observed })
   fault.afterRetain = () => { fault.unavailable = true }
