@@ -113,7 +113,7 @@ describe('Agent Messages in its own process', () => {
     expect(api().account.signedIn()).toBe(true)
   })
 
-  it('passes on a Settings ▸ Agents write once its service runs, and before then has nothing to tell', async () => {
+  it('passes on a change to its switch once its service runs, and before then has nothing to tell', async () => {
     const { options, calls } = setup()
     options.onEvent!({ kind: 'settings' })
     expect(calls).toEqual([])

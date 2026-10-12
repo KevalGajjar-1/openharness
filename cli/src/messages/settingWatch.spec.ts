@@ -3,8 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentSettingsPath, writeAgentSettings } from '../lib/agentSettings.js'
+import { AGENT_SETTINGS_DEFAULTS, agentSettingsPath, saveAgentSettings } from '../lib/agentSettings.js'
 import { POLL_MS, watchSettingFile } from './settingWatch.js'
+
+/** The core's sync writing the copy, as it does: whole, renamed over the one before (lib/agentSettings.ts). */
+const write = (root: string, agentMessages: boolean) =>
+  saveAgentSettings(root, { accountId: 'acct', machineId: 'm1' }, { ...AGENT_SETTINGS_DEFAULTS, agentMessages })
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'setting-watch-')) })
@@ -26,23 +30,23 @@ class FakeWatch extends EventEmitter {
   close(): void { this.closed = true }
 }
 
-describe('the watch on Settings ▸ Agents while Agent Messages are off', () => {
+describe('the watch on the setting\'s file while Agent Messages are off', () => {
   it('hears every write to the file, each a rename over the one it watched, until it is stopped', async () => {
-    writeAgentSettings(root, { agentMessages: false })
+    write(root, false)
     const changed = vi.fn()
     const stop = watchSettingFile(agentSettingsPath(root), changed)
     // Read once more as the watch takes hold, for a write it could not yet hear.
     await until(() => changed.mock.calls.length === 1)
-    // As Settings ▸ Agents and `harness settings` write it: whole, renamed into place.
-    writeAgentSettings(root, { agentMessages: true })
+    // As the core's sync writes it: whole, renamed into place.
+    write(root, true)
     await until(() => changed.mock.calls.length >= 2)
     const heard = changed.mock.calls.length
-    writeAgentSettings(root, { agentMessages: false })
+    write(root, false)
     await until(() => changed.mock.calls.length > heard)
     stop()
     stop()
     const after = changed.mock.calls.length
-    writeAgentSettings(root, { agentMessages: true })
+    write(root, true)
     await new Promise((settle) => setTimeout(settle, 300))
     expect(changed).toHaveBeenCalledTimes(after)
   })
@@ -52,7 +56,7 @@ describe('the watch on Settings ▸ Agents while Agent Messages are off', () => 
     const changed = vi.fn()
     const poll = vi.fn(() => () => {})
     const stop = watchSettingFile(agentSettingsPath(root), changed, { poll })
-    writeAgentSettings(root, { agentMessages: true })
+    write(root, true)
     await new Promise((settle) => setTimeout(settle, 300))
     expect(poll).not.toHaveBeenCalled()
     expect(changed).not.toHaveBeenCalled()

@@ -14,7 +14,8 @@ import 'swarm_state_test.dart' show createApp;
 /// at rest and hovered it shows only its name, its status and ×. The 💬 that
 /// sat beside × was easy to hit by mistake and turned the tab off, failing a
 /// message that was waiting (owner, 2026-10-12); whether agents may message is
-/// Settings ▸ Agents' now. Traffic between its agents shows nothing either.
+/// the account's now (Settings ▸ Experimental). Traffic between its agents
+/// shows nothing either.
 typedef _Spec = ({String id, bool working});
 
 Widget _host(

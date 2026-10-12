@@ -1,8 +1,9 @@
 /**
- * Hearing `harness settings` turn Agent Messages on again, while it is off (messages/service.ts). Off, the service runs
- * no timer, so nothing of it would read the setting again: it watches the one file the setting is kept in
- * (lib/agentSettings.ts `agent-settings.json`), which `harness settings` writes on its own and tells no one of.
- * Settings ▸ Agents writes it through the daemon, which tells the service as well (core/messagesLink.ts).
+ * Hearing Agent Messages turned on again, while it is off (messages/service.ts). Off, the service runs no timer, so
+ * nothing of it would read the setting again: it watches the one file the setting is kept in (lib/agentSettings.ts
+ * `agent-settings.json`), the core's copy of the account's experiment. The core tells the service as well when it
+ * writes a change (core/experiments.ts `createAgentSettingsSync`, `MessagesPort.settingsChanged`); a core from before
+ * that does not, and an older `harness settings` that wrote the file itself, are heard only here.
  *
  * The file itself, not the data folder it is in: the daemon's log, the search index and the registry are written there
  * many times a second, and every write would wake this process for nothing. A write replaces the file (a rename over

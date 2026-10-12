@@ -34,11 +34,14 @@ So the product needs a safe doorbell, and nothing more.
 
 ## What the person sees
 
-Setup is putting harnesses in a tab. **Agent Messages** is one switch per computer, in Settings ▸ Agents
-(`harness settings agent-messages on|off` from a terminal), and it is **on by default**: while it is on, every
-tab carries messages between its harnesses; off, no tab on that computer does. Until October 12 each tab had a
-switch of its own, a 💬 beside its ×, off by default; it was easy to hit by mistake, and the owner turned a tab off
-that way and failed a message waiting in it, so it became this one setting (owner, 2026-10-12).
+Setup is putting harnesses in a tab. **Agent Messages** is one switch of the account, in Settings ▸ Experimental
+(`harness settings agent-messages on|off` from a terminal), and it is **off by default**: while it is on, every
+tab carries messages between its harnesses, on every computer of the account; off, no tab does. Until October 12
+each tab had a switch of its own, a 💬 beside its ×, off by default; it was easy to hit by mistake, and the owner
+turned a tab off that way and failed a message waiting in it, so it became one setting (owner, 2026-10-12). That
+setting was each computer's, in Settings ▸ Agents, and on by default for part of that day; then the owner made it
+an experiment of the account, off by default like the other things agents may do, since none had been announced
+(2026-10-12).
 
 How they work together comes from how they are prompted:
 
@@ -58,12 +61,15 @@ message, sent the owner looking in the panes for messages that agents take at th
 with text lines) and nothing else of it: the **Agent Messages** checkmark that turned a tab on went with the
 tab's 💬.
 
-### Settings ▸ Agents
+### Settings ▸ Experimental
 
-**Agent Messages**, beside the other things the person lets agents do on this computer
-(docs/design/2026-10-11-agent-client.md): "agents in the same tab may message each other", on by default. It is
-kept by the daemon in its data folder (`agent-settings.json`, `agentMessages`), so each computer has its own:
-turned off on one, its agents neither send nor receive, and a teammate on another computer is told so.
+**Agents in the same tab can message each other** (`agent_messages`), beside the other things the person lets
+agents do (docs/design/2026-10-11-agent-client.md), off by default. It is the account's (backend
+lib/experimentalSettings.ts), so one choice holds on every computer the account signs in to. Each daemon keeps a
+copy in its data folder for its agents (`agent-settings.json`, `agentMessages`; cli/src/lib/agentSettings.ts),
+read again as the core starts, at every `desk_changed` (turning it publishes one) and every 5 minutes: a computer
+that has not read the change yet acts on what it read last, and a teammate on a computer with it off is told so.
+Signed out, or signed in to another account, the copy reads as off.
 
 ### Panes
 
@@ -160,8 +166,9 @@ not only `send` (docs/design/2026-10-11-agent-client.md, No permission prompts).
 file in the temporary folder (its real path, one name): otherwise it could read for an agent what a deny rule or
 the sandbox keeps from it, and send that to a teammate on another machine.
 
-`harness send` says plainly why it sent nothing: `MESSAGES_OFF` while this computer has Agent Messages off
-("The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`"), answered
+`harness send` says plainly why it sent nothing: `MESSAGES_OFF` while Agent Messages are off ("The person turns
+on "Agents in the same tab can message each other" in Settings ▸ Experimental, or runs `harness settings
+agent-messages on`"), answered
 before the tabs are read; `NO_TEAMMATES` for an agent alone in its tab, or in none (`harness send` alone still
 answers "No teammates in this tab yet." and its last messages); `NOT_IN_TAB` when the recipient left the tab
 while the send was under way.
@@ -186,7 +193,7 @@ Measured from the bundle, signed in, with a Claude Code and a Codex agent in one
 |---|---|---|---|
 | on, active (both agents have their note) | 683 MiB | 614 MiB | 2, both builds |
 | off | 600 MiB | 599 MiB | 0, both builds |
-| never written (on by that day's default) | 679 MiB | 611 MiB | 2, both builds |
+| never written (on by that day's default; off since) | 679 MiB | 611 MiB | 2, both builds |
 
 On, it costs 69 MiB less: the messages process's 62 MiB is gone, the edge host holds it for 1 MiB more (73 MiB), and the
 master is 4 to 8 MiB smaller, which this measurement does not explain (it was 81 MiB with the experiment off as well).
@@ -197,12 +204,12 @@ Off costs nothing there. Only while this computer is signed in and has Agent Mes
 15 s), look at its deliveries (every 2 s) and at its notes, its outbox and other machines' deliveries (every 5 s).
 Turned off, it takes the notes back, holds what waits for this computer's agents out of the hook's reach and fails it
 after 5 minutes, as before, and then runs no timer at all; what this computer sent that still waits for another
-machine is handed over once it is on again. It hears the switch turned on two ways. Settings ▸ Agents writes it
-through the daemon, which tells the service (`MessagesPort.settingsChanged`). `harness settings` writes the file
-(`agent-settings.json`) on its own, and a watch on that one file hears it, never on the data folder, whose log and
-indexes are written many times a second (messages/settingWatch.ts). A file that was never written is not watched, nor
-polled for: the first `harness settings` that writes it is heard at the service's next request (`harness send`) or
-the core's next start. Signed
+machine is handed over once it is on again. It hears the switch turned on two ways. The core keeps the account's
+switch in a file (`agent-settings.json`, core/experiments.ts `createAgentSettingsSync`): when a change to it reaches
+this computer (from Settings ▸ Experimental here or on another computer, or `harness settings`), the core writes the
+file and tells the service (`MessagesPort.settingsChanged`). A watch on that one file hears the write too, never on
+the data folder, whose log and indexes are written many times a second (messages/settingWatch.ts); it covers a core
+from before, which does not tell. Signed
 out, it runs nothing either: there is no account to read tabs from, and signing in starts a new core, which it
 reconnects to and wakes for. Its requests are answered on or off. With `HARNESSD_SERVICES=none` it runs in the core's
 process, and named alone (`HARNESSD_SERVICES=messages`) in an edge host of its own. (It began as Swarm's
@@ -288,8 +295,8 @@ route and a reason.
 A delivery no tab carries any more (Agent Messages turned off on the recipient's computer, or the two no longer
 share a tab) is held for 5 minutes before it fails: out of the hook's reach and never typed, so off still means
 off, and put back once it is carried again. A tab's 💬 turned off by a slip of the mouse and on again a minute
-later failed the message waiting in it (owner, 2026-10-12); a slip in Settings ▸ Agents, or a harness that leaves
-its tab for a moment, loses nothing.
+later failed the message waiting in it (owner, 2026-10-12); a slip in Settings ▸ Experimental, or a harness that
+leaves its tab for a moment, loses nothing.
 
 ### Limits
 
@@ -312,24 +319,26 @@ Experimental → Swarm collaboration, the Swarm conversation views on desktop an
    Messages, pane marks, and Swarm's views and setting removed.
 3. Cleanup: the phone's Swarm views, the backend's `tab_channels`, the core's prompt scopes. The phone shows
    no message log: the owner dropped it (October 11, 2026).
-4. One switch (owner, 2026-10-12): the daemon and `harness settings` read Settings ▸ Agents' `agentMessages`, on
-   by default, and no tab's flag; the desktop drops the tab's 💬 and its **Agent Messages** menu item, keeps
-   **Show Agent Messages**, and shows the switch in Settings ▸ Agents. The backend's per-tab records stay, unread,
-   for older windows.
+4. One switch (owner, 2026-10-12): the daemon reads the account's `agent_messages` experiment (its copy, kept by
+   the core) and no tab's flag, off by default; `harness settings` turns it through the daemon; the desktop drops
+   the tab's 💬 and its **Agent Messages** menu item, keeps **Show Agent Messages**, and shows the switch in
+   Settings ▸ Experimental. The backend's per-tab records stay, unread, for older windows.
 5. Into the edge host (2026-10-12): no process of its own, and off or signed out it runs nothing (How it works).
 
 ## Verification
 
 - Unit: the service, directory, store, mailbox and both delivery routes (`messages/*.spec.ts`), off and signed out
   running nothing (`messages/service.spec.ts`, "off costs nothing"), the setting's watch (`settingWatch.spec.ts`);
-  what the core answers it and the ask at start, at 100% (`core/messagesLink.spec.ts`, `npm run test:core`); where the
+  what the core answers it and the ask at start, and the core's copy of the account's switch, at 100% (`core/messagesLink.spec.ts`, `npm run test:core`); where the
   master runs it under either build (`harnessd/services.spec.ts`); the hook script; the backend routes.
 - End to end on the real daemon with the fake engines (`e2e/agentMessages.e2e.ts`): in the edge host with no process
-  of its own; on, a fresh daemon reads the tabs with no request and gives two agents in one tab their note; turned
-  off, it never reads them, and wakes when Settings ▸ Agents turns it on or `harness settings` writes the file (an older window's tab switch wakes nothing); `send` from a pane through a signed-in daemon whose directory the
-  fake backend answers; an idle recipient gets a typed prompt, from the edge host, from the core's process and from an
-  edge host of its own; working Claude Code and Codex agents get the hook's context at the next tool call with nothing
-  typed; turned off in Settings ▸ Agents, it refuses; a hand-over from a process on this machine is refused.
+  of its own; signed out, `harness settings` cannot turn it on; off by default, a fresh signed-in daemon never reads
+  the tabs, and turned on from another computer (the fake backend's `desk_changed`) it wakes with no request and
+  gives two agents in one tab their note; it wakes when `harness settings` turns it on for the account too (an older
+  window's tab switch wakes nothing); `send` from a pane through a signed-in daemon whose directory the fake backend
+  answers; an idle recipient gets a typed prompt, from the edge host, from the core's process and from an edge host
+  of its own; working Claude Code and Codex agents get the hook's context at the next tool call with nothing typed;
+  turned off for the account, it refuses; a hand-over from a process on this machine is refused.
 - A core and a master of different builds (`e2e/messagesSkew.e2e.ts`, opt-in with a build from before): each message
   typed once, under either.
 - In unit tests (`messages/*.spec.ts`): drafts, dialogs and refusals that may have typed; parking; restarts and a

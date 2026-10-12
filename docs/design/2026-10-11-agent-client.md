@@ -34,7 +34,7 @@ Harness is for:
 4. **The person sees it**: what an agent starts appears as a pane on the desktop and the phone, where the person
    can watch, answer or stop it. Sub-agents are invisible.
 5. **Existing peers**: harnesses the person started, in the agent's tab, while Agent Messages are on (Settings ▸
-   Agents, on by default).
+   Experimental, off by default).
 
 Claude Code itself now has `ListAgents`, `SendMessage` and `notify_when_idle` for its own sessions on one
 machine. The verbs below take the same shape on purpose; what Harness adds is every engine, every machine,
@@ -85,8 +85,8 @@ Claude Code gets it with `--append-system-prompt`, joined into one with a grid's
 keep only the last of a repeated flag), and records it with the rest of the system prompt on the first request
 (`--system-prompt-snapshot`). Codex gets it in `developer_instructions`, after the person's own value and before the
 pull request instruction, in one `-c` (a second would replace the first); not at all where a folder's
-`.codex/config.toml` sets that key. Turning agents starting agents off (Settings ▸ Agents) leaves it out of every launch
-after. `lib/agentAttribution.ts` `HARNESS_INSTRUCTIONS`, `EngineLaunch.harnessInstructions`.
+`.codex/config.toml` sets that key. Only while the account lets agents start agents (Settings ▸ Experimental, off by
+default): off, it is left out of every launch after. `lib/agentAttribution.ts` `HARNESS_INSTRUCTIONS`, `EngineLaunch.harnessInstructions`.
 
 ### ⌘N or ⌘P: new harness or an existing one
 
@@ -231,12 +231,36 @@ its launch contract (`EngineLaunch.attribution`) and applied by `engines/kit/att
   multi-line string, an escape), or one a folder's own `.codex/config.toml` sets, is left alone and nothing is added.
 - Pull requests only: no commit trailer.
 
-The person turns it off per computer with `harness settings pull-request-line off`: `pullRequestLine` in
-`<data>/agent-settings.json`, beside `agentsStartAgents`, on by default and read at each launch, so a harness running
-then keeps its line until it restarts. `/api/agent-settings` reads and writes it too; Settings ▸ Agents does not show it
-yet, as a setting in the apps needs an agreed mockup first. The same file keeps `agentMessages` since October 12:
-Agent Messages within a tab, on by default (`harness settings agent-messages on|off`, 2026-10-10-agent-messages.md). Not covered yet: the other eleven engines (no contract),
-the orchestrator's harnesses, and a machine whose daemon predates `startedBy`, which ignores it.
+Only while the account has it on: "Mark pull requests from agent-started harnesses" in Settings ▸ Experimental
+(`agent_pull_request_line`), or `harness settings pull-request-line on`, off by default. It is read at each launch,
+so a harness running when it is turned off keeps its line until it restarts. Not covered yet: the other eleven engines
+(no contract), the orchestrator's harnesses, and a machine whose daemon predates `startedBy`, which ignores it.
+
+## What the person lets agents do
+
+Three switches, each an experiment of the account in Settings ▸ Experimental (backend lib/experimentalSettings.ts),
+the same on every computer it signs in to, and each off until the person turns it on: **Agents can start other
+agents** (`agents_start_agents`), **Mark pull requests from agent-started harnesses** (`agent_pull_request_line`)
+and **Agents in the same tab can message each other** (`agent_messages`, 2026-10-10-agent-messages.md). From a
+terminal, `harness settings` lists them and `harness settings <name> on|off` turns one for the account.
+
+They began as each computer's own Settings ▸ Agents, kept by its daemon and on by default (October 11 and 12). On
+October 12 the owner made them the account's and off for all, since none had been announced: one choice holds on
+every computer, and a person who never turned one on gets none of them.
+
+Launches cannot wait on the network, so each daemon keeps a copy in its data folder, `<data>/agent-settings.json`
+(`lib/agentSettings.ts`), written only by the core's sync (`core/experiments.ts` `createAgentSettingsSync`):
+
+- It reads `GET /api/experimental-settings` as the core starts, at every `desk_changed` (a change to the
+  experiments publishes one), and every 5 minutes as a safety net, and keeps what every answer the windows get
+  through this daemon says, so a switch turned in this computer's window holds here at once.
+- The copy names the account and this computer's machine in it. Signed out, or signed in to another account, it
+  reads as all off: no copy kept for the installation may turn one account's experiments on for another (the
+  desktop's own rule for its experiments). An answer for a sign-in that changed while it was asked is not kept.
+- A sync that turns Agent Messages on asks for its process at once, so its agents get its note.
+- `harness settings <name> on|off` goes through this computer's daemon (`PATCH /api/agent-settings`), which writes
+  it to the account and keeps the answer; signed out it says to sign in. An older window's Settings ▸ Agents
+  reaches the same route and so writes through to the account too.
 
 ## Limits
 
@@ -252,9 +276,10 @@ spends the person's tokens. Every limit refuses with a clear error; nothing is d
   record is kept where the starter ran, and only `parentAgentId` was in the frame before; the review of #1234).
 - `new` per harness: 20 in 10 minutes.
 - An agent never answers a permission dialog, and never closes a harness it did not start.
-- The person can turn agents starting agents off on a computer (Settings ▸ Agents, `harness settings
-  agents-start-agents off`; `<data>/agent-settings.json`): then every agent's `harness new` and `harness_start` is
-  refused there, and reading, waiting and closing what it started still work. On by default.
+- Agents start harnesses only while the account lets them (Settings ▸ Experimental, `harness settings
+  agents-start-agents on`), off by default: otherwise every agent's `harness new` and `harness_start` is refused with
+  where the person turns it on, and reading, waiting and closing what it started still work. The person is never
+  refused.
 
 ### No permission prompts (owner, October 12, 2026)
 
@@ -392,7 +417,7 @@ machine (the lineage exception), kept in a `started` log beside the tabs' logs, 
 it to. With CLI 0.3.75 live, the owner found agents messaging each other before turning Agent Messages on
 anywhere, and decided: **Agent Messages off means off; a harness started by another gets no exception.** A harness
 may message another only where the person turned Agent Messages on, like any teammate: then a tab's chat icon,
-since October 12 one switch per computer, on by default, within a tab the two share (Settings ▸ Agents,
+since October 12 one switch of the account, off by default, within a tab the two share (Settings ▸ Experimental,
 2026-10-10-agent-messages.md).
 
 - `messages/service.ts` reads who started what only to keep another machine's record (`started`, for limits and

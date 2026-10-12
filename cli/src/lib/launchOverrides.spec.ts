@@ -1,7 +1,8 @@
 import { rmSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { env } from '../config/env.js'
-import { agentSettingsPath, writeAgentSettings } from './agentSettings.js'
+import { agentSettingsPath } from './agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 import { loadEngine } from '../engines/inProcess.js'
 import { buildLaunchOverrides, prepareLaunchOverrides, validateLaunchOverrides, type LaunchOverridesDeps } from './launchOverrides.js'
 import { DSH_SESSION_ENV } from '../dsh/launch.js'
@@ -38,10 +39,10 @@ function deps(overrides: Partial<LaunchOverridesDeps> = {}) {
   return { d, calls }
 }
 
-// Every Claude Code and Codex launch is told how to use Harness (lib/agentAttribution.ts) unless the person turned agents
-// starting agents off: off here, so each relaunch below shows only what it is about. The line has its own describe.
-beforeEach(() => { writeAgentSettings(env.ADAPTER_DATA_DIR, { agentsStartAgents: false }) })
-afterEach(() => rmSync(agentSettingsPath(env.ADAPTER_DATA_DIR), { force: true }))
+// A Claude Code or Codex launch is told how to use Harness (lib/agentAttribution.ts) once the account lets agents start
+// agents, and a harness another agent started adds its pull request line once the account has that on: both off by
+// default, so each relaunch below shows only what it is about. Each has its own describe, which turns it on.
+afterEach(() => { rmSync(agentSettingsPath(env.ADAPTER_DATA_DIR), { force: true }); signedOutForTest() })
 
 describe('buildLaunchOverrides — a relaunch comes back where the agent was', () => {
   it('awaits profile hook durability, holds an unavailable profile and checks ownership after completion', async () => {
@@ -335,6 +336,7 @@ describe('buildLaunchOverrides — a pane opened as a named agent comes back as 
 
 describe('buildLaunchOverrides — a harness another agent started keeps its pull request line', () => {
   const pr = (args: string[]) => JSON.parse(args[args.indexOf('--settings') + 1]!).attribution.pr as string
+  beforeEach(() => { setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { pullRequestLine: true }) })
 
   it('appends it after everything else, on its own login and on a grid, read from the settings the relaunch reads', async () => {
     const read = vi.fn((path: string) => path === '/workspace/.claude/settings.json' ? '{"attribution":{"pr":"Mine"}}' : null)
@@ -361,7 +363,7 @@ describe('buildLaunchOverrides — a harness another agent started keeps its pul
 
 describe('buildLaunchOverrides — every harness is told how to use Harness', () => {
   it('on every relaunch, beside its grid\'s own prompt for Claude Code and in the one instructions value for Codex', async () => {
-    writeAgentSettings(env.ADAPTER_DATA_DIR, { agentsStartAgents: true })
+    setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { agentsStartAgents: true, pullRequestLine: true })
     const own = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'claude', { startedBy: null, cwd: '/w' }, 'a')
     expect(own).toMatchObject({ ok: true, overrides: { extraArgs: ['--append-system-prompt', HARNESS_INSTRUCTIONS] } })
     const grid = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'claude', { startedBy: 'agent', gridLaunch: GRID, cwd: null }, 'a')

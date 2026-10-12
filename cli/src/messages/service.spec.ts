@@ -12,11 +12,17 @@ import type { Rpc } from './rpc.js'
 import { HELD_OFF_REASON, HELD_OUTSIDE_MS, MESSAGES_OFF_TEXT, REMOTE_STATUS_MS, SETTING_FRESH_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS, WHO_MS } from './service.js'
 import { MessageStore } from './store.js'
 import { Ledger, ledgerPath } from '../agentClient/ledger.js'
-import { writeAgentSettings } from '../lib/agentSettings.js'
+import { agentSettingsPath } from '../lib/agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 
 let root: string
-beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'agent-messages-')) })
-afterEach(() => { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }) })
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'agent-messages-'))
+  // The account has turned Agent Messages on: off by default (lib/agentSettings.ts), and these are about what they do
+  // once on. A test of the default removes the file.
+  setAgentSettingsForTest(root, { agentMessages: true })
+})
+afterEach(() => { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); signedOutForTest() })
 
 const OWNER_LOCAL = { local: true, owner: true }
 const OWNER_REMOTE = { local: false, owner: true }
@@ -49,7 +55,7 @@ function setup(over: Setup = {}) {
     return { statuses: [] }
   })
   const changed = vi.fn()
-  /** The watches on Settings ▸ Agents' file, armed while Agent Messages are off (settingWatch.ts): heard at a write. */
+  /** The watches on the setting's file, armed while Agent Messages are off (settingWatch.ts): heard at a write. */
   const watchers = new Set<() => void>()
   const core = fakeCore({
     dataDir: root,
@@ -77,10 +83,10 @@ function setup(over: Setup = {}) {
     service, ask, delivered, windows, backend, rpcCalls, agents, tabs, directory, changed, watchers,
     inbox: new PaneInbox(join(root, 'inbox-root')),
     tick: (ms: number) => { clock += ms },
-    /** Settings ▸ Agents on this computer, as the person turns Agent Messages on or off: read at the service's next
-     *  look, once what it read last is no longer fresh, and heard by the watch on its file while they are off. */
+    /** The account's switch as this computer keeps it, as the person turns Agent Messages on or off: read at the
+     *  service's next look, once what it read last is no longer fresh, and heard by the watch on its file while off. */
     setting: (on: boolean) => {
-      writeAgentSettings(root, { agentMessages: on })
+      setAgentSettingsForTest(root, { agentMessages: on })
       clock += SETTING_FRESH_MS
       for (const heard of [...watchers]) heard()
     },
@@ -271,10 +277,17 @@ describe('harness send', () => {
   })
 
   it('refuses while Agent Messages are off on this computer, saying where to turn them on, and when the directory cannot be read', async () => {
-    // One Settings ▸ Agents switch replaced each tab's chat icon, which the owner hit by mistake (2026-10-12).
+    // One switch of the account replaced each tab's chat icon, which the owner hit by mistake (2026-10-12).
+    const refused = { error: 'MESSAGES_OFF', detail: 'Agent Messages are off. The person turns on "Agents in the same tab can message each other" in Settings ▸ Experimental, or runs `harness settings agent-messages on`.' }
+    // An account that never said: off by default, so nothing is sent and no one is told of teammates.
+    rmSync(agentSettingsPath(root))
+    const fresh = setup()
+    expect(await fresh.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
+    expect(await fresh.ask({ action: 'send', pane: '%1' })).toEqual(refused)
+    expect(fresh.delivered).toEqual([])
     const off = setup()
+    off.setting(true)
     off.setting(false)
-    const refused = { error: 'MESSAGES_OFF', detail: 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.' }
     expect(await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
     expect(MESSAGES_OFF_TEXT).toBe(refused.detail)
     // Nor does `harness send` alone list anyone.
@@ -671,7 +684,7 @@ describe('the roster note and the directory', () => {
 
   it('holds a waiting delivery while Agent Messages are off, goes on once they are on again, and fails it later', async () => {
     // Turned off by a slip of the mouse and on again a minute later, a tab's switch failed the message waiting in it
-    // (2026-10-12). The switch is Settings ▸ Agents now, and a slip there must cost nothing either.
+    // (2026-10-12). The switch is the account's now (Settings ▸ Experimental), and a slip there must cost nothing either.
     vi.useFakeTimers()
     const t = setup()
     t.service.start()
@@ -763,7 +776,7 @@ describe('off costs nothing', () => {
     for (const heard of [...t.watchers]) { heard(); heard() }
     await vi.advanceTimersByTimeAsync(0)
     expect(t.backend).not.toHaveBeenCalled()
-    // Turned on in Settings ▸ Agents: the watch wakes it, and the notes go out at its next look.
+    // Turned on for the account and kept here: the watch wakes it, and the notes go out at its next look.
     t.setting(true)
     await vi.advanceTimersByTimeAsync(0)
     expect(t.backend).toHaveBeenCalledOnce()
@@ -834,7 +847,7 @@ describe('off costs nothing', () => {
     t.service.stop()
   })
 
-  it('wakes when told Settings ▸ Agents was written through the daemon, with no file to hear', async () => {
+  it('wakes when the core tells it its switch changed, with no file to hear', async () => {
     // A computer whose switches are all at their defaults has no file to watch: the daemon's write tells it.
     vi.useFakeTimers()
     const t = setup()
@@ -845,7 +858,7 @@ describe('off costs nothing', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(t.backend).not.toHaveBeenCalled()
     // Written on, with no watch to hear it: told, it reads its switch again and wakes.
-    writeAgentSettings(root, { agentMessages: true })
+    setAgentSettingsForTest(root, { agentMessages: true })
     t.service.settingsChanged()
     await vi.advanceTimersByTimeAsync(0)
     expect(t.backend).toHaveBeenCalledOnce()
@@ -854,11 +867,11 @@ describe('off costs nothing', () => {
   })
 
   it('hears its setting\'s own file while off, with no watch given', async () => {
-    writeAgentSettings(root, { agentMessages: false })
+    setAgentSettingsForTest(root, { agentMessages: false })
     const backend = vi.fn(async () => ({ status: 503, body: {} }))
     const real = startAgentMessages(fakeCore({ dataDir: root, account: { backend } }), { stateDir: join(root, 's3'), inboxRoot: join(root, 'i3') })
     real.start()
-    writeAgentSettings(root, { agentMessages: true })
+    setAgentSettingsForTest(root, { agentMessages: true })
     for (let i = 0; i < 250 && !backend.mock.calls.length; i++) await new Promise((settle) => setTimeout(settle, 20))
     expect(backend).toHaveBeenCalled()
     real.stop()

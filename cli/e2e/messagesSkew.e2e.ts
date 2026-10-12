@@ -22,8 +22,8 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient, type Frame } from './harness/client.js'
 import { IsolatedDaemon, until } from './harness/daemon.js'
-import { FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
-import { writeAgentSettings } from '../src/lib/agentSettings.js'
+import { FAKE_ACCOUNT, FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
+import { AGENT_SETTINGS_DEFAULTS, saveAgentSettings } from '../src/lib/agentSettings.js'
 
 const FROM = process.env.SKEW_FROM
 const ME: FakeMachine = { machineId: 'c3'.repeat(16), computerId: 'e2e-computer-0000-0000-0000000000c3', name: 'skew', token: 'e2e-token-skew' }
@@ -70,8 +70,10 @@ describe.skipIf(!FROM)('Agent Messages between a core and a master of different 
       HARNESSD_SERVICE_INITIAL_BACKOFF_MS: '200', HARNESSD_SERVICE_MAX_BACKOFF_MS: '1000',
     } })
     onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-200).join('\n')}`) })
-    // On in Settings ▸ Agents, written as the person turns it on: never left to either build's default.
-    writeAgentSettings(d.dataDir, { agentMessages: true })
+    // On for the account, which this build's core keeps, and in the copy it keeps, which a build from before reads as
+    // its own Settings ▸ Agents: never left to either build's default.
+    backend.experiments.agent_messages = true
+    saveAgentSettings(d.dataDir, { accountId: FAKE_ACCOUNT, machineId: ME.machineId }, { ...AGENT_SETTINGS_DEFAULTS, agentMessages: true })
     writeFileSync(join(d.root, 'auth', 'session.json'), JSON.stringify({
       version: 1, accessToken: ME.token, autonomousEnv: 'prod', computerId: ME.computerId,
       machineId: ME.machineId, expiresAt: Date.now() + 30 * 24 * 3600_000, updatedAt: Date.now(), signInEpoch: 'e2e',

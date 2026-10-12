@@ -875,9 +875,9 @@ export interface WorkspacesPort {
 export const WORKSPACES_FALLBACKS: PortFallbacks<WorkspacesPort> = { nameBranches: undefined, sweepUnused: undefined }
 
 /** The core's calls into Agent Messages: whether one of its typed deliveries (a `team:` id) may still be written,
- *  asked in line as it is written (core/input.ts); and that Settings ▸ Agents was written through the daemon, which
- *  wakes it when its switch is turned on: off, it runs no timer that would read the file again, and a file never
- *  written has nothing to watch (messages/settingWatch.ts). */
+ *  asked in line as it is written (core/input.ts); and that the core's copy of the account's switch changed
+ *  (core/experiments.ts `createAgentSettingsSync`), which wakes it when it is turned on: off, it runs no timer that
+ *  would read the file again, and a file never written has nothing to watch (messages/settingWatch.ts). */
 export interface MessagesPort {
   canWrite(deliveryId: string): boolean
   settingsChanged(): void

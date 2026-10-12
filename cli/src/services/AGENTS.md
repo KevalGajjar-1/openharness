@@ -154,9 +154,10 @@ master too old to run it starts it beside itself, still in its own process (`src
   (`src/core/messagesLink.ts`, `MESSAGES_QUERIES` in `src/core/api.ts`) is shown the agents, told how this daemon is
   reached and whether it is signed in, reads the account's tabs and nothing else of the backend, sends the windows
   its log's change notice and nothing else, and hears `desk_changed`. It never creates an agent, stops a turn or
-  watches a terminal. Off on this computer, or signed out, it runs no timer: a Settings ▸ Agents write through the
-  daemon wakes it (`MessagesPort.settingsChanged`), so does `harness settings` through a watch on the setting's file
-  when there is one (`src/messages/settingWatch.ts`), and so does a core it reconnects to signed in.
+  watches a terminal. Off for the account (Settings ▸ Experimental, off by default), or signed out, it runs no
+  timer: the core wakes it when its copy of the switch changes (`MessagesPort.settingsChanged`, from
+  `createAgentSettingsSync` in `src/core/experiments.ts`), so does a watch on the setting's file when there is one
+  (`src/messages/settingWatch.ts`), and so does a core it reconnects to signed in.
 - A service that drives hardware: the devices (src/services/devicesProcess.ts, src/core/devicesLink.ts).
   The dial reads a dozen facts in line while it builds each frame, so the process keeps a copy of what it
   reads (this computer's agents, its name, the sign-in, whether a window is there), asked of the core as

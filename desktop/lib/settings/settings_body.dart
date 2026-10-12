@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
-import 'agent_settings.dart';
 import 'experimental_features.dart';
 import 'sections/about_section.dart';
 import 'sections/account_section.dart';
-import 'sections/agents_section.dart';
 import 'sections/connectors_section.dart';
 import 'sections/debug_section.dart';
 import 'sections/experimental_section.dart';
@@ -23,7 +21,6 @@ class SettingsBody extends StatelessWidget {
     super.key,
     required this.section,
     required this.notifier,
-    required this.agentSettings,
     this.experimentalFeatures,
   });
 
@@ -31,14 +28,10 @@ class SettingsBody extends StatelessWidget {
   final AppNotifier notifier;
   final ExperimentalFeaturesStore? experimentalFeatures;
 
-  /// Settings ▸ Agents, held by the screen so leaving the page does not lose a save under way.
-  final AgentSettingsStore agentSettings;
-
   @override
   Widget build(BuildContext context) {
     final screen = switch (section) {
       SettingsSection.account => AccountSection(notifier: notifier),
-      SettingsSection.agents => AgentsSection(store: agentSettings),
       SettingsSection.usage => const UsageSection(),
       SettingsSection.connectors => ConnectorsSection(notifier: notifier),
       SettingsSection.customize => throw StateError(

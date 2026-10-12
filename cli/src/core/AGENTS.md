@@ -60,8 +60,8 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
   frames, handed to the viewers, refused at once while they are down, and held while they first start. `workspacesLink.ts`: what the core tells workspaces in
   theirs. `messagesLink.ts`: Agent Messages out of this process (the edge host): which of its deliveries may be
   written, as it last said, the few things it may ask (the agents, this daemon and its sign-in, the account's tabs,
-  its log's notice for the windows), the desk's changes and Settings ▸ Agents' writes, and the ask for it as the core
-  starts.
+  its log's notice for the windows), the desk's changes and changes to its switch (the account's, as the core keeps
+  it), and the ask for it as the core starts.
   `monitorLink.ts`: the monitor's port, asked of its process. `recapsLink.ts`: the recaps in their process,
   told each turn's lifecycle and never waited on, and read back from what they last said
   (`turns/recaps.ts` is the core's whole side of them). `storeLink.ts`: what the Store in its
@@ -70,7 +70,9 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
   keystrokes, and how it asks it the rest. `agentQueries.ts`: what a service in its own process may ask of the agents;
   `accountQueries.ts`: of the account (a token, and the fleet's lane's sealing), so it holds no credential.
   `experimentQueries.ts`: what an experiment acts on the core through; `experiments.ts`: which are on as the
-  core starts, by their saved state; `orchestratorLink.ts`: what the core keeps of the orchestrator in its own process;
+  core starts, by their saved state, and the account's agent experiments kept for this computer's launches
+  (`createAgentSettingsSync`, the one writer of `agent-settings.json`, which tells Agent Messages when its switch
+  changes); `orchestratorLink.ts`: what the core keeps of the orchestrator in its own process;
   `sharingLink.ts`: Share's observers' frames to its process; `terminalWatch.ts`: a read-only view of the
   agents' terminals, which Share shows its observers. `conversationQueries.ts`: the conversation facts the
   change-agent handoff in the edge host asks for, one at a time.

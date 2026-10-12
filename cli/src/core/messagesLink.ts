@@ -14,7 +14,8 @@
  *   backend read of the account's tabs, and its log's change notice for the windows. Writing turns into agents is
  *   core/deliveries.ts's to allow (`TURN_DELIVERERS`).
  * - The account's `desk_changed`, told as the backend announces it: its tabs are read again then.
- * - That Settings ▸ Agents was written through the daemon (`writeSettingsAndTell`), so that turning it on wakes it.
+ * - That its switch changed here (`MessagesPort.settingsChanged`): the core's sync of the account's experiments tells
+ *   it (core/experiments.ts `createAgentSettingsSync`), so that turning it on wakes it.
  */
 import { MESSAGES_BACKEND_PATH, MESSAGES_WINDOW_FRAME, type BackendNotice, type CoreApi, type MessagesPort } from './api.js'
 import { daemonAddress, shownAgents } from './experimentQueries.js'
@@ -73,17 +74,6 @@ export function createMessagesLink(deps: MessagesLinkDeps) {
       if (notice.type === 'desk_changed') deps.notify({ type: 'service_event', payload: { kind: 'notice', notice } })
     },
   }
-}
-
-/**
- * A Settings ▸ Agents write through the daemon (`PATCH /api/agent-settings`), and Agent Messages told of it once it is
- * written. Off, it runs no timer that would read its switch again, and where the file was never written (every switch
- * at its default) there is no file for it to watch: this is how turning it on in Settings ▸ Agents wakes it at once.
- */
-export async function writeSettingsAndTell<T extends { status: number }>(write: () => Promise<T>, tell: () => void): Promise<T> {
-  const result = await write()
-  if (result.status >= 200 && result.status < 300) tell()
-  return result
 }
 
 /**

@@ -15,8 +15,8 @@ import 'support/agent_messages_api.dart';
 /// Agent Messages as the window keeps it (docs/design/2026-10-10-agent-messages.md):
 /// whether the account has them, the traffic `messages_changed` reports, the
 /// pane marks it leaves, and a tab's log merged from every daemon that holds
-/// part of it. A tab has no flag here: whether agents may message is each
-/// computer's Settings ▸ Agents (owner, 2026-10-12).
+/// part of it. A tab has no flag here: whether agents may message is the
+/// account's, in Settings ▸ Experimental (owner, 2026-10-12).
 class _Backend {
   /// Each tab's old flag, which a backend still answers and nothing reads.
   Map<String, bool> tabs = {};

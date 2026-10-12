@@ -14,10 +14,9 @@ import 'desktop_chrome.dart';
 ///
 /// At rest the name and status have the whole tab; hovering reveals ×.
 /// Holding Command replaces the status with the tab's shortcut, as before.
-/// Agent
-/// Messages has nothing on a tab: traffic between its agents shows nothing,
+/// Agent Messages has nothing on a tab: traffic between its agents shows nothing,
 /// since messages arrive when they arrive, and its on/off is Settings ▸
-/// Agents'. The 💬 that sat beside × was easy to hit by mistake and turned
+/// Experimental's. The 💬 that sat beside × was easy to hit by mistake and turned
 /// the tab off, failing a message that was waiting (owner, 2026-10-12).
 class DesktopWorkspaceTab extends StatefulWidget {
   const DesktopWorkspaceTab({

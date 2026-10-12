@@ -222,7 +222,7 @@ const codexRulesFile = (): string => {
   const verbs = '["ps", "show", "wait", "new", "close", "send"]'
   return "# Written by Harness, which rewrites it: do not edit. Its agent commands (harness ps, show, wait, new, close, send)\n"
     + "# need Harness's daemon, which Codex's sandbox cannot reach, so they run outside it without asking. What each\n"
-    + '# may do is for Harness to decide: Settings > Agents, and an agent gives work to and closes only what it started.\n'
+    + '# may do is for Harness to decide: Settings > Experimental, and an agent gives work to and closes only what it started.\n'
     // Only the launcher's path counts as `harness` by its last part: not a `harness` an agent wrote elsewhere.
     + `host_executable(name="harness", paths=[${JSON.stringify(join(env.HARNESS_BIN_DIR, 'harness'))}])\n`
     + `prefix_rule(pattern=["harness", ${verbs}], decision="allow")\n`

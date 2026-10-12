@@ -496,7 +496,7 @@ final harnessCommands = <HarnessCommand>[
   ),
   // Agent Messages (docs/design/2026-10-10-agent-messages.md): the active
   // tab's log; its native menu row is File's. There is no turning it on or
-  // off for a tab: that is Settings ▸ Agents', for the whole computer.
+  // off for a tab: that is the account's, in Settings ▸ Experimental.
   const HarnessCommand(
     'agent_messages.show',
     'Show Agent Messages',

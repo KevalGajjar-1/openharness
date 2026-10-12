@@ -2,49 +2,69 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { AGENT_SETTING_NAMES, agentSettingsPath, readAgentSettings, writeAgentSettings } from './agentSettings.js'
+import { AGENT_SETTING_EXPERIMENTS, AGENT_SETTING_NAMES, agentSettingsFromAnswer, agentSettingsPath, ownsAgentSettings, readAgentSettings, saveAgentSettings } from './agentSettings.js'
+import { clearAuthSession, writeAuthSession, type AuthSession } from './authSession.js'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'agent-settings-')) })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => { rmSync(dir, { recursive: true, force: true }); clearAuthSession() })
+
+const OFF = { agentsStartAgents: false, pullRequestLine: false, agentMessages: false }
+const session = (over: Partial<AuthSession> = {}): AuthSession =>
+  ({ version: 1, accessToken: 't', autonomousEnv: 'prod', computerId: 'c', machineId: 'm1', updatedAt: 0, ...over })
+const owner = { accountId: 'acct', machineId: 'm1' }
 
 describe('what the person lets agents do', () => {
-  it('lets agents start agents until the person turns it off', () => {
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: true, agentMessages: true })
-    expect(writeAgentSettings(dir, { agentsStartAgents: false })).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
-    expect(JSON.parse(readFileSync(agentSettingsPath(dir), 'utf8'))).toEqual({ version: 1, agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
+  it('is nothing until the account turns a switch on: every one off by default', () => {
+    // Off for all: none had been announced (owner, 2026-10-12).
+    expect(readAgentSettings(dir, session())).toEqual(OFF)
+    expect(readAgentSettings(dir, null)).toEqual(OFF)
+    expect(AGENT_SETTING_NAMES).toEqual({ 'agents-start-agents': 'agentsStartAgents', 'pull-request-line': 'pullRequestLine', 'agent-messages': 'agentMessages' })
+    expect(AGENT_SETTING_EXPERIMENTS).toEqual({ agentsStartAgents: 'agents_start_agents', pullRequestLine: 'agent_pull_request_line', agentMessages: 'agent_messages' })
+  })
+
+  it('reads the copy kept for the account signed in here, written whole and private', () => {
+    saveAgentSettings(dir, owner, { ...OFF, agentMessages: true })
+    expect(readAgentSettings(dir, session())).toEqual({ ...OFF, agentMessages: true })
+    expect(readAgentSettings(dir, session({ signInAcct: 'acct' }))).toEqual({ ...OFF, agentMessages: true })
+    expect(JSON.parse(readFileSync(agentSettingsPath(dir), 'utf8'))).toEqual({ version: 2, accountId: 'acct', machineId: 'm1', ...OFF, agentMessages: true })
     expect(statSync(agentSettingsPath(dir)).mode & 0o777).toBe(0o600)
-    expect(AGENT_SETTING_NAMES['agents-start-agents']).toBe('agentsStartAgents')
+    // Read from the session's own file when not given one.
+    expect(readAgentSettings(dir)).toEqual(OFF)
+    writeAuthSession(session())
+    expect(readAgentSettings(dir)).toEqual({ ...OFF, agentMessages: true })
   })
 
-  it('adds a line to the pull requests of a harness another agent started until the person turns it off', () => {
-    expect(writeAgentSettings(dir, { pullRequestLine: false })).toEqual({ agentsStartAgents: true, pullRequestLine: false, agentMessages: true })
-    expect(readAgentSettings(dir).pullRequestLine).toBe(false)
-    // A file written before the setting existed: the default for it, and the other kept.
-    writeFileSync(agentSettingsPath(dir), '{"version":1,"agentsStartAgents":false}')
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
-    expect(AGENT_SETTING_NAMES['pull-request-line']).toBe('pullRequestLine')
+  it('never turns one account\'s experiments on for another, or for no one', () => {
+    saveAgentSettings(dir, owner, { agentsStartAgents: true, pullRequestLine: true, agentMessages: true })
+    // Signed out, signed in with no machine yet, to another account's machine, or to another account.
+    expect(readAgentSettings(dir, null)).toEqual(OFF)
+    expect(readAgentSettings(dir, session({ machineId: undefined }))).toEqual(OFF)
+    expect(readAgentSettings(dir, session({ machineId: 'm2' }))).toEqual(OFF)
+    expect(readAgentSettings(dir, session({ signInAcct: 'other' }))).toEqual(OFF)
+    expect(ownsAgentSettings(owner, session())).toBe(true)
+    expect(ownsAgentSettings(owner, session({ signInAcct: 'other' }))).toBe(false)
+    // A copy from when they were each computer's own Settings ▸ Agents names no account: it is no one's.
+    writeFileSync(agentSettingsPath(dir), '{"version":1,"agentsStartAgents":true,"pullRequestLine":true,"agentMessages":true}')
+    expect(readAgentSettings(dir, session())).toEqual(OFF)
   })
 
-  it('lets agents in one tab message each other until the person turns it off, on a computer that never said', () => {
-    // It replaced each tab's chat icon, off by default, which the owner hit by mistake (2026-10-12): on by default, so a
-    // file written before it existed, which says nothing of it, has it on.
-    writeFileSync(agentSettingsPath(dir), '{"version":1,"agentsStartAgents":true,"pullRequestLine":false}')
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: false, agentMessages: true })
-    expect(writeAgentSettings(dir, { agentMessages: false })).toEqual({ agentsStartAgents: true, pullRequestLine: false, agentMessages: false })
-    expect(readAgentSettings(dir).agentMessages).toBe(false)
-    expect(AGENT_SETTING_NAMES['agent-messages']).toBe('agentMessages')
-  })
-
-  it('applies only booleans it knows, and reads a broken file as the defaults', () => {
-    expect(writeAgentSettings(dir, null)).toBeNull()
-    expect(writeAgentSettings(dir, 'off')).toBeNull()
-    expect(writeAgentSettings(dir, { agentsStartAgents: 'no', other: true })).toBeNull()
-    expect(writeAgentSettings(dir, { agentsStartAgents: false, other: true })).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
-    writeFileSync(agentSettingsPath(dir), '{"agentsStartAgents": "nope", "pullRequestLine": 0, "agentMessages": "off"}')
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: true, agentMessages: true })
+  it('reads what a copy does not say, or says wrongly, and a broken file, as the defaults', () => {
+    writeFileSync(agentSettingsPath(dir), '{"version":2,"accountId":"acct","machineId":"m1","agentsStartAgents":true,"agentMessages":"on"}')
+    expect(readAgentSettings(dir, session())).toEqual({ ...OFF, agentsStartAgents: true })
     writeFileSync(agentSettingsPath(dir), 'not json')
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: true, agentMessages: true })
+    expect(readAgentSettings(dir, session())).toEqual(OFF)
+  })
+
+  it('takes the account\'s experiments from its answer, and nothing from any other', () => {
+    const answer = (data: unknown, status = 200, success = true) => ({ status, body: { success, data } })
+    expect(agentSettingsFromAnswer(answer({ accountId: 'acct', revision: 3, features: { share_button: true, agent_messages: true, agents_start_agents: false } })))
+      .toEqual({ accountId: 'acct', settings: { ...OFF, agentMessages: true } })
+    // A backend from before them names none: off.
+    expect(agentSettingsFromAnswer(answer({ accountId: 'acct', features: { share_button: true } }))).toEqual({ accountId: 'acct', settings: OFF })
+    for (const refused of [answer({ accountId: 'acct', features: {} }, 401), answer({ accountId: 'acct', features: {} }, 200, false), answer(null),
+      answer({ features: {} }), answer({ accountId: '', features: {} }), answer({ accountId: 'acct' }), answer({ accountId: 'acct', features: 'on' })]) {
+      expect(agentSettingsFromAnswer(refused)).toBeNull()
+    }
   })
 })

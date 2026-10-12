@@ -1,9 +1,9 @@
 /**
  * Who may message whom (docs/design/2026-10-10-agent-messages.md, "Who may message whom"): the account's
  * desk tabs, each with its owned panes, read from the backend (`GET /api/agent-messages`). A message goes only
- * between harnesses that share a tab, while this computer has Agent Messages on (Settings ▸ Agents, on by default).
+ * between harnesses that share a tab, while the account has Agent Messages on (Settings ▸ Experimental, off by default).
  * Each tab's own flag, which the backend still answers for older windows, is not read: the tab's switch was a chat
- * icon beside its × that was easy to hit by mistake, and the owner made it one setting, on by default (2026-10-12).
+ * icon beside its × that was easy to hit by mistake, and the owner made it one setting of the account (2026-10-12).
  *
  * Read every 15 seconds while this computer is signed in with Agent Messages on (`start`, `stop`: service.ts runs it
  * only then), again on the account's `desk_changed`, and fresh before a send. An unreadable directory never clears
@@ -50,7 +50,7 @@ export interface DirectoryDeps {
   read(): Promise<unknown>
   /** The directory changed: deliveries and notes may need another look. */
   changed?(): void
-  /** Whether this computer has Agent Messages on (Settings ▸ Agents); on when not said. */
+  /** Whether Agent Messages are on, as this computer keeps the account's experiment; on when not said. */
   on?(): boolean
   now?(): number
 }

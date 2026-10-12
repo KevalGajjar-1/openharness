@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RegisteredSession } from '../lib/registry.js'
 import { fakeCore } from '../testing/fakeCore.js'
 import { MESSAGES_QUERIES } from './api.js'
-import { askForMessages, createMessagesLink, writeSettingsAndTell } from './messagesLink.js'
+import { askForMessages, createMessagesLink } from './messagesLink.js'
 
 const agent = (agentId: string) => ({ agentId, sessionId: `s-${agentId}`, engine: 'claude', cwd: '/w' }) as RegisteredSession
 
@@ -82,7 +82,7 @@ describe('Agent Messages in its own process, as the core keeps it', () => {
     expect([...MESSAGES_QUERIES].sort()).toEqual(['backend', 'daemon', 'shown', 'windows', 'writable'])
   })
 
-  it('tells the process Settings ▸ Agents was written through the daemon', () => {
+  it('tells the process its switch changed here', () => {
     const { link: l, notify } = link()
     l.port.settingsChanged()
     expect(notify.mock.calls).toEqual([[{ type: 'service_event', payload: { kind: 'settings' } }]])
@@ -94,17 +94,6 @@ describe('Agent Messages in its own process, as the core keeps it', () => {
     l.notice({ type: 'machines_changed', reason: 'renamed' })
     l.notice({ type: 'connectors_changed', revision: 1 })
     expect(notify.mock.calls).toEqual([[{ type: 'service_event', payload: { kind: 'notice', notice: { type: 'desk_changed', revision: 7 } } }]])
-  })
-})
-
-describe('a Settings ▸ Agents write through the daemon', () => {
-  it('tells Agent Messages once it is written, and not when it was refused', async () => {
-    const tell = vi.fn()
-    expect(await writeSettingsAndTell(async () => ({ status: 200, body: { agentMessages: true } }), tell)).toEqual({ status: 200, body: { agentMessages: true } })
-    expect(tell).toHaveBeenCalledOnce()
-    await writeSettingsAndTell(async () => ({ status: 400, body: {} }), tell)
-    await writeSettingsAndTell(async () => ({ status: 199, body: {} }), tell)
-    expect(tell).toHaveBeenCalledOnce()
   })
 })
 

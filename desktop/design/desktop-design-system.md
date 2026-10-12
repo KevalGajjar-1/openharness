@@ -337,8 +337,8 @@ is New Tab. A small right-hand close icon appears on hover, with its 32-point
 target inset 8 points from the outer tab bounds. This puts the cross's center
 16 points inside the curved body edge. × is the tab's only control: Agent
 Messages' 💬 that sat left of it was removed, since it was easy to hit by mistake
-and turned the tab off (owner, 2026-10-12); Settings ▸ Agents holds that switch
-now. At rest the name and status have the whole tab; on hover a name that would run
+and turned the tab off (owner, 2026-10-12); the account's Settings ▸ Experimental
+holds that switch now, off by default. At rest the name and status have the whole tab; on hover a name that would run
 into × moves left only as far as it needs, then truncates, so hover never
 crowds the name or status. Holding Command shows the original small shortcut
 label in each tab's status slot. Release or window deactivation restores the

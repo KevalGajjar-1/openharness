@@ -1,8 +1,9 @@
 /**
  * Agent Messages (`messages`), a service in the edge host: harnesses in one tab message each other with `harness
- * send`, while Settings ▸ Agents has it on (messages/service.ts, docs/design/2026-10-10-agent-messages.md).
- * Its typed deliveries go through `core.turns.deliver` under `team:` ids, which the core writes only into an idle,
- * empty composer, and the core asks in line whether one may still be written (`canWrite`).
+ * send`, while the account has it on (Settings ▸ Experimental, off by default; messages/service.ts,
+ * docs/design/2026-10-10-agent-messages.md). Its typed deliveries go through `core.turns.deliver` under `team:` ids,
+ * which the core writes only into an idle, empty composer, and the core asks in line whether one may still be written
+ * (`canWrite`).
  * - The `agent_messages` request: `harness send` in an agent's pane, the owner's other machines, the windows.
  * - In the core's process (`HARNESSD_SERVICES=none`, or a subset without it) it starts here, at once; out of it,
  *   services/messagesProcess.ts starts the same service in the edge host.

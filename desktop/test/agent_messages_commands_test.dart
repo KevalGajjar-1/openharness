@@ -11,7 +11,8 @@ import 'swarm_state_test.dart' show createApp;
 
 /// ⇧⌘P: "Show Agent Messages" (this tab's log) replaces Swarm's "Tab
 /// conversation". There is no command to turn Agent Messages on or off for a
-/// tab: whether agents may message is Settings ▸ Agents' (owner, 2026-10-12).
+/// tab: whether agents may message is the account's, in Settings ▸ Experimental
+/// (owner, 2026-10-12).
 void main() {
   test('Show Agent Messages is the one command, and Swarm\'s is gone', () {
     expect(

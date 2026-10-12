@@ -1,6 +1,6 @@
 /**
  * Agent Messages (docs/design/2026-10-10-agent-messages.md): harnesses in one tab message each other with `harness
- * send`, while this computer has Agent Messages on (Settings ▸ Agents, on by default). This is the whole service,
+ * send`, while the account has Agent Messages on (Settings ▸ Experimental, off by default). This is the whole service,
  * on the core's API, in the core's process or in its own (services/messages.ts, services/messagesProcess.ts):
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
@@ -14,8 +14,9 @@
  * Agent Messages on does it read the account's tabs (every 15 s), look at its deliveries (every 2 s) and at its notes,
  * its outbox and other machines' deliveries (every 5 s). Turned off, it withdraws the notes, holds what waits here out
  * of the hook's reach and fails it once it has waited HELD_OUTSIDE_MS, as while on, and then runs nothing until it is
- * turned on again: a Settings ▸ Agents write through the daemon tells it (`settingsChanged`), and a watch on the
- * setting's file hears `harness settings` (settingWatch.ts); what this computer sent that waits for another machine is
+ * turned on again: the core tells it when its copy of the account's switch changes (`settingsChanged`, from
+ * core/experiments.ts `createAgentSettingsSync`), and a watch on the setting's file hears the same write
+ * (settingWatch.ts); what this computer sent that waits for another machine is
  * handed over once it is on again. Signed out it runs nothing: there is no account to read tabs from, and signing in
  * starts a new core, which it reconnects to (`reconnected`). Its requests are answered either way, and read the switch
  * again as they come.
@@ -49,7 +50,7 @@ export interface MessagesOptions {
   ledgerFile?: string
   /** Something that decides whether a typed delivery may be written changed: the process tells the core. */
   changed?: () => void
-  /** How it hears Settings ▸ Agents' file change while Agent Messages are off (settingWatch.ts); a test's own. */
+  /** How it hears the setting's file change while Agent Messages are off (settingWatch.ts); a test's own. */
   watchSetting?: (path: string, changed: () => void) => () => void
   now?: () => number
 }
@@ -61,7 +62,7 @@ export interface AgentMessages {
   /** The service reached a core again, perhaps a new one: typed attempts in flight go back to the hook, and what
    *  runs follows whether this computer is signed in now. */
   reconnected?(): void
-  /** Settings ▸ Agents was written through the daemon: its switch is read again, and it wakes if it is on now. */
+  /** The core's copy of the account's switch changed: it is read again, and it wakes if it is on now. */
   settingsChanged(): void
   start(): void
   stop(): void
@@ -80,11 +81,11 @@ export const SWEEP_AFTER_MS = 10 * 60_000
 export const HELD_OUTSIDE_MS = 5 * 60_000
 export const HELD_OFF_REASON = 'Agent Messages are off on its computer: it waits 5 minutes for them to be on again, then fails'
 export const HELD_LEFT_REASON = 'it is not in a tab with the sender: it waits 5 minutes for that to change, then fails'
-/** How long this computer's Agent Messages setting (Settings ▸ Agents) is taken as read: the mailbox's pump asks
+/** How long the Agent Messages setting, as this computer keeps it, is taken as read: the mailbox's pump asks
  *  every 2 s (mailbox.ts PUMP_MS), and a send or a hand-over asks too. */
 export const SETTING_FRESH_MS = 2_000
 /** What `harness send` says while this computer has Agent Messages off: where the person turns them on again. */
-export const MESSAGES_OFF_TEXT = 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.'
+export const MESSAGES_OFF_TEXT = 'Agent Messages are off. The person turns on "Agents in the same tab can message each other" in Settings ▸ Experimental, or runs `harness settings agent-messages on`.'
 
 const PANE = /^%\d{1,9}$/
 /** The most messages `harness send` alone gives an agent at once, unread ones first. */
@@ -128,9 +129,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   let unwatch: (() => void) | null = null
   const settingsFile = agentSettingsPath(options.dataDir ?? core.dataDir)
 
-  // Settings ▸ Agents, kept by the core in the data folder (lib/agentSettings.ts) and written by `harness settings`
-  // too, which tells no one: a small file, read again at most every SETTING_FRESH_MS, so a switch turned off takes
-  // effect at the next look; while off, nothing looks, and the file's watch wakes it (settingWatch.ts).
+  // The account's experiment, kept by the core in the data folder (lib/agentSettings.ts) as it changes: a small file,
+  // read again at most every SETTING_FRESH_MS, so a switch turned off takes effect at the next look; while off,
+  // nothing looks, and the core's word (`settingsChanged`) or the file's watch wakes it (settingWatch.ts).
   let setting = { on: true, at: -Infinity }
   const readSetting = (): boolean => {
     setting = { on: readAgentSettings(options.dataDir ?? core.dataDir).agentMessages, at: now() }

@@ -8,7 +8,7 @@ import 'package:harness/widgets/terminal_prompt.dart';
 
 /// Show Agent Messages: a tab's log, newest last. Enter opens the recipient's
 /// pane; Esc closes; nothing is composed or turned on here — whether agents may
-/// message is Settings ▸ Agents' (owner, 2026-10-12).
+/// message is the account's, in Settings ▸ Experimental (owner, 2026-10-12).
 AgentMessage _message(
   String id,
   DateTime at, {

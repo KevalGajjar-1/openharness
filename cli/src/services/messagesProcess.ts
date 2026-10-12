@@ -12,7 +12,7 @@
  *   mailbox reads them and they are a second old.
  * - Whether this daemon is signed in, as the core says it with its address: signed out, the service runs nothing.
  *   A core from before says nothing of it, and is taken as signed in, as the service took every core then.
- * - That Settings ▸ Agents was written through the daemon (`service_event` kind `settings`), which a core from before
+ * - That the core's copy of the account's switch changed (`service_event` kind `settings`), which a core from before
  *   never says: off, the service then hears it only from the setting's file.
  */
 import type { BackendNotice, DaemonAddress } from '../core/api.js'
@@ -156,7 +156,7 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
     },
     onEvent: (payload) => {
       if (deliveries.heard(payload)) { tell(); return }
-      // Settings ▸ Agents written through the daemon: the running service reads its switch again.
+      // The core's copy of the account's switch changed: the running service reads it again.
       if (payload.kind === 'settings') { if (started) messages.settingsChanged(); return }
       // Heard once the service runs for a known machine: the tabs it would read are that machine's.
       if (started && payload.kind === 'notice' && payload.notice && typeof payload.notice === 'object') {

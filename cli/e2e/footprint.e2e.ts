@@ -5,8 +5,8 @@
  *
  * An isolated daemon from the run's bundle (as a release ships it), signed in to the fake backend, with two agents
  * (Claude Code and Codex) in one tab, measured once for each state of Agent Messages (FOOTPRINT_SCENARIOS, all three
- * by default): `on`, written so in Settings ▸ Agents, and active (it has given both agents their note); `off`, written
- * so; and `defaults`, with no Settings ▸ Agents written at all, as most computers are. After a warm-up
+ * by default): `on`, turned on for the account (Settings ▸ Experimental), and active (it has given both agents their
+ * note); `off`, turned off; and `defaults`, never turned at all, as most accounts are (off). After a warm-up
  * (FOOTPRINT_WARMUP_SECONDS, 20) each stays idle for FOOTPRINT_SECONDS (30) while `ps` reads, every second, the
  * resident memory of every process under the master: the master (`harnessd`), the core (`harnessd-core`), each
  * service process (`harnessd-<name>`) and the engine workers. Each is named by its process title, or by the pid the
@@ -23,7 +23,6 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { cpus, platform, release, totalmem } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { writeAgentSettings } from '../src/lib/agentSettings.js'
 import { LocalClient } from './harness/client.js'
 import { CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
 import { harnessdProcesses } from './harness/endurance.js'
@@ -81,9 +80,9 @@ function nameOf(row: Row, logged: ReadonlyMap<number, string>): string {
 
 type Scenario = 'on' | 'off' | 'defaults'
 const SCENARIOS: Record<Scenario, string> = {
-  on: 'Agent Messages on in Settings ▸ Agents, active: both agents have their note',
-  off: 'Agent Messages off in Settings ▸ Agents',
-  defaults: 'Settings ▸ Agents never written: every switch at its default',
+  on: 'Agent Messages on for the account, active: both agents have their note',
+  off: 'Agent Messages turned off for the account',
+  defaults: 'never turned: every switch at its default (off)',
 }
 const chosen = (process.env.FOOTPRINT_SCENARIOS ?? 'on,off,defaults').split(',').map((name) => name.trim()).filter((name): name is Scenario => name in SCENARIOS)
 /** Every scenario measured in this run, written whole to FOOTPRINT_REPORT after each. */
@@ -106,8 +105,9 @@ describe.runIf(process.env.FOOTPRINT === '1')('the daemon\'s memory at idle', ()
         version: 1, accessToken: ME.token, autonomousEnv: 'prod', computerId: ME.computerId,
         machineId: ME.machineId, expiresAt: Date.now() + 30 * 24 * 3600_000, updatedAt: Date.now(), signInEpoch: 'e2e',
       }), { mode: 0o600 })
-      // Written as the person turns it on or off; never left to a build's default but in `defaults`.
-      if (scenario !== 'defaults') writeAgentSettings(d.dataDir, { agentMessages: scenario === 'on' })
+      // Turned as the person turns it, for the account the daemon keeps it for; never left to the default but in
+      // `defaults`.
+      if (scenario !== 'defaults') backend.experiments.agent_messages = scenario === 'on'
       await d.start()
       await until('signed in to the fake backend', () => backend.nodeUp(ME.machineId) || null, 60_000, 250)
       client = await LocalClient.connect(d, { machineId: ME.machineId })
