@@ -118,14 +118,6 @@ TAG_VER="$(git tag -l 'v*_cli' \
   | sort -V | tail -1)"
 LAST_TAG=""
 [ -z "$TAG_VER" ] || LAST_TAG="v${TAG_VER}_cli"
-# The last release must be in what is released now. A checkout made before another release went out once tagged an
-# older commit with a newer version (v0.3.82_cli on fae1ca5766, after v0.3.81_cli on d96c270493, 2026-10-12; cancelled
-# before it published): every daemon would have updated to the older code.
-if [ -n "$LAST_TAG" ] && ! git merge-base --is-ancestor "$LAST_TAG" HEAD 2>/dev/null; then
-  echo "ERROR HEAD does not contain $LAST_TAG, the last release: it would ship older code under a newer version." >&2
-  echo "      Release from the latest origin/$BRANCH: git fetch, then a clean checkout of it." >&2
-  exit 1
-fi
 TAG_VER="${TAG_VER:-0.0.0}"
 
 # --- current version, source 2: the version actually being served ---
@@ -162,9 +154,11 @@ fi
 # --- preflight: this release must contain the one before it ---
 # HEAD on origin/$BRANCH is not enough: a checkout nobody updated is on it too, and a tag cut there ships
 # older code under a newer version, which every daemon installs. v0.3.82_cli was tagged that way on
-# October 12, 2026, 27 minutes after v0.3.81_cli and three commits behind it (its run was cancelled
-# before it published). Checked against the highest tag and against the tag of the version being served:
-# they differ when a tag's release never published. A rollback is the one release that means to do this.
+# October 12, 2026 (on fae1ca5766, 27 minutes after v0.3.81_cli on d96c270493 and three commits behind
+# it; its run was cancelled before it published). Checked against the highest tag and against the tag of
+# the version being served: they differ when a tag's release never published. A rollback is the one
+# release that means to do this. The one check: #1246 and #1249 each added one the same hour, and the
+# first, with no way past it, refused the rollback the second allows.
 contains_release() {
   local tag="$1" sha
   git rev-parse -q --verify "refs/tags/$tag" >/dev/null || return 0
