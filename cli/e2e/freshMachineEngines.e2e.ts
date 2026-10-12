@@ -8,14 +8,17 @@
  *    on its PATH. Its probe failed, so every launch held; its pane would have failed the same way.
  *  - A Codex that cannot run at all is refused at once, with its own reason, instead of being held and said only to be
  *    unconfirmed after a minute.
+ *  - A Codex that is not there at all is installed by Harness for a new project (2026-10-12): `harness new` waits for
+ *    the install and then starts it, or says why it could not be installed, and leaves no folder behind either way.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, onTestFailed } from 'vitest'
 import { LocalClient } from './harness/client.js'
 import { CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
+import { resolveBinaryOnPath } from '../src/lib/binaryOnPath.js'
 
 let daemon: IsolatedDaemon | undefined
 afterEach(async () => { await daemon?.close(); daemon = undefined })
@@ -139,5 +142,66 @@ it('says what a launch still held after a minute waits for, and cancels it so it
   const client = await LocalClient.connect(d)
   try {
     expect((await client.request<{ agents: unknown[] }>('agents_list', { includeStopped: true }, 30_000)).agents).toEqual([])
+  } finally { client.close() }
+}, 180_000)
+
+it('installs a missing Codex for a new project and starts it there, or says why it could not, leaving no folder', async (context) => {
+  // A computer with nothing: no codex, npm or node in the system folders the login shell's PATH names below.
+  const system = ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
+  if (system.some((dir) => ['codex', 'npm', 'node'].some((name) => existsSync(join(dir, name))))) context.skip()
+  let offline = ''
+  const d = await boot((d) => {
+    const bin = join(d.root, 'bin'), tools = join(d.root, 'tools'), installed = join(d.root, 'codex-package')
+    offline = join(d.root, 'npm-offline')
+    // What `npm install -g @openai/codex` puts in the prefix is the fake engine's own wrapper; until then, no codex
+    // anywhere, so the daemon installs it with the recipe it would use on a person's computer.
+    renameSync(join(bin, 'codex'), installed)
+    delete d.env.CODEX_PATH
+    symlinkSync(process.execPath, join(bin, 'node'))
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh
+case "$1" in
+  prefix) printf '%s\\n' "\${npm_config_prefix:-$HOME/.local}"; exit 0 ;;
+  install) ;;
+  *) exit 1 ;;
+esac
+if [ -f ${JSON.stringify(offline)} ]; then
+  echo 'npm error code ENOTFOUND' >&2
+  echo 'npm error network request to https://registry.npmjs.org/@openai%2fcodex failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org' >&2
+  exit 1
+fi
+sleep 3
+mkdir -p "$npm_config_prefix/bin" && cp ${JSON.stringify(installed)} "$npm_config_prefix/bin/codex" && chmod 755 "$npm_config_prefix/bin/codex"
+`, { mode: 0o755 })
+    mkdirSync(tools)
+    symlinkSync(resolveBinaryOnPath('tmux')!, join(tools, 'tmux'))
+    // The daemon's own PATH too: no codex of the developer's may be found and run.
+    const path = [bin, tools, ...system].join(':')
+    d.env.PATH = path
+    writeFileSync(join(d.env.HOME!, '.zshrc'), `export PATH=${path}\n`)
+    writeFileSync(join(d.env.HOME!, '.bash_profile'), `export PATH=${path}\n`)
+  })
+  const home = d.env.HOME!, folder = join(home, 'harnesses', 'scratch1')
+  const run = () => harness(d, ['new', 'codex', 'scratch1', '--name', 'cx', '--', 'Reply with pong'])
+  // Offline: it says it is installing, then why Codex could not be installed, and no folder blocks the same command.
+  writeFileSync(offline, '')
+  const refused = await run()
+  expect(refused.code, refused.out + refused.err).toBe(1)
+  expect(refused.err.trim().split('\n')).toEqual(['Installing Codex. The harness starts once it is installed.',
+    'Codex could not be installed: npm error network request to https://registry.npmjs.org/@openai%2fcodex failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org'])
+  expect(existsSync(folder)).toBe(false)
+  // Online again: the same command installs it, waits, and starts the harness in its new project.
+  rmSync(offline)
+  const started = await run()
+  expect(started.code, started.out + started.err).toBe(0)
+  expect(started.err.trim()).toBe('Installing Codex. The harness starts once it is installed.')
+  expect(started.out).toContain(`Created cx on this computer in ${folder}.`)
+  expect(existsSync(join(home, '.local', 'bin', 'codex'))).toBe(true)
+  const client = await LocalClient.connect(d)
+  try {
+    const agents = await until('Codex to bind its conversation in its new project', async () => {
+      const rows = (await client.request<{ agents: Array<Record<string, any>> }>('agents_list', { includeStopped: true }, 30_000)).agents
+      return rows.length === 1 && rows[0]!.sessionId && rows[0]!.status === 'active' ? rows : null
+    }, 60_000, 500)
+    expect(agents[0]).toMatchObject({ name: 'cx' })
   } finally { client.close() }
 }, 180_000)

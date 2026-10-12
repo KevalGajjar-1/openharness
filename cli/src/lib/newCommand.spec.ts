@@ -265,6 +265,38 @@ describe('harness new: the daemon', () => {
     expect(d.out).toEqual([])
   })
 
+  it('waits for an engine Harness is installing, saying so once, then starts the harness', async () => {
+    // A fresh Ubuntu VM (2026-10-12): Codex took about a minute to install, the whole of the wait every other hold gets.
+    const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex. The harness starts once it is installed.' } }
+    let asks = 0
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? installing
+      : frame.type === 'agent_create_status' ? (++asks < 60 ? installing : asks < 70 ? { state: 'pending', held: { service: 'native', detail: 'Waiting to confirm the engine’s native hooks.' } }
+        : { state: 'created', agent: { id: 'h3', name: 'cx' } }) : null)
+    const d = deps(['codex', '--', 'Reply with pong'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(0)
+    expect(d.err).toEqual(['Installing Codex. The harness starts once it is installed.', 'Waiting to confirm the engine’s native hooks.'])
+    expect(d.out[0]).toBe('Created cx on this computer in /work/repo.')
+    expect(socket.sent.some((f) => f.type === 'agent_create_cancel')).toBe(false)
+  })
+
+  it('gives an install five minutes, then says plainly it is still installing and that this request will not start', async () => {
+    let asks = 0
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? { state: 'cancelled' }
+      : (frame.type === 'agent_create_status' && ++asks, { state: 'pending', held: { service: 'install', detail: 'Installing Claude Code. The harness starts once it is installed.' } }))
+    const d = deps(['claude'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(1)
+    expect(asks).toBe(180)
+    expect(d.err.at(-1)).toBe('Harness is still installing Claude Code. Run the same command again in a minute; this request is cancelled, so it will not start later.')
+    // A hold after an install has finished is given its minute, and then said as the hold it is.
+    asks = 0
+    const after = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? null
+      : (frame.type === 'agent_create_status' && ++asks, asks < 10 ? { state: 'pending', held: { service: 'install', detail: 'Installing Codex.' } } : { state: 'pending', held: { service: 'native', detail: 'Waiting.' } }))
+    const late = deps(['codex'], after, { sleep: async () => {} })
+    expect(await newCommand(late)).toBe(1)
+    expect(asks).toBe(39)
+    expect(late.err.at(-1)).toBe('Harness did not start the harness in time: Waiting. It is still saved and may start later by itself: check with `harness ps` before starting another.')
+  })
+
   it('takes what became of a launch it could no longer cancel, and says so when it cannot cancel at all', async () => {
     const answer = (cancel: Record<string, unknown> | null) => new FakeSocket((frame) =>
       frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending' }

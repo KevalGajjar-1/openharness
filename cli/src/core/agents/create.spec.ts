@@ -294,7 +294,7 @@ describe('creating an agent', () => {
 
   it('refuses, with the engine\'s own reason, an engine that ran and failed instead of holding the creation', async () => {
     const detail = 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory'
-    const broken = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail, cannotRun: true } as const
+    const broken = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail, refusal: 'ENGINE_CANNOT_RUN' } as const
     expect(await setup({ native: async () => broken }).create(request())).toEqual({ ok: false, error: 'ENGINE_CANNOT_RUN', detail })
     expect(createAndRegisterPane).not.toHaveBeenCalled()
   })
