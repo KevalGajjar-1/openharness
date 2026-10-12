@@ -528,11 +528,12 @@ void pod_transport(pod_out_frame_t *f, bool talking)
         send_plane(s, 360, mid, 60);
     } else {
         pod_grad(s, 310, mid - 50, 100, 100, 50, C(0x5ea2f2), C(0x1f63d1));
-        // The voice button (owner, 2026-10-11, mockup pro-nowplaying "Voice button"): Material Symbols' mic, its 24-unit
-        // glyph at 2.4 px a unit: the capsule, the cradle (the ring's lower half, flat ends) and the stem.
-        ht_pro_rect(s, 360 - 7, mid - 23, 14, 29, 7, C(0xffffff));
-        pod_arc(s, 360 * 16, mid * 16 - 19, 230, 77, 270, 90, C(0xffffff));
-        ht_pro_rect(s, 360 - 2, mid + 14, 5, 9, 0, C(0xffffff));
+        // The voice button: a mic 40 px wide and 53 tall (10% under the first cut, owner 2026-10-12), in the proportions of the owner's sample (2026-10-12: the
+        // Material glyph read too long): a capsule half the width, the cradle (the ring's lower half, flat ends) hugging
+        // it, and a short stem.
+        ht_pro_rect(s, 360 - 11, mid - 26, 22, 34, 11, C(0xffffff));
+        pod_arc(s, 360 * 16, mid * 16 - 58, 281, 72, 270, 90, C(0xffffff));
+        ht_pro_rect(s, 360 - 2, mid + 15, 4, 12, 0, C(0xffffff));   // a pixel into the cradle: no seam
         // One empty slot: the plane is four triangles, the mic three runs, so both faces add the same runs (POD_TRANSPORT_RUNS).
         pod_arc(s, 360 * 16, mid * 16, 0, 0, 0, 0, 0);
     }

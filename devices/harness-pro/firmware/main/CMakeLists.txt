@@ -26,6 +26,7 @@ idf_component_register(
         "cable/cable_scroll.c"
         "cable/pro_cable.c"
         "display/pro_display.c"
+        "display/pro_turn.c"
         "display/pro_panel_bus.c"
         "display/touch_gt911.c"
         "display/pro_frame.c"
@@ -80,7 +81,7 @@ idf_component_register(
         mbedtls
 )
 
-# POD_PANEL_TURN=180 turns picture and touch together (display/pro_display.c).
+# POD_PANEL_TURN=180 is the DEFAULT of the runtime screen-turn flag (display/pro_turn.c); the owner's NVS setting overrides it.
 if(POD_PANEL_TURN)
     if(NOT POD_PANEL_TURN EQUAL 180)
         message(FATAL_ERROR "POD_PANEL_TURN must be 180")
