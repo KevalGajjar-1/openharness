@@ -1347,7 +1347,10 @@ pub(crate) mod oracle {
             let hint: String = if details { row.detail.iter().map(|s| s.content.as_ref()).collect() } else { String::new() };
             let hx = at + 28;
             let with_hint = !hint.is_empty() && hx + 8 < end;
-            at += put(buf, at, y, if with_hint { 26 } else { end.saturating_sub(at) }, &row.label, style);
+            let label_w = if with_hint { 26 } else { end.saturating_sub(at) };
+            let split = row.label.char_indices().nth(row.label_dim).map_or(row.label.len(), |(i, _)| i);
+            let dim = put(buf, at, y, label_w, &row.label[..split], if here { style } else { c.muted });
+            at += dim + put(buf, at + dim, y, label_w.saturating_sub(dim), &row.label[split..], style);
             let quiet = if here { style.remove_modifier(Modifier::BOLD) } else { c.muted };
             if with_hint { put(buf, hx.max(at + 2), y, end - hx.max(at + 2), &hint, quiet); }
             else if !details && at + 10 < end {
