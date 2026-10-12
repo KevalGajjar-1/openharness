@@ -22,7 +22,6 @@ import type { registry, RegisteredSession } from '../../lib/registry.js'
 import { bypassPermissionFor, restartAgent } from '../../lib/restartAgent.js'
 import type { RuntimeProfileManager } from '../../lib/runtimeProfile.js'
 import { parseRuntimeProfile } from '../../lib/runtimeProfileWire.js'
-import type { ScreenReader } from '../../lib/screenReader.js'
 import type { TerminalAgentReconciler } from '../../lib/terminalAgentReconciler.js'
 import { terminalRouteKey } from '../../lib/terminalRuntime.js'
 import type { TmuxRuntimeRef } from '../../lib/terminalTypes.js'
@@ -39,14 +38,14 @@ type LaunchHelpers = ReturnType<typeof createLaunchHelpers>
 type RetargetAgent = NonNullable<BackendSocket['onRetargetAgent']>
 
 export interface RetargetDeps {
-  readScreen: ScreenReader
+  /** Whether the engine's turn state says this session is mid-turn (normalizers.sessionTurnOpen). */
+  sessionTurnOpen: (sessionId: string) => boolean
   /** Whether a purge holds this agent (PurgeAgentService.busy). */
   purgeBusy: (agentId: string) => boolean | undefined
   tmuxBackend: TmuxBackend | null
   registry: typeof registry
   runtimeProfiles: Pick<RuntimeProfileManager, 'selectedModel'>
   launchOverridesDeps: LaunchOverridesDeps
-  captureTerminal: (target: string, historyLines?: number) => Promise<string | null>
   acquireTerminalControl: (id: string, opts?: { forAnswer?: boolean }) => (() => void) | null
   relaunchOverrides: LaunchHelpers['relaunchOverrides']
   downgradedPermission: LaunchHelpers['downgradedPermission']
@@ -61,7 +60,7 @@ export interface RetargetDeps {
 }
 
 export function createAgentRetargeter({
-  readScreen, purgeBusy, tmuxBackend, registry, runtimeProfiles, launchOverridesDeps, captureTerminal, acquireTerminalControl,
+  sessionTurnOpen, purgeBusy, tmuxBackend, registry, runtimeProfiles, launchOverridesDeps, acquireTerminalControl,
   relaunchOverrides, downgradedPermission, agentReconciler, restartJobs, paneSwapDeps, liveBypassPermission,
   announceSession, refreshGridAssignment, opencodeDb,
 }: RetargetDeps) {
@@ -168,15 +167,13 @@ export function createAgentRetargeter({
     const missing = workspaceMissing(session.cwd)
     if (missing) return missing
     // Mid-turn is the one state where restarting costs real work: the conversation comes back but
-    // whatever the engine was doing does not. The app is told which agents these are so the user can
-    // move them once they are done, rather than being asked to choose between losing a turn and losing
-    // the grid.
-    const capture = await captureTerminal(session.agentId, 100)
-    if (!current()) return changed()
-    if (!capture) return { ok: false, error: 'TMUX_FAILED' }
-    const screen = await readScreen(session, capture)
-    if (!current()) return changed()
-    if (!screen?.pane.idle) return { ok: false, error: 'AGENT_BUSY' }
+    // whatever the engine was doing does not. The engine's own turn state (hooks, transcript) says
+    // so, for every engine; the screen is not read. It used to be, to keep an unsent draft, and an
+    // engine whose placeholder colour moved (OpenCode 2) then read as holding one and refused every
+    // switch until its first chat. A draft is lost to the respawn; that is the person's call.
+    if (session.sessionId && sessionTurnOpen(session.sessionId)) {
+      return { ok: false, error: 'AGENT_BUSY', detail: 'This harness is in a turn. Stop it, then switch the model.' }
+    }
     // Nothing may type into the pane while it is being replaced.
     if (purgeBusy(session.agentId) || restartJobs.busy(session.agentId)) return { ok: false, error: 'AGENT_BUSY' }
     const release = acquireTerminalControl(session.agentId)

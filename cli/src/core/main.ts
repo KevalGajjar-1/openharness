@@ -2394,13 +2394,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Moving a running agent onto a grid, or back to its own login (core/agents/retarget.ts).
   backend.onRetargetAgent = createAgentRetargeter({
-    readScreen: screens.read,
+    sessionTurnOpen,
     purgeBusy: (agentId) => restorePanes.busy(agentId) || backend.purgeAgentService?.busy(agentId),
     tmuxBackend,
     registry,
     runtimeProfiles,
     launchOverridesDeps,
-    captureTerminal,
     acquireTerminalControl,
     relaunchOverrides,
     downgradedPermission,

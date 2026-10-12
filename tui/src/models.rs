@@ -395,6 +395,9 @@ pub struct Models {
     /// The picker keeps the harness it opened for, even if another client changes focus.
     pub selection: Option<crate::session_close::Identity>,
     pub selection_fixed: bool,
+    /// The pane focused when it opened: a harness there still starting (its terminal, until the
+    /// daemon sees the engine) becomes the selection once it is one.
+    selection_pane: Option<u64>,
     pub panel_generation: u64,
     pub switch_generation: u64,
     /// Each machine's local models, when they were last read, and a read out now.
@@ -508,7 +511,7 @@ pub fn target(app: &App) -> Option<Target> {
     };
     if app.models_view.selection_fixed {
         let selected = app.models_view.selection.as_ref()?;
-        if !selected.matches(app) { return None }
+        if !same_harness(app, selected) { return None }
         return of(selected.machine.clone(), selected.agent.clone());
     }
     if let Some(t) = crate::input::focused_agent(app).and_then(|(m, a)| of(m, a)) { return Some(t) }
@@ -1129,8 +1132,16 @@ pub fn choose(app: &mut App, picker: &mut Picker, id: &str, stop: bool) {
     run(app, picker, plan, &key);
 }
 
+/// Whether [identity] is still the harness the view opened for. One that had no conversation yet and
+/// now has its first (a new harness is chatted with, or its engine reports its session late) is the
+/// same harness; any other change of conversation is not.
+fn same_harness(app: &App, identity: &crate::session_close::Identity) -> bool {
+    identity.matches(app) || identity.session.is_empty() && identity.connection_matches(app)
+        && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.created_at_wire == identity.created)
+}
+
 fn current_identity(app: &App, identity: &crate::session_close::Identity) -> bool {
-    identity.matches(app) && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.status != "stopped")
+    same_harness(app, identity) && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.status != "stopped")
 }
 
 fn selection_changed(app: &App) -> bool {
@@ -1888,15 +1899,21 @@ pub fn advance(app: &mut App) {
 /// The view opened: read what it shows now (what was read in the last 20 s of the grids is kept).
 pub fn open(app: &mut App) {
     reconcile_reads(app);
-    app.models_view.selection_fixed = false;
-    app.models_view.selection = target(app).and_then(|t| app.fleet.agent(&t.machine, &t.agent)).map(|a| crate::session_close::Identity::capture(app, a));
-    app.models_view.selection_fixed = true;
+    app.models_view.selection_pane = app.focused();
+    select(app);
     app.models_view.panel_generation = app.models_view.panel_generation.wrapping_add(1);
     let machine = app.fleet.local_id.clone();
     if machine.is_empty() || app.link(&machine).is_none() { return }
     if !app.models_view.reading.contains(&machine) { read_local(app, &machine) }
     if !app.models_view.grids_reading.contains(&machine) && due(app.models_view.grids_at.get(&machine), Duration::from_secs(20), Instant::now()) { read_grids(app, &machine) }
     read_apis(app);
+}
+
+/// Fix the harness the view acts on: the one [target] names now.
+fn select(app: &mut App) {
+    app.models_view.selection_fixed = false;
+    app.models_view.selection = target(app).and_then(|t| app.fleet.agent(&t.machine, &t.agent)).map(|a| crate::session_close::Identity::capture(app, a));
+    app.models_view.selection_fixed = true;
 }
 
 /// Whether the view is still reading what it shows (its spinner turns).
@@ -1907,7 +1924,10 @@ pub fn loading(app: &App) -> bool { !app.models_view.reading.is_empty() || !app.
 pub fn tick(app: &mut App) {
     reconcile_reads(app);
     let open = matches!(&app.modal, Some(crate::modal::Modal::Picker { kind: crate::modal::PickerKind::Models, .. }));
-    if !open { app.models_view.selection_fixed = false; app.models_view.selection = None; }
+    if !open { app.models_view.selection_fixed = false; app.models_view.selection = None; app.models_view.selection_pane = None; }
+    // Opened over a harness still starting: it is the one meant once its engine is seen, while that
+    // pane keeps the focus. (A selection already made is never replaced: "This session changed".)
+    if open && app.models_view.selection.is_none() && app.models_view.selection_pane.is_some() && app.focused() == app.models_view.selection_pane { select(app) }
     follow(app);
     app.models_view.starts.retain(|_, at| at.elapsed() < START_CAP);
     if app.models_view.switching.as_ref().is_some_and(|s| switched(app, s)) { app.models_view.switching = None }
@@ -2278,7 +2298,7 @@ mod tests {
     /// The harness's frame, its `grid` as given (`{}`: on its own login).
     fn frame(app: &mut App, grid: Value) {
         let key = ("local".to_string(), "a1".to_string());
-        let row = json!({ "id": "a1", "name": "fix-login", "engine": "claude", "selectedModel": "opus", "grid": grid });
+        let row = json!({ "id": "a1", "name": "fix-login", "engine": "claude", "sessionId": "s1", "selectedModel": "opus", "grid": grid });
         let a = crate::fleet::agent_from("local", &row, app.fleet.agents.get(&key));
         app.fleet.agents.insert(key, a);
     }
@@ -2294,6 +2314,39 @@ mod tests {
         on_grids(&mut app, "local", Ok(g));
         let mine: Vec<String> = super::rows(&app, "").into_iter().filter(|r| r.group.as_deref() == Some("Your models") && is_row(&r.id)).map(|r| r.id).collect();
         assert_eq!(mine, vec!["mv:local:qwen-35b".to_string(), "mv:local:gemma-12b".into(), "mv:grid:own-grid\tstudio\tbox-model".into(), "mv:grid:own-grid\tlap\taway-model".into()]);
+    }
+
+    /// A harness just opened reads as its terminal until the daemon sees the engine in it (OpenCode:
+    /// ~7 s). Models opened in that window takes the engine once it is seen — the same pane, never
+    /// another — instead of saying "focus a harness" until it is closed and opened again.
+    #[test]
+    fn models_opened_while_a_harness_starts_takes_it_once_its_engine_is_seen() {
+        let mut app = app();
+        let key = ("local".to_string(), "t1".to_string());
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "terminal" }), None));
+        app.panes.insert(2, crate::pane::Pane::new(2, "local", "t1", 75, 40));
+        app.rects = vec![(1, ratatui::layout::Rect::new(0, 0, 75, 40)), (2, ratatui::layout::Rect::new(75, 0, 75, 40))];
+        app.tabs[0].focus = Some(2);
+        app.modal = Some(crate::modal::Modal::Picker { kind: crate::modal::PickerKind::Models, picker: crate::picker::Picker::new("Models", "") });
+        open(&mut app);
+        assert!(target(&app).is_none(), "still a terminal");
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode" }), None));
+        tick(&mut app);
+        assert_eq!(target(&app).map(|t| t.agent).as_deref(), Some("t1"), "{}", no_target_why(&app));
+        // Its first conversation a moment later is the same harness; another one after it is not.
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_1" }), None));
+        assert_eq!(target(&app).map(|t| t.agent).as_deref(), Some("t1"), "{}", no_target_why(&app));
+        app.models_view.selection = None;
+        tick(&mut app);
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_2" }), None));
+        assert!(target(&app).is_none());
+        assert!(no_target_why(&app).contains("This session changed"), "{}", no_target_why(&app));
+        // Another pane focused meanwhile: not followed there.
+        app.fleet.agents.insert(key, crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "terminal" }), None));
+        open(&mut app);
+        app.tabs[0].focus = Some(1);
+        tick(&mut app);
+        assert!(target(&app).is_none());
     }
 
     /// Which harness Enter moves: the focused pane's. A focused terminal is the one meant — never
