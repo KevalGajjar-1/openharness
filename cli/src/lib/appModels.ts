@@ -109,9 +109,10 @@ export async function scanAppModels({ node, packageDir, env, run = exec }: {
     for (const m of rows(found.models)) {
       if (m.missingFiles || m.error) continue
       if (!(m.format === 'gguf' || (m.format === 'mlx' && canRun.includes('lm-studio')))) continue
-      const gguf = obj(m.gguf)
-      const context = num(gguf.contextLength)
-      if ((context !== undefined && context < MIN_APP_CONTEXT) || gguf.toolCalls === false) continue
+      // An MLX folder's window, tool calls and cache per token are in its `config`, a GGUF's in `gguf`.
+      const meta = obj(m.format === 'mlx' ? m.config : m.gguf)
+      const context = num(meta.contextLength)
+      if ((context !== undefined && context < MIN_APP_CONTEXT) || meta.toolCalls === false) continue
       const copies = [...(m.source === 'lm-studio' ? [str(m.path)] : []), ...rows(m.alsoAt).filter(a => a.source === 'lm-studio').map(a => str(a.path))]
       for (const file of copies) {
         // The file's own name is what the grid lists it as: an API name, where a display name has spaces.
@@ -120,7 +121,7 @@ export async function scanAppModels({ node, packageDir, env, run = exec }: {
         ids.add(id)
         result.push({ id, name, app: 'lm-studio', engine: 'lm-studio', ref: file, binary: lms,
           sizeBytes: num(m.bytes) ?? 0, ...(str(m.quant) ? { quant: str(m.quant) } : {}),
-          ...(context ? { contextLength: context } : {}), ...(num(gguf.kvBytesPerToken) ? { kvBytesPerToken: num(gguf.kvBytesPerToken) } : {}) })
+          ...(context ? { contextLength: context } : {}), ...(num(meta.kvBytesPerToken) ? { kvBytesPerToken: num(meta.kvBytesPerToken) } : {}) })
       }
     }
   }
@@ -189,6 +190,13 @@ export function appEngineOps(env: NodeJS.ProcessEnv, request: typeof fetch = fet
       const response = await request(url, { signal: AbortSignal.timeout(5_000), redirect: 'error' })
       return { status: response.status, body: obj(await response.json().catch(() => ({}))) }
     } catch { return { status: 0, body: {} } }
+  }
+  /** Whether nothing listens at [url]: the connection is refused. A timeout or any answer is not that. */
+  const refused = async (url: string): Promise<boolean> => {
+    try { await request(url, { signal: AbortSignal.timeout(5_000), redirect: 'error' }); return false } catch (error) {
+      const cause = obj(obj(error).cause)
+      return cause.code === 'ECONNREFUSED' || obj(error).code === 'ECONNREFUSED'
+    }
   }
   /** Up when [url] answers 200; a 503 is a model still loading. Gives up early if the process exits. */
   const ready = async (url: string, ms: number, pid?: number): Promise<boolean> => {
@@ -286,8 +294,9 @@ export function appEngineOps(env: NodeJS.ProcessEnv, request: typeof fetch = fet
     async stop(record) {
       if (record.engine === 'lm-studio') {
         // Every `lms` command starts LM Studio. One the person already quit has nothing loaded to unload, and
-        // is not woken to be told so: only a server that answers is asked.
-        if ((await get(`http://127.0.0.1:${record.port}/api/v0/models`)).status === 0) return
+        // is not woken to be told so. Only a refused connection says that: a server slow to answer still has
+        // the model, and this record is the last thing that can unload it.
+        if (await refused(`http://127.0.0.1:${record.port}/api/v0/models`)) return
         await run(record.binary, ['unload', record.served], { env, timeout: 60_000 })
         if (record.startedServer) await run(record.binary, ['server', 'stop'], { env, timeout: 30_000 })
         return

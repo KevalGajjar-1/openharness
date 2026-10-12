@@ -80,8 +80,11 @@ describe('models other apps downloaded', () => {
       models: [
         gguf({ name: 'gemma-4-E2B-it-Q4_K_M', source: 'lm-studio', path: `${root}/google/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf`,
           startWith: { engine: 'lm-studio', label: 'lm-studio' } }),
+        // An MLX folder's window and tool calls are in `config` (the scan reads its config.json), not `gguf`.
         { name: 'mlx-community/Qwen3-4B-4bit', format: 'mlx', source: 'lm-studio', bytes: 2e9, path: `${root}/mlx-community/Qwen3-4B-4bit`,
-          startWith: { engine: 'lm-studio', label: 'lm-studio' } },
+          config: { contextLength: 131072, toolCalls: true, kvBytesPerToken: 73728 }, startWith: { engine: 'lm-studio', label: 'lm-studio' } },
+        { name: 'mlx-community/Short-4bit', format: 'mlx', source: 'lm-studio', bytes: 1e9, path: `${root}/mlx-community/Short-4bit`,
+          config: { contextLength: 32768, toolCalls: true }, startWith: { engine: 'lm-studio', label: 'lm-studio' } },
         // A file Ollama shares with LM Studio: the scan's Ollama model, with LM Studio's copy beside it.
         gguf({ name: 'qwen3:8b', source: 'ollama', path: '/m/blobs/sha256-a', startWith: { engine: 'ollama', label: 'ollama' },
           alsoAt: [{ source: 'lm-studio', path: `${root}/ollama-reuse/qwen3-8b/qwen3-8b.gguf`, name: null }] }),
@@ -96,7 +99,7 @@ describe('models other apps downloaded', () => {
         ref: `${root}/google/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf`, binary: lms,
         sizeBytes: 2 * GiB, quant: 'Q4_K_M', contextLength: 131072, kvBytesPerToken: 114688 },
       { id: 'app:lm-studio:Qwen3-4B-4bit', name: 'Qwen3-4B-4bit', app: 'lm-studio', engine: 'lm-studio', ref: `${root}/mlx-community/Qwen3-4B-4bit`,
-        binary: lms, sizeBytes: 2e9 },
+        binary: lms, sizeBytes: 2e9, contextLength: 131072, kvBytesPerToken: 73728 },
       { id: 'app:lm-studio:qwen3-8b.gguf', name: 'qwen3-8b', app: 'lm-studio', engine: 'lm-studio', ref: `${root}/ollama-reuse/qwen3-8b/qwen3-8b.gguf`,
         binary: lms, sizeBytes: 2 * GiB, quant: 'Q4_K_M', contextLength: 131072, kvBytesPerToken: 114688 },
     ])
@@ -130,17 +133,21 @@ describe('models other apps downloaded', () => {
     await expect(ops.start({ ...model, ref: '/elsewhere/gone.gguf' }, 65536, '/tmp/logs')).rejects.toThrow('LM Studio does not list this model')
   })
 
-  it('stops an LM Studio model only through a server that answers, so a quit LM Studio stays closed', async () => {
+  it('leaves a quit LM Studio closed on Stop, and still unloads from one that is only slow', async () => {
     const record = { spec: 1 as const, modelId: 'app:lm-studio:m.gguf', grid: 'g', engine: 'lm-studio' as const, name: 'm',
       served: 'm', alias: 'm', port: 1234, binary: '/home/me/.lmstudio/bin/lms', startedServer: true }
     const seen: string[][] = []
     const run = async (_file: string, args: string[]) => { seen.push(args); return { ok: true, stdout: '', stderr: '' } }
-    const closed = (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
-    await appEngineOps({}, closed, run).stop(record)
+    const fails = (error: unknown) => (async () => { throw error }) as unknown as typeof fetch
+    // Nothing listens: LM Studio was quit (undici's shape, and a bare socket error's).
+    await appEngineOps({}, fails(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })), run).stop(record)
+    await appEngineOps({}, fails(Object.assign(new Error('connect'), { code: 'ECONNREFUSED' })), run).stop(record)
     expect(seen).toEqual([])
+    // Up and answering, or busy past the timeout: the model is still loaded there.
     const open = (async () => new Response(JSON.stringify({ data: [{ id: 'm', state: 'loaded' }] }))) as unknown as typeof fetch
     await appEngineOps({}, open, run).stop(record)
-    expect(seen).toEqual([['unload', 'm'], ['server', 'stop']])
+    await appEngineOps({}, fails(new DOMException('timed out', 'TimeoutError')), run).stop(record)
+    expect(seen).toEqual([['unload', 'm'], ['server', 'stop'], ['unload', 'm'], ['server', 'stop']])
   })
 
   it('is no models, never an error, without the Model Manager or with a scan that fails', async () => {
