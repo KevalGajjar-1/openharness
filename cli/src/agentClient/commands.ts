@@ -23,7 +23,7 @@ import { engineName } from '../messages/model.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath, type Pending, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
-import { callerOf, clip, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
+import { asSaid, callerOf, clip, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
 
 export interface ClientDeps {
   pane?: string | undefined
@@ -409,7 +409,7 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
         const about = (Array.isArray(recent.events) ? recent.events as Array<Record<string, unknown>> : [])
           .map((e) => (typeof e.recap === 'string' && e.recap ? e.recap : typeof e.text === 'string' ? e.text : '').replace(/\s+/g, ' ').trim())
           .filter(Boolean).slice(0, 3).map((t) => clip(t, 140))
-        if (asks.length) row.asks = asks.map((a) => clip(a.replace(/\s+/g, ' ').trim(), 200))
+        if (asks.length) row.asks = asks.map((a) => clip(asSaid(a).replace(/\s+/g, ' ').trim(), 200))
         if (about.length) row.about = about.join(' / ')
       }))
       // Asked for and not started yet: listed by the name it was given, and what it waits for.

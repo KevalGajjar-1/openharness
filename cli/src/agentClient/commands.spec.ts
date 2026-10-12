@@ -158,6 +158,17 @@ describe('harness ps', () => {
     expect(h.out.join('\n')).toContain('  asked: the ask')
   })
 
+  it('lists an ask without the markers around a paste', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('a')]
+    // As the daemon keeps it: on one line, the markers still in it.
+    d.extra.agent_recent = () => ({ events: [], asks: ['read this: <pasted_content id="1c18"> #1242 is merged </pasted_content id="1c18">'] })
+    const h = harness(d)
+    expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n')).toContain('  asked: read this: #1242 is merged')
+    expect(h.out.join('\n')).not.toContain('pasted_content')
+  })
+
   it('refuses names and unknown options with the usage, and prints the usage for --help', async () => {
     const h = harness(new FakeDaemon())
     expect(await psCommand(['kid'], h.deps)).toBe(EXIT.usage)
