@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newAgentPayload, newCommand, NewUsageError, parseNewArgs, resolveNewMachine, trustAsked, type NewCommandDeps, type NewSocket } from './newCommand.js'
+import { SANDBOXED } from './unreachable.js'
 
 const env = { cwd: '/work/repo', home: '/home/me' }
 
@@ -140,7 +141,37 @@ function deps(argv: string[], socket: FakeSocket, over: Partial<NewCommandDeps> 
   }
 }
 
+/** A connect that fails with [code], as `ws` reports it: one 'error', then 'close'. */
+class RefusedSocket extends EventEmitter implements NewSocket {
+  constructor(private code: string) { super() }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  override on(event: string, listener: (...args: any[]) => void): this {
+    super.on(event, listener)
+    if (event === 'error') queueMicrotask(() => {
+      this.emit('error', Object.assign(new Error(`connect ${this.code} 127.0.0.1:1`), { code: this.code }))
+      this.emit('close', 1006, '')
+    })
+    return this
+  }
+  send(): void {}
+  close(): void {}
+}
+
 describe('harness new: the daemon', () => {
+  it('says a sandbox is in the way when the daemon runs but its port is refused, and passes on anything else', async () => {
+    // Linux: the signal reaches the daemon, so it runs, and the sandbox refuses the connect (lib/unreachable.ts).
+    const sandboxed = deps(['claude', '--name', 'opinion', '--', 'a second opinion'], new FakeSocket(() => null), { connect: () => new RefusedSocket('EPERM') })
+    expect(await newCommand(sandboxed)).toBe(1)
+    expect(sandboxed.err).toEqual([SANDBOXED])
+    const json = deps(['claude', '--json'], new FakeSocket(() => null), { connect: () => new RefusedSocket('EACCES') })
+    expect(await newCommand(json)).toBe(1)
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: false, error: SANDBOXED })
+    // Nothing listening is not a sandbox's doing: said as the connection said it.
+    const refused = deps(['claude'], new FakeSocket(() => null), { connect: () => new RefusedSocket('ECONNREFUSED') })
+    expect(await newCommand(refused)).toBe(1)
+    expect(refused.err).toEqual(['connect ECONNREFUSED 127.0.0.1:1'])
+  })
+
   it('selects this machine, creates here and says where', async () => {
     const socket = new FakeSocket((frame) => frame.type === 'agent_create'
       ? { state: 'created', agent: { id: 'a1', name: 'Codex harness 9-19 10:02', cwd: '/work/repo' } } : null)

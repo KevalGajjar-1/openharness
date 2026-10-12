@@ -8,7 +8,7 @@ import { engineName } from '../messages/model.js'
 import { projectFolderSlug } from './agentNames.js'
 import { permissionModeFlags } from './engineLaunch.js'
 import { projectsRoot } from './projectFolder.js'
-import { NOT_RUNNING } from './unreachable.js'
+import { NOT_RUNNING, SANDBOXED, refused } from './unreachable.js'
 
 /** Engine names, so an unknown word is judged rather than cast (the shape `registry.ts` uses). */
 const ENGINE_NAMES: ReadonlySet<string> = new Set(ENGINES)
@@ -345,7 +345,9 @@ export function daemonSession(deps: Pick<NewCommandDeps, 'port' | 'connect' | 't
     }
     // A tool, not a window: a window's registration turns on the question watcher and counts as someone looking.
     socket.on('open', () => socket.send(JSON.stringify({ type: 'machine_select', payload: { machineId, localProtocolVersion: 1, tool: true } })))
-    socket.on('error', (error) => failAll(error))
+    // `daemonRunning` saw the daemon's process, so a connect refused on the way is a sandbox's: Linux's lets the signal
+    // through and refuses the connect (lib/unreachable.ts).
+    socket.on('error', (error) => failAll(refused(error) ? new Error(SANDBOXED) : error))
     socket.on('close', (code, reason) => failAll(new Error(
       code === 4404 ? 'That machine is not linked to this one yet. Run `harness link` first.'
         : `The connection to Harness closed (${code}${reason.toString() ? `: ${reason.toString()}` : ''}).`)))

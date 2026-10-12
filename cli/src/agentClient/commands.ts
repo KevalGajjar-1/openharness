@@ -563,7 +563,10 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   const agentOutside = !!outsideCaller(s.env, '')
   if (!s.pane && !agentOutside) return null
   let o: Opened
-  try { o = await opened(s) } catch {
+  try { o = await opened(s) } catch (error) {
+    // Out of reach is said as it is (a sandbox, or nothing running): "try again in a moment" was tried again in the
+    // same sandbox.
+    if (error instanceof AgentClientError && error.code === 'DAEMON_UNREACHABLE') return refusing(error.code, error.message)
     return s.where().harnessPane || agentOutside ? refusing('UNKNOWN_CALLER', 'Harness could not tell who is starting this. Try again in a moment.') : null
   }
   o.daemon.close()
