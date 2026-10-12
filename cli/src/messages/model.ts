@@ -122,6 +122,16 @@ export function rendered(message: Message): string {
   return `${header(message)}\n${message.text}`
 }
 
+/** How long the pane's line for a message is: its sender and the start of its first line. */
+export const NOTICE_TEXT = 120
+
+/** The line a message leaves in its recipient's pane when the hook gives it to the model, for the person. */
+export function paneNotice(message: Message): string {
+  const first = message.text.split('\n').map((line) => line.replace(/\s+/g, ' ').trim()).find(Boolean) ?? ''
+  const line = first.length > NOTICE_TEXT ? `${first.slice(0, NOTICE_TEXT - 1)}…` : first
+  return `← ${message.from.name}${message.fyi ? ' · FYI' : ''}: ${line}`
+}
+
 /** One teammate in the note. */
 export interface Teammate { name: string; engine: string; machine: string; where?: string }
 

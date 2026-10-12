@@ -18,7 +18,7 @@ import type { TurnDelivery } from '../core/api.js'
 import { isMessageHold } from '../lib/messageHolds.js'
 import { TERMINAL_LEASE_REFUSED } from '../lib/terminalTypes.js'
 import type { PaneInbox } from './inbox.js'
-import type { DeliveryStatus, Message } from './model.js'
+import { paneNotice, type DeliveryStatus, type Message } from './model.js'
 import type { LocalDelivery, MessageStore } from './store.js'
 
 export const PUMP_MS = 2_000
@@ -293,7 +293,7 @@ export class Mailbox {
   }
 
   private put(delivery: LocalDelivery, message: Message, agent: MailboxAgent): void {
-    try { this.deps.inbox.put(agent.pane, delivery.key, { session: agent.session, text: this.deps.text(delivery, message) }) }
+    try { this.deps.inbox.put(agent.pane, delivery.key, { session: agent.session, text: this.deps.text(delivery, message), notice: paneNotice(message) }) }
     catch { /* the next pump puts it again */ }
   }
 
