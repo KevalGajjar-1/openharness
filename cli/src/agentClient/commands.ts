@@ -563,7 +563,10 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   const agentOutside = !!outsideCaller(s.env, '')
   if (!s.pane && !agentOutside) return null
   let o: Opened
-  try { o = await opened(s) } catch {
+  try { o = await opened(s) } catch (error) {
+    // Out of reach is said as it is (a sandbox, or nothing running): "try again in a moment" was tried again in the
+    // same sandbox.
+    if (error instanceof AgentClientError && error.code === 'DAEMON_UNREACHABLE') return refusing(error.code, error.message)
     return s.where().harnessPane || agentOutside ? refusing('UNKNOWN_CALLER', 'Harness could not tell who is starting this. Try again in a moment.') : null
   }
   o.daemon.close()
@@ -573,6 +576,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   // The person's say, on the machine the agent runs on (Settings ▸ Agents, `harness settings`).
   if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF)
   return {
+    // A harness in a pane here: the new one is opened beside it in the windows. An agent outside Harness has no pane.
+    ...(caller.outside ? {} : { parentAgentId: caller.agentId }),
     check: async () => {
       const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now())
       if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)

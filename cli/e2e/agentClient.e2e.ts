@@ -133,6 +133,11 @@ describe('Harness for agents, end to end', () => {
     expect(sent.code, sent.out + sent.err).toBe(1)
     expect(sent.err).toContain(off)
     const kid = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'kid')!
+    // The windows open it beside the harness that started it, and say so in its header: its frame names that harness,
+    // in the list and in the push a window first sees it by (desktop `Agent.parentAgentId`). The person's has none.
+    expect(kid.parentAgentId).toBe(lead.id)
+    expect(lead.parentAgentId).toBeNull()
+    expect(client.frames.some((f) => f.type === 'agent_synced' && f.payload?.agent?.id === kid.id && f.payload.agent.parentAgentId === lead.id)).toBe(true)
     const back = await harness(d, String(kid.tmuxPane), ['send', 'lead', 'Footer checked.'])
     expect(back.code, back.out + back.err).toBe(1)
     expect(back.err).toContain(off)
@@ -151,6 +156,16 @@ describe('Harness for agents, end to end', () => {
     expect(closed.out.trim()).toBe('Closed kid. Its conversation is kept.')
     const after = await run('ps', '--all', '--json')
     expect(JSON.parse(after.out).harnesses).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'kid', state: 'stopped', startedBy: 'you' })]))
+
+    // The same through `harness mcp` run in its pane (`harness_start`), as Claude Code with the plugin does.
+    const server = mcp(d, { TMUX_PANE: String(lead.tmuxPane) })
+    await server.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '1' } })
+    server.notify('notifications/initialized')
+    const viaMcp = await server.call('harness_start', { task: 'hello from the pane', project: 'pane-kid', name: 'panekid' })
+    expect(viaMcp.isError, viaMcp.text).toBe(false)
+    const paneKid = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'panekid')
+    expect(paneKid?.parentAgentId).toBe(lead.id)
+    server.close()
     client.close()
   })
 
@@ -202,6 +217,9 @@ describe('Harness for agents, end to end', () => {
     expect(started.out).not.toContain('harness send')
     const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: 'claude-code:outside-session', name: 'Claude Code' }), child: expect.objectContaining({ name: 'helper' }) })])
+    // No harness started it, so no window has one to open it beside.
+    const helper = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'helper')
+    expect(helper).toMatchObject({ parentAgentId: null })
 
     const waited = await run('wait', 'helper', '--timeout', '2m')
     expect(waited.code, waited.out + waited.err).toBe(0)

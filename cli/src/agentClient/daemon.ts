@@ -76,7 +76,7 @@ export function openDaemon(where: Where, machineId: string = where.machineId, co
       waiting.clear()
       if (!ready) rejectOpen(error)
     }
-    socket.on('error', (error) => failAll(new AgentClientError('DAEMON_UNREACHABLE', daemonUnreachableText(error))))
+    socket.on('error', (error) => failAll(new AgentClientError('DAEMON_UNREACHABLE', daemonUnreachableText(error, where.dataDir))))
     socket.on('close', (code) => failAll(code === 4404
       ? new AgentClientError('NO_PEER_LINK', 'That machine is not linked to this one. Run `harness link` first.')
       : new AgentClientError('DISCONNECTED', 'The connection to Harness closed.')))

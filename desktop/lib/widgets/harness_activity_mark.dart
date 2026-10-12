@@ -298,8 +298,9 @@ class _MessagingMarkState extends State<MessagingMark> {
                   'messaging-mark:${mirrored ? 'mirrored' : 'plain'}',
                 ),
                 flipX: mirrored,
+                // Filled, as the tab's 💬 is while Agent Messages is on.
                 child: Icon(
-                  AppIcons.messagesSquare,
+                  AppIcons.agentMessagesOn,
                   size: 13,
                   color: widget.color,
                 ),

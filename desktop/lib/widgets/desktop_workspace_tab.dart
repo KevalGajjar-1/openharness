@@ -65,8 +65,9 @@ class DesktopWorkspaceTab extends StatefulWidget {
 
   // × and, left of it, 💬, inside the tab's curved body, with a dead gap
   // between them so a click just off × never toggles 💬. They show only on
-  // hover; at rest the name and status have the whole tab.
-  static const closeWidth = 16.0, messagesWidth = 16.0, accessoryGap = 3.0;
+  // hover; at rest the name and status have the whole tab. 20pt targets 8pt
+  // apart: 16pt ones 3pt apart were easy to click by mistake (owner, 2026-10-12).
+  static const closeWidth = 20.0, messagesWidth = 20.0, accessoryGap = 8.0;
   static const _restingInset = grid.AppDesktop.tabShoulder + 6;
   static const _revealedInset =
       closeWidth + accessoryGap + messagesWidth + grid.AppDesktop.tabCloseInset;
@@ -321,16 +322,18 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
                                   ),
                                   state: messages,
                                   onPressed: widget.onToggleAgentMessages,
+                                  // Filled at full strength while on, a quieter
+                                  // outline while off (AppKit's SwarmTitlebar too).
                                   style: messagesOn
                                       ? _accessoryStyle(
                                           widget.messagesColor ?? foreground,
-                                          MediaQuery.highContrastOf(context)
-                                              ? 1
-                                              : .85,
+                                          1,
                                         )
                                       : _accessoryStyle(
                                           foreground,
-                                          quietOpacity,
+                                          MediaQuery.highContrastOf(context)
+                                              ? .7
+                                              : .35,
                                         ),
                                 ),
                         ),
@@ -419,7 +422,12 @@ class _AgentMessagesButton extends StatelessWidget {
             height: 32,
           ),
           style: style,
-          icon: const Icon(AppIcons.messagesSquare, size: 13),
+          icon: Icon(
+            state == TabMessagesState.off
+                ? AppIcons.agentMessagesOff
+                : AppIcons.agentMessagesOn,
+            size: 14,
+          ),
         ),
       ),
     );

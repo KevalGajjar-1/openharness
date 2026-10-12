@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newAgentPayload, newCommand, NewUsageError, parseNewArgs, resolveNewMachine, trustAsked, type NewCommandDeps, type NewSocket } from './newCommand.js'
+import { SANDBOXED } from './unreachable.js'
 
 const env = { cwd: '/work/repo', home: '/home/me' }
 
@@ -140,7 +141,37 @@ function deps(argv: string[], socket: FakeSocket, over: Partial<NewCommandDeps> 
   }
 }
 
+/** A connect that fails with [code], as `ws` reports it: one 'error', then 'close'. */
+class RefusedSocket extends EventEmitter implements NewSocket {
+  constructor(private code: string) { super() }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  override on(event: string, listener: (...args: any[]) => void): this {
+    super.on(event, listener)
+    if (event === 'error') queueMicrotask(() => {
+      this.emit('error', Object.assign(new Error(`connect ${this.code} 127.0.0.1:1`), { code: this.code }))
+      this.emit('close', 1006, '')
+    })
+    return this
+  }
+  send(): void {}
+  close(): void {}
+}
+
 describe('harness new: the daemon', () => {
+  it('says a sandbox is in the way when the daemon runs but its port is refused, and passes on anything else', async () => {
+    // Linux: the signal reaches the daemon, so it runs, and the sandbox refuses the connect (lib/unreachable.ts).
+    const sandboxed = deps(['claude', '--name', 'opinion', '--', 'a second opinion'], new FakeSocket(() => null), { connect: () => new RefusedSocket('EPERM') })
+    expect(await newCommand(sandboxed)).toBe(1)
+    expect(sandboxed.err).toEqual([SANDBOXED])
+    const json = deps(['claude', '--json'], new FakeSocket(() => null), { connect: () => new RefusedSocket('EACCES') })
+    expect(await newCommand(json)).toBe(1)
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: false, error: SANDBOXED })
+    // Nothing listening is not a sandbox's doing: said as the connection said it.
+    const refused = deps(['claude'], new FakeSocket(() => null), { connect: () => new RefusedSocket('ECONNREFUSED') })
+    expect(await newCommand(refused)).toBe(1)
+    expect(refused.err).toEqual(['connect ECONNREFUSED 127.0.0.1:1'])
+  })
+
   it('selects this machine, creates here and says where', async () => {
     const socket = new FakeSocket((frame) => frame.type === 'agent_create'
       ? { state: 'created', agent: { id: 'a1', name: 'Codex harness 9-19 10:02', cwd: '/work/repo' } } : null)
@@ -234,6 +265,38 @@ describe('harness new: the daemon', () => {
     expect(d.out).toEqual([])
   })
 
+  it('waits for an engine Harness is installing, saying so once, then starts the harness', async () => {
+    // A fresh Ubuntu VM (2026-10-12): Codex took about a minute to install, the whole of the wait every other hold gets.
+    const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex. The harness starts once it is installed.' } }
+    let asks = 0
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? installing
+      : frame.type === 'agent_create_status' ? (++asks < 60 ? installing : asks < 70 ? { state: 'pending', held: { service: 'native', detail: 'Waiting to confirm the engine’s native hooks.' } }
+        : { state: 'created', agent: { id: 'h3', name: 'cx' } }) : null)
+    const d = deps(['codex', '--', 'Reply with pong'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(0)
+    expect(d.err).toEqual(['Installing Codex. The harness starts once it is installed.', 'Waiting to confirm the engine’s native hooks.'])
+    expect(d.out[0]).toBe('Created cx on this computer in /work/repo.')
+    expect(socket.sent.some((f) => f.type === 'agent_create_cancel')).toBe(false)
+  })
+
+  it('gives an install five minutes, then says plainly it is still installing and that this request will not start', async () => {
+    let asks = 0
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? { state: 'cancelled' }
+      : (frame.type === 'agent_create_status' && ++asks, { state: 'pending', held: { service: 'install', detail: 'Installing Claude Code. The harness starts once it is installed.' } }))
+    const d = deps(['claude'], socket, { sleep: async () => {} })
+    expect(await newCommand(d)).toBe(1)
+    expect(asks).toBe(180)
+    expect(d.err.at(-1)).toBe('Harness is still installing Claude Code. Run the same command again in a minute; this request is cancelled, so it will not start later.')
+    // A hold after an install has finished is given its minute, and then said as the hold it is.
+    asks = 0
+    const after = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? null
+      : (frame.type === 'agent_create_status' && ++asks, asks < 10 ? { state: 'pending', held: { service: 'install', detail: 'Installing Codex.' } } : { state: 'pending', held: { service: 'native', detail: 'Waiting.' } }))
+    const late = deps(['codex'], after, { sleep: async () => {} })
+    expect(await newCommand(late)).toBe(1)
+    expect(asks).toBe(39)
+    expect(late.err.at(-1)).toBe('Harness did not start the harness in time: Waiting. It is still saved and may start later by itself: check with `harness ps` before starting another.')
+  })
+
   it('takes what became of a launch it could no longer cancel, and says so when it cannot cancel at all', async () => {
     const answer = (cancel: Record<string, unknown> | null) => new FakeSocket((frame) =>
       frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending' }
@@ -313,6 +376,32 @@ describe('harness new: the daemon', () => {
     expect(await newCommand(person)).toBe(0)
     expect(person.out[1]).toBe('Open it in Harness with ⌘O.')
     expect(atTerminal.sent[1]!.payload).not.toHaveProperty('startedBy')
+  })
+
+  it('run by a harness here: names it as the one that started the new harness, so the windows open it beside it', async () => {
+    const origin = {
+      check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', parentAgentId: 'lead-agent',
+    }
+    const created = (id: string) => new FakeSocket((frame) => frame.type === 'fs_list_dir' ? { path: '/Users/mini', entries: [] }
+      : frame.type === 'agent_create' ? { state: 'created', agent: { id, name: id } } : null)
+    const here = created('kid')
+    expect(await newCommand(deps(['codex', '--', 'review it'], here, { origin: async () => origin }))).toBe(0)
+    expect(here.sent[1]!.payload).toMatchObject({ startedBy: 'agent', parentAgentId: 'lead-agent' })
+    // `@this computer` is still here.
+    const named = created('kid2')
+    expect(await newCommand(deps(['codex', '@MacBook', '--', 'go'], named, { origin: async () => origin }))).toBe(0)
+    expect(named.sent.find((frame) => frame.type === 'agent_create')!.payload.parentAgentId).toBe('lead-agent')
+    // Another machine has no harness by that id: it records only that an agent started it.
+    const far = created('far')
+    expect(await newCommand(deps(['codex', '@mini', '~/w', '--', 'go'], far, { origin: async () => origin }))).toBe(0)
+    const farCreate = far.sent.find((frame) => frame.type === 'agent_create')!.payload
+    expect(farCreate.startedBy).toBe('agent')
+    expect(farCreate).not.toHaveProperty('parentAgentId')
+    // An agent outside Harness has no harness to name.
+    const outside = created('helper')
+    expect(await newCommand(deps(['codex', '--', 'go'], outside, { origin: async () => ({ ...origin, parentAgentId: undefined }) }))).toBe(0)
+    expect(outside.sent[1]!.payload.startedBy).toBe('agent')
+    expect(outside.sent[1]!.payload).not.toHaveProperty('parentAgentId')
   })
 
   it('turns the machine\'s refusal into words, and a usage slip into the usage', async () => {

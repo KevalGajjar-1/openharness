@@ -8,7 +8,7 @@ import { engineName } from '../messages/model.js'
 import { projectFolderSlug } from './agentNames.js'
 import { permissionModeFlags } from './engineLaunch.js'
 import { projectsRoot } from './projectFolder.js'
-import { NOT_RUNNING } from './unreachable.js'
+import { NOT_RUNNING, SANDBOXED, refused } from './unreachable.js'
 
 /** Engine names, so an unknown word is judged rather than cast (the shape `registry.ts` uses). */
 const ENGINE_NAMES: ReadonlySet<string> = new Set(ENGINES)
@@ -255,6 +255,9 @@ export interface NewOrigin {
   created(machineId: string, agent: Record<string, unknown>): Promise<string | null>
   /** How to read, wait for and message what was started. */
   next(agent: Record<string, unknown>): string
+  /** The caller's own harness, by agent id, when it is one on this computer: a harness started here records it, and the
+   *  windows open it beside the caller's pane. Absent for an agent outside Harness. */
+  parentAgentId?: string
 }
 
 const ERRORS: Record<string, string> = {
@@ -345,7 +348,9 @@ export function daemonSession(deps: Pick<NewCommandDeps, 'port' | 'connect' | 't
     }
     // A tool, not a window: a window's registration turns on the question watcher and counts as someone looking.
     socket.on('open', () => socket.send(JSON.stringify({ type: 'machine_select', payload: { machineId, localProtocolVersion: 1, tool: true } })))
-    socket.on('error', (error) => failAll(error))
+    // `daemonRunning` saw the daemon's process, so a connect refused on the way is a sandbox's: Linux's lets the signal
+    // through and refuses the connect (lib/unreachable.ts).
+    socket.on('error', (error) => failAll(refused(error) ? new Error(SANDBOXED) : error))
     socket.on('close', (code, reason) => failAll(new Error(
       code === 4404 ? 'That machine is not linked to this one yet. Run `harness link` first.'
         : `The connection to Harness closed (${code}${reason.toString() ? `: ${reason.toString()}` : ''}).`)))
@@ -457,14 +462,23 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       }
       const asked = origin && args.prompt ? { ...args, prompt: origin.prompt(args.prompt, machineId) } : args
       // Started by an agent: the machine records it, and the pull requests it opens say so (lib/agentAttribution.ts).
-      const payload: Record<string, unknown> = { ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}) }
+      // Started by a harness on this computer: which one, so the windows open it beside that harness.
+      const parent = origin && local ? origin.parentAgentId ?? null : null
+      const payload: Record<string, unknown> = {
+        ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}), ...(parent ? { parentAgentId: parent } : {}),
+      }
       let result = await session.request('agent_create', payload)
       // A launch the daemon holds (a native launch waiting its turn) is still on its way: asked after until it is not,
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it
       // (the review of #1180). What it waits for is said as it changes: the daemon's own words, which used to stay in
       // the daemon while this said only "could not confirm" (OpenCode and Codex held for good in clean VMs, 2026-10-11).
-      let said = ''
-      for (let i = 0; i < 30 && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+      // An engine Harness is installing for this launch (a hold under `install`) is waited for up to five minutes,
+      // and the launch then gets its minute: a minute in all ended a Codex install as it finished (a fresh Ubuntu VM,
+      // 2026-10-12, where it took about that).
+      const installing = (status: Record<string, unknown>) => (status.held as { service?: unknown } | undefined)?.service === 'install'
+      let said = '', polls = 30
+      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+        if (installing(result)) polls = Math.min(180, Math.max(polls, i + 30))
         const reason = holdReason(result)
         if (reason && reason !== said && !args.json) deps.error(reason)
         said = reason || said
@@ -476,15 +490,17 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // otherwise answers what became of it, which is then the answer here.
       if (result.state === 'pending') {
         const reason = holdReason(result) || said
+        const install = installing(result)
+        const why = install ? `Harness is still installing ${engineName(String(payload.engine))}.`
+          : `Harness did not start the harness ${polls > 30 ? 'in time' : 'within a minute'}${reason ? `: ${reason}` : '.'}`
         const cancelled = await session.request('agent_create_cancel', { creationId: payload.creationId }).catch(() => null)
         if (cancelled?.state === 'cancelled') {
-          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
-            + 'The request is cancelled, so it will not start later.')
+          throw new Error(`${why} ${install ? 'Run the same command again in a minute; this request is cancelled' : 'The request is cancelled'}, `
+            + 'so it will not start later.')
         }
         // No answer (a daemon that predates the cancel): the request is still saved, and may start later.
         if (typeof cancelled?.state !== 'string' || cancelled.state === 'pending') {
-          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
-            + 'It is still saved and may start later by itself: check with `harness ps` before starting another.')
+          throw new Error(`${why} It is still saved and may start later by itself: check with \`harness ps\` before starting another.`)
         }
         // Too late to cancel: what became of it (created, refused, or claimed and starting now) is the answer.
         result = cancelled
