@@ -12,6 +12,7 @@ retired; only the host routes below were kept.
 |---|---|
 | `/`, `/s/:id`, `/auth/callback`, `/callback` | The Flutter app (`public/harness-web/index.html`, via `rewrites()` in `next.config.js`) |
 | `/download` (and `/install` → it) | Install page: CLI command and desktop downloads |
+| `/app` | The phone app's download code: an iPhone or iPad is redirected to the App Store and an Android device to Google Play, by user agent (`src/lib/phoneApp.ts`); anything else gets both stores |
 | `/pair` | Phone setup guidance — the mobile app and the desktop "add phone" dialog link here |
 | `/os` | The Harness operating system landing page: plain HTML/CSS, local fonts and screenshots in `public/os/` |
 | `/agents` | Harness for agents: install, the agent commands with examples and exit codes, the plugin and skill. One plain HTML file, `public/agents/index.html`, with no script |

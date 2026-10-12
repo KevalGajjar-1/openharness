@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/models.dart' show Agent;
 import '../core/open_in_browser.dart';
 import '../state/app_state.dart';
 
@@ -74,9 +75,49 @@ class ConnectorsController extends ChangeNotifier {
   bool signedIn = true;
   bool loading = false;
   String? error;
-  String notice = '';
   final Set<String> pending = {};
   bool _disposed = false;
+
+  /// Whether a connection made here reaches the account's other computers (`list` `shared`).
+  bool shared = false;
+
+  /// What the last action came to. It goes away on its own: Settings keeps this page alive, and a
+  /// "disconnected" from days ago was still standing there.
+  String get notice => _notice;
+  set notice(String text) {
+    _notice = text;
+    _noticeTimer?.cancel();
+    if (text.isEmpty) return;
+    _noticeTimer = Timer(noticeFor, () {
+      _notice = '';
+      _changed();
+    });
+  }
+
+  String _notice = '';
+  Timer? _noticeTimer;
+  @visibleForTesting
+  static Duration noticeFor = const Duration(seconds: 20);
+
+  /// The engines Harness gives connections to as MCP servers (cli/src/lib/connectors/agents.ts).
+  static const mcpEngines = {'claude', 'codex', 'opencode'};
+
+  /// The harness in the focused pane, when it is running on an engine that reads its tools at start
+  /// and is this account's to restart (a shared machine's is view-only).
+  ({String machineId, Agent agent})? get focusedRestartable {
+    final pane = app.focusedPane;
+    final agentId = pane?.agentId;
+    if (pane == null || agentId == null) return null;
+    final machine = app.stateOf(pane.machineId);
+    if (machine == null || machine.machine.isShared != false) return null;
+    final agent = machine.agents.where((a) => a.id == agentId).firstOrNull;
+    if (agent == null ||
+        agent.isStopped ||
+        !mcpEngines.contains(agent.engine)) {
+      return null;
+    }
+    return (machineId: pane.machineId, agent: agent);
+  }
 
   String? get _target => machineId ?? app.localMachineState?.machine.machineId;
 
@@ -110,6 +151,7 @@ class ConnectorsController extends ChangeNotifier {
           if (row is Map) ConnectorCard.fromJson(row.cast<String, dynamic>()),
       ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
       signedIn = answer['signed_in'] != false;
+      shared = answer['shared'] == true;
       error = null;
     } catch (e) {
       error = _message(e);
@@ -179,7 +221,9 @@ class ConnectorsController extends ChangeNotifier {
   Future<void> disconnect(ConnectorCard card) async {
     try {
       await _ask({'action': 'disconnect', 'connector': card.code});
-      notice = '${card.name} disconnected on this computer.';
+      notice = shared
+          ? '${card.name} disconnected on all your computers.'
+          : '${card.name} disconnected on this computer.';
     } catch (e) {
       notice = _message(e);
     }
@@ -226,6 +270,7 @@ class ConnectorsController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _noticeTimer?.cancel();
     super.dispose();
   }
 }

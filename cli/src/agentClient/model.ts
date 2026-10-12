@@ -177,6 +177,17 @@ export interface LastTurn {
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 
 /**
+ * What a harness was asked, as the person said it: without the markers Claude Code puts around a paste. `ps` and
+ * `show` printed `asked: another agent release: <pasted_content id="1c18"> #1242 is merged…` (October 12, 2026).
+ * What was pasted stays: it was said. A marker on a line of its own goes with its line; one inside a line, as the
+ * daemon keeps an ask (on one line), leaves a space.
+ */
+const PASTE_TAG = '<\\/?pasted_content\\b[^>]*>'
+const PASTE_LINE = new RegExp(`^[^\\S\\n]*${PASTE_TAG}[^\\S\\n]*\\n?`, 'gm')
+const PASTE_INLINE = new RegExp(`[^\\S\\n]*${PASTE_TAG}[^\\S\\n]*`, 'g')
+export const asSaid = (ask: string): string => ask.replace(PASTE_LINE, '').replace(PASTE_INLINE, ' ').replace(/\n{3,}/g, '\n\n').trim()
+
+/**
  * The last turn in [events], oldest first: the last ask, and the answer, which is the text after the turn's last
  * tool call (the narration before it is the working, not the result). Null when the page holds no ask.
  *
@@ -194,7 +205,7 @@ export function lastTurn(events: HistoryEvent[]): LastTurn | null {
   turn.forEach((e, i) => { if (e.type === 'tool_start') tools++; if (e.type === 'tool_end' || e.type === 'tool_start') lastTool = i })
   const said = (from: number) => turn.slice(from).filter((e) => e.type === 'text_delta').map((e) => text(e.payload?.content)).join('').trim()
   const final = said(lastTool + 1)
-  return { ask: text(events[start].payload?.content).trim() || null, answer: final || said(0), tools, answered: !!final }
+  return { ask: asSaid(text(events[start].payload?.content)) || null, answer: final || said(0), tools, answered: !!final }
 }
 
 export const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value)
