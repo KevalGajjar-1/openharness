@@ -75,6 +75,8 @@ pub struct LocalModel {
     /// The app it runs in: `Ollama`, `LM Studio` or `llama.cpp` for one that app downloaded, `Grid`
     /// for Grid's own engine (absent from an older daemon).
     pub app: Option<String>,
+    /// The names the grid lists it under while it runs here (`servedAs`; absent from an older daemon).
+    pub served_as: Vec<String>,
 }
 
 impl LocalModel {
@@ -85,10 +87,18 @@ impl LocalModel {
             size: num(&v["sizeBytes"]), quant: text(&v["quant"]), recommended: v["recommended"] == true, can_start: v["canStart"] == true, can_stop: v["canStop"] == true,
             tok_s: num(&v["tokensPerSecond"]), requests: num(&v["requests"]), window_secs: num(&v["windowSeconds"]),
             context: num(&v["contextWindow"]), est_tok_s: num(&v["estTokS"]), params_b: num(&v["paramsB"]),
-            operation: Operation::parse(&v["operation"]), asleep: v["gridAsleep"] == true, app: text(&v["app"]), id,
+            operation: Operation::parse(&v["operation"]), asleep: v["gridAsleep"] == true, app: text(&v["app"]),
+            served_as: v["servedAs"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(), id,
         })
     }
     pub fn running(&self) -> bool { self.state == "running" }
+    /// Whether [id] — a grid's model, a harness's — is this model: its id, its name, or a name the grid
+    /// serves it under. A catalog model runs under its file's name (`Qwen3.8-27B-UD-Q4_K_M`), not the
+    /// catalog's (`Qwen3.8-27B`): matched by name alone, it was listed twice in Your models and a
+    /// harness could not be moved onto it from its own row.
+    pub fn answers_to(&self, id: &str) -> bool {
+        self.id.eq_ignore_ascii_case(id) || self.name.eq_ignore_ascii_case(id) || self.served_as.iter().any(|s| s.eq_ignore_ascii_case(id))
+    }
     /// Its name as shown: without the quantization a file name ends in, which the Quant line says.
     /// [name] stays whole — it is what the grid serves it as, and what a harness is matched to it by.
     pub fn shown(&self) -> String { without_quant(&self.name).to_string() }
@@ -576,7 +586,7 @@ fn up(app: &App, machine: &str) -> bool { app.fleet.machine(machine).is_some_and
 /// The own grid's listing of [m] once it serves — (section, the grid's id for it).
 fn served_in(grids: Option<&Grids>, m: &LocalModel) -> Option<(String, String)> {
     grids?.sections.iter().filter(|s| s.own).find_map(|s| s.models.iter()
-        .find(|x| x.offline.is_none() && (x.id.eq_ignore_ascii_case(&m.id) || x.id.eq_ignore_ascii_case(&m.name)))
+        .find(|x| x.offline.is_none() && m.answers_to(&x.id))
         .map(|x| (s.name.clone(), x.id.clone())))
 }
 
@@ -589,10 +599,9 @@ fn other_running(app: &App, m: &LocalModel) -> Option<LocalModel> {
 /// until they move to another (the desktop's `_harnessesOn`).
 fn harnesses_on(app: &App, m: &LocalModel, t: Option<&Target>) -> Vec<String> {
     let served = served_in(app.models_view.grids.get(&app.fleet.local_id), m).map(|(_, id)| id);
-    let names = [Some(&m.name), Some(&m.id), served.as_ref()];
     let mut out: Vec<String> = app.fleet.agents.values()
         .filter(|a| !t.is_some_and(|t| t.machine == a.machine_id && t.agent == a.id))
-        .filter(|a| !a.grid_model.is_empty() && names.iter().flatten().any(|n| n.eq_ignore_ascii_case(&a.grid_model)))
+        .filter(|a| !a.grid_model.is_empty() && (m.answers_to(&a.grid_model) || served.as_ref().is_some_and(|s| s.eq_ignore_ascii_case(&a.grid_model))))
         .map(|a| a.name.clone()).collect();
     out.sort();
     out
@@ -651,9 +660,9 @@ pub fn facts(app: &App, m: &LocalModel, t: Option<&Target>) -> Facts {
     let runs = t.is_some_and(|t| can_run(app, &t.engine));
     let served = served_in(v.grids.get(machine), m);
     let in_use = t.is_some_and(|t| m.running() && !t.grid_model.is_empty()
-        && (served.as_ref().is_some_and(|(_, id)| id.eq_ignore_ascii_case(&t.grid_model)) || m.id.eq_ignore_ascii_case(&t.grid_model) || m.name.eq_ignore_ascii_case(&t.grid_model)));
+        && (served.as_ref().is_some_and(|(_, id)| id.eq_ignore_ascii_case(&t.grid_model)) || m.answers_to(&t.grid_model)));
     let get = !m.downloaded() && m.can_start && !busy && online;
-    let names = |id: &str| m.id.eq_ignore_ascii_case(id) || m.name.eq_ignore_ascii_case(id) || served.as_ref().is_some_and(|(_, s)| s.eq_ignore_ascii_case(id));
+    let names = |id: &str| m.answers_to(id) || served.as_ref().is_some_and(|(_, s)| s.eq_ignore_ascii_case(id));
     Facts {
         switching: switching_for(app, t).is_some_and(|to| !to.is_empty() && names(to)),
         failed: op.as_ref().is_some_and(Operation::failed),
@@ -929,7 +938,7 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
             // (This computer's running ones are listed by their local names, above.)
             let here: Vec<&LocalModel> = s.models.iter().filter(|m| m.running()).collect();
             let theirs: Vec<Row> = v.grids.get(&machine).map(own).unwrap_or_default().into_iter()
-                .filter(|(_, x)| !here.iter().any(|m| x.id.eq_ignore_ascii_case(&m.id) || x.id.eq_ignore_ascii_case(&m.name)))
+                .filter(|(_, x)| !here.iter().any(|m| m.answers_to(&x.id)))
                 .map(|(s, x)| grid_row(app, &s, &x, t, YOUR_MODELS)).collect();
             // (Only with something below to get: Enter goes to it.)
             let to_get = s.models.iter().any(|m| !m.downloaded() && !m.can_stop);
@@ -3608,6 +3617,29 @@ mod tests {
             Plan::Retarget { payload, .. } => assert_eq!(payload["gridModel"], "Qwen3.8-27B-UD-Q4_K_M"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The catalog's Qwen3.8-27B running here, which grid serves under its file's name: one row in Your
+    /// models (not a second, as the grid's), and Enter on it moves the harness onto what grid serves.
+    #[test]
+    fn a_catalog_model_running_here_is_one_row_and_switched_onto_by_the_name_grid_serves() {
+        let mut app = app();
+        let catalog = json!({ "id": "unsloth/Qwen3.8-27B-GGUF", "name": "Qwen3.8-27B", "state": "running", "quant": "UD-Q4_K_M", "sizeBytes": 15.3 * GIB,
+            "canStart": false, "canStop": true, "app": "Grid", "servedAs": ["Qwen3.8-27B-UD-Q4_K_M"] });
+        on_local(&mut app, "local", Ok(local_reply(catalog, false)));
+        on_grids(&mut app, "local", Ok(grids_reply(&["Qwen3.8-27B-UD-Q4_K_M"])));
+        let rows = rows_of(&app);
+        let mine: Vec<&str> = rows.iter().filter(|r| r.group.as_deref() == Some(YOUR_MODELS) && r.label == "Qwen3.8-27B").map(|r| r.id.as_str()).collect();
+        assert_eq!(mine, vec!["mv:local:unsloth/Qwen3.8-27B-GGUF"]);
+        match plan_enter(&app, "mv:local:unsloth/Qwen3.8-27B-GGUF") {
+            Plan::Retarget { payload, name, .. } => { assert_eq!(payload["gridModel"], "Qwen3.8-27B-UD-Q4_K_M"); assert_eq!(name, "Qwen3.8-27B") }
+            other => panic!("{other:?}"),
+        }
+        // An older daemon, which does not say: as before — the grid's row beside it.
+        let mut older = app.models_view.local.get("local").cloned().unwrap();
+        older.models.iter_mut().for_each(|m| m.served_as.clear());
+        app.models_view.local.insert("local".into(), older);
+        assert!(rows_of(&app).iter().any(|r| r.id == "mv:grid:own-grid\tstudio\tQwen3.8-27B-UD-Q4_K_M"));
     }
 
     /// A model a Grid setup left running, which the catalog does not list: grid serves it under its

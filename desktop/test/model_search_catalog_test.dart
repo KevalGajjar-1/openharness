@@ -424,6 +424,42 @@ void main() {
     },
   );
 
+  test(
+    'a catalog model running here is one row, matched to the name grid serves it under',
+    () async {
+      Map<String, Object?> running() => {
+        'models': [
+          {
+            'id': 'unsloth/Qwen3.8-27B-GGUF',
+            'name': 'Qwen3.8-27B',
+            'state': 'running',
+            'canStop': true,
+            'app': 'Grid',
+            'servedAs': ['Qwen3.8-27B-UD-Q4_K_M'],
+          },
+        ],
+      };
+      app.localInventory = running();
+      app.inventory = const GridModels(
+        gridName: 'home',
+        models: [],
+        grids: [
+          GridSection(
+            name: 'home',
+            own: true,
+            models: [GridModel(id: 'Qwen3.8-27B-UD-Q4_K_M', node: 'This Mac')],
+          ),
+        ],
+      );
+      await app.modelManager.refresh();
+      final served = catalog.entries.values.where(
+        (entry) => entry.local?.id == 'unsloth/Qwen3.8-27B-GGUF',
+      );
+      expect(catalog.entries, hasLength(1));
+      expect(served.single.gridModel?.id, 'Qwen3.8-27B-UD-Q4_K_M');
+    },
+  );
+
   test('legacy own-grid replies remain visible in models', () async {
     app.localInventory = {'models': <Object>[]};
     app.inventory = const GridModels(

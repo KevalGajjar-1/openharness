@@ -83,6 +83,11 @@ export interface LocalModel {
   /** What it runs in: `Grid` for a model Grid's llama.cpp serves, or the app whose folder holds it
    *  (`Ollama`, `LM Studio`, `llama.cpp`, [AppModel]). Absent for a catalog model not downloaded yet. */
   app?: string
+  /** The names the grid lists it under while its engine runs here — what a harness on it names as its
+   *  model. A catalog model is served under its file (`Qwen3.8-27B-UD-Q4_K_M`), not its name
+   *  (`Qwen3.8-27B`): matched by name alone, the apps listed it twice, the second time as the grid's,
+   *  and could not move a harness onto it from its own row. */
+  servedAs?: string[]
 }
 export interface ModelOperation {
   id: string; modelId: string; action: 'download' | 'start' | 'stop'; phase: 'running' | 'done' | 'failed'
@@ -764,6 +769,7 @@ export class LocalModels {
       const single = Array.isArray(node?.models) && node.models.length === 1
       return { id: candidate.id, name: candidate.name, state: running ? 'running' : available ? 'downloaded' : 'available',
         sizeBytes: candidate.size, quant: candidate.quant, recommended: index === 0,
+        ...(instance ? { servedAs: instance.aliases.map(displayModelName) } : {}),
         ...(candidate.context ? { contextWindow: candidate.context } : {}),
         ...(candidate.estTokS ? { estTokS: candidate.estTokS } : {}),
         ...(candidate.paramsB ? { paramsB: candidate.paramsB } : {}),
@@ -779,7 +785,7 @@ export class LocalModels {
     })
     for (const instance of owned.filter(o => !choices.some(c => c.file === o.file))) {
       const serving = !!servingNode(instance)
-      models.push({ id: `local:${instance.file}`, name: cleanName(instance.aliases[0]),
+      models.push({ id: `local:${instance.file}`, name: cleanName(instance.aliases[0]), servedAs: instance.aliases.map(displayModelName),
         state: serving || parked(instance) ? 'running' : 'available', canStart: false, canStop: !inventoryError,
         operation: operation?.modelId === `local:${instance.file}` ? operation : undefined,
         ...(!serving && parked(instance) ? { gridAsleep: true } : {}), app: GRID_LABEL })
@@ -792,7 +798,7 @@ export class LocalModels {
       const alive = record && this.options.appEngines ? await this.options.appEngines.alive(record) : false
       const listed = !!record && listedHere(record.alias)
       const running = alive && (listed || asleep)
-      return { id, name, app: APP_LABEL[app], state: running ? 'running' : 'downloaded', ...extra,
+      return { id, name, app: APP_LABEL[app], state: running ? 'running' : 'downloaded', ...extra, ...(record ? { servedAs: [record.alias] } : {}),
         canStart: !inventoryError && !record, canStop: !inventoryError && !!record,
         operation: operation?.modelId === id ? operation : undefined, ...(running && !listed ? { gridAsleep: true } : {}) }
     }
