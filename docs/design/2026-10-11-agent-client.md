@@ -263,8 +263,9 @@ may message another only where the person turned Agent Messages on (the tab's ch
   depth); `send`, `harness send` alone and delivery go through the tabs alone. A send to a harness one started, with
   no shared tab on, is refused with the same words as any other recipient: `MESSAGES_OFF` in a tab with it off,
   `UNKNOWN_RECIPIENT` ("No teammate named …") otherwise.
-- A message an older version queued under `started` is failed like one whose tab was turned off, its inbox file
-  withdrawn, as soon as the service reads the directory.
+- A message an older version queued under `started` is never delivered: it is failed and its inbox file withdrawn
+  as the service starts, before the directory is read (the hook takes what waits in an inbox without asking, and a
+  directory that cannot be read would have left it there), even between two that now share a tab with it on.
 - The record (`agent-client/started.jsonl`) stays: `ps`, the limits, the depth and `close` read it.
 - For a follow-up to a harness it started, an agent starts it with everything in the task, or, where Agent Messages
   are on in its tab, sends.
