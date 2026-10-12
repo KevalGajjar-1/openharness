@@ -99,6 +99,25 @@ no matching generation authority. It cannot safely close a reconstructed turn
 until both sides preserve a verifiable correlation; arrival time or the current
 parser alone cannot substitute for that evidence.
 
+The October 12, 00:09 UTC generation checkpoint supplies the eager, bounded core
+projection for that integration. It keeps submitted prompts separate from actual
+execution, accepts Stop without an observed start, preserves terminal and Cancel
+tombstones across late facts, and holds selection when multiple generations are
+running. Contradictory terminal statuses stay closed with an unresolved outcome;
+an idle selection is not evidence of success. Authority includes the original
+engine incarnation and the complete confirmed fact frontier, rechecked before
+each effect. An appended Stop, Cancel or successor invalidates the older view.
+
+Receipt `20261012T000826.157162Z-34820` passes TypeScript, all 63 projection and
+architecture cases, 100% projection statements/branches/functions/lines, and all
+19 deliberately broken variants by assertion. Independent review approved this
+primitive over `3bd0dd7cb` after the source-owner proof and precise process-key
+corrections. The initial receipt `20261012T000233.067555Z-10802` passed its earlier
+55-case scope; it does not cover those later corrections. Durable source,
+generation-specific effects, native-client migration and the private Stop
+acceptance remain unfinished. This checkpoint is not a completed Stop fix or PR
+approval. Validation and review overlap implementation; no merge or publication.
+
 Client coordination checkpoint (October 11, 20:16 UTC): all linked phases are
 retained before the first send. Retries preserve their original bytes, ID and
 native time, and use versioned mutation routes that an older core rejects before
