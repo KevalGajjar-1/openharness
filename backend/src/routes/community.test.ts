@@ -55,7 +55,7 @@ vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
 import { errorHandler } from '../middlewares/errorHandler.js'
-import { isPublicCommunityRead } from '../lib/communityAccess.js'
+import { communityStarters, isPublicCommunityRead } from '../lib/communityAccess.js'
 
 const sample = { title: 'A little idea', description: 'An editable project', category: 'Apps', engine: 'Codex', files: [{ path: 'index.html', content: '<h1>A little idea</h1>' }], viewerPath: 'index.html', conversation: [{ role: 'user', text: 'Make a little idea.' }], confirmed: true, license: 'MIT' }
 const starter = 'starter-pocket-film'
@@ -277,6 +277,38 @@ describe('persistent social actions', () => {
     // A page after a harness that has gone ends the feed rather than starting it over.
     await call('DELETE', `harnesses/${liked}`, 'alice')
     expect((await call('GET', `harnesses?sort=popular&cursor=${liked}`)).json().data.harnesses).toEqual([])
+  })
+  it('ranks the starters among publications in a popular feed, and names them in its order', async () => {
+    const quiet = await publish('alice', { ...sample, title: 'Quiet' })
+    const liked = await publish('alice', { ...sample, title: 'Liked' })
+    await call('PUT', `harnesses/${liked}/like`, 'bob', { liked: true })
+    for (const token of ['alice', 'bob']) await call('PUT', 'harnesses/starter-blue-hour/like', token, { liked: true })
+    const popular = (await call('GET', 'harnesses?sort=popular')).json().data
+    // Most liked first; publications before starters with as many likes; starters in the Hub's order.
+    const rest = [...communityStarters].filter(id => id !== 'starter-blue-hour')
+    expect(popular.order).toEqual(['starter-blue-hour', liked, quiet, ...rest])
+    expect(popular.harnesses.map((row: Row) => row.id)).toEqual([liked, quiet])
+    expect(popular.stats['starter-blue-hour']).toMatchObject({ likes: 2 })
+    // The newest feed keeps the starters to the website, as before.
+    expect((await call('GET', 'harnesses')).json().data).not.toHaveProperty('order')
+  })
+  it('ranks starters only where the Hub shows them', async () => {
+    const id = await publish('alice')
+    const order = async (query: string, token?: string) => (await call('GET', `harnesses?sort=popular&${query}`, token)).json().data.order
+    expect(await order('mine=true', 'alice')).toEqual([id])
+    expect(await order(`forkedFrom=${id}`)).toEqual([])
+    expect(await order('following=true', 'bob')).toEqual([])
+    await call('PUT', 'creators/harness/follow', 'bob', { following: true })
+    expect(await order('following=true', 'bob')).toEqual([...communityStarters])
+  })
+  it('pages a popular feed past a starter, and only a popular one', async () => {
+    for (let i = 0; i < 20; i++) db.communityHarness.rows.push({ ...sample, id: crypto.randomUUID(), createdAt: new Date(Date.now() - i * 1000), autonomousEnv: 'prod', authorId: 'alice', authorName: 'Alice', deletedAt: null, credits: [] })
+    const first = (await call('GET', 'harnesses?sort=popular')).json().data
+    expect(first.order).toHaveLength(30); expect(first.harnesses).toHaveLength(20)
+    expect(first.nextCursor).toBe(first.order[29])
+    const second = (await call('GET', `harnesses?sort=popular&cursor=${first.nextCursor}`)).json().data
+    expect(second.order).toEqual([...communityStarters].slice(10)); expect(second.nextCursor).toBeNull()
+    expect((await call('GET', `harnesses?cursor=${first.nextCursor}`)).statusCode).toBe(400)
   })
   it('pages a popular feed past thirty publications without repeating one', async () => {
     for (let i = 0; i < 31; i++) db.communityHarness.rows.push({ ...sample, id: crypto.randomUUID(), createdAt: new Date(Date.now() - i * 1000), autonomousEnv: 'prod', authorId: 'alice', authorName: 'Alice', deletedAt: null, credits: [] })

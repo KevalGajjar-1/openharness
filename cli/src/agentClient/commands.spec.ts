@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
+import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
 import { writeAgentSettings } from '../lib/agentSettings.js'
@@ -99,6 +99,28 @@ describe('harness ps', () => {
     expect(d.closed).toBe(true)
   })
 
+  it('tells an agent how many of its own are open and idle, and to close them once answered', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('a'), frame('b', { activity: { state: 'working' } }), frame('c', { status: 'stopped' }), frame('theirs')]
+    const h = harness(d)
+    for (const kid of ['a', 'b', 'c']) started(h.ledger, 'lead', kid)
+    expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n').split('\n').at(-1)).toBe('You have 2 harnesses of your own open, 1 idle. Close each once you have its answer: harness close <name>.')
+    // One, and none idle.
+    d.frames = [frame('lead', { engine: 'claude' }), frame('b', { activity: { state: 'working' } })]
+    const one = harness(d, { env: { HARNESS_VIA_MCP: '1' } })
+    expect(await psCommand([], one.deps)).toBe(EXIT.ok)
+    expect(one.out.join('\n').split('\n').at(-1)).toBe('You have 1 harness of your own open. Close each once you have its answer: harness_close (name: "<name>").')
+    // None of its own, and the person: nothing to say.
+    d.frames = [frame('lead', { engine: 'claude' }), frame('theirs')]
+    const none = harness(d)
+    expect(await psCommand([], none.deps)).toBe(EXIT.ok)
+    expect(none.out.join('\n')).not.toMatch(/of your own open/)
+    const person = harness(d, { pane: undefined })
+    expect(await psCommand([], person.deps)).toBe(EXIT.ok)
+    expect(person.out.join('\n')).not.toMatch(/of your own open/)
+  })
+
   it('tells an agent outside Harness that it is one', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('kid')]
@@ -179,10 +201,36 @@ describe('harness show', () => {
       'asked: review 3f2a',
       'answer (after 1 tool calls):',
       'Two bugs.',
+      // Idle and the caller's: a harness left open after its answer is read sits there for nobody.
+      'Close it once you have what you need: harness close reviewer',
     ])
     expect(d.requests.filter((r) => r.type === 'session_get').map((r) => r.payload)).toEqual([
       { sessionId: 's-reviewer', limit: 80 }, { sessionId: 's-reviewer', limit: 80, before: '1' },
     ])
+  })
+
+  it('ends with a hint to close only an idle harness of the caller\'s, by a name its verbs take, as a tool through MCP', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead'), frame('kid', { name: 'so we have built harness web,' }), frame('busy'), frame('theirs')]
+    d.screens.set('busy', ['working'])
+    d.pages.set('s-kid', [{ events: [ev('user_message', { content: 'go' }), ev('text_delta', { content: 'done' })], hasMore: false }])
+    const h = harness(d)
+    started(h.ledger, 'lead', 'kid')
+    started(h.ledger, 'lead', 'busy')
+    expect(await showCommand(['kid'], h.deps)).toBe(EXIT.ok)
+    // An unnamed harness is called by its session title, a sentence `close` would not take: the start of its id.
+    expect(h.out.at(-1)).toBe('Close it once you have what you need: harness close kid')
+    expect(await showCommand(['busy'], h.deps)).toBe(EXIT.ok)
+    expect(h.out.at(-1)).not.toMatch(/Close it/)
+    expect(await showCommand(['theirs'], h.deps)).toBe(EXIT.ok)
+    expect(h.out.at(-1)).not.toMatch(/Close it/)
+    const mcp = harness(d, { env: { HARNESS_VIA_MCP: '1' } })
+    expect(await showCommand(['kid'], mcp.deps)).toBe(EXIT.ok)
+    expect(mcp.out.at(-1)).toBe('Close it once you have what you need: harness_close (name: "kid")')
+    // Programs read the state themselves.
+    const json = harness(d)
+    expect(await showCommand(['kid', '--json'], json.deps)).toBe(EXIT.ok)
+    expect(json.out.join('\n')).not.toMatch(/Close it/)
   })
 
   it('clips a long answer and says how to read the rest; says when it waits for the person', async () => {
@@ -373,7 +421,7 @@ describe('harness wait', () => {
     s.extra.agents_list = () => ({ agents: n++ < 2 ? s.frames : [{ ...s.frames[0], status: 'stopped' }] })
     const st = harness(s)
     expect(await waitCommand(['x'], st.deps)).toBe(EXIT.stopped)
-    expect(st.out[0]).toBe('x: stopped · it was stopped')
+    expect(st.out[0]).toBe('x: stopped · it was stopped; its answer is kept: harness show x')
     let m = 0
     s.extra.agents_list = () => ({ agents: m++ < 2 ? s.frames : [] })
     const g = harness(s)
@@ -405,14 +453,14 @@ describe('harness wait', () => {
     const other = harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 'T1' } })
     other.ledger.append({ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'codex:T1', name: 'Codex', engine: 'codex' }, child: { machineId: 'm', agentId: 'kid', name: 'kid' } })
     expect(await waitCommand(['kid'], other.deps)).toBe(EXIT.stopped)
-    expect(other.out).toEqual(['kid: stopped · it was stopped'])
+    expect(other.out).toEqual(['kid: stopped · it was stopped; its answer is kept: harness show kid'])
     const person = harness(d, { pane: undefined })
     expect(await waitCommand(['kid'], person.deps)).toBe(EXIT.stopped)
     // Reopened after it closed it, worked on and stopped again: not its close any more.
     d.frames = [frame('lead'), frame('kid', { status: 'stopped', updatedAt: '2026-10-11T12:05:00Z' })]
     const reopened = harness(d)
     expect(await waitCommand(['kid'], reopened.deps)).toBe(EXIT.stopped)
-    expect(reopened.out).toEqual(['kid: stopped · it was stopped'])
+    expect(reopened.out).toEqual(['kid: stopped · it was stopped; its answer is kept: harness show kid'])
   })
 
   it('waits for all of several, listing once a round, or the first with --any; a name twice is one harness', async () => {
@@ -738,7 +786,7 @@ describe('harness new, run by an agent', () => {
     const live = new Set(['m/lead'])
     expect(spawnRefusal(lead, live, l, 'm', NOW)).toBeNull()
     l.append({ at: NOW, depth: SPAWN_LIMITS.depth, by: { ...lead, agentId: 'up' }, child: { machineId: 'm', agentId: 'deep', name: 'deep' } })
-    expect(spawnRefusal({ ...lead, agentId: 'deep' }, live, l, 'm', NOW)).toMatch(/this far down/)
+    expect(spawnRefusal({ ...lead, agentId: 'deep' }, live, l, 'm', NOW)).toBe(DEPTH_REFUSAL)
     for (let i = 0; i < SPAWN_LIMITS.livePerHarness - 1; i++) {
       started(l, 'lead', `k${i}`, 'm', NOW - 3_600_000)
       live.add(`m/k${i}`)
@@ -746,7 +794,7 @@ describe('harness new, run by an agent', () => {
     started(l, 'lead', 'far', 'mini', NOW - 3_600_000)
     expect(spawnRefusal(lead, live, l, 'm', NOW)).toBeNull()
     live.add('mini/far')
-    expect(spawnRefusal(lead, live, l, 'm', NOW)).toBe('You have 8 harnesses running. Close one you are done with first (harness close <name>).')
+    expect(spawnRefusal(lead, live, l, 'm', NOW)).toBe('You have 4 harnesses running. Close one you are done with first (harness close <name>).')
     const crowd = new Ledger(ledgerPath(mkdtempSync(join(dir, 'crowd-'))))
     const busy = new Set<string>()
     for (let i = 0; i < SPAWN_LIMITS.livePerMachine; i++) {
@@ -759,6 +807,36 @@ describe('harness new, run by an agent', () => {
     expect(spawnRefusal(lead, new Set(), quick, 'm', NOW)).toBe('You started 20 harnesses in 10 minutes. Wait, or work with the ones you have.')
   })
 
+  it('keeps a harness another agent started from starting more: four of its own at most, one level down', () => {
+    // Owner, October 12: "be very careful about when to start a new agent so we don't waste user token". They were eight
+    // and two levels: a harness an agent started could start more, and each of those spent the person's tokens.
+    expect(SPAWN_LIMITS).toMatchObject({ livePerHarness: 4, depth: 1, livePerMachine: 40, perWindow: 20 })
+    const l = new Ledger(ledgerPath(dir))
+    const kid = { machineId: 'm', agentId: 'kid', name: 'kid', engine: 'codex' }
+    // The person's harness: no line, no parent.
+    expect(spawnRefusal(kid, new Set(), l, 'm', NOW)).toBeNull()
+    // Its record says another agent started it.
+    started(l, 'lead', 'kid')
+    expect(spawnRefusal(kid, new Set(), l, 'm', NOW)).toBe('A harness another agent started may not start harnesses itself. Do the work yourself, or say in your answer what else is needed.')
+    // The record lost its line, but the core's row names its starter.
+    const lost = new Ledger(ledgerPath(mkdtempSync(join(dir, 'lost-'))))
+    expect(spawnRefusal({ ...kid, startedByAgent: true }, new Set(), lost, 'm', NOW)).toBe(DEPTH_REFUSAL)
+  })
+
+  it('refuses a harness another agent started, from its pane, before anything is asked', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('kid', { parentAgentId: 'lead' })]
+    const h = harness(d, { pane: '%kid' })
+    const origin = (await agentOrigin(h.deps))!
+    expect(origin.parentAgentId).toBe('kid')
+    await expect(origin.check()).rejects.toThrow(DEPTH_REFUSAL)
+    expect(d.requests.filter((r) => r.type === 'agent_create')).toEqual([])
+    // Started from another machine, or by an agent outside Harness: no starter here, and no line in this machine's
+    // record. The core's row still says another agent started it.
+    d.frames = [frame('far', { startedBy: 'agent' })]
+    await expect((await agentOrigin(harness(d, { pane: '%far' }).deps))!.check()).rejects.toThrow(DEPTH_REFUSAL)
+  })
+
   it('counts harnesses asked for and still installing as running, toward every limit', () => {
     // Each starts by itself once its engine is installed: asked for meanwhile, they passed every limit and started at once.
     const lead = { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }
@@ -767,7 +845,7 @@ describe('harness new, run by an agent', () => {
     const empty = new Ledger(ledgerPath(mkdtempSync(join(dir, 'waiting-'))))
     expect(spawnRefusal(lead, new Set(), empty, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness - 1))).toBeNull()
     expect(spawnRefusal(lead, new Set(), empty, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness)))
-      .toBe('You have 8 harnesses running or starting. Close one you are done with first (harness close <name>).')
+      .toBe('You have 4 harnesses running or starting. Close one you are done with first (harness close <name>).')
     const crowd = new Ledger(ledgerPath(mkdtempSync(join(dir, 'crowd-waiting-'))))
     const busy = new Set<string>()
     for (let i = 0; i < SPAWN_LIMITS.livePerMachine - 1; i++) {

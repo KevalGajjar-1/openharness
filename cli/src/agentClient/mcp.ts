@@ -23,11 +23,11 @@ export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '202
 /** What an agent is told once, as it connects: when Harness is the right tool, and whose harnesses are whose. */
 export const INSTRUCTIONS = `Harness runs coding agents (Claude Code, Codex) in sessions of their own, on this computer or the person's other machines. The person can watch and join every one in the Harness app.
 
-Start a harness (harness_start) for work that can run beside yours, needs another agent's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do small, quick work yourself. For scratch or new work give it a project name (project), not a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
+Every harness spends the person's tokens. Start one (harness_start) only for work that can run in parallel with yours, needs another model's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do quick work yourself. For scratch or new work give it a project name (project), not a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 
 List first (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in a tab where the person turned Agent Messages on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
 
-Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it when you are done (harness_close). Never ask a harness to publish, deploy, delete or push.`
+Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself. Never ask a harness to publish, deploy, delete or push.`
 
 /** How long `harness_wait` waits when not told: within what MCP clients allow a call. Codex ends one at 60 s unless its
  *  config says otherwise (`tool_timeout_sec`, developers.openai.com/codex/mcp), so 120 s ended every long wait as an
@@ -117,7 +117,11 @@ export const TOOLS: Tool[] = [
     name: 'harness_close',
     description: 'Close a harness you started, once it is done. Its conversation is kept: the person can resume it. Refused while it works, unless now is true.',
     inputSchema: schema({ name: { type: 'string' }, now: { type: 'boolean', description: 'Close it even while it works.' } }, ['name']),
-    annotations: { destructiveHint: true },
+    // Not destructive: the conversation is kept and the person can resume it, and Harness itself lets an agent close only
+    // what it started. Said so, Codex closes without asking even where the server was added by hand (`codex mcp add`),
+    // not only through the plugin's manifest: a close that waits on approval in `codex exec` left the harness running
+    // (2026-10-12, in a clean VM).
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
     argv: (a) => ['close', str(a.name), ...(a.now === true ? ['--now'] : [])],
   },
 ]

@@ -165,6 +165,16 @@ describe('community navigation', () => {
     await waitFor(() => expect(request).toHaveBeenLastCalledWith('harnesses?'));
     expect(window.location.search).toBe('');
   });
+  it('draws a popular feed in the order the server gave, the liked starters among the publications', async () => {
+    request.mockResolvedValue({ harnesses: [{ ...sample, id: 'post', title: 'Published' }], order: ['starter-blue-hour', 'post', 'starter-orbit'], nextCursor: null, following: [], stats: {} });
+    window.history.replaceState(null, '', '/hub?sort=popular');
+    render(<Feed initialView={{ query: '', category: '', sort: 'popular' }} />);
+    await screen.findByRole('link', { name: 'Open Published' });
+    // Only what the server ranked, where it ranked it: no starter is appended after the publications.
+    expect(screen.getAllByRole('link', { name: /^Open / }).map(link => link.getAttribute('href')))
+      .toEqual(['/hub/starter-blue-hour', '/hub/post', '/hub/starter-orbit']);
+    window.history.replaceState(null, '', '/');
+  });
   it('holds a feed like until the server answers, and shows the forks a card has', async () => {
     request.mockResolvedValueOnce({ harnesses: [{ ...sample, id: 'first' }], nextCursor: null, following: [], stats: { first: { likes: 1, comments: 0, liked: false, forks: 2 } }, signedIn: true });
     render(<Feed mine />);

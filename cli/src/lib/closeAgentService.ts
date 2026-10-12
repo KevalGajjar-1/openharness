@@ -107,6 +107,8 @@ export interface CloseAgentServiceDeps {
   stop(agentId: string, options: StopAgentOptions): Promise<void>
   changed(s: RegisteredSession): void
   openTabs?: { assertHidden(s: RegisteredSession): Promise<void>; isHidden(s: RegisteredSession): boolean }
+  /** Whether the conversation [request] names is closed already: no longer live, and kept as stopped. */
+  closedAlready?(request: AgentCloseRequest): boolean
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }
@@ -150,7 +152,7 @@ export class CloseAgentService {
 
   request(request: AgentCloseRequest): Promise<AgentCloseResult> {
     const current = this.deps.registry.byAgent(request.agentId)
-    if (!matches(current, request, this.now())) return Promise.resolve({ error: 'AGENT_CHANGED' })
+    if (!matches(current, request, this.now())) return Promise.resolve(this.changed(request))
     if (request.mode === 'cancel') { this.cancel(request.agentId); return Promise.resolve({ cancelled: true }) }
     // A job answers only a request of its own kind. When any job running for the agent answered every
     // request, a close asked for while another window (or the cleanup preview) was inspecting the agent
@@ -172,6 +174,16 @@ export class CloseAgentService {
     this.jobs.set(key, job)
     this.queues.set(request.agentId, job)
     return job
+  }
+
+  /**
+   * The answer to a close of an agent that is not the one asked about. One already closed, the same conversation, is
+   * closed: a window closing a tab after a pane in it, its starter, was closed takes the harnesses that starter started
+   * with it (services/agentCleanup.ts), and the window's own close of them, asked a moment later, was answered
+   * AGENT_CHANGED and shown as "Could not confirm that it stopped". Anything else is AGENT_CHANGED.
+   */
+  private changed(request: AgentCloseRequest): AgentCloseResult {
+    return (request.mode === 'idle' || request.mode === 'now') && this.deps.closedAlready?.(request) ? { closed: true } : { error: 'AGENT_CHANGED' }
   }
 
   private async execute(request: AgentCloseRequest, target: string, revision: number): Promise<AgentCloseResult> {
@@ -199,7 +211,7 @@ export class CloseAgentService {
     let tried = target, result = first, waiting = false
     for (;;) {
       const s = same()
-      if (!s) return { error: 'AGENT_CHANGED' }
+      if (!s) return this.changed(request)
       const bound = identity(s) !== tried
       // Neither unreadable nor newly bound: a refusal of its own (working, a failed save), answered as it is.
       if (!bound && result.error !== 'IDENTITY_UNAVAILABLE') return result
@@ -214,7 +226,7 @@ export class CloseAgentService {
       waiting = true
       if (!bound) await this.sleep(Math.min(CLOSE_BIND_RETRY_MS, deadline - this.now()))
       const latest = same()
-      if (!latest) return { error: 'AGENT_CHANGED' }
+      if (!latest) return this.changed(request)
       tried = identity(latest)
       result = await this.attempt(request, tried, revision)
       if (result.closed) return result
@@ -237,7 +249,8 @@ export class CloseAgentService {
         await this.deps.openTabs.assertHidden(s)
       }
       const s = current()
-      if (!s) return { error: 'AGENT_CHANGED' }
+      // Closed by the job ahead of this one (another window's close, or the cleanup's): closed all the same.
+      if (!s) return this.changed(request)
       const observed = await this.deps.activity(s)
       // Close belongs to the global workspace. Other viewers do not change
       // whether the session has unfinished work.

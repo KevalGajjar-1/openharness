@@ -13,8 +13,9 @@ import { chmodSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statS
 import { join } from 'node:path'
 
 /** What one inbox file holds: the text, and the engine conversation it is for. A hook in any other conversation
- *  (a Codex sub-agent runs its hooks from its parent's pane) leaves it. */
-export interface InboxItem { session: string; text: string }
+ *  (a Codex sub-agent runs its hooks from its parent's pane) leaves it. `notice` is the line the pane shows the
+ *  person when the hook takes it, never given to the model. */
+export interface InboxItem { session: string; text: string; notice?: string }
 
 const PANE = /^%(\d{1,9})$/
 const KEY = /^[0-9a-z._-]{1,120}$/

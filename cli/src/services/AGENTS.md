@@ -54,7 +54,7 @@ that process. A process per risk, not per feature (`SERVICE_HOSTS` in `src/harne
 | `engine-claude`, `engine-codex` | history, live parsers, runtime profiles, screens, submission readings, model control, question navigation and Codex's app-server connection (`src/engines/worker/`) | engine behavior outside core; snapshots and revocable model- and question-control grants | on demand |
 | `search` | search | native `node:sqlite`, the index's memory | always |
 | `viewers` | viewers, store | the viewer servers, the remote viewer streams and rendered surfaces, minutes-long installs | always |
-| `edge` | workspaces, usage, monitor, projects, handoff, recaps, windowNames, shell | light pure-JS services: isolated from the core, not from each other | always |
+| `edge` | workspaces, usage, monitor, projects, handoff, recaps, windowNames, shell, connectors, agentCleanup | light pure-JS services: isolated from the core, not from each other | always |
 | `gateway` | gateway | network, crypto and pure-JS WebRTC: the attack surface | on demand |
 | `models` | models | grid's installs, downloads and commands | on demand |
 | `devices` | devices, wifi | the dials' serial ports, the fleet's lane, the voice router's worker, the Wi-Fi device | on demand |
@@ -172,6 +172,9 @@ master too old to run it starts it beside itself, still in its own process (`src
   what the core reads back in line it reads from what they last said of each session.
   `e2e/recapsProcess.e2e.ts` proves turns end on time with them killed, hung or slow, and
   `e2e/recapsCompat.e2e.ts` that the dial and the windows hear the same cards and recaps as before.
+  The agent cleanup (`src/services/agentCleanupProcess.ts`, `src/core/agentCleanupLink.ts`) is told the same way
+  (a harness stopped, the person typing into one another agent started), and acts on the core only through what the
+  core lets it: `closeStarted` closes a harness another agent started and refuses any other.
 
 ## On demand
 

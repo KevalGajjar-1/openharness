@@ -110,6 +110,10 @@ export type AgentFrame = {
    * starter's current name (desktop `Agent.parentAgentId`).
    */
   parentAgentId: string | null
+  /** `agent` when another agent started this harness, wherever that agent runs (registry `startedBy`); null when the
+   *  person did. The agent verbs read it to keep such a harness from starting harnesses itself (agentClient/model.ts
+   *  `callerOf`): `parentAgentId` names only a starter on this machine. */
+  startedBy: 'agent' | null
   /** Whether `agent_fork` can do anything for this engine (lib/forkAgent.ts) — natively, or by a
    *  handoff. A client hides the Fork action on a false rather than offering a button that refuses. */
   forkable: boolean
@@ -264,6 +268,7 @@ export async function agentFrame(
     verdict: dsh?.verdict ?? null,
     forkedFrom: s.forkedFrom ? { agentId: s.forkedFrom.agentId, name: s.forkedFrom.name } : null,
     parentAgentId: s.parentAgentId ?? null,
+    startedBy: s.startedBy === 'agent' ? 'agent' : null,
     forkable: engineCanFork(s.engine),
     resumeMode: resumeMode(s.engine),
     permissionMode: s.permissionMode ?? null,

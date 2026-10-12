@@ -62,7 +62,8 @@ questions. Everything else is a service ([../services/AGENTS.md](../services/AGE
   `monitorLink.ts`: the monitor's port, asked of its process. `recapsLink.ts`: the recaps in their process,
   told each turn's lifecycle and never waited on, and read back from what they last said
   (`turns/recaps.ts` is the core's whole side of them). `storeLink.ts`: what the Store in its
-  process tells the core. `modelsLink.ts`: what the core keeps of models in its process for frames and
+  process tells the core. `agentCleanupLink.ts`: the agent cleanup in its process, told every stop and the person
+  typing into a harness another agent started, and answered what it may close. `modelsLink.ts`: what the core keeps of models in its process for frames and
   keystrokes, and how it asks it the rest. `agentQueries.ts`: what a service in its own process may ask of the agents;
   `accountQueries.ts`: of the account (a token, and the fleet's lane's sealing), so it holds no credential.
   `experimentQueries.ts`: what an experiment acts on the core through; `experiments.ts`: which are on as the

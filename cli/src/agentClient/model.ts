@@ -18,6 +18,10 @@ export interface Frame {
   project?: { cwd?: string; root?: string; branch?: string | null; worktree?: boolean } | null
   createdAt?: string
   updatedAt?: string
+  /** The harness here whose agent started this one (registry `parentAgentId`); null for the rest. */
+  parentAgentId?: string | null
+  /** `agent` when another agent started it, here or from another machine or outside Harness. */
+  startedBy?: string | null
 }
 
 /** The agent running the verb: a harness in its own pane, or an agent outside Harness. Null for a person at a terminal. */
@@ -27,6 +31,8 @@ export interface Caller extends LedgerMember {
   /** An agent Harness did not start (in a terminal app, an editor, the person's own tmux): no pane, so nothing can
    *  message it, and it is told apart by the session its shell names. */
   outside?: boolean
+  /** Another agent started this harness, as the core's row says (`startedBy`, `parentAgentId`): one level down. */
+  startedByAgent?: boolean
 }
 
 /** `installing`, `starting`, `failed`: a harness asked for that has not started (commands.ts `Asked`). */
@@ -75,7 +81,7 @@ export function callerOf(frames: Frame[], pane: string | undefined, machineId: s
   const on = frames.filter((f) => f.tmuxPane === pane)
   const frame = on.find((f) => f.status === 'active') ?? on.filter(isAgent).sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]
   if (!frame || !isAgent(frame)) return null
-  return { machineId, agentId: frame.id, name: frame.name || frame.id.slice(0, 8), engine: frame.engine ?? '' }
+  return { machineId, agentId: frame.id, name: frame.name || frame.id.slice(0, 8), engine: frame.engine ?? '', ...(frame.startedBy === 'agent' || frame.parentAgentId ? { startedByAgent: true } : {}) }
 }
 
 /**

@@ -189,7 +189,8 @@ try:
     wait(lambda: hn('display-message', '-p', '#{local_machine}|#{pane_machine}').stdout.strip() == 'mock-local|mock-local',
          'local shell and status share the machine name from the app')
     hn('workspace-menu', 'new-harness')
-    wait(lambda: ' @ local' in tm('capture-pane', '-p', '-t', 'outer').stdout, 'New Harness identifies the local destination')
+    # Its own Machine row, by the name the app gave it (not "@ local" after the project).
+    wait(lambda: 'Machine     mock-local' in tm('capture-pane', '-p', '-t', 'outer').stdout, 'New Harness identifies the local destination')
     tm('send-keys', '-t', 'outer', 'Escape')
     print('PASS daemon arrival preserves local shell and identifies the local destination', flush=True)
 

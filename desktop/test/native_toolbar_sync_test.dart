@@ -230,12 +230,12 @@ void main() {
     final tab = app.activeSwarmId;
     Map row() => (updates().last['tabs'] as List).single as Map;
 
-    // Traffic alone rebuilds no workspace; it reaches the tab only while on,
-    // since a tab that is off says nothing about agents messaging.
+    // Traffic rebuilds no workspace, and the row carries only the flag: a tab
+    // never shows agents messaging.
     app.agentMessages.handleEvent({'tabId': tab, 'messageId': 'm0000001'});
     await tester.idle();
     expect(row()['agentMessages'], isFalse);
-    expect(row()['agentMessagesFlowing'], isFalse);
+    expect(row().containsKey('agentMessagesFlowing'), isFalse);
     expect(updates().last['activeAgentMessages'], isFalse);
 
     Future<void> native(String method) =>
@@ -251,8 +251,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.writes, [(tab, true)]);
     expect(row()['agentMessages'], isTrue);
-    expect(row()['agentMessagesFlowing'], isTrue);
     expect(updates().last['activeAgentMessages'], isTrue);
+    app.agentMessages.handleEvent({'tabId': tab, 'messageId': 'm0000002'});
+    await tester.idle();
+    expect(row().containsKey('agentMessagesFlowing'), isFalse);
 
     // A refused turn off goes back, and says so where the click was.
     api.writeError = StateError('offline');
@@ -270,10 +272,6 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
     expect(find.text('Before · Agent Messages'), findsNothing);
-
-    await tester.pump(const Duration(seconds: 61));
-    await tester.idle();
-    expect(row()['agentMessagesFlowing'], isFalse);
 
     // An older CLI or backend: no 💬, no menu row.
     api.unsupported = true;

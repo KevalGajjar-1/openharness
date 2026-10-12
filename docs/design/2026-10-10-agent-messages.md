@@ -58,17 +58,15 @@ holding ⌘ changes nothing on them (owner, 2026-10-11).
 | State | Not hovered | Hovered | Click 💬 |
 |---|---|---|---|
 | Off (default) | `app ✓` | `app ✓    💬 ×` (💬 a quiet outline) | turns on |
-| On, quiet | `app ✓` | `app ✓    💬 ×` (💬 filled, in color) | turns off |
-| On, messages flowing | `app 💬` (the status slot, animated) | `app 💬    💬 ×` | turns off |
+| On | `app ✓` | `app ✓    💬 ×` (💬 filled, in color) | turns off |
 
-While agents in the tab message each other, its status slot (where the working spinner, ✓ and ? go)
-shows 💬 in Agent Messages' color, its two bubbles trading sides every half second, for 10 seconds after
-the last message (long enough to catch at a glance, short enough to stay a blip: replies take minutes),
-then the tab's status again. Traffic read from another machine's log lasts one 15 s poll round longer. The color is the design
-system's accent blue (`AppPalette.accentOnSurface`), its one color for "on" and selection; it stays
-clear of the status marks' cyan, green, yellow and red, and the bubbles' shape carries the meaning too. Reduce Motion
-holds it still. At rest a tab gives its name the whole width; when hovered, a name that would run into
-💬 and × moves left only as far as they need, then gives up its tail.
+The tab shows no traffic: its status slot keeps the working spinner, ✓ or ?, and messages arrive when they
+arrive. An animated 💬 there, for 10 seconds after each message, sent the owner looking in the panes for
+messages that agents take at their tool calls, so it went (owner, 2026-10-12). The color of an on 💬 is the
+design system's accent blue (`AppPalette.accentOnSurface`), its one color for "on" and selection; it stays
+clear of the status marks' cyan, green, yellow and red, and the bubbles' shape carries the meaning too. At
+rest a tab gives its name the whole width; when hovered, a name that would run into 💬 and × moves left
+only as far as they need, then gives up its tail.
 
 On and off differ in shape as well as color: on, the bubbles are filled, at full strength; off, an outline
 at a third of the text's strength. One outline in two tints read alike ("really hard to see on/off
@@ -76,15 +74,19 @@ states", owner, 2026-10-12, who chose filled over a blue pill and a slash). 💬
 apart (16pt, 3pt apart, were easy to click by mistake), and the tab's × is the pane's: 7pt across with a
 1pt stroke (AppKit `xmark` 9pt semibold beside Lucide's 12pt `x`).
 
-Tooltips: "Agent messages off · click to turn on", "Agent messages on · click to turn off",
-"Agents messaging · click to turn off". The tab's right-click menu and the File menu gain **Agent Messages**
-(a checkmark) and **Show Agent Messages**.
+Tooltips: "Agent messages off · click to turn on", "Agent messages on · click to turn off". The tab's
+right-click menu and the File menu gain **Agent Messages** (a checkmark) and **Show Agent Messages**.
 
 ### Panes
 
 The recipient's conversation shows the message under one header line; the sender's shows its `harness send`
 call and the state it reached. The pane headers show `→ agent1` on the sender and `← lead` on the
 recipient for a few seconds.
+
+A message the hook gives a working agent goes to the model whole, and leaves the person one line in the pane:
+its sender and the start of its first line (`systemMessage`, which neither engine gives the model). Claude Code
+draws it as `PostToolUse:Bash says: ← lead: Review of 3f2a9c1…`, Codex as `↳ Hook · ← lead: Review of 3f2a9c1…`.
+Before it, the owner watched a tab's agents trade messages while their panes showed nothing (2026-10-12).
 
 ```
 [m12 from lead · Codex · studio]

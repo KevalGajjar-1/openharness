@@ -36,15 +36,16 @@ Harness is not running.
 
 ## When to start a harness
 
-Start one for work that:
+Every harness you start spends the person's tokens. Start one only for work that:
 
-1. **can run beside yours**: tests in one folder while you work in another, several tasks at once;
-2. **needs another agent's view**: a review, a second opinion from Codex;
+1. **can run in parallel with yours**: tests in one folder while you work in another, several tasks at once;
+2. **needs another model's view**: a review, a second opinion from Codex;
 3. **takes long**: it keeps running after your turn or your context ends;
 4. **belongs in its own folder**, or on another of the person's machines (`harness machines` lists them).
 
-Do small, quick work yourself, and a quick parallel search or edit inside your own task with your own
-sub-agents: cheaper and faster. Everything you start appears in Harness, where the person can watch and step in.
+Do quick work yourself, and a quick parallel search or edit inside your own task with your own sub-agents:
+cheaper and faster. Close each harness once you have its answer. Everything you start appears in Harness, where
+the person can watch and step in.
 
 ## New harness or an existing one
 
@@ -81,9 +82,10 @@ harness close <name> [--now]                        # when you are done with one
   only the person answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0`
   waits as long as it takes.
 - Read the result with `show` instead of asking for a summary.
-- `close` what you started once you have what you need. It keeps the conversation; the person can resume it.
+- `close` what you started once you have its answer. It keeps the conversation; the person can resume it.
   It refuses while the harness is working, unless `--now`. One closed while still starting may have no
-  conversation to keep yet, and `close` says so.
+  conversation to keep yet, and `close` says so. `show` reminds you when one of yours sits idle, and `ps`
+  says how many of yours are open.
 - Add `--json` to any verb for JSON. Every error says what to run next.
 
 ## Inside a harness, or outside
@@ -119,8 +121,12 @@ If Harness's MCP server (`harness mcp`) is connected, its tools are the same ver
 
 ## Limits and rules
 
-- At most 8 live harnesses of yours, 20 starts in 10 minutes, and a harness you start may start others, but
-  the ones it starts may not. Every limit refuses with a message; do not work around it.
+- At most 4 live harnesses of yours, and 20 starts in 10 minutes. A harness another agent started may not start
+  harnesses itself: if you were started by one, do the work yourself, or say in your answer what else is needed.
+  Every limit refuses with a message; do not work around it.
+- Harness cleans up after you: closing a harness closes the harnesses it started, and one another agent started
+  is closed once it has sat idle 30 minutes after its last answer, unless the person typed into it. Its
+  conversation is kept, and `show` still reads its answer.
 - A harness you start runs in its agent's auto mode, with the agent's own checks on. `--mode full` (checks and
   sandbox off) is the person's to choose: from an agent it is refused.
 - Never answer a harness's question or permission prompt yourself, and never type into it some other way.

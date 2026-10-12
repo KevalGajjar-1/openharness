@@ -13,8 +13,9 @@ import 'desktop_chrome.dart';
 /// and, at its trailing edge, Agent Messages' 💬 and the close action.
 ///
 /// At rest the name and status have the whole tab. Hovering reveals 💬 — grey
-/// while Agent Messages is off, [messagesColor] while on — and ×. While agents
-/// message, the caller passes a [MessagingMark] as [activity].
+/// while Agent Messages is off, [messagesColor] while on — and ×. Traffic
+/// between its agents shows nothing on the tab: messages arrive when they
+/// arrive.
 class DesktopWorkspaceTab extends StatefulWidget {
   const DesktopWorkspaceTab({
     super.key,
@@ -47,8 +48,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
   final VoidCallback? onToggleAgentMessages;
   final String? tooltip, activityLabel;
 
-  /// The status cell: an [ActivityMark], or a [MessagingMark] while agents
-  /// message.
+  /// The status cell: an [ActivityMark].
   final Widget? activity;
 
   static double _measure(BuildContext context, String text, TextStyle style) {
@@ -77,7 +77,6 @@ class DesktopWorkspaceTab extends StatefulWidget {
   static String agentMessagesTooltip(TabMessagesState state) => switch (state) {
     TabMessagesState.off => 'Agent messages off · click to turn on',
     TabMessagesState.on => 'Agent messages on · click to turn off',
-    TabMessagesState.flowing => 'Agents messaging · click to turn off',
   };
 
   static double labelWidth(BuildContext context, String label) =>
