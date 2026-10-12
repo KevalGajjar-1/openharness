@@ -429,6 +429,12 @@ it('retains the exact native response with its generation while legacy response 
   expect(records().find(record => record.event.kind === 'intake').event.intake.payload)
     .toMatchObject({ generationId: 'generation-one', responseText })
   expect(records().find(record => record.event.kind === 'generation').event.fact.kind).toBe('activity')
+  const source = await f.started.readNativeGenerations({ agentId, sessionId, processKey: key })
+  expect(source.observations).toMatchObject([{ owner: source.owner, generationId: 'generation-one',
+    deliveryId: delivery.id, event: 'afterAgentResponse', responseText }])
+  expect(observed.mock.calls.at(-1)![1].observations).toEqual(source.observations)
+  expect(Object.isFrozen(source.observations)).toBe(true)
+  expect(() => source.verify()).not.toThrow()
   expect(await f.post(raw, {}, '/api/hook/session-start')).toMatchObject({ status: 400 })
   expect(await f.post(JSON.stringify(cursorBody({ hookEvent: 'afterAgentResponse', responseText: 'é'.repeat(65537) })))).toMatchObject({ status: 400 })
 }, 15000)

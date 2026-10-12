@@ -16,6 +16,7 @@ import { IdentityReadUnavailable } from './engines/kit/identityScan.js'
 import { createPendingAdmissions, type AdmissionDecision } from './core/engines/pendingAdmission.js'
 import { paneReadIdentity } from './core/transcripts/readIdentity.js'
 import { createNativeGenerationSource } from './core/turns/nativeGenerationSource.js'
+import { captureNativeGenerationContent } from './core/turns/nativeGenerationContent.js'
 import type { NativeGenerationOwner, NativeGenerationSource } from './core/turns/nativeGenerations.js'
 import { nativeHookGeneration } from './engines/kit/nativeHookGeneration.js'
 import { nativeGenerationFactState, type NativeGenerationFactRecord } from './engines/kit/nativeGenerationFact.js'
@@ -559,6 +560,7 @@ export function startHookServer(
     if (!publish || publicationGuard || snapshot.cancellations.size || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
       if (publish && !handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
       const original = { agentId: owner.agentId, sessionId: owner.sessionId, processKey: context.key }
+      const observations = captureNativeGenerationContent(original, snapshot.generations, snapshot.deliveries)
       const retained = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()
       // Confirmation can outlive a kernel incarnation even while Registry is
       // unchanged. verify() checks the budget; this final read re-probes it.
@@ -571,7 +573,7 @@ export function startHookServer(
           throw new IdentityReadUnavailable('the native generation binding changed')
         }
       }
-      source = Object.freeze({ ...retained, verify })
+      source = Object.freeze({ ...retained, observations, verify })
       publicationGuard?.(source)
       verify()
       if (publish) handlers.onNativeGenerations!(structuredClone(owner), source, pending)

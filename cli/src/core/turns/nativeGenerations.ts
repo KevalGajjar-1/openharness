@@ -4,6 +4,7 @@
  * which generations are still running. */
 import { MAX_RETAINED_GENERATION_FACTS, validNativeGenerationCancellation,
   type NativeGenerationCancellation, type NativeGenerationFrontier } from '../../engines/kit/nativeGenerationCancellation.js'
+import type { NativeGenerationObservation } from './nativeGenerationContent.js'
 export interface NativeGenerationOwner {
   readonly agentId: string
   readonly sessionId: string
@@ -24,6 +25,9 @@ export interface NativeGenerationSource {
   /** A barrier survives even when no generation was known at Cancel. It applies
    * across conversation rebindings within the original process incarnation. */
   readonly cancellations?: readonly NativeGenerationCancellation[]
+  /** Present only when the complete native intake content was captured under
+   * the same proof as these facts. Its absence cannot authorize live consumers. */
+  readonly observations?: readonly NativeGenerationObservation[]
   /** Rechecks this exact complete frontier, including absence of later relevant
    * activity/Stop/Cancel facts. A proof of the old leaves alone is insufficient.
    * It must reject append as well as replacement and cannot select a new view. */

@@ -766,6 +766,33 @@ pin original terminal ownership, and retain the one-use verifier through dispatc
 
 ## Ownership before acknowledgement
 
+The October 12 native turn-controller checkpoint copies each prompt, response
+and tool payload from its exact retained intake before source confirmation
+yields. Late responses stay with their generation; distinct unordered responses
+remain ambiguous. Stop closes a generation independently of missing response
+text. Content allocation is bounded before building lookup tables.
+
+The inactive controller shares one actual inspection between refresh and effect
+permits. Revocation and a five-second monotonic deadline settle waiters without
+releasing an unsettled I/O slot. Absolute deadline checks also reject results
+after an event-loop stall. A settled old permit can expire only itself; it cannot
+invalidate a newer inspection. Validated recovered cancellation permanently
+revokes the incarnation, even if a later source omits its barrier. Every effect
+rechecks its original generation proof; presentation recovery is quiet.
+
+Independent review found and closed unbounded permit reads, timer-only expiry,
+forgotten recovered cancellation, and old-permit expiry revoking newer reads.
+The reviewer approved this inactive scope over `4518b78f8`, conditional on the
+now-passing final checks. Receipt `20261012T070011.098130Z-74950` passes types,
+167 projection/content/controller/source/golden/architecture cases, 100% per-file
+coverage for both new core modules, the exact HTTP response-content baseline,
+and all eight assertion mutations (35.4 seconds). The earlier sandbox-denied
+process cleanup receipt remains failed despite successful test exits. Review
+corrections and validation ran approximately 06:51–07:01 UTC. No merge or
+publication occurred. Physical Cancel, explicit durable rearm and the atomic
+history/input/task/recap activation remain required; this checkpoint does not
+activate them or provide final PR approval.
+
 Core must durably retain the immutable native body, delivery ID, native time,
 original routing hints and proved engine process incarnation before acknowledging
 owned pending work. A write that cannot be confirmed receives an unowned retry
