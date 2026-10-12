@@ -243,10 +243,12 @@ describe('Harness for agents, end to end', () => {
     const started = await server.call('harness_start', { task: 'hello from mcp', folder: dir, name: 'mcpkid' })
     expect(started.isError, started.text).toBe(false)
     expect(started.text).toContain('Created mcpkid on this computer')
+    // Its next steps are named as the tools: an MCP client may have no shell to run `harness show` in.
+    expect(started.text).toContain('Read it: harness_read (name: "mcpkid") · wait for it: harness_wait (names: "mcpkid")')
     const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(ledger).toEqual([expect.objectContaining({ by: expect.objectContaining({ agentId: expect.stringMatching(/^agent:cursor:mcp-\d+$/), name: 'Cursor' }) })])
     const waited = await server.call('harness_wait', { names: ['mcpkid'], timeout_seconds: 120 })
-    expect(waited).toEqual({ text: 'mcpkid: idle · read it: harness show mcpkid', isError: false })
+    expect(waited).toEqual({ text: 'mcpkid: idle · read it: harness_read (name: "mcpkid")', isError: false })
     const read = await server.call('harness_read', { name: 'mcpkid' })
     expect(read.text).toContain('asked: [from Cursor outside Harness · ')
     expect(read.text).toContain('hello from mcp')
