@@ -24,14 +24,17 @@ class _Daemon {
   Map<String, dynamic>? settings;
   Object? readError;
   Object? writeError;
-  Completer<void>? writeGate;
+  Completer<void>? readGate, writeGate;
   int reads = 0;
   final writes = <(String, bool)>[];
 
+  /// What the file said when the read reached it, answered once [readGate] opens.
   Future<Map<String, dynamic>?> read() async {
     reads++;
+    final answer = settings == null ? null : Map.of(settings!);
+    await readGate?.future;
     if (readError case final error?) throw error;
-    return settings == null ? null : Map.of(settings!);
+    return answer;
   }
 
   Future<Map<String, dynamic>> write(String key, bool value) async {
@@ -48,15 +51,18 @@ class _Daemon {
 void main() {
   Future<AgentSettingsStore> open(
     WidgetTester tester,
-    AgentSettingsStore store,
-  ) async {
+    AgentSettingsStore store, {
+    Duration recheckEvery = const Duration(seconds: 5),
+  }) async {
     addTearDown(store.dispose);
     tester.view.physicalSize = const Size(1000, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: AgentsSection(store: store)),
+        home: Scaffold(
+          body: AgentsSection(store: store, recheckEvery: recheckEvery),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -198,6 +204,160 @@ void main() {
       find.text('Mark pull requests from agent-started harnesses'),
       findsOneWidget,
     );
+  });
+
+  group('while the page is open', () {
+    const every = Duration(seconds: 5);
+
+    /// Lets [time] pass, then the frames an answer arriving in it needs.
+    Future<void> wait(
+      WidgetTester tester, [
+      Duration time = Duration.zero,
+    ]) async {
+      await tester.pump(time);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('a change made elsewhere shows by the next read', (
+      tester,
+    ) async {
+      final daemon = _Daemon();
+      await open(tester, daemon.store(), recheckEvery: every);
+      expect(daemon.reads, 1);
+      // `harness settings pull-request-line off`, in a terminal.
+      daemon.settings!['pullRequestLine'] = false;
+      await wait(tester, every ~/ 2);
+      expect(daemon.reads, 1);
+      expect(switchFor(tester, AgentSetting.pullRequestLine).value, isTrue);
+      await wait(tester, every ~/ 2);
+      expect(daemon.reads, 2);
+      expect(switchFor(tester, AgentSetting.pullRequestLine).value, isFalse);
+      // Quietly: no Loading… between, and the switches stay live.
+      expect(find.text('Loading…'), findsNothing);
+      expect(
+        switchFor(tester, AgentSetting.pullRequestLine).onChanged,
+        isNotNull,
+      );
+      daemon.settings!['agentsStartAgents'] = false;
+      await wait(tester, every);
+      expect(daemon.reads, 3);
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isFalse);
+    });
+
+    testWidgets('coming back to the front reads again at once; hidden asks '
+        'nothing', (tester) async {
+      final daemon = _Daemon();
+      await open(tester, daemon.store(), recheckEvery: every);
+      final binding = tester.binding;
+      addTearDown(
+        () => binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed),
+      );
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await wait(tester, every * 3);
+      expect(daemon.reads, 1, reason: 'a hidden window asks nothing');
+      daemon.settings!['agentsStartAgents'] = false;
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await wait(tester);
+      expect(daemon.reads, 2, reason: 'once, as it comes back');
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isFalse);
+      // Beside the terminal, not in front: still read on the timer.
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      daemon.settings!['agentsStartAgents'] = true;
+      await wait(tester, every);
+      expect(daemon.reads, 3);
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isTrue);
+    });
+
+    testWidgets('never fights a toggle', (tester) async {
+      final daemon = _Daemon();
+      await open(tester, daemon.store(), recheckEvery: every);
+      // Saving: no read starts, however long the daemon takes.
+      daemon.writeGate = Completer<void>();
+      await tester.tap(
+        find.byKey(const ValueKey('agent-setting-switch-agentsStartAgents')),
+      );
+      await wait(tester, every * 3);
+      expect(daemon.reads, 1);
+      expect(daemon.writes, [('agentsStartAgents', false)]);
+      expect(find.text('Saving…'), findsOneWidget);
+      daemon.writeGate!.complete();
+      daemon.writeGate = null;
+      await wait(tester);
+      expect(find.text('Saving…'), findsNothing);
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isFalse);
+
+      // A read under way when the person flips a switch: its older answer is dropped.
+      daemon.readGate = Completer<void>();
+      final before = daemon.reads;
+      await wait(tester, every);
+      expect(daemon.reads, before + 1);
+      await tester.tap(
+        find.byKey(const ValueKey('agent-setting-switch-pullRequestLine')),
+      );
+      await wait(tester);
+      expect(daemon.writes.last, ('pullRequestLine', false));
+      expect(switchFor(tester, AgentSetting.pullRequestLine).value, isFalse);
+      daemon.readGate!.complete();
+      daemon.readGate = null;
+      await wait(tester);
+      expect(
+        switchFor(tester, AgentSetting.pullRequestLine).value,
+        isFalse,
+        reason:
+            'the read began before the change and says pullRequestLine is on',
+      );
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isFalse);
+      // And the next read sees the change.
+      await wait(tester, every);
+      expect(switchFor(tester, AgentSetting.pullRequestLine).value, isFalse);
+    });
+
+    testWidgets('a read that fails leaves the page as it was', (tester) async {
+      final daemon = _Daemon();
+      await open(tester, daemon.store(), recheckEvery: every);
+      daemon.readError = StateError('daemon restarting');
+      await wait(tester, every);
+      expect(daemon.reads, 2);
+      expect(find.byKey(const Key('agent-settings-reason')), findsNothing);
+      expect(switchFor(tester, AgentSetting.agentsStartAgents).value, isTrue);
+      expect(
+        switchFor(tester, AgentSetting.agentsStartAgents).onChanged,
+        isNotNull,
+      );
+    });
+
+    testWidgets('opened while the daemon was down, the next answer puts the '
+        'page right', (tester) async {
+      final daemon = _Daemon()..readError = StateError('no daemon');
+      await open(tester, daemon.store(), recheckEvery: every);
+      expect(find.byKey(const Key('agent-settings-reason')), findsOneWidget);
+      expect(
+        find.text('Mark pull requests from agent-started harnesses'),
+        findsNothing,
+      );
+      daemon.readError = null;
+      await wait(tester, every);
+      expect(find.byKey(const Key('agent-settings-reason')), findsNothing);
+      expect(
+        switchFor(tester, AgentSetting.agentsStartAgents).onChanged,
+        isNotNull,
+      );
+      expect(
+        find.text('Mark pull requests from agent-started harnesses'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a page that is closed reads no more', (tester) async {
+      final daemon = _Daemon();
+      await open(tester, daemon.store(), recheckEvery: every);
+      await tester.pumpWidget(const SizedBox());
+      await wait(tester, every * 3);
+      expect(daemon.reads, 1);
+    });
   });
 
   testWidgets('in a browser: disabled, saying where it is changed', (

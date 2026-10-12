@@ -512,9 +512,19 @@ final harnessCommands = <HarnessCommand>[
   ),
   const HarnessCommand(
     'app.customize',
-    'Customize Harness',
+    'Appearance',
     ShortcutGroup.actions,
     nativeAction: 'customize',
+    // It was Customize Harness; its panel's tabs are Status, Workspace, Wallpaper and Terminal.
+    keywords: [
+      'customize',
+      'theme',
+      'colors',
+      'palette',
+      'wallpaper',
+      'status',
+      'font',
+    ],
   ),
   const HarnessCommand(
     'pane.toggle_shading',

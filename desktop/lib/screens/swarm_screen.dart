@@ -7076,7 +7076,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ?mode('keyboard.quick_start', 'Quick start', 'Four steps into real work'),
       ?mode('keyboard.practice', 'Keyboard practice', 'Try every shortcut'),
       ?mode('keyboard.open_config', 'Edit keybindings', 'keybindings.jsonc'),
-      ?mode('app.customize', 'Customize Harness', 'Prompt · colors · fonts'),
+      ?mode(
+        'app.customize',
+        'Appearance',
+        'Status · colors · wallpaper · fonts',
+      ),
       ?mode('app.settings', 'Settings', ''),
     ];
   }
@@ -7121,7 +7125,12 @@ class _SwarmScreenState extends State<SwarmScreen> {
             swarmId: null,
             current: false,
             commandId: '$_settingsCommand${section.name}',
-            searchFields: ['settings', 'preferences', section.name],
+            searchFields: [
+              'settings',
+              'preferences',
+              section.name,
+              ...section.keywords,
+            ],
           ),
   ];
 

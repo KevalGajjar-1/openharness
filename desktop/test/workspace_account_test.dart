@@ -360,7 +360,7 @@ void main() {
     expect(find.text('dee@example.com'), findsOneWidget);
     final rows = [
       'Add Phone',
-      'Customize Harness',
+      'Appearance',
       'Notifications',
       'Settings',
       'Sign out',
@@ -452,7 +452,7 @@ void main() {
       'no name says its email once', (tester) async {
     await _mountMenu(tester, name: '', showAddPhone: false);
     expect(find.text('Add Phone'), findsNothing);
-    expect(find.text('Customize Harness'), findsOneWidget);
+    expect(find.text('Appearance'), findsOneWidget);
     expect(find.text('dee@example.com'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
