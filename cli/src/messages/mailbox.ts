@@ -44,6 +44,8 @@ export const PARKED_MAX_MS = 10 * 60_000
  * (2026-10-12).
  */
 export const HOOKLESS_MS = 10 * 60_000
+/** Why news (`harness send --fyi`) waits: it is never typed, so it starts no turn of the agent's. */
+export const FYI_REASON = 'news: arrives at its next tool call, or when it reads its messages; it starts no turn'
 export const HOOKLESS_REASON = 'working, and no tool call has taken it: it may have started before Agent Messages. '
   + 'It reads its messages with `harness send`; restarting it gives it them at once'
 /** How long a finished delivery is kept: its outcome lives on in the history. */
@@ -224,6 +226,8 @@ export class Mailbox {
         if (delivery.reason === 'its harness is stopped') this.report(delivery, undefined)
         this.save()
       }
+      // News waits for the hook, or for the agent to read it: typed, it would start a turn of its own.
+      if (message.fyi) { this.report(delivery, FYI_REASON); continue }
       if (this.now() < delivery.nextTryAt) continue
       if (!this.deps.inbox.reclaim(delivery.pane, delivery.key)) continue
       delivery.tries += 1

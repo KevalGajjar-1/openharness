@@ -6,8 +6,8 @@ import type { BackendNotice, TurnDelivery } from '../core/api.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import { fakeCore } from '../testing/fakeCore.js'
 import { PaneInbox } from './inbox.js'
-import { deliveryKey } from './mailbox.js'
-import { LIMITS, MessageError } from './model.js'
+import { deliveryKey, FYI_REASON } from './mailbox.js'
+import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, type Message } from './model.js'
 import type { Rpc } from './rpc.js'
 import { REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
 import { MessageStore } from './store.js'
@@ -165,6 +165,30 @@ describe('harness send', () => {
     // The sender sees them delivered.
     const lead = (await t.ask({ action: 'send', pane: '%1' })).recent as Array<Record<string, unknown>>
     expect(lead.every((m) => m.state === 'delivered')).toBe(true)
+  })
+
+  it('sends news that never starts a turn of an idle teammate, marked as news where it is read', async () => {
+    const t = setup()
+    const sent = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'quiet window 04:19–04:22Z', fyi: true })
+    expect(sent.recipients).toEqual([{ name: 'api', state: 'queued', reason: FYI_REASON }])
+    expect(t.delivered).toEqual([])
+    const read = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    expect(read.find((m) => m.id === sent.id)).toMatchObject({ unread: true, state: 'delivered', text: 'quiet window 04:19–04:22Z' })
+    const history = await t.ask({ action: 'history', tabId: 'app' }) as { messages: Array<Record<string, unknown>> }
+    expect(history.messages.find((m) => m.id === sent.id)).toMatchObject({ fyi: true })
+    expect(header({ ...(history.messages[0] as unknown as Message), fyi: true })).toMatch(/ · FYI\]$/)
+    expect(header({ ...(history.messages[0] as unknown as Message), fyi: undefined })).not.toMatch(/FYI/)
+    // Only `true` is news on the wire.
+    expect(parseMessage({ ...history.messages[0], fyi: 'yes' })).not.toHaveProperty('fyi')
+  })
+
+  it('sends a long message, and tells its sender what it costs the teammates who read it', async () => {
+    const t = setup()
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x'.repeat(LONG_TEXT) })).not.toHaveProperty('advice')
+    const long = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x'.repeat(LONG_TEXT + 1) })
+    expect(long.recipients).toHaveLength(1)
+    expect(long.advice).toBe(longAdvice(LONG_TEXT + 1))
+    expect(long.advice).toMatch(/leave the rest in the repo/)
   })
 
   it('tells two teammates with the same start apart only by more of the name', async () => {

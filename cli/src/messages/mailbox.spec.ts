@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaneInbox } from './inbox.js'
-import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, HOOKLESS_MS, HOOKLESS_REASON, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
+import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, FYI_REASON, HOOKLESS_MS, HOOKLESS_REASON, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
 import type { DeliveryStatus, Message } from './model.js'
 import { MessageStore } from './store.js'
 
@@ -131,6 +131,24 @@ describe('Agent Messages\' mailbox', () => {
     expect(t.mailbox.read('web', ['m0000002'])).toEqual([])
     t.mailbox.pump()
     expect(t.delivered.filter(([, , id]) => id.includes(parked.key))).toHaveLength(1)
+  })
+
+  it('never types news into an idle agent: it waits for its next tool call, or for the agent to read it', () => {
+    // Six quiet-window notices in 45 minutes each woke an idle teammate for a turn that said only "noted" (2026-10-12).
+    const t = setup()
+    const news = t.accept({ ...message(), fyi: true })
+    t.tick(PUMP_MS * 10)
+    t.mailbox.pump()
+    expect(t.delivered).toEqual([])
+    expect(news).toMatchObject({ state: 'queued', reason: FYI_REASON })
+    expect(t.inbox.waiting('%3', news.key)).toBe(true)
+    t.claim('%3', news.key)
+    t.mailbox.pump()
+    expect(news).toMatchObject({ state: 'delivered', via: 'hook' })
+    const read = t.accept({ ...message('m0000002'), fyi: true })
+    expect(t.mailbox.read('api', ['m0000002'])).toEqual(['m0000002'])
+    expect(read).toMatchObject({ state: 'delivered', via: 'read' })
+    expect(t.delivered).toEqual([])
   })
 
   it('waits longer between typed attempts at an agent that keeps refusing, up to a limit, and says why', () => {
