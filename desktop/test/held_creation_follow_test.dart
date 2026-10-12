@@ -293,6 +293,49 @@ void main() {
       expect(box.canCancelPending, isFalse);
     });
 
+    for (final (engine, hint) in [
+      ('claude', 'What would you like to work on?'),
+      ('terminal', 'Open a terminal in this repo'),
+      // Takes no first message, and is not a terminal: the box said one would open.
+      ('kilo', 'Type to Kilo once it opens'),
+    ]) {
+      testWidgets('says what $engine does with the task line', (tester) async {
+        final app = _app(_Machine());
+        final box = NewHarnessController(
+          app,
+          machineId: 'm',
+          engine: engine,
+          folder: '/work',
+        );
+        addTearDown(box.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData.dark(),
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 1000,
+                  height: 600,
+                  child: NewHarnessForm(
+                    controller: box,
+                    onClose: () {},
+                    onCreated: () {},
+                    desktop: true,
+                    embedded: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final field = tester.widget<TextField>(
+          find.byKey(const ValueKey('new-harness-task')),
+        );
+        expect(field.decoration?.hintText, hint);
+      });
+    }
+
     testWidgets(
       'the form opens the harness when it has started, with no press',
       (tester) async {

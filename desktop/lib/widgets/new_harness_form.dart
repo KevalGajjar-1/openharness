@@ -1940,9 +1940,13 @@ class NewHarnessFormState extends State<NewHarnessForm> {
                 },
                 onTapOutside: (_) {},
                 decoration: InputDecoration(
+                  // An agent that takes no first message is not a terminal: with Kilo chosen
+                  // the box said a terminal would open (a fresh Ubuntu VM, 2026-10-12).
                   hintText: box.takesTask
                       ? 'What would you like to work on?'
-                      : 'Open a terminal in this repo',
+                      : box.isTerminal
+                      ? 'Open a terminal in this repo'
+                      : 'Type to ${box.agentLabel} once it opens',
                   hintStyle: DesktopChrome.text(
                     size: 15,
                     color: DesktopChrome.muted,
