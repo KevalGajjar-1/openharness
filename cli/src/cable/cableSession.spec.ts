@@ -646,6 +646,31 @@ describe('cable session', () => {
     await session.stop()
   })
 
+  it('carries the optional screenTurned flag of a Pro, and never invents it', async () => {
+    const seen: any[] = []
+    const { session, port } = await connect(makeHost({ onDialStatus: (s) => seen.push(s) }))
+    const base = {
+      brightness: 80, character: 0, face: 720, muted: false, quiet: false, straightTitle: false,
+      focusFace: false, scrollReversed: false, round: false, voiceLang: 'en',
+    }
+    port.say({ t: 'hello', product: 'harness', mac: 'aa:bb', board: 'pro', proto: 3, settings: { ...base, screenTurned: true } })
+    await vi.waitFor(() => expect(seen.at(-1)?.settings?.screenTurned).toBe(true))
+
+    // Round dials and Pro 0.1.0 never send it: the object still parses and the field stays absent.
+    port.say({ t: 'settings.state', ok: true, settings: base })
+    await vi.waitFor(() => expect(seen.at(-1)?.settings?.brightness).toBe(80))
+    expect(seen.at(-1).settings).not.toHaveProperty('screenTurned')
+
+    // A non-boolean is refused whole, like the other flags.
+    port.say({ t: 'settings.state', ok: true, settings: { ...base, brightness: 10, screenTurned: 'yes' } })
+    await settle()
+    expect(seen.at(-1).settings.brightness).toBe(80)
+
+    await session.setSettings({ screenTurned: false })
+    expect(port.sent.at(-1)).toEqual({ t: 'settings.set', screenTurned: false })
+    await session.stop()
+  })
+
   it('answers a repeat hello WITHOUT re-pushing the list', async () => {
     const { session, port } = await connect()
     port.say({ t: 'hello', product: 'harness', mac: 'aa:bb' })

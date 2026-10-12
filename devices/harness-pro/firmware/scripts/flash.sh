@@ -16,11 +16,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-PORT=/dev/cu.usbmodem21101
+PORT=${FLASH_PORT:-/dev/cu.usbmodem21101}   # another unit: FLASH_PORT=/dev/cu.usbmodemXXXX scripts/flash.sh
 ESPTOOL="$HOME/.harness/flasher/esptool-v5.3.1-macos-amd64/esptool-macos-amd64/esptool"
 FLAG="$HOME/.harness/flasher/flashing"
 WANT_CHIP="ESP32-P4 (revision v3.2)"
-WANT_MAC="e8:f6:0a:e7:63:7d"
+WANT_MACS="e8:f6:0a:e7:63:7d e8:f6:0a:e7:64:61"   # the known units; a new one is added here after its chip-id is read
 
 cd "$(dirname "$0")/.." || exit 1
 APP=$(ls "$BUILD_DIR"/harness_pro.bin 2>/dev/null | head -n 1)
@@ -47,8 +47,8 @@ harness stop
 info=$("$ESPTOOL" --port "$PORT" chip-id 2>&1)
 echo "$info"
 mac=$(printf '%s\n' "$info" | tr '[:upper:]' '[:lower:]' | grep -o 'mac: *[0-9a-f:]*' | head -n 1 | sed 's/mac: *//')
-if ! printf '%s\n' "$info" | grep -qF "$WANT_CHIP" || [ "$mac" != "$WANT_MAC" ]; then
-    echo "refusing to flash: expected $WANT_CHIP with MAC $WANT_MAC, got MAC '${mac:-none}'" >&2
+if ! printf '%s\n' "$info" | grep -qF "$WANT_CHIP" || ! printf ' %s ' "$WANT_MACS" | grep -qF " ${mac:-none} "; then
+    echo "refusing to flash: expected $WANT_CHIP with a MAC in [$WANT_MACS], got MAC '${mac:-none}'" >&2
     status=2
     finish
 fi

@@ -877,6 +877,39 @@ static void panel_turn(void) {
 #endif
 }
 
+// The runtime screen turn: the default is the build's; a request switches nothing until the render task's next frame, then
+// the picture and the contact axes turn, the whole glass is repainted and a contact in progress is cancelled.
+static void screen_turn_switch(void) {
+    const bool def = pro_turn_build_default();
+#ifdef POD_PANEL_TURN
+    CHECK(def);
+#else
+    CHECK(!def);
+#endif
+    CHECK(pro_turn_get() == def);                       // before NVS is read: the build flag
+    setup();
+    tap(POD_A_OPEN_TAB, 0);
+    CHECK(top() == POD_V_TAB);
+    (void)pro_app_test_take_force_frame();
+    CHECK(!pro_app_apply_turn());                       // nothing asked, nothing done
+    pro_app_request_turn(def);                          // asking for what already is: no switch, no repaint
+    CHECK(!pro_app_apply_turn() && !pro_app_test_take_force_frame());
+    CHECK(pro_app_touch(true, 19, 19));                 // a finger on BACK ...
+    pro_app_request_turn(!def);
+    CHECK(pro_turn_get() == def && !pro_app_test_take_force_frame());   // ... the switch waits for the frame
+    CHECK(pro_app_apply_turn());
+    CHECK(pro_turn_get() == !def && pod_turn_coord(700) == (def ? 700 : 19));   // picture and contact axes turned
+    CHECK(pro_app_test_take_force_frame());             // every pixel moved: the whole glass is repainted
+    CHECK(!pro_app_touch(true, 700, 700));              // the held finger, now on the new axes: swallowed, so
+    CHECK(top() == POD_V_TAB);                          // the contact in progress was cancelled, not a tap at the mirror
+    CHECK(pro_app_touch(true, 360, 360) && pro_app_touch(false, 360, 360));   // the next contact is a contact again
+    CHECK(!pro_app_apply_turn());                       // the request was consumed
+    pro_app_request_turn(def);                          // and back, with no finger down: nothing is swallowed
+    CHECK(pro_app_apply_turn() && pro_turn_get() == def && pro_app_test_take_force_frame());
+    CHECK(pro_app_touch(true, 360, 360));
+    pro_app_touch_cancel();
+}
+
 // Wake rate on the paged grid: 300 ms while a ribbon shows on the resting page, 1000 ms without one, 16 ms while it drags or snaps.
 static void ribbon_wakes(void) {
     many_tabs();                                          // nine covers; a1 works, Recent (page 0) counts it, page 1 has no working agent
@@ -2378,7 +2411,7 @@ int main(int argc, char **argv) {
         {"grid_caught_while_settling", grid_caught_while_settling}, {"one_page_does_not_move", one_page_does_not_move},
         {"tap_cover_opens_tab", tap_cover_opens_tab},
         {"release_off_the_hit_cancels", release_off_the_hit_cancels},
-        {"panel_turn", panel_turn}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, {"ribbon_wakes", ribbon_wakes},
+        {"panel_turn", panel_turn}, {"screen_turn_switch", screen_turn_switch}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, {"ribbon_wakes", ribbon_wakes},
         {"roster_after_swarms_rebuilds_tabs", roster_after_swarms_rebuilds_tabs},
         {"moved_agent_reaches_the_model", moved_agent_reaches_the_model},
         {"recap_flips_to_agent_when_work_starts", recap_flips_to_agent_when_work_starts},
@@ -2416,22 +2449,26 @@ int main(int argc, char **argv) {
 
 
 def test_turn_is_applied_once():
-    """The 180 turn lives in pro_display.c (picture and touch). Nothing in main/app turns a contact again."""
+    """The 180 turn lives in pro_turn.h/.c (rules, flag) and pro_display.c (applied once to picture and touch). Nothing in main/app turns a contact again."""
     display = (DISP / "pro_display.c").read_text()
     turn = (DISP / "pro_turn.h").read_text()
     frame = (DISP / "pro_frame.c").read_text()
-    assert display.count("pro_turn_coord(tx)") == 1 and display.count("pro_turn_coord(ty)") == 1, \
-        "pro_display.c must turn the contact once"
+    assert display.count("pro_turn_point(&tx, &ty)") == 1 and "pro_turn_coord(" not in display, \
+        "pro_display.c must turn the contact once, both axes from one read of the flag"
     assert display.count("pro_turn_pixels(") == 1 and display.count("pro_turn_rect(") == 1, \
         "pro_display.c must turn the picture once (pixels in place, rectangle mapped)"
-    assert "POD_PANEL_TURN == 180" in turn and "PRO_TURN_PX - 1 - v" in turn, "pro_turn.h holds the turn rules"
+    flag = (DISP / "pro_turn.c").read_text()
+    assert "PRO_TURN_PX - 1 - v" in turn and "pro_turn_get()" in turn, "pro_turn.h holds the turn rules, reading the runtime flag"
+    assert "POD_PANEL_TURN == 180" in turn and "POD_PANEL_TURN == 180" in flag, \
+        "the build flag is only the default: pro_turn.h (pro_turn_build_default) and pro_turn.c (initial value)"
+    assert "POD_PANEL_TURN" not in display, "pro_display.c asks pro_turn.h, never the build flag"
     assert "POD_PANEL_TURN" not in frame and "pro_turn" not in frame, \
-        "the turn rules live in pro_turn.h only; pro_frame.c paints upright"
+        "the turn rules live in pro_turn.h/.c only; pro_frame.c paints upright"
     for source in list(APP.glob("*.c")) + list(APP.glob("*.h")):
         if source.name == "pod_turn.h":
             continue
         text = source.read_text()
-        assert "pod_turn_coord" not in text and "POD_PANEL_TURN" not in text, \
+        assert "pod_turn_coord" not in text and "POD_PANEL_TURN" not in text and "pro_turn_coord" not in text, \
             f"{source.name} must not turn the glass: pro_display.c does, once"
 
 
@@ -2453,7 +2490,7 @@ with tempfile.TemporaryDirectory(prefix="harness-pro-app-") as directory:
     source = directory / "pro_app_test.c"
     source.write_text(code)
     modules = sorted(POD.glob("*.c")) + [APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c", DISP / "scroll.c",
-                                         DISP / "pro_canvas.c", DISP / "terminal.c", fonts]
+                                         DISP / "pro_canvas.c", DISP / "terminal.c", DISP / "pro_turn.c", fonts]
     for label, extra in (("upright", []), ("turned 180", ["-DPOD_PANEL_TURN=180"])):
         # The callbacks run on the cable_link task's 6 KB stack, the touch task's contact path on 10 KB: no frame of
         # pro_app.c, pro_touch.c or the glue may pass 1 KB.
