@@ -6,10 +6,10 @@ import type { BackendNotice, TurnDelivery } from '../core/api.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import { fakeCore } from '../testing/fakeCore.js'
 import { PaneInbox } from './inbox.js'
-import { deliveryKey, FYI_REASON } from './mailbox.js'
+import { deliveryKey, FYI_REASON, PUMP_MS } from './mailbox.js'
 import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, type Message } from './model.js'
 import type { Rpc } from './rpc.js'
-import { REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
+import { HELD_OFF_REASON, HELD_OUTSIDE_MS, REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
 import { MessageStore } from './store.js'
 import { Ledger, ledgerPath } from '../agentClient/ledger.js'
 
@@ -561,16 +561,44 @@ describe('the roster note and the directory', () => {
     again.stop()
   })
 
-  it('fails a waiting delivery once its tab turns Agent Messages off', async () => {
+  it('holds a waiting delivery while its tab has Agent Messages off, goes on once it is on again, and fails it later', async () => {
+    // Turned off by a slip of the mouse and on again a minute later, a tab failed the message waiting in it (2026-10-12).
+    vi.useFakeTimers()
     const t = setup()
+    t.service.start()
     const reply = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })
     t.deliveryEvent({ deliveryId: t.delivered[0][2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
-    t.tabs[0].enabled = false
-    t.notice({ type: 'desk_changed', revision: 6 })
-    await new Promise((settle) => setTimeout(settle, 0))
-    const history = await t.ask({ action: 'history', limit: 10 })
-    expect((history.messages as Array<{ id: string; statuses: Array<{ state: string; reason?: string }> }>).find((m) => m.id === reply.id)!.statuses[0])
-      .toMatchObject({ state: 'failed', reason: 'Agent Messages were turned off in this tab' })
+    const key = deliveryKey(reply.id as string, 'api')
+    const status = async () => ((await t.ask({ action: 'history', limit: 10 })).messages as Array<{ id: string; statuses: Array<{ state: string; reason?: string }> }>)
+      .find((m) => m.id === reply.id)!.statuses[0]
+    const turn = async (enabled: boolean) => {
+      t.tabs[0].enabled = enabled
+      t.notice({ type: 'desk_changed', revision: 6 })
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await turn(false)
+    expect(await status()).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
+    // Given to no one meanwhile: out of the hook's reach.
+    expect(t.inbox.waiting('%2', key)).toBe(false)
+    t.tick(HELD_OUTSIDE_MS - 1)
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    expect(await status()).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
+    const attempts = t.delivered.length
+    await turn(true)
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    // Carried again: put back, and typed into the idle agent.
+    expect(t.delivered.length).toBe(attempts + 1)
+    expect(t.delivered.at(-1)![2]).toContain(key)
+    expect((await status()).reason).not.toBe(HELD_OFF_REASON)
+    t.deliveryEvent({ deliveryId: t.delivered.at(-1)![2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
+    // Off for good: held a while again, then failed.
+    await turn(false)
+    expect(await status()).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
+    t.tick(HELD_OUTSIDE_MS)
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    expect(await status()).toMatchObject({ state: 'failed', reason: 'Agent Messages were turned off in this tab' })
+    expect(t.inbox.waiting('%2', key)).toBe(false)
+    t.service.stop()
   })
 
   it('answers a failure it did not expect without saying more', async () => {

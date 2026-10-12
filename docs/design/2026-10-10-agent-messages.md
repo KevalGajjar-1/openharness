@@ -245,6 +245,11 @@ returns; a start sweeps old files nothing waits on.
 States: **queued**, **delivered** (claimed by the hook, or typed; "unconfirmed" when the core could not say),
 **failed** (the recipient left the tab or the flag was turned off), each with the time, the route and a reason.
 
+A delivery no tab with Agent Messages on carries any more is held for 5 minutes before it fails: out of the hook's
+reach and never typed, so off still means off, and put back once a tab carries it again. A tab turned off by a slip
+of the mouse and on again a minute later failed the message waiting in it (owner, 2026-10-12); a harness that leaves
+its tab for a moment loses nothing either.
+
 ### Limits
 
 Per sender: 30 messages in 10 minutes, then `RATE_LIMITED` and an alert to the person. Per message: 16,000
