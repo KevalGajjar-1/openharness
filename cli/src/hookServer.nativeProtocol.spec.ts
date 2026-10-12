@@ -15,6 +15,7 @@ const fault = vi.hoisted(() => ({ unavailable: false, afterRetain: undefined as 
   afterFinish: undefined as (() => void) | undefined, afterGeneration: undefined as (() => void) | undefined,
   afterClaim: undefined as (() => void) | undefined, afterSourceConfirmation: undefined as (() => void) | undefined,
   limitedStages: false, journalBytes: undefined as number | undefined,
+  journals: [] as Array<ReturnType<typeof import('./engines/kit/nativeHookJournal.js')['createNativeHookJournal']>>,
   pools: [] as Array<ReturnType<typeof import('./engines/kit/nativeHookStaging.js')['createNativeHookStagePool']>>,
 }))
 vi.mock('./engines/kit/nativeHookStaging.js', async original => {
@@ -42,6 +43,7 @@ vi.mock('./engines/kit/nativeHookJournal.js', async original => {
   const actual = await original<typeof import('./engines/kit/nativeHookJournal.js')>()
   return { ...actual, createNativeHookJournal: (...args: Parameters<typeof actual.createNativeHookJournal>) => {
     const journal = actual.createNativeHookJournal({ ...args[0], ...(fault.journalBytes ? { maxBytes: fault.journalBytes } : {}) })
+    fault.journals.push(journal)
     return { ...journal, retain: async (...input: Parameters<typeof journal.retain>) => {
       const delivery = await journal.retain(...input); fault.afterRetain?.(); return delivery
     }, recordGeneration: async (...input: Parameters<typeof journal.recordGeneration>) => {
@@ -82,7 +84,7 @@ async function close() {
 }
 beforeEach(async () => {
   live = true; fault.unavailable = false; fault.afterRetain = undefined; fault.afterFinish = undefined; fault.afterGeneration = undefined
-  fault.afterClaim = undefined; fault.afterSourceConfirmation = undefined; fault.limitedStages = false; fault.pools = []; fault.journalBytes = undefined
+  fault.afterClaim = undefined; fault.afterSourceConfirmation = undefined; fault.limitedStages = false; fault.pools = []; fault.journalBytes = undefined; fault.journals = []
   key = `${boot}\u0000codex\u00005100\u000012345`
   root = realpathSync(mkdtempSync(join(tmpdir(), 'native-protocol-http-')))
   for (const [name, value] of Object.entries({ HOME: join(root, 'home'), ADAPTER_DATA_DIR: join(root, 'data'),
@@ -149,6 +151,29 @@ it('holds native generation input before effects if eager generation control is 
   expect(records()).toEqual([])
   expect(await f.post(raw, {}, '/api/hook/session-start')).toMatchObject({ status: 400 })
 })
+
+it('restores an empty cancellation barrier before releasing attach after restart', async () => {
+  const raw = JSON.stringify(cursorBody({ generationId: undefined, hookEvent: 'sessionStart' }))
+  const first = await fixture({ onNativeGenerations() {} })
+  await first.settle(raw)
+  const journal = fault.journals[0], before = await journal.snapshot()
+  expect(before.generations.size).toBe(0)
+  const request = { requestId: 'fixture-empty-cancellation', nonce: 'fixture-empty-cancel-nonce', agentId,
+    conversationId: sessionId, frontier: before.frontier }
+  await journal.recordCancellation(request)
+  await close()
+  const sources: NativeGenerationSource[] = []
+  const restarted = await fixture({ onNativeGenerations: (_row, source) => { sources.push(source) } })
+  restarted.started.startRecovery()
+  await vi.waitFor(() => {
+    expect(sources.length).toBeGreaterThan(0)
+    expect(sources.at(-1)!.facts).toEqual([])
+    expect(sources.at(-1)!.cancellations).toEqual([request])
+    expect(restarted.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true)
+  }, { timeout: 5000 })
+  expect(restarted.registered).not.toHaveBeenCalled()
+  expect(restarted.stopped).not.toHaveBeenCalled()
+}, 20_000)
 
 it('reads fresh native authority without replaying notifications or changing readiness', async () => {
   const raw = JSON.stringify(cursorBody()), observed = vi.fn(), recovered = vi.fn()
@@ -387,7 +412,7 @@ it('reprobes native birth after source confirmation before publishing generation
 
 it.each(['normal staging', 'journal bytes'])('owns a matching native Stop at %s exhaustion without a new registration obligation', async capacity => {
   fault.limitedStages = capacity === 'normal staging'
-  fault.journalBytes = capacity === 'journal bytes' ? 90_000 : undefined
+  fault.journalBytes = capacity === 'journal bytes' ? 135_000 : undefined
   const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), sources: NativeGenerationSource[] = []
   const f = await fixture({ onNativeGenerations: (_entry, source, pending) => { if (!pending) sources.push(source) } })
   await f.settle(raw)

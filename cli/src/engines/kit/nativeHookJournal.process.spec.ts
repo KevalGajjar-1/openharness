@@ -30,7 +30,7 @@ beforeAll(() => {
     import { createNativeHookStagePool } from ${JSON.stringify(resolve('src/engines/kit/nativeHookStaging.ts'))}
     const [directory, encodedKey, options] = process.argv.slice(2), processKey = JSON.parse(encodedKey)
     const { outbox, catalog: allocated, maxGenerations, terminalGenerations, ...limits } = JSON.parse(options)
-    const dead = new Set(), claims = new Map()
+    const dead = new Set(), claims = new Map(), cancellations = new Map()
     const pool = allocated && createNativeHookStagePool({ root: directory,
       writer: { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', namespace: 'linux:4:5', pid: process.pid, birth: '12345' },
       verifyWriter: () => {}, closeWriter: () => {}, maxGenerations, terminalGenerations,
@@ -68,9 +68,18 @@ beforeAll(() => {
           result = { intake: delivery.intake, result: delivery.result, acknowledgements: delivery.acknowledgements && [...delivery.acknowledgements] }
         } else if (operation === 'generation') {
           await journal.recordGeneration(value)
+        } else if (operation === 'cancellation') {
+          const retained = await journal.recordCancellation(value)
+          if (retained.recorded) cancellations.set(value.requestId, retained)
+          result = { recorded: retained.recorded, ...(retained.recorded ? { targets: retained.targets } : {}) }
+        } else if (operation === 'cancel-dispatch') {
+          const retained = cancellations.get(value)
+          if (!retained) throw Error('No original cancellation publisher')
+          result = retained.dispatch(verify => { verify(); return 'fixture interrupt' })
         } else if (operation === 'generation-snapshot') {
           const snapshot = await journal.snapshot(); await snapshot.confirm(); snapshot.verify()
-          result = { generations: [...snapshot.generations.values()], active: snapshot.active, lastResult: snapshot.lastResult }
+          result = { generations: [...snapshot.generations.values()], cancellations: [...snapshot.cancellations.values()],
+            frontier: snapshot.frontier, active: snapshot.active, lastResult: snapshot.lastResult }
         } else if (operation === 'snapshot') {
           const snapshot = await journal.snapshot(); snapshot.verify()
           result = { previous: snapshot.previous, active: snapshot.active,
@@ -87,6 +96,7 @@ beforeAll(() => {
         } else if (operation === 'pause') { pauseKind = 'claim'
         } else if (operation === 'pause-ack') { pauseKind = 'ack'
         } else if (operation === 'pause-generation') { pauseKind = 'generation'
+        } else if (operation === 'pause-cancellation') { pauseKind = 'cancellation'
         } else if (operation === 'pause-intake') { pauseKind = 'intake'
         } else if (operation === 'pause-confirmation') { pauseNextSync = true
         } else if (operation === 'consume-normal') {
@@ -159,6 +169,77 @@ async function accepted(writer: Worker, operation: string, value?: unknown) {
   expect(reply, reply.error).toMatchObject({ ok: true })
   return reply.value
 }
+
+async function cancellation(writer: Worker) {
+  return { requestId: 'fixture-cancellation-request', nonce: 'fixture-cancellation-nonce', agentId: 'agent-one',
+    conversationId: 'conversation-one', frontier: (await accepted(writer, 'generation-snapshot')).frontier }
+}
+
+it('gives only the original cancellation publisher one interrupt across competing OS processes', async () => {
+  const a = worker(), b = worker()
+  await accepted(a, 'generation', generationFact('activity'))
+  await accepted(a, 'generation', generationFact('submitted', 'fixture-queued-prompt', 'queued-generation'))
+  const input = await cancellation(a)
+  await accepted(a, 'pause-cancellation')
+  const paused = a.event('paused'), publishing = a.call('cancellation', input)
+  await paused
+  expect(await accepted(b, 'cancellation', input)).toEqual({ recorded: false })
+  expect(await b.call('cancel-dispatch', input.requestId)).toMatchObject({ ok: false, error: expect.stringContaining('No original') })
+  await accepted(a, 'release')
+  expect(await publishing).toMatchObject({ ok: true, value: { recorded: true, targets: ['generation-one', 'queued-generation'] } })
+  expect(await accepted(a, 'cancel-dispatch', input.requestId)).toBe('fixture interrupt')
+  expect(await a.call('cancel-dispatch', input.requestId)).toMatchObject({ ok: false, error: expect.stringContaining('already consumed') })
+  const recovered = await accepted(worker(), 'generation-snapshot')
+  expect(recovered.cancellations).toEqual([input])
+  expect(recovered.generations.filter((fact: any) => fact.kind === 'cancelled')).toHaveLength(2)
+}, 30_000)
+
+it('recovers a complete cancellation barrier after its publisher dies before the mirror is written', async () => {
+  const a = worker()
+  await accepted(a, 'generation', generationFact('activity'))
+  await accepted(a, 'generation', generationFact('submitted', 'fixture-queued-prompt', 'queued-generation'))
+  const input = await cancellation(a)
+  await accepted(a, 'pause-cancellation')
+  const paused = a.event('paused'), publishing = a.call('cancellation', input)
+  await paused; await a.kill()
+  expect(await publishing).toMatchObject({ ok: false })
+  const b = worker(), snapshot = await accepted(b, 'generation-snapshot')
+  expect(snapshot.cancellations).toEqual([input])
+  expect(snapshot.generations.filter((fact: any) => fact.kind === 'cancelled').map((fact: any) => fact.generationId).sort())
+    .toEqual(['generation-one', 'queued-generation'])
+  expect(await accepted(b, 'cancellation', input)).toEqual({ recorded: false })
+  expect(await b.call('cancel-dispatch', input.requestId)).toMatchObject({ ok: false, error: expect.stringContaining('No original') })
+}, 30_000)
+
+it('uses reserved staging for the first cancellation at exhaustion but never for a later request', async () => {
+  const options = { catalog: true, maxGenerations: 4, terminalGenerations: 3 }, a = worker(options)
+  await accepted(a, 'generation', generationFact('activity'))
+  const input = await cancellation(a)
+  await accepted(a, 'consume-normal', 7)
+  expect(await a.call('generation', generationFact('activity', 'fixture-new-activity', 'another-generation')))
+    .toMatchObject({ ok: false, error: expect.stringContaining('generation capacity') })
+  expect(await accepted(a, 'cancellation', input)).toEqual({ recorded: true, targets: ['generation-one'] })
+  const b = worker(options)
+  expect(await accepted(b, 'cancellation', input)).toEqual({ recorded: false })
+  const second = { ...input, requestId: 'fixture-next-cancellation', nonce: 'fixture-next-nonce' }
+  expect(await b.call('cancellation', second)).toMatchObject({ ok: false, error: expect.stringContaining('generation capacity') })
+  expect((await accepted(b, 'generation-snapshot')).cancellations).toEqual([input])
+}, 30_000)
+
+it('does not let a later process re-expand or dispatch an earlier cancellation prefix', async () => {
+  const a = worker(), b = worker()
+  await accepted(a, 'generation', generationFact('activity'))
+  const input = await cancellation(a)
+  await accepted(a, 'cancellation', input)
+  await accepted(b, 'generation', generationFact('activity', 'fixture-new-activity', 'new-generation'))
+  const second = { ...input, requestId: 'fixture-next-cancellation', nonce: 'fixture-next-nonce' }
+  expect(await accepted(b, 'cancellation', second)).toEqual({ recorded: true, targets: ['generation-one'] })
+  expect(await b.call('cancel-dispatch', second.requestId)).toMatchObject({ ok: false, error: expect.stringContaining('frontier changed') })
+  expect(await a.call('cancel-dispatch', input.requestId)).toMatchObject({ ok: false })
+  const snapshot = await accepted(b, 'generation-snapshot')
+  expect(snapshot.cancellations).toEqual([input, second])
+  expect(snapshot.generations.filter((fact: any) => fact.kind === 'cancelled')).toHaveLength(1)
+}, 30_000)
 
 it.each(['intake', 'direct'])('keeps the %s representation exclusive while another core sees its unfinished publication', async first => {
   const a = worker(), b = worker(), body = intake(), fact = generationFact('stopped', body.id)

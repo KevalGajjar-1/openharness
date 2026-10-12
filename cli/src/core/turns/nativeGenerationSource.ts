@@ -2,10 +2,11 @@
  * includes the complete journal frontier, not only a surviving delivery leaf. */
 import type { createNativeHookJournal } from '../../engines/kit/nativeHookJournal.js'
 import { validNativeGenerationFact } from '../../engines/kit/nativeGenerationFact.js'
+import { MAX_RETAINED_GENERATION_FACTS, validNativeGenerationCancellation, validNativeGenerationFrontier } from '../../engines/kit/nativeGenerationCancellation.js'
 import type { NativeGenerationFact, NativeGenerationOwner, NativeGenerationSource } from './nativeGenerations.js'
 
 type Snapshot = Pick<Awaited<ReturnType<ReturnType<typeof createNativeHookJournal>['snapshot']>>,
-  'processKey' | 'generations' | 'verify' | 'confirm'>
+  'processKey' | 'generations' | 'cancellations' | 'frontier' | 'verify' | 'confirm'>
 
 export function createNativeGenerationSource({ owner, read }: {
   owner: NativeGenerationOwner
@@ -24,7 +25,14 @@ export function createNativeGenerationSource({ owner, read }: {
         if (snapshot.processKey !== original.processKey) held('the process incarnation changed')
       }
       verify()
-      if (!(snapshot.generations instanceof Map) || snapshot.generations.size > 4096) held('the retained fact capacity was exceeded')
+      if (!(snapshot.generations instanceof Map) || snapshot.generations.size > MAX_RETAINED_GENERATION_FACTS) held('the retained fact capacity was exceeded')
+      if (!(snapshot.cancellations instanceof Map) || snapshot.cancellations.size > 4096) held('the retained cancellation capacity was exceeded')
+      const cancellations = Object.freeze([...snapshot.cancellations].map(([id, request]) => {
+        if (id !== request.requestId || !validNativeGenerationCancellation(request)) held('a retained cancellation is invalid')
+        return Object.freeze({ ...request, frontier: Object.freeze({ ...request.frontier }) })
+      }))
+      if (!validNativeGenerationFrontier(snapshot.frontier)) held('the retained frontier is invalid')
+      const frontier = Object.freeze({ ...snapshot.frontier })
       // Disk proofs do not freeze the caller's Map. Capture the bounded scalar
       // facts before confirmation yields, retaining only this original view.
       const facts: NativeGenerationFact[] = []
@@ -38,7 +46,7 @@ export function createNativeGenerationSource({ owner, read }: {
       // the complete mirrored tail and namespace have been confirmed.
       await confirmSnapshot()
       verify()
-      return Object.freeze({ owner: original, facts: Object.freeze(facts), verify })
+      return Object.freeze({ owner: original, facts: Object.freeze(facts), frontier, cancellations, verify })
     },
   }
 }

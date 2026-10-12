@@ -5,6 +5,8 @@ const owner: NativeGenerationOwner = { agentId: 'agent', sessionId: 'conversatio
 const fact = (id: string, generationId: string, kind: 'submitted' | 'activity' | 'cancelled'): NativeGenerationFact => ({ id, generationId, kind })
 const stop = (id: string, generationId: string, status: 'completed' | 'aborted' | 'error' = 'completed'): NativeGenerationFact =>
   ({ id, generationId, kind: 'stopped', status })
+const cancellation = () => ({ requestId: 'fixture-cancel-request', nonce: 'fixture-cancel-nonce',
+  agentId: owner.agentId, conversationId: owner.sessionId, frontier: { index: -1, digest: null } })
 function setup(facts: readonly NativeGenerationFact[] = []) {
   let current = true
   const source: NativeGenerationSource = { owner: { ...owner }, facts, verify: vi.fn() }
@@ -15,6 +17,34 @@ function setup(facts: readonly NativeGenerationFact[] = []) {
 const all = async (facts: readonly NativeGenerationFact[]) => (await setup(facts).control.inspect()).generations
 
 describe('native generation control', () => {
+  it('retains an incarnation barrier for an empty Cancel, late unknown activity and a conversation rebind', async () => {
+    const t = setup(), original = cancellation()
+    Object.assign(t.source, { cancellations: [original] })
+    expect((await t.control.inspect()).selection).toBe('cancelled')
+    Object.assign(t.source, { facts: [fact('late-activity', 'previously-unknown', 'activity')] })
+    const late = await t.control.inspect()
+    expect(late.running.map(turn => turn.id)).toEqual(['previously-unknown'])
+    expect(late.selection).toBe('cancelled')
+    Object.assign(original, { conversationId: 'a different original conversation' })
+    const rebound = await t.control.inspect()
+    expect(rebound.selection).toBe('cancelled')
+    expect(late.cancellations[0].conversationId).toBe(owner.sessionId)
+    expect(Object.isFrozen(late.cancellations)).toBe(true)
+    expect(Object.isFrozen(late.cancellations[0].frontier)).toBe(true)
+  })
+
+  it.each([null, Array.from({ length: 4097 }, cancellation)])('refuses an incomplete or oversized cancellation collection', async cancellations => {
+    const t = setup()
+    Object.assign(t.source, { cancellations })
+    await expect(t.control.inspect()).rejects.toThrow('cancellation capacity')
+  })
+
+  it('refuses a malformed retained cancellation barrier', async () => {
+    const t = setup()
+    Object.assign(t.source, { cancellations: [{ ...cancellation(), nonce: '' }] })
+    await expect(t.control.inspect()).rejects.toThrow('barrier is invalid')
+  })
+
   it('treats queued or rejected submissions as pending, not executing turns', async () => {
     const view = await setup([fact('submit-1', 'one', 'submitted'), fact('submit-2', 'two', 'submitted')]).control.inspect()
     expect(view.selection).toBe('idle')
@@ -189,7 +219,7 @@ describe('native generation control', () => {
   })
 
   it('bounds both complete source facts and independent generations', async () => {
-    const maximum = Array.from({ length: 4096 }, (_, n) => fact(`event-${n}`, `generation-${n % 512}`, 'activity'))
+    const maximum = Array.from({ length: 4608 }, (_, n) => fact(`event-${n}`, `generation-${n % 512}`, 'activity'))
     expect((await setup(maximum).control.inspect()).running).toHaveLength(512)
     await expect(setup([...maximum, fact('over', 'generation-0', 'activity')]).control.inspect()).rejects.toThrow('fact capacity')
     await expect(setup(Array.from({ length: 513 }, (_, n) => fact(`event-${n}`, `generation-${n}`, 'activity'))).control.inspect()).rejects.toThrow('generation capacity')

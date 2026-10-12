@@ -76,7 +76,7 @@ it('deduplicates exact generation phases and refuses changed content under their
 })
 
 it('reserves Stop capacity only for actual execution, not rejected submissions', async () => {
-  const owner = journal({ maxBytes: 90_000 })
+  const owner = journal({ maxBytes: 135_000 })
   for (let index = 0; index < 30; index++) await owner.recordGeneration(generationFact('submitted', `fixture-submitted-${index}`, `generation-${index}`))
   await expect(owner.recordGeneration(generationFact('activity'))).resolves.toBeUndefined()
   await expect(owner.recordGeneration(generationFact('activity', 'fixture-activity-second', 'generation-two'))).rejects.toThrow('terminal outcomes')
@@ -100,8 +100,8 @@ it.each(['intake', 'direct'])('keeps the original %s representation exclusive ac
   }
 })
 
-it('shares record and byte reservations between legacy effects and native generations', async () => {
-  const owner = journal({ maxRecords: 7, maxBytes: 90_000 }), body = intake()
+it('shares record and byte reservations between legacy effects, native generations and the cancellation barrier', async () => {
+  const owner = journal({ maxRecords: 9, maxBytes: 135_000 }), body = intake()
   await owner.retain(body)
   await owner.recordGeneration(generationFact('activity'))
   await expect(owner.retain(intake('fixture-second-intake'))).rejects.toThrow('terminal outcomes')

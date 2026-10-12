@@ -548,7 +548,7 @@ export function startHookServer(
     }
     const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)
     let source: NativeGenerationSource | undefined
-    if (!publish || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
+    if (!publish || snapshot.cancellations.size || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
       if (publish && !handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
       const original = { agentId: owner.agentId, sessionId: owner.sessionId, processKey: context.key }
       const retained = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()

@@ -690,6 +690,45 @@ uninterrupted passing mutation run. Independent review approved this read-port
 scope over `82bdb13be`, conditional on those completed checks. Controller wiring,
 durable Cancel and final acceptance remain open; no merge or release occurred.
 
+## Atomic cancellation of a native incarnation
+
+The cancellation foundation records one immutable event naming its request ID,
+nonce, original agent and conversation, and original journal prefix (record index
+and digest). That prefix selects every observed nonterminal generation for that
+owner, including submitted work. Later observations cannot enlarge the request.
+One event retains the entire target set; recovery never sees a partially written
+sequence of cancellation facts. Repeated requests cannot change their identity or
+prefix. Synthetic tombstones are deduplicated across requests by owner/generation,
+so the existing 4,096-record journal produces at most 4,608 retained facts.
+
+Even an empty target set records a barrier for the whole native process
+incarnation. It survives restart and conversation or agent rebinding. Late facts
+remain available as history but cannot authorize input, a new turn or other live
+effects through that barrier. The first Cursor intake or generation observation
+reserves one of the existing conservative 40,960-byte/two-record terminal
+obligations for this control record. It is counted inside the existing 25-obligation
+namespace bound, preserving the staging reserve calculation above. The first
+barrier can use terminal capacity after ordinary staging is full; a later new
+request cannot. An exact retry only confirms the original record.
+
+Only the exclusive original publisher receives a one-use interrupt capability.
+Recovery never reconstructs it. Both original outside/mirror publication proofs
+survive append readback, cancellation reconstruction and dispatch. Identical bytes
+in a replacement file do not inherit that authority. Dispatch also proves that the
+request's original prefix was still the complete prefix at publication and that
+nothing has since been appended. The caller must recheck the supplied verifier at
+the actual input boundary after any await; the full disk proof ends with a cheap
+owner/shutdown check. Consuming the capability never makes an uncertain interrupt
+safe to repeat.
+
+This storage and projection boundary does not yet activate live Cancel. The
+controller still has to combine it with fresh kernel ownership, input dispatch,
+generation-scoped tasks and recap content. Rearming also needs explicit user
+authority for a fresh native incarnation or a proven exact request/generation
+correlation. Automatic restore, arrival order, a new PID or an uncorrelated prompt
+hook cannot clear the saved barrier. Until those paths and private acceptance are
+complete, this remains an unfinished integration.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,

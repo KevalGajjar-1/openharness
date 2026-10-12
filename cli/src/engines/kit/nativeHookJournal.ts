@@ -15,6 +15,8 @@ import { validNativeHookWireIdentity, type NativeHookWireIdentity } from './nati
 import type { NativeHookStageLease } from './nativeHookStaging.js'
 import { MAX_NATIVE_GENERATIONS, nativeGenerationFactState, validNativeGenerationFact,
   type NativeGenerationFactRecord } from './nativeGenerationFact.js'
+import { MAX_RETAINED_GENERATION_FACTS, nativeCancellationFact, nativeCancellationTargets,
+  validNativeGenerationCancellation, type NativeGenerationCancellation, type NativeGenerationFrontier } from './nativeGenerationCancellation.js'
 
 let activeOperations = 0
 type OperationPurpose = 'normal' | 'terminal'
@@ -59,6 +61,7 @@ export interface NativeHookIntake {
 }
 type Event = { kind: 'intake'; intake: NativeHookIntake }
   | { kind: 'generation'; fact: NativeGenerationFactRecord }
+  | { kind: 'cancellation'; request: NativeGenerationCancellation }
   | { kind: 'claim'; id: string; token: string; agentId: string; predecessor: string | null }
   | { kind: 'result'; id: string; token: string; value: Record<string, unknown> }
   | { kind: 'ack'; id: string; phase: NativeHookPhase }
@@ -83,6 +86,12 @@ interface Snapshot {
   deliveries: Map<string, NativeHookDelivery>
   /** Observations share the complete frontier, but never own an effect slot. */
   generations: Map<string, NativeGenerationFactRecord>
+  cancellations: Map<string, NativeGenerationCancellation>
+  frontier: NativeGenerationFrontier
+  cancellationTargets(request: NativeGenerationCancellation): readonly string[]
+  /** Counted as one existing conservative terminal obligation, including its
+   * staging/repair allowance, until the incarnation's first barrier is retained. */
+  controlReserved: boolean
   active?: { id: string; token: string; agentId: string; verify(): void }
   previous: string | null
   lastResult: string | null
@@ -337,6 +346,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       readFence(() => { verify(); published.verify(); owner.check() })
       owner.yieldedAt = performance.now()
     }
+    return published.verify
   }
   const confirm = async (records: readonly Exclude<Read, undefined>[], verify: () => void, owner = verify) => {
     verify()
@@ -454,6 +464,13 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       && history.names.every((name, index) => outside.names[index] === name)
     if (!repair && JSON.stringify(history.names) !== JSON.stringify(outside.names)) held('a journal record or witness is missing')
     const deliveries = new Map<string, NativeHookDelivery>(), generations = new Map<string, NativeGenerationFactRecord>()
+    const cancellations = new Map<string, NativeGenerationCancellation>(), positions = new Map<string, number>()
+    const chain: string[] = [], cancelled = new Set<string>()
+    const generationScope = (fact: NativeGenerationFactRecord) => JSON.stringify([fact.agentId, fact.conversationId, fact.generationId])
+    const addGeneration = (fact: NativeGenerationFactRecord, index: number) => {
+      generations.set(fact.id, fact); positions.set(fact.id, index)
+      if (fact.kind === 'cancelled') cancelled.add(generationScope(fact))
+    }
     let active: { id: string; token: string; agentId: string; verify(): void } | undefined
     let previous: string | null = null, lastResult: string | null = null,
       bytes = kind === 'outbox' || boundary ? owned.records.reduce((total, record) => total + Buffer.byteLength(record.text), 0) : 0,
@@ -484,7 +501,19 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       }
       if (event.kind === 'generation') {
         if (kind !== 'effects' || !validNativeGenerationFact(event.fact) || generations.has(event.fact.id)) held('invalid or repeated generation fact')
-        generations.set(event.fact.id, event.fact)
+        if (event.fact.source.type === 'core' && cancellations.has(event.fact.source.requestId)) held('a cancellation cannot gain later targets')
+        addGeneration(event.fact, index)
+      } else if (event.kind === 'cancellation') {
+        if (kind !== 'effects' || !validNativeGenerationCancellation(event.request) || cancellations.has(event.request.requestId)
+          || [...generations.values()].some(fact => fact.source.type === 'core' && fact.source.requestId === event.request.requestId)) {
+          held('invalid or repeated native cancellation')
+        }
+        const targets = nativeCancellationTargets(event.request, generations, positions, chain)
+        for (const generationId of targets) {
+          const fact = nativeCancellationFact(event.request, generationId)
+          if (!cancelled.has(generationScope(fact))) addGeneration(fact, index)
+        }
+        cancellations.set(event.request.requestId, event.request)
       } else if (event.kind === 'intake') {
         if (!valid(event.intake) || deliveries.has(event.intake.id)) held('invalid or repeated journal intake')
         deliveries.set(event.intake.id, { intake: event.intake, verify, ...(kind === 'outbox' ? { acknowledgements: new Set<NativeHookPhase>() } : {}) })
@@ -507,7 +536,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         delivery.result = event.value; delivery.resultToken = event.token; delivery.verify = () => { before(); verify() }
         active = undefined; lastResult = digest(record.text)
       } else held('unknown hook journal event')
-      previous = digest(record.text); tail = [...owned.records, record, witness]
+      previous = digest(record.text); chain.push(previous); tail = [...owned.records, record, witness]
       if (index % 64 === 63 || performance.now() - began >= 20) {
         await new Promise<void>(done => setImmediate(done)); began = performance.now()
         verifyAuthority(); history.verify(); outside.verify()
@@ -533,8 +562,13 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       verifyRecords()
       return snapshot(false)
     }
-    if (nativeGenerationFactState(generations.values()).size > MAX_NATIVE_GENERATIONS) held('native generation capacity is exhausted')
-    return { processKey, deliveries, generations, active, previous, lastResult, bytes, length: history.names.length, verify, verifyRecords, verifyAuthority,
+    if (generations.size > MAX_RETAINED_GENERATION_FACTS || nativeGenerationFactState(generations.values()).size > MAX_NATIVE_GENERATIONS) held('native generation capacity is exhausted')
+    const controlReserved = kind === 'effects' && !cancellations.size
+      && (generations.size > 0 || [...deliveries.values()].some(delivery => delivery.intake.payload.engine === 'cursor'))
+    return { processKey, deliveries, generations, cancellations, controlReserved,
+      frontier: Object.freeze({ index: history.names.length - 1, digest: previous }),
+      cancellationTargets: request => { verify(); return nativeCancellationTargets(request, generations, positions, chain) },
+      active, previous, lastResult, bytes, length: history.names.length, verify, verifyRecords, verifyAuthority,
       confirm: () => operation('terminal', () => confirm(tail, verify, verifyAuthority), true) }
   }
   const append = async (before: Snapshot, event: Event, normalOnly = false) => {
@@ -545,16 +579,17 @@ function createNativeHookLog({ directory, processKey, current = () => true,
     const name = `${String(before.length).padStart(8, '0')}.json`
     // The outside publication exclusively selects this log position across cores.
     // A failed sync never transfers that publisher's execution right to a retry.
-    await publish(join(witnesses, name), text, before.verifyAuthority, true, normalOnly)
+    const verifyOutside = await publish(join(witnesses, name), text, before.verifyAuthority, true, normalOnly)
     // A recovery reader may already have completed the mirror. Only the original
     // exclusive outside publisher can reach this return and own a new claim.
     const existing = read(join(directory, name))
     if (existing && existing.text !== text) held('journal publication changed')
-    await publish(join(directory, name), text, () => { before.verifyAuthority(); existing?.verify() }, !existing, normalOnly)
+    const verifyMirror = await publish(join(directory, name), text, () => { before.verifyAuthority(); verifyOutside(); existing?.verify() }, !existing, normalOnly)
     const record = read(join(directory, name)), witness = read(join(witnesses, name))
     if (!record || !witness || record.text !== text || witness.text !== text) held('journal publication changed')
-    before.verifyRecords()
-    return () => { before.verifyRecords(); record.verify(); witness.verify() }
+    const verify = () => { before.verifyRecords(); verifyOutside(); verifyMirror(); record.verify(); witness.verify() }
+    verify()
+    return verify
   }
   return {
     snapshot: (repairAllowed = true) => operation('terminal', () => snapshot(repairAllowed)),
@@ -567,6 +602,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const terminal = fact.kind === 'stopped' || fact.kind === 'cancelled'
       return operation('terminal', async () => {
         const before = await snapshot(), known = before.generations.get(fact.id)
+        if (fact.source.type === 'core' && before.cancellations.has(fact.source.requestId) && !known) held('a cancellation cannot gain later targets')
         if (fact.source.type === 'native' && fact.source.identityV1 !== undefined && before.deliveries.has(fact.source.deliveryId)) {
           held('the native Stop already has an original intake')
         }
@@ -583,8 +619,9 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         // Stop/Cancel and independent mirror repair fit that existing allowance.
         const remaining = [...nativeGenerationFactState([...before.generations.values(), fact]).values()]
           .filter(state => state === 'running').length
-        const reservedRecords = 2 * (pending + remaining) - Number(!!before.active)
-        const reservedBytes = (pending + remaining) * TERMINAL_BYTES
+        const control = Number(!before.cancellations.size)
+        const reservedRecords = 2 * (pending + remaining + control) - Number(!!before.active)
+        const reservedBytes = (pending + remaining + control) * TERMINAL_BYTES
         const bytes = 2 * Buffer.byteLength(JSON.stringify({ version: 1, ...log, processKey,
           index: before.length, previous: before.previous, event: { kind: 'generation', fact } }))
         if (before.length + 1 + reservedRecords > maxRecords || before.bytes + bytes + reservedBytes > maxBytes) {
@@ -595,6 +632,49 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         // A peer's winning Stop/Cancel invalidates this frontier; a later retry
         // reclassifies the fact as normal instead of spending that slot twice.
         await append(before, { kind: 'generation', fact }, !reserved)
+      })
+    },
+    recordCancellation: async (input: NativeGenerationCancellation) => {
+      const request = structuredClone(input)
+      if (kind !== 'effects' || !validNativeGenerationCancellation(request)) held('invalid native cancellation')
+      return operation('terminal', async () => {
+        const before = await snapshot(), known = before.cancellations.get(request.requestId)
+        if (known) {
+          if (JSON.stringify(known) !== JSON.stringify(request)) held('NATIVE_CANCELLATION_CONFLICT')
+          await before.confirm(); before.verify()
+          return { recorded: false as const }
+        }
+        if ([...before.generations.values()].some(fact => fact.source.type === 'core' && fact.source.requestId === request.requestId)) {
+          held('NATIVE_CANCELLATION_CONFLICT')
+        }
+        const targets = before.cancellationTargets(request), facts = targets.map(id => nativeCancellationFact(request, id))
+        const remaining = [...nativeGenerationFactState([...before.generations.values(), ...facts]).values()]
+          .filter(state => state === 'running').length
+        const pending = [...before.deliveries.values()].filter(delivery => !delivery.result).length
+        const event: Event = { kind: 'cancellation', request }
+        const bytes = 2 * Buffer.byteLength(JSON.stringify({ version: 1, ...log, processKey,
+          index: before.length, previous: before.previous, event }))
+        if (bytes > TERMINAL_BYTES || before.length + 1 + 2 * (pending + remaining) - Number(!!before.active) > maxRecords
+          || before.bytes + bytes + (pending + remaining) * TERMINAL_BYTES > maxBytes) held('cancellation capacity cannot retain terminal outcomes')
+        await before.confirm()
+        const verifyPublished = await append(before, event, !before.controlReserved)
+        // Retention is not permission to interrupt. Only this exclusive publisher
+        // receives an in-memory capability, and only for an unchanged original
+        // prefix. Recovery never recreates it or retries an uncertain interrupt.
+        const after = await snapshot(); await after.confirm(); after.verify(); verifyPublished(); checkOwner()
+        if (JSON.stringify(after.cancellations.get(request.requestId)) !== JSON.stringify(request)) held('the retained cancellation changed')
+        let used = false
+        return { recorded: true as const, targets,
+          dispatch: <T>(effect: (verify: () => void) => T): T => {
+            if (used) held('the cancellation dispatch was already consumed')
+            used = true
+            if (before.frontier.index !== request.frontier.index || before.frontier.digest !== request.frontier.digest
+              || after.length !== before.length + 1) held('the cancellation dispatch frontier changed')
+            const verify = () => { check(); verifyPublished(); after.verify(); checkOwner() }
+            verify()
+            return effect(verify)
+          },
+        }
       })
     },
     retain: (input: NativeHookIntake): Promise<NativeHookDelivery> => operation('normal', async () => {
@@ -614,8 +694,9 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const pending = deliveries.filter(item => kind === 'outbox' ? outstanding(item) > 0 : !item.result).length
       if (pending >= pendingCapacity) held('too many pending native hooks')
       const generations = [...nativeGenerationFactState(before.generations.values()).values()].filter(state => state === 'running').length
-      const needed = kind === 'outbox' ? deliveries.reduce((count, item) => count + outstanding(item), 0) + intake.phases!.length : (pending + generations) * 2 - Number(!!before.active) + 2
-      const reservedBytes = kind === 'outbox' ? needed * ackBytes : (pending + generations + 1) * TERMINAL_BYTES
+      const control = Number(kind === 'effects' && !before.cancellations.size && (before.controlReserved || intake.payload.engine === 'cursor'))
+      const needed = kind === 'outbox' ? deliveries.reduce((count, item) => count + outstanding(item), 0) + intake.phases!.length : (pending + generations + control) * 2 - Number(!!before.active) + 2
+      const reservedBytes = kind === 'outbox' ? needed * ackBytes : (pending + generations + control + 1) * TERMINAL_BYTES
       const inputBytes = kind === 'outbox' ? 2 * Buffer.byteLength(JSON.stringify({ version: 1, ...log, processKey,
         index: before.length, previous: before.previous, event: { kind: 'intake', intake } })) : 2 * Buffer.byteLength(JSON.stringify(intake)) + 4096
       if (before.length + needed + 1 > maxRecords) held('journal record capacity cannot retain terminal outcomes')
@@ -686,8 +767,8 @@ function createNativeHookLog({ directory, processKey, current = () => true,
  * lost receipt or replaced directory holds instead of making an old ID new.
  */
 export function createNativeHookJournal(options: JournalOptions) {
-  const { snapshot, retain, claim, recordGeneration, close } = createNativeHookLog(options, 'effects')
-  return { snapshot, retain, claim, recordGeneration, close }
+  const { snapshot, retain, claim, recordGeneration, recordCancellation, close } = createNativeHookLog(options, 'effects')
+  return { snapshot, retain, claim, recordGeneration, recordCancellation, close }
 }
 
 /** Client receipts record responsibility, never permission to dispatch an effect. */

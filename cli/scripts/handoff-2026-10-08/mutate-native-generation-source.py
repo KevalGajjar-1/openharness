@@ -13,9 +13,9 @@ source_unit = 'src/core/turns/nativeGenerationSource.spec.ts'
 catalog = 'src/engines/kit/nativeHookCatalog.spec.ts'
 mutations = [
     ('restoration drops native observations', journal, [
-        ('generations.set(event.fact.id, event.fact)', '')], unit, 'immutable generation facts'),
+        ('addGeneration(event.fact, index)', '')], unit, 'immutable generation facts'),
     ('observation clears uncertain effect ownership', journal, [
-        ('generations.set(event.fact.id, event.fact)', 'generations.set(event.fact.id, event.fact); active = undefined')], unit, 'immutable generation facts'),
+        ('addGeneration(event.fact, index)', 'addGeneration(event.fact, index); active = undefined')], unit, 'immutable generation facts'),
     ('retention follows mutable caller data', journal, [
         ('const fact = structuredClone(input)', 'const fact = input')], unit, 'immutable generation facts'),
     ('phase identity forgets the endpoint', schema, [

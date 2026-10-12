@@ -2,6 +2,8 @@
  * A submitted prompt may be queued or rejected; execution and terminal facts can
  * arrive without it. The complete retained source, not arrival order, determines
  * which generations are still running. */
+import { MAX_RETAINED_GENERATION_FACTS, validNativeGenerationCancellation,
+  type NativeGenerationCancellation, type NativeGenerationFrontier } from '../../engines/kit/nativeGenerationCancellation.js'
 export interface NativeGenerationOwner {
   readonly agentId: string
   readonly sessionId: string
@@ -18,6 +20,10 @@ export interface NativeGenerationSource {
   readonly owner: NativeGenerationOwner
   /** A complete, durably confirmed view. A truncated prefix is not a source. */
   readonly facts: readonly NativeGenerationFact[]
+  readonly frontier?: NativeGenerationFrontier
+  /** A barrier survives even when no generation was known at Cancel. It applies
+   * across conversation rebindings within the original process incarnation. */
+  readonly cancellations?: readonly NativeGenerationCancellation[]
   /** Rechecks this exact complete frontier, including absence of later relevant
    * activity/Stop/Cancel facts. A proof of the old leaves alone is insufficient.
    * It must reject append as well as replacement and cannot select a new view. */
@@ -39,12 +45,13 @@ export interface NativeGenerationView {
   readonly running: readonly NativeGeneration[]
   readonly pending: readonly NativeGeneration[]
   /** More than one executing generation has no inferred current-turn order. */
-  readonly selection: 'idle' | 'one' | 'ambiguous'
+  readonly selection: 'idle' | 'one' | 'ambiguous' | 'cancelled'
+  readonly cancellations: readonly NativeGenerationCancellation[]
   /** Must be called immediately before any generation-specific effect. */
   verify(): void
 }
 
-const MAX_FACTS = 4096
+const MAX_FACTS = MAX_RETAINED_GENERATION_FACTS
 const MAX_GENERATIONS = 512
 const identity = (owner: NativeGenerationOwner): string => JSON.stringify([owner.agentId, owner.sessionId, owner.processKey])
 const identifier = (value: unknown): value is string => typeof value === 'string'
@@ -76,6 +83,12 @@ export function createNativeGenerations({ owner, current, read }: {
       // Only bounded scalar facts enter the projection. Keep independent copies
       // so a caller changing its input cannot change an already inspected turn.
       if (!Array.isArray(source.facts) || source.facts.length > MAX_FACTS) unavailable('the retained fact capacity was exceeded')
+      const barriers = source.cancellations === undefined ? [] : source.cancellations
+      if (!Array.isArray(barriers) || barriers.length > 4096) unavailable('the retained cancellation capacity was exceeded')
+      const cancellations = Object.freeze(barriers.map(request => {
+        if (!validNativeGenerationCancellation(request)) unavailable('a retained cancellation barrier is invalid')
+        return Object.freeze({ ...request, frontier: Object.freeze({ ...request.frontier }) })
+      }))
       const byId = new Map<string, string>()
       const generations = new Map<string, { submitted: boolean; executed: boolean; cancelled: boolean;
         stops: Set<'completed' | 'aborted' | 'error'>; ids: string[] }>()
@@ -134,8 +147,8 @@ export function createNativeGenerations({ owner, current, read }: {
         check()
       }
       verify()
-      return Object.freeze({ owner: original, generations: projected, running, pending,
-        selection: running.length > 1 ? 'ambiguous' : running.length === 1 ? 'one' : 'idle', verify })
+      return Object.freeze({ owner: original, generations: projected, running, pending, cancellations,
+        selection: cancellations.length ? 'cancelled' : running.length > 1 ? 'ambiguous' : running.length === 1 ? 'one' : 'idle', verify })
     },
   }
 }

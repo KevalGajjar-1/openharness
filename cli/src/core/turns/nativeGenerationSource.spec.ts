@@ -12,12 +12,62 @@ vi.mock('node:fs', async original => ({ ...await original<typeof import('node:fs
   fsync: (_fd: number, done: (error: Error | null) => void) => queueMicrotask(() => done(fault.fail ? Error('fixture disk unavailable') : null)),
 }))
 const owner = { agentId: 'agent-one', sessionId: 'conversation-one', processKey: 'linux:fixture\u0000cursor\u00005100\u000012345' }
+const cancellation = () => ({ requestId: 'fixture-cancellation-request', nonce: 'fixture-cancellation-nonce',
+  agentId: owner.agentId, conversationId: owner.sessionId, frontier: { index: -1, digest: null } })
 let root: string, journal: ReturnType<typeof createNativeHookJournal>
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'native-generation-source-')))
   journal = createNativeHookJournal({ directory: join(root, 'history'), processKey: owner.processKey })
 })
 afterEach(() => { fault.fail = false; journal.close(); rmSync(root, { recursive: true, force: true }) })
+
+it('restores an empty cancellation barrier across late first activity and conversation rebinding', async () => {
+  const request = cancellation()
+  await journal.recordCancellation(request)
+  journal.close(); journal = createNativeHookJournal({ directory: join(root, 'history'), processKey: owner.processKey })
+  const source = createNativeGenerationSource({ owner, read: journal.snapshot })
+  const empty = await source.read()
+  expect(empty.facts).toEqual([])
+  expect(empty.cancellations).toEqual([request])
+  expect(empty.frontier?.index).toBe(0)
+  await journal.recordGeneration(fact('activity'))
+  expect((await createNativeGenerations({ owner, current: () => true, read: source.read }).inspect()).selection).toBe('cancelled')
+  const rebound = { ...owner, agentId: 'replacement-agent', sessionId: 'replacement-conversation' }
+  const newSource = createNativeGenerationSource({ owner: rebound, read: journal.snapshot })
+  const view = await createNativeGenerations({ owner: rebound, current: () => true, read: newSource.read }).inspect()
+  expect(view.selection).toBe('cancelled')
+  expect(view.cancellations).toEqual([request])
+  expect(() => empty.verify()).toThrow('changed during recovery')
+})
+
+it.each(['collection', 'capacity', 'key', 'shape', 'frontier'] as const)('rejects invalid cancellation %s before disk confirmation', async problem => {
+  const snapshot = await journal.snapshot(), request = cancellation()
+  if (problem === 'collection') snapshot.cancellations = null as any
+  else if (problem === 'capacity') snapshot.cancellations = new Map(Array.from({ length: 4097 }, (_, index) => [String(index), request]))
+  else if (problem === 'frontier') snapshot.frontier = { index: 5, digest: null }
+  else {
+    if (problem === 'shape') Object.assign(request, { nonce: '' })
+    snapshot.cancellations.set(problem === 'key' ? 'wrong-key' : request.requestId, request)
+  }
+  const confirm = snapshot.confirm = vi.fn(snapshot.confirm)
+  await expect(createNativeGenerationSource({ owner, read: async () => snapshot }).read()).rejects.toThrow('retained')
+  expect(confirm).not.toHaveBeenCalled()
+})
+
+it('copies the original barrier and prefix before confirmation yields', async () => {
+  const request = cancellation()
+  await journal.recordCancellation(request)
+  const snapshot = await journal.snapshot(), expectedFrontier = { ...snapshot.frontier }, confirm = snapshot.confirm
+  snapshot.confirm = async () => {
+    Object.assign(snapshot.cancellations.get(request.requestId)!, { nonce: 'replacement-nonce' })
+    snapshot.cancellations.clear(); snapshot.frontier = { index: -1, digest: null }
+    await confirm()
+  }
+  const source = await createNativeGenerationSource({ owner, read: async () => snapshot }).read()
+  expect(source.cancellations).toEqual([request])
+  expect(source.frontier).toEqual(expectedFrontier)
+  expect(Object.isFrozen(source.cancellations![0].frontier)).toBe(true)
+})
 
 it('reconstructs scoped Stop and Cancel tombstones from confirmed durable facts', async () => {
   await journal.recordGeneration(fact('stopped'))
@@ -100,7 +150,7 @@ it.each(['replace', 'delete', 'insert', 'mutate'] as const)('does not project a 
 
 it.each(['invalid', 'oversized'] as const)('bounds an %s fact collection before waiting for confirmation', async problem => {
   const snapshot = await journal.snapshot()
-  snapshot.generations = (problem === 'invalid' ? null : new Map(Array.from({ length: 4097 }, (_, index) => [String(index), fact('activity')]))) as any
+  snapshot.generations = (problem === 'invalid' ? null : new Map(Array.from({ length: 4609 }, (_, index) => [String(index), fact('activity')]))) as any
   const confirm = snapshot.confirm = vi.fn(snapshot.confirm)
   await expect(createNativeGenerationSource({ owner, read: async () => snapshot }).read()).rejects.toThrow('fact capacity')
   expect(confirm).not.toHaveBeenCalled()
