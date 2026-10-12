@@ -13,6 +13,8 @@ import tarfile
 import threading
 import time
 
+from PIL import Image, ImageOps
+
 from session_vm import put
 from vm import VM
 
@@ -22,6 +24,19 @@ ROOT = Path(__file__).resolve().parents[2]
 def digest(path):
     with path.open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def screen_text(path):
+    # Both the OS form and hn use light text, but hn has a shaded panel. Global
+    # automatic thresholding mistakes that panel for ink. Normalize the known
+    # dark palette first; block OCR keeps a row's words on the same line.
+    readable = path.with_name(path.stem + '-ocr.png')
+    with Image.open(path) as frame:
+        ink = frame.convert('L').point(lambda value: 0 if value >= 96 else 255)
+        ink = ink.resize((frame.width * 2, frame.height * 2), Image.Resampling.NEAREST)
+        ImageOps.expand(ink, border=24, fill=255).save(readable)
+    return subprocess.check_output(['tesseract', str(readable), 'stdout', '--psm', '6'],
+                                   text=True, stderr=subprocess.DEVNULL, timeout=15)
 
 
 def main():
@@ -65,7 +80,16 @@ def main():
                   encrypt=False, serial_console=True)
 
     def shown(name, text):
-        assert vm.screen_shows(name, text, timeout=90), f'{text} was not visible'
+        deadline = time.monotonic() + 90
+        while True:
+            vm.screenshot(name)
+            observed = screen_text(folder / (name + '.png'))
+            (folder / (name + '.txt')).write_text(observed)
+            if text.lower() in observed.lower():
+                return
+            if time.monotonic() >= deadline:
+                raise AssertionError(f'{text} was not visible')
+            time.sleep(1)
 
     try:
         vm.start(live=True)
