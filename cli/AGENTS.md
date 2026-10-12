@@ -28,7 +28,7 @@ they show as `harnessd`, `harnessd-core` and `harnessd-<process>` (`src/harnessd
 | engine-claude, engine-codex | history, last-turn readers, live transcript parsers, runtime profiles/catalogs, screen interpretation, submission verification readings, model control, question navigation, and (Codex) the shared app-server connection | on demand: an attach or read for that engine |
 | search | session search | always |
 | viewers | the harness viewers, their remote streams and rendered surfaces, and the Store | always |
-| edge | the shell service, workspaces, usage, the monitor, the project readers, the change-agent handoff, the recaps | always |
+| edge | the shell service, workspaces, usage, the monitor, the project readers, the change-agent handoff, the recaps, the agent cleanup | always |
 | gateway | the relay and its E2EE (`src/gateway/`) | on demand: as the core starts when signed in or anything is paired here, or when something needs it (a pairing, a window's E2EE request, a key command, the Wi-Fi device) |
 | models | grid, local models, the Model Manager | on demand: once grid is in use here (a managed grid, saved grid pictures, local models), or on a models request |
 | updater | checks, downloads and stages a new build (`src/services/updaterProcess.ts`) | by the master, for the installed copy only |

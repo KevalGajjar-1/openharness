@@ -173,7 +173,8 @@ import { createMonitorLink } from './monitorLink.js'
 import { createStoreLink } from './storeLink.js'
 import { createModelsLink } from './modelsLink.js'
 import { createRecapsLink } from './recapsLink.js'
-import { RECAPS_FALLBACKS, TERMINALS_OFF } from './api.js'
+import { createAgentCleanupLink } from './agentCleanupLink.js'
+import { AGENT_CLEANUP_FALLBACKS, RECAPS_FALLBACKS, TERMINALS_OFF } from './api.js'
 import { answerAgentQuery } from './agentQueries.js'
 import { createDeliveries } from './deliveries.js'
 import { createTerminalWatch } from './terminalWatch.js'
@@ -825,6 +826,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     },
     // The window's `agent_create` for an experiment's agents (core/experimentQueries.ts).
     create: (request) => createForExperiment(backendRef?.onCreateAgent ?? null, request),
+    // The window's `agent_close`, for the agent cleanup (services/agentCleanup.ts): createCoreApi lets it close only
+    // a harness another agent started. Read when it closes one, never now: the close service is built further down.
+    closeAgent: (request) => backendRef?.closeAgentService?.request(request) ?? Promise.resolve({ error: 'UNSUPPORTED' }),
+    activityAt: lastActivityAt,
     dsh: (session) => backendRef?.dshFrameProvider?.(session) ?? null,
     windows: (frame) => backendRef?.sendLocal(frame),
     daemon: { command: daemonCommand(), port: env.PORT, machineId: () => backendRef?.machineId ?? '', autonomousEnv: session?.autonomousEnv ?? env.AUTONOMOUS_ENV },
@@ -1001,9 +1006,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The keystroke prewarm (grid-reads-without-waking issue 03): typing into a pane whose agent runs on
     // a sleeping grid starts that grid while the person types. Here, in the daemon's own input path, so
     // an older desktop and typing from a phone get it too; an agent on its own login has no `grid`.
-    onInput: (agentId) => {
+    onInput: (agentId, typed) => {
       const grid = registry.resolve(agentId)?.grid
       if (grid) ports.models?.prewarm(grid)
+      // The person typing into a harness another agent started makes it theirs (services/agentCleanup.ts).
+      if (typed) ports.agentCleanup?.typed(agentId)
     },
   })
   backend.setTerminalStreamManager(terminalStreams)
@@ -1151,6 +1158,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     emit: (sessionId, events) => emitSessionEvents(sessionId, events),
     // Declared further down: read as a prompt is typed, never now.
     promptTyped: (session, capture, screen) => { if (session.sessionId) questionWatcher.notePrompt(session.sessionId, capture, screen.question) },
+    // The person sent a harness text from a window or the phone (services/agentCleanup.ts).
+    typed: (id) => ports.agentCleanup?.typed(id),
   })
   const input = inputs.input
   const deviceInput = inputs.deviceInput
@@ -1292,6 +1301,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // What the core tells the recaps in their own process, and reads back from what they said (core/recapsLink.ts).
   const recapsLink = createRecapsLink({ notify: (frame, opts) => serviceLinks.notify('recaps', frame, opts), buffered: () => serviceLinks.buffered('recaps'),
     call: (type, payload) => serviceLinks.call('recaps', type, payload), clients: coreApi.clients, lastTurn: coreApi.transcripts.lastTurn })
+  // What the core tells the agent cleanup in its own process, and answers it (core/agentCleanupLink.ts).
+  const agentCleanupLink = createAgentCleanupLink(coreApi, (frame, opts) => serviceLinks.notify('agentCleanup', frame, opts))
   const usageLink = createUsageLink({ call: payload => ports.usage?.read(payload.target as AgentUsageTarget) ?? Promise.resolve({}), changed: agentEvents.onTokenUsageChanged })
   const serviceLinks = createServiceLinks({
     token: serviceToken,
@@ -1317,6 +1328,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       : service === 'wifi' ? wifiLink.answer(query, payload)
       : service === 'handoff' ? answerConversationQuery(coreApi, query, payload, authority)
       : service === 'shell' ? answerShellQuery(coreApi, query, payload)
+      : service === 'agentCleanup' ? agentCleanupLink.answer(query, payload)
       : service === 'recaps' ? recapsLink.answer(query, payload) : answerAgentQuery(coreApi, query, payload)),
     // The gateway's own traffic: its remote clients and what they sent, and its comings and goings; and what
     // the devices tell the core (a turn, a frame for the windows, a dial on the wire); a viewer stream's answers.
@@ -1428,6 +1440,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (!outOfProcess.has('connectors')) serviceHost.serve('connectors', inline!.startConnectors, coreApi, CONNECTORS_REQUESTS)
   // The recaps: in this process, or in the edge host (services/recapsProcess.ts), told each turn's lifecycle.
   if (outOfProcess.has('recaps')) ports.recaps = recapsLink.port; else serviceHost.start('recaps', inline!.startRecaps, coreApi, RECAPS_FALLBACKS)
+  // Cleaning up after agents: the harnesses a closed harness started, and those idle half an hour (services/agentCleanup.ts).
+  if (outOfProcess.has('agentCleanup')) ports.agentCleanup = agentCleanupLink.port; else serviceHost.start('agentCleanup', inline!.startAgentCleanup, coreApi, AGENT_CLEANUP_FALLBACKS)
   if (!outOfProcess.has('shell')) serviceHost.serve('shell', inline!.startShell, coreApi, SHELL_REQUESTS)
   // Models: grid access and its pin, the model pictures on agents' frames, the keystroke prewarm, where an
   // agent on a grid model sends its inference, and the models requests the apps send (services/models.ts):
@@ -2424,6 +2438,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     attachDsh,
     attachSession: (session) => attachSession(session),
     relaunchMarks,
+    // A harness closed or stopped: the harnesses it started close with it (services/agentCleanup.ts).
+    stopped: (agentId) => ports.agentCleanup?.closed(agentId),
   })
   const stopJobs = lifecycle.stopJobs
   launchCancelled = id => stopJobs.has(id)
@@ -2447,6 +2463,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     stopAgent,
     announceSession,
     engineReady: (engine, ms) => engineLinks.ready(engine, ms),
+    stoppedAgents,
   })
   backend.closeAgentService = closing.closeAgentService
   backend.closeAgentService.start()
