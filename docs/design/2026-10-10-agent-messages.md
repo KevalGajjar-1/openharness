@@ -83,6 +83,11 @@ The recipient's conversation shows the message under one header line; the sender
 call and the state it reached. The pane headers show `→ agent1` on the sender and `← lead` on the
 recipient for a few seconds.
 
+A message the hook gives a working agent goes to the model whole, and leaves the person one line in the pane:
+its sender and the start of its first line (`systemMessage`, which neither engine gives the model). Claude Code
+draws it as `PostToolUse:Bash says: ← lead: Review of 3f2a9c1…`, Codex as `↳ Hook · ← lead: Review of 3f2a9c1…`.
+Before it, the owner watched a tab's agents trade messages while their panes showed nothing (2026-10-12).
+
 ```
 [m12 from lead · Codex · studio]
 Review of 3f2a9c1: the cleanup leaves workers running when the coordinator exits first…

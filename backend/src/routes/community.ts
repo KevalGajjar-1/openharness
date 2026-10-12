@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { parseAutonomousEnvironment } from '../lib/autonomousEnvironment.js'
-import { communityStarters } from '../lib/communityAccess.js'
+import { communityStarterAuthor, communityStarters } from '../lib/communityAccess.js'
 import { feedPage, feedSorts, feedStats } from '../lib/communityFeed.js'
 import { communityCategories, communityEngines, communityHarnessIds, communityHarnessMarkers, communityLimits, communityPathPattern, communityReservedName } from '../lib/communityContract.js'
 import { validateBody, validateParams, validateQuery } from '../middlewares/validation.js'
@@ -107,7 +107,7 @@ async function socialState(post: Publication, autonomousEnv: string, userId: str
 }
 
 async function publication(id: string, autonomousEnv: string) {
-  if (communityStarters.has(id)) return { id, authorId: 'harness', authorName: 'Harness', credits: [] }
+  if (communityStarters.has(id)) return { id, authorId: communityStarterAuthor, authorName: 'Harness', credits: [] }
   return prisma.communityHarness.findFirst({ where: { id, autonomousEnv, deletedAt: null } })
 }
 
@@ -115,10 +115,11 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onSend', async (_req, reply) => { reply.header('Cache-Control', 'no-store') })
 
   const feedQuery = z.object({
-    cursor: z.string().uuid().optional(), following: z.enum(['true', 'false']).optional(), mine: z.enum(['true', 'false']).optional(),
+    cursor: z.string().uuid().or(z.enum([...communityStarters] as [string, ...string[]])).optional(),
+    following: z.enum(['true', 'false']).optional(), mine: z.enum(['true', 'false']).optional(),
     q: z.string().trim().min(1).max(searchMaxChars).optional(), category: z.enum(communityCategories).optional(),
     sort: z.enum(feedSorts).optional(), forkedFrom: identifier.optional(),
-  }).strict()
+  }).strict().refine(query => query.sort === 'popular' || !communityStarters.has(query.cursor ?? ''), 'Only a popular feed pages past a starter.')
   app.get<{ Querystring: z.infer<typeof feedQuery> }>('/api/community/harnesses', { preHandler: validateQuery(feedQuery) }, async (req, reply) => {
     const autonomousEnv = environment(req)
     if ((req.query.following === 'true' || req.query.mine === 'true') && !req.user) return sendError(reply, 'Sign in to see your harnesses and creators you follow.', 'UNAUTHORIZED', 401)
@@ -129,7 +130,12 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
       ...(following === 'true' ? { authorId: { in: follows.map(row => row.authorId) } } : {}), ...(mine === 'true' ? { authorId: req.user!.sub } : {}),
       ...(category ? { category } : {}), ...(forkedFrom ? { forkedFrom } : {}),
     }
-    const { page, nextCursor } = await feedPage(where, autonomousEnv, sort, cursor)
+    // Starters are the website's: it matches their search and category, so a popular page ranks all of
+    // them there is a place for — none among your own or a harness's forks, and in Following only
+    // when the reader follows Harness.
+    const followed = new Set(follows.map(row => row.authorId))
+    const starters = mine === 'true' || forkedFrom || (following === 'true' && !followed.has(communityStarterAuthor)) ? [] : [...communityStarters]
+    const { page, order, nextCursor } = await feedPage(where, autonomousEnv, sort, starters, cursor)
     const ids = [...page.map(row => row.id), ...communityStarters]
     const [stats, covered] = await Promise.all([
       feedStats(ids, autonomousEnv, req.user?.sub),
@@ -137,7 +143,7 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
       prisma.communityHarness.findMany({ where: { id: { in: page.map(row => row.id) }, cover: { isSet: true, not: null } }, select: { id: true } }),
     ])
     const withCover = new Set(covered.map(row => row.id))
-    sendSuccess(reply, { harnesses: page.map(row => withCoverPath({ ...row, cover: withCover.has(row.id) ? 'set' : null })), stats, signedIn: !!req.user, nextCursor, following: follows.map(row => row.authorId) })
+    sendSuccess(reply, { harnesses: page.map(row => withCoverPath({ ...row, cover: withCover.has(row.id) ? 'set' : null })), ...(order ? { order } : {}), stats, signedIn: !!req.user, nextCursor, following: [...followed] })
   })
 
   // `files=viewer` sends only the output page: a harness page draws nothing else.

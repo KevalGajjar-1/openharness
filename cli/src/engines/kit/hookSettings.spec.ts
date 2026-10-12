@@ -152,11 +152,15 @@ it('reports a held malformed file even when an engine declares no malformed-file
   expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{not-json')
 })
 
-/** Every rule Harness adds to Claude Code's allow list on this computer, in order: each verb's commands, then its tool. */
-const claudeRules = (skip: { bash?: string[]; mcp?: string[] } = {}): string[] => HARNESS_AGENT_VERBS.flatMap((verb) => [
-  ...(skip.bash?.includes(verb) ? [] : [`Bash(harness ${verb}:*)`, `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} ${verb}:*)`]),
-  ...(skip.mcp?.includes(verb) ? [] : [`mcp__harness__${HARNESS_AGENT_TOOLS[verb]}`, `mcp__plugin_harness_harness__${HARNESS_AGENT_TOOLS[verb]}`]),
-])
+/** Every rule Harness adds to Claude Code's allow list on this computer, in order: `harness --help`, then each verb's
+ *  commands, then its tool. */
+const claudeRules = (skip: { bash?: string[]; mcp?: string[]; help?: boolean } = {}): string[] => [
+  ...(skip.help ? [] : ['Bash(harness --help)', 'Bash(harness -h)', `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} --help)`]),
+  ...HARNESS_AGENT_VERBS.flatMap((verb) => [
+    ...(skip.bash?.includes(verb) ? [] : [`Bash(harness ${verb}:*)`, `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} ${verb}:*)`]),
+    ...(skip.mcp?.includes(verb) ? [] : [`mcp__harness__${HARNESS_AGENT_TOOLS[verb]}`, `mcp__plugin_harness_harness__${HARNESS_AGENT_TOOLS[verb]}`]),
+  ]),
+]
 
 it('allows Harness\'s agent commands and MCP tools in Claude Code beside the person\'s own rules, once', async () => {
   const home = join(root, 'claude'); mkdirSync(home)

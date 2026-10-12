@@ -6,7 +6,8 @@ import type { HarnessSummary } from '@/lib/community/types';
 
 /** `forks` comes from a backend that counts them; an older one leaves it out. */
 export type Stats = { likes: number; comments: number; liked: boolean; forks?: number };
-type FeedResult = { harnesses: HarnessSummary[]; nextCursor: string | null; following: string[]; stats?: Record<string, Stats>; signedIn?: boolean };
+/** `order` comes with a popular feed from a backend that ranks the starters too; an older one leaves it out. */
+type FeedResult = { harnesses: HarnessSummary[]; order?: string[]; nextCursor: string | null; following: string[]; stats?: Record<string, Stats>; signedIn?: boolean };
 
 /**
  * One feed's pages, their likes, comments and forks, and the reader's likes. Pages load as `more`
@@ -18,6 +19,7 @@ export function useFeed({ following, mine, forkedFrom, query, category, sort }: 
   const [posts, setPosts] = useState<HarnessSummary[]>([]), [follows, setFollows] = useState<string[]>([]);
   const [stats, setStats] = useState<Record<string, Stats>>({}), [signedIn, setSignedIn] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null), [settled, setSettled] = useState(false);
+  const [order, setOrder] = useState<string[] | null>(null);
   const [error, setError] = useState(''), [likeError, setLikeError] = useState(''), [signedOut, setSignedOut] = useState(false), [busy, setBusy] = useState(false);
   const [liking, setLiking] = useState<ReadonlySet<string>>(new Set());
   const generation = useRef(0), loading = useRef(false), pendingLikes = useRef(new Set<string>()), more = useRef<HTMLDivElement>(null);
@@ -30,6 +32,7 @@ export function useFeed({ following, mine, forkedFrom, query, category, sort }: 
       if (requestId !== generation.current) return;
       setPosts(previous => after ? [...previous, ...result.harnesses.filter(item => !previous.some(p => p.id === item.id))] : result.harnesses);
       setStats(previous => after ? { ...previous, ...result.stats } : result.stats || {});
+      setOrder(previous => !result.order ? null : after && previous ? [...previous, ...result.order.filter(id => !previous.includes(id))] : result.order);
       setCursor(result.nextCursor); setFollows(result.following); setSignedIn(!!result.signedIn);
     } catch (e) {
       if (requestId !== generation.current) return;
@@ -65,5 +68,5 @@ export function useFeed({ following, mine, forkedFrom, query, category, sort }: 
       else setLikeError(e instanceof Error ? e.message : 'Could not save your like. Try again.');
     } finally { pending(id, false); }
   }
-  return { posts, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like };
+  return { posts, order, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like };
 }
