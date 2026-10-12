@@ -557,6 +557,16 @@ describe('harness new, run by an agent', () => {
     await expect(unknown.check()).rejects.toThrow(/could not tell who is starting this/)
   })
 
+  it('says the daemon is out of reach rather than "try again", which an agent did in the same sandbox', async () => {
+    const message = 'Harness is running, but a sandbox keeps this shell from reaching it.'
+    const unreachable = async () => { throw new AgentClientError('DAEMON_UNREACHABLE', message) }
+    // Codex outside Harness, and Codex in a pane Harness made: both run `harness new` sandboxed.
+    for (const over of [{ pane: undefined, env: { CODEX_THREAD_ID: 't' } }, { where: () => ({ ...where, harnessPane: true }) }]) {
+      const origin = (await agentOrigin(harness(new FakeDaemon(), { open: unreachable, ...over }).deps))!
+      await expect(origin.check()).rejects.toMatchObject({ code: 'DAEMON_UNREACHABLE', message })
+    }
+  })
+
   it('refuses every agent when the person has turned agents starting agents off, and never the person', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' })]

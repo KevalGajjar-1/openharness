@@ -25,6 +25,10 @@ these verbs: `harness update`. The agent you start must be installed as well (`c
 for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
 asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
 
+In Codex, run `harness` commands outside your sandbox: they talk to Harness's local daemon, which the sandbox
+blocks, so ask for escalated permissions the first time. A sandbox in the way is not a stopped Harness: do not run
+`harness start` unless a command run outside the sandbox says Harness is not running.
+
 ## When to start a harness
 
 Start one for work that:

@@ -30,7 +30,7 @@ import { runCoreInForeground } from './core/main.js'
 import { startCoreProcess } from './coreProcess.js'
 import { GRID_MINT_TIMEOUT_MS, backendHttpBase, requestJson, postJson, controlPlaneAuth } from './lib/controlPlane.js'
 import { LEGACY_LOG_FILE, MACHINE_NAME_FILE, tildify, computerId, thisDeviceLabel, DAEMON_LOG_FILE, HARNESSD_STATUS_FILE, daemonPort, isAlive, isDaemonRunning, readPid, daemonUnreachableText } from './lib/daemonState.js'
-import { SANDBOXED, sandboxed } from './lib/unreachable.js'
+import { sandboxed, startRefusalText } from './lib/unreachable.js'
 import { onError, BIND_WAIT_MS, connectFailure, defaultLaunchDeps, waitForBind } from './lib/daemonLaunch.js'
 import { ensureUtf8Locale } from './lib/childLocale.js'
 import { buildLogBundle, bundleFileName, redactSecretsInText } from './lib/logBundle.js'
@@ -1034,8 +1034,10 @@ async function startCommand(foreground: boolean, repair: boolean = false): Promi
       onWaiting: (owner) => console.log(`  the daemon is ${describeSpawnLockOwner(owner)} — waiting for it to finish…`),
     }).catch((error: unknown) => {
       // A sandbox refuses the spawn lock (EPERM): Harness may well be running, out of this shell's reach, and an
-      // agent that read a stack trace here asked the person to let it start Harness (lib/unreachable.ts).
-      if (sandboxed({ error })) { console.error(`\n✗ ${SANDBOXED}\n`); process.exit(1) }
+      // agent that read a stack trace here asked the person to let it start Harness (lib/unreachable.ts). With none
+      // running, it is told to start Harness outside the sandbox rather than that Harness runs.
+      const refusal = startRefusalText({ error, pid: readPid() })
+      if (refusal) { console.error(`\n✗ ${refusal}\n`); process.exit(1) }
       if (!(error instanceof SpawnLockBusyError)) throw error
       console.error(`\n✗ Could not start: the daemon spawn lock is ${describeSpawnLockFailure(error)}.`)
       console.error('  check   harness status   ·   stop it   harness stop')
