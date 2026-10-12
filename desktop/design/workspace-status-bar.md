@@ -123,13 +123,12 @@ smaller tabs while preserving their controls.
 Hovering a tab reveals Agent Messages' 💬 and × at its right, 💬 just left of ×
 ([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)); its status
 stays. Tabs show no shortcut hint, and holding Command changes nothing on them.
-At rest a tab shows only its name and status. While its agents message each
-other, the status slot shows 💬 in Agent Messages' color (the accent blue,
-`AppPalette.accentOnSurface`), mirrored every half second, for 10 seconds after
-the last message, then the tab's status again. The hover 💬 is grey while off and in that color
+At rest a tab shows only its name and status; traffic between its agents shows
+nothing on it, since messages arrive when they arrive. The hover 💬 is grey while
+off and in Agent Messages' color (the accent blue, `AppPalette.accentOnSurface`)
 while on; its tooltip says what a click
 does ("Agent messages off · click to turn on", "Agent messages on · click to
-turn off", "Agents messaging · click to turn off"), and a click toggles that
+turn off"), and a click toggles that
 tab's flag at once, going back — with a notice — if the backend refuses. Only a
 tab the desk holds has a 💬 (not the Store, Devices, Companions, an orchestrator
 or a draft tab), and only once the daemon and backend have answered for Agent

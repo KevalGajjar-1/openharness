@@ -39,7 +39,6 @@ private let previewHover = NSEvent.mouseEvent(with: .mouseMoved, location: .zero
 private struct PreviewTab {
   let id: String
   var messages: Bool?
-  var flowing = false
   var activity: ((Bool) -> [String: Any])? = nil
 }
 
@@ -88,10 +87,7 @@ private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [Previe
   messenger.receive("configure", ["palette": palette])
   let rows: [[String: Any]] = tabs.map { tab in
     var row: [String: Any] = ["id": tab.id, "name": tab.id, "label": tab.id]
-    if let messages = tab.messages {
-      row["agentMessages"] = messages
-      row["agentMessagesFlowing"] = tab.flowing
-    }
+    if let messages = tab.messages { row["agentMessages"] = messages }
     if let activity = tab.activity { row["activity"] = activity(palette["dark"] as? Int64 == 1) }
     return row
   }
@@ -153,8 +149,8 @@ private func captureMenu(_ menu: NSMenu, _ name: String, dark: Bool) {
   if !captured { print("No menu window for \(name)") }
 }
 
-private let lampTabs: [PreviewTab] = [
-  PreviewTab(id: "lamp", messages: true, activity: working),
+private let sceneTabs: [PreviewTab] = [
+  PreviewTab(id: "app", messages: true, activity: working),
   PreviewTab(id: "desktop", messages: true, activity: ready),
   PreviewTab(id: "website", messages: false, activity: needsInput),
   PreviewTab(id: "notes", messages: false),
@@ -162,9 +158,9 @@ private let lampTabs: [PreviewTab] = [
 
 for (theme, palette) in previewPalettes {
   let dark = theme == "dark"
-  func scene(_ name: String, tabs: [PreviewTab] = lampTabs, width: CGFloat = 1280, crop: CGFloat? = nil,
+  func scene(_ name: String, tabs: [PreviewTab] = sceneTabs, width: CGFloat = 1280, crop: CGFloat? = nil,
              after: (SwarmTabStrip) -> Void = { _ in }, _ act: (SwarmTabStrip) -> Void = { _ in }) {
-    let (window, titlebar) = previewWindow(width: width, palette: palette, tabs: tabs, active: "lamp",
+    let (window, titlebar) = previewWindow(width: width, palette: palette, tabs: tabs, active: "app",
       activeMessages: tabs.first?.messages)
     act(titlebar.previewStrip)
     titlebar.previewStrip.layoutSubtreeIfNeeded()
@@ -174,36 +170,26 @@ for (theme, palette) in previewPalettes {
     capture(window, "\(name)-\(theme)", width: crop)
     window.close()
   }
-  var messaging = lampTabs
-  messaging[0].flowing = true
+  // A tab shows no traffic between its agents, so at rest there is one scene.
   scene("01-rest-quiet")
-  // The status slot's two frames: 💬, then mirrored half a second later.
-  scene("02-rest-messaging", tabs: messaging)
-  scene("02b-rest-messaging-next-frame", tabs: messaging, after: { $0.previewTabs[0].activityFrame = 5 })
-  // The animation, frame by frame, for the review page to play: messaging's
-  // two sides, then the working spinner's ten frames.
-  for frame in [0, 5] {
-    scene("anim-messaging-\(frame)", tabs: messaging, crop: 600,
-      after: { $0.previewTabs[0].activityFrame = frame })
-  }
+  // The working spinner, frame by frame, for the review page to play.
   for frame in 0..<10 {
     scene("anim-working-\(frame)", crop: 600, after: { $0.previewTabs[0].activityFrame = frame })
   }
   scene("03-hover-off") { $0.previewTabs[2].mouseEntered(with: previewHover) }
   scene("04-hover-on-quiet") { $0.previewTabs[1].mouseEntered(with: previewHover) }
-  scene("05-hover-on-messaging", tabs: messaging) { $0.previewTabs[0].mouseEntered(with: previewHover) }
   scene("06-pointer-on-arrows-off") {
     $0.previewTabs[2].mouseEntered(with: previewHover)
     $0.previewTabs[2].previewPointOnMessages()
   }
   let crowded = (1...9).map { index in
-    PreviewTab(id: ["lamp", "desktop", "website", "notes", "cli", "backend", "phone", "docs", "infra"][index - 1],
-      messages: index % 3 != 0, flowing: index == 1, activity: index % 2 == 0 ? working : nil)
+    PreviewTab(id: ["app", "desktop", "website", "notes", "cli", "backend", "phone", "docs", "infra"][index - 1],
+      messages: index % 3 != 0, activity: index % 2 == 0 ? working : nil)
   }
   scene("08-crowded-rest", tabs: crowded, width: 1280)
   scene("09-crowded-hover", tabs: crowded, width: 1280) { $0.previewTabs[1].mouseEntered(with: previewHover) }
 
-  let (window, titlebar) = previewWindow(width: 1280, palette: palette, tabs: messaging, active: "lamp",
+  let (window, titlebar) = previewWindow(width: 1280, palette: palette, tabs: sceneTabs, active: "app",
     activeMessages: true)
   let tabs = titlebar.previewStrip.previewTabs
   captureMenu(tabs[0].previewMenu!, "10-tab-menu-on-\(theme)", dark: dark)
