@@ -115,6 +115,14 @@ TAG_VER="$(git tag -l 'v*_cli' \
   | sort -V | tail -1)"
 LAST_TAG=""
 [ -z "$TAG_VER" ] || LAST_TAG="v${TAG_VER}_cli"
+# The last release must be in what is released now. A checkout made before another release went out once tagged an
+# older commit with a newer version (v0.3.82_cli on fae1ca5766, after v0.3.81_cli on d96c270493, 2026-10-12; cancelled
+# before it published): every daemon would have updated to the older code.
+if [ -n "$LAST_TAG" ] && ! git merge-base --is-ancestor "$LAST_TAG" HEAD 2>/dev/null; then
+  echo "ERROR HEAD does not contain $LAST_TAG, the last release: it would ship older code under a newer version." >&2
+  echo "      Release from the latest origin/$BRANCH: git fetch, then a clean checkout of it." >&2
+  exit 1
+fi
 TAG_VER="${TAG_VER:-0.0.0}"
 
 # --- current version, source 2: the version actually being served ---
