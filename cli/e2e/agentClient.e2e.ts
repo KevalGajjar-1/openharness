@@ -103,6 +103,12 @@ describe('Harness for agents, end to end', () => {
     expect(ps.out).toMatch(/^You are "lead" \(/)
     expect(ps.out).toMatch(/\nlead +Claude Code +\w+ +person \(you\)/)
 
+    // A terminal is the person's: no verb here lists one, so the agent could never read or close it. Refused, none made.
+    const shell = await run('new', 'terminal', '--', 'npm run dev')
+    expect(shell.code, shell.out).toBe(1)
+    expect(shell.err).toContain('An agent cannot start a terminal')
+    expect((await client.request<{ agents: unknown[] }>('agents_list', {}, 30_000)).agents).toHaveLength(1)
+
     // It starts a harness with a task, which reads who sent it, in a project Harness makes for it.
     const started = await run('new', 'claude', 'kid', '--name', 'kid', '--', 'hello kid')
     expect(started.code, started.err).toBe(0)

@@ -58,6 +58,17 @@ describe('harness new: the words', () => {
     expect(() => parseNewArgs(['codex', '!!!'], env)).toThrow(/no usable folder name/)
   })
 
+  it('will not take a project for a terminal, which opens in a folder and makes none', () => {
+    // The name used to be dropped: the terminal opened in the home folder and no project was made.
+    expect(() => parseNewArgs(['terminal', 'my-game'], env)).toThrow(/does not make a project/)
+    expect(() => parseNewArgs(['terminal', '--new'], env)).toThrow(NewUsageError)
+    // Here, in a folder, or on another machine (its home): as before.
+    expect(parseNewArgs(['terminal'], env)).toMatchObject({ agent: 'terminal', cwd: env.cwd, projectName: null })
+    expect(parseNewArgs(['terminal', '~/code'], env)).toMatchObject({ cwd: `${env.home}/code`, projectName: null })
+    expect(parseNewArgs(['terminal', '@mini'], env)).toMatchObject({ machine: 'mini', cwd: null, projectName: '' })
+    expect(newAgentPayload(parseNewArgs(['terminal', '@mini'], env), null)).not.toHaveProperty('projectSource')
+  })
+
   it('sends what the app sends', () => {
     const here = newAgentPayload(parseNewArgs(['codex', '--plan', '--prompt', 'fix the tests'], env), '/work/repo')
     expect(here).toMatchObject({ engine: 'codex', cwd: '/work/repo', permissionMode: 'plan', bypassPermission: false, prompt: 'fix the tests' })
@@ -452,6 +463,17 @@ describe('harness new: the daemon', () => {
     const far = deps(['codex', '--', 'go'], new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'f1', name: 'far' } } : null), { origin: async () => origin })
     expect(await newCommand(far)).toBe(0)
     expect(far.err).toEqual(['its limits start from zero'])
+    // A terminal: refused before anything is asked of the machine. No verb of the agent's lists one, so it could
+    // never read or close what it started.
+    const none = new FakeSocket(() => null)
+    const shell = deps(['terminal', '--json', '--', 'npm run dev'], none, { origin: async () => origin })
+    expect(await newCommand(shell)).toBe(1)
+    expect(JSON.parse(shell.out[0]!)).toMatchObject({ ok: false, error: expect.stringMatching(/^An agent cannot start a terminal.*Nothing was started\.$/) })
+    expect(none.sent).toEqual([])
+    // The person's own terminal is still made, where they are.
+    const own = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 't1', name: 'Terminal' } } : null)
+    expect(await newCommand(deps(['terminal'], own, { origin: async () => null }))).toBe(0)
+    expect(own.sent[1]!.payload).toMatchObject({ engine: 'terminal', cwd: env.cwd })
     // A person at a terminal: no origin, the old words.
     const atTerminal = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'c1', name: 'x' } } : null)
     const person = deps(['codex'], atTerminal, { origin: async () => null })
