@@ -1041,6 +1041,23 @@ describe('the permission gates', () => {
     expect(dropped).toEqual({ choice: { permissionMode: 'ask', bypassPermission: false }, droppedFlag: '--auto' })
   })
 
+  it('drops Claude Code\'s mode for a relaunch to no flag at all, since its Ask names a mode with that flag', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'harness-engine-gate-'))
+    dirs.push(binDir)
+    process.env.HARNESS_ENGINE_TEST_PATH = binDir
+    fakeEngine(binDir, 'claude', '--resume')
+    const shell = bashProbeShell()
+    for (const permissionMode of ['auto', 'ask']) {
+      const dropped = await dropPermissionFlagIfUnsupported('claude', { permissionMode, bypassPermission: permissionMode === 'auto' }, shell)
+      expect(dropped).toEqual({ choice: { permissionMode: null, bypassPermission: false }, droppedFlag: '--permission-mode' })
+      expect(buildEngineCommandArgv('claude', { ...dropped.choice, permissionMode: dropped.choice.permissionMode ?? undefined })).toEqual([engineBin('claude')])
+    }
+    // A create in Ask is told to update, never to choose the Ask it chose.
+    const refusal = await refusePermissionFlagIfUnsupported('claude', { permissionMode: 'ask' }, shell)
+    expect(refusal?.detail).toContain('Update claude and try again.')
+    expect(refusal?.detail).not.toContain('choose Ask')
+  })
+
   it('leaves a relaunch alone when the flag is supported', async () => {
     const shell = withFakeOpencode('--auto')
     const kept = await dropPermissionFlagIfUnsupported('opencode', { permissionMode: 'auto', bypassPermission: true }, shell)
