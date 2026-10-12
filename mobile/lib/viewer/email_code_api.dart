@@ -8,11 +8,12 @@ import 'direct_auth_api.dart';
 /// one the Autonomous companion app uses (`ecm-sds-mobile`, `features/auth`), called straight from
 /// the app.
 ///
-/// Why a phone signs in this way and not through the browser: the SSO flow redirects back to a
-/// loopback listener inside the app (the desktop CLI's `loginCommand`), and a phone is not obliged
-/// to keep that listener alive while a browser is in front of it. Google Play's review saw exactly that —
-/// "127.0.0.1 took too long to respond" — and rejected the build for a sign-in that could not
-/// finish. A code typed into the app never leaves it.
+/// Why a phone keeps this way beside the browser's "Continue with Google / Apple"
+/// (`direct_login.dart`): the SSO flow redirects back to a loopback listener inside the app (the
+/// desktop CLI's `loginCommand`), and a phone is not obliged to keep that listener alive while a
+/// browser is in front of it. Google Play's review saw exactly that — "127.0.0.1 took too long to
+/// respond" — and rejected a build whose ONLY sign-in it was. A code typed into the app never
+/// leaves it.
 ///
 /// The token it returns is an ordinary Autonomous access token: the Harness backend checks it
 /// against the same account API's `/me` endpoints it checks an SSO token against

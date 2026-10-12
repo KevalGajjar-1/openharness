@@ -44,9 +44,13 @@ class TtyPrimaryButton extends StatefulWidget {
     required this.onPressed,
     this.busy = false,
     this.busyLabel,
+    this.icon,
   });
 
   final String label;
+
+  /// Drawn before [label], in its ink — Connect computer's QR.
+  final IconData? icon;
 
   /// Null draws it disabled.
   final VoidCallback? onPressed;
@@ -104,11 +108,32 @@ class _TtyPrimaryButtonState extends State<TtyPrimaryButton> {
             borderRadius: BorderRadius.circular(6),
           ),
           alignment: Alignment.center,
-          child: TtyText(
-            widget.busy ? (widget.busyLabel ?? widget.label) : widget.label,
-            color: ink,
-            weight: FontWeight.w600,
-            size: TtySize.title,
+          // One line, as a [TtyText] — but ending in "…" where it does not fit, not cut at the
+          // edge: a busy label names the computer ("Pairing with Tonys-MacBook-Pro.local…"), and
+          // a hostname that long lost its end, and the ellipsis that says it is still working.
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.icon case final icon?) ...[
+                Icon(icon, size: 20, color: ink),
+                const SizedBox(width: 10),
+              ],
+              Flexible(
+                child: Text(
+                  widget.busy
+                      ? (widget.busyLabel ?? widget.label)
+                      : widget.label,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: tty.style(
+                    color: ink,
+                    weight: FontWeight.w600,
+                    size: TtySize.title,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

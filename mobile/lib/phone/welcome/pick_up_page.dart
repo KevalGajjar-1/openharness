@@ -84,6 +84,7 @@ class _PickUpPageState extends State<PickUpPage> {
     builder: (context, _) {
       AppTheme.watch(context);
       final tty = Tty.of(context);
+      final sample = SampleMode.maybeOf(context);
       return Scaffold(
         backgroundColor: tty.ground,
         body: SafeArea(
@@ -91,16 +92,23 @@ class _PickUpPageState extends State<PickUpPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // The sample's way back to the welcome screen it was opened from, placed where the
+              // set-up pages put theirs.
+              if (sample != null)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TtyBackButton(onPressed: sample.leave),
+                ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(
+                padding: EdgeInsets.fromLTRB(
                   Tty.origin,
-                  20,
+                  sample != null ? 8 : 20,
                   Tty.origin,
                   0,
                 ),
                 child: Text(
                   // Broken by hand: at 28pt it wraps with "off" alone on the second line.
-                  SampleMode.maybeOf(context) != null
+                  sample != null
                       ? 'Try a sample\nharness'
                       : 'Pick up where\nyou left off',
                   key: const ValueKey('pick-up-title'),

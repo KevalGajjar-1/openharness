@@ -1,14 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'package:harness_mobile/shared/theme/app_theme.dart';
 import 'package:harness_mobile/shared/widgets/empty_state.dart';
 import 'package:harness_mobile/state/app_state.dart';
 
-import 'link_page.dart';
 import 'welcome/connect_computer.dart';
+import 'welcome/set_up_computer.dart' show ComputerSteps;
 import 'tty_controls.dart';
 import 'tty.dart';
 import 'find_row.dart';
@@ -17,6 +18,7 @@ import 'machine_index.dart';
 import 'phone_card.dart';
 import 'phone_navigation.dart';
 import 'phone_status.dart';
+import 'settings_page.dart' show PhoneSettingsButton;
 
 /// The machines on the account, grouped by what they need.
 ///
@@ -27,13 +29,22 @@ import 'phone_status.dart';
 /// Harness that is not running — collect underneath, where they read as a to-do list rather than
 /// as the thing standing between you and the machine you actually came for.
 class MachinesTab extends StatelessWidget {
-  const MachinesTab({super.key, required this.notifier, this.large = true});
+  const MachinesTab({
+    super.key,
+    required this.notifier,
+    this.large = true,
+    this.fromTerminal = false,
+  });
 
   final AppNotifier notifier;
 
-  /// The tab's big title. Off when this is PUSHED — from the terminal's `⋯` sheet — where it needs
-  /// the back chevron that a large header does not draw.
+  /// The tab's big title. Off when this is PUSHED — from Settings or a swipe left on the terminal —
+  /// where it draws the back chevron above its title instead, as Settings itself does.
   final bool large;
+
+  /// Pushed by a swipe left on the terminal: a swipe right ANYWHERE goes back — the way home is the
+  /// same swipe the other way, as on the New Harness form.
+  final bool fromTerminal;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -41,45 +52,107 @@ class MachinesTab extends StatelessWidget {
     builder: (context, _) {
       AppTheme.watch(context);
       final tty = Tty.of(context);
-      return Scaffold(
+      final page = Scaffold(
         backgroundColor: tty.ground,
         body: SafeArea(
           bottom: false,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  Tty.origin,
-                  12,
-                  Tty.origin,
-                  4,
+              if (!large)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TtyBackButton(
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
                 ),
-                child: TtyText(
-                  'Computers',
-                  size: large ? 24 : TtySize.title,
-                  weight: FontWeight.w600,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        Tty.origin,
+                        large ? 12 : 8,
+                        Tty.origin,
+                        4,
+                      ),
+                      child: TtyText(
+                        'Computers',
+                        size: large ? 24 : TtySize.title,
+                        weight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  // What a pull on the list does, for whoever does not know to pull — or has
+                  // nothing to pull: the empty and failed states draw no list.
+                  _RefreshButton(
+                    busy:
+                        notifier.machinesRefreshing || notifier.machinesLoading,
+                    trailing: !large,
+                    onPressed: () => unawaited(notifier.retryMachines()),
+                  ),
+                  // Large, this is the home screen while no computer is ready — locked, or off —
+                  // and nothing else on it leads to Settings or Sign out. Pushed (small) — from
+                  // Settings, or by the terminal's swipe left — back is the way out.
+                  if (large) PhoneSettingsButton(notifier: notifier),
+                ],
               ),
-              Expanded(child: _Body(notifier: notifier)),
+              Expanded(
+                child: _Body(notifier: notifier, home: large),
+              ),
             ],
           ),
         ),
       );
+      return fromTerminal ? _SwipeBack(child: page) : page;
     },
   );
 }
 
+/// A swipe right anywhere on [child] pops it — not only the system's sliver of left edge, which a
+/// thumb in the middle of the screen never finds. The New Harness form's reach and flick.
+class _SwipeBack extends StatefulWidget {
+  const _SwipeBack({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_SwipeBack> createState() => _SwipeBackState();
+}
+
+class _SwipeBackState extends State<_SwipeBack> {
+  /// How far right the drag under way has gone.
+  double _swiped = 0;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    // Translucent: the rows under the finger still take their taps; the list scrolls on the other
+    // axis.
+    behavior: HitTestBehavior.translucent,
+    onHorizontalDragStart: (_) => _swiped = 0,
+    onHorizontalDragUpdate: (details) => _swiped += details.primaryDelta ?? 0,
+    onHorizontalDragEnd: (details) {
+      if (_swiped >= 64 || (details.primaryVelocity ?? 0) >= 300) {
+        unawaited(Navigator.of(context).maybePop());
+      }
+    },
+    child: widget.child,
+  );
+}
+
 class _Body extends StatelessWidget {
-  const _Body({required this.notifier});
+  const _Body({required this.notifier, required this.home});
 
   final AppNotifier notifier;
 
+  /// This list is the home screen ([MachinesTab.large]), not pushed over it.
+  final bool home;
+
   @override
   Widget build(BuildContext context) {
-    // The order a swipe on the machine page walks, split back into the two sections this list draws.
+    // The order a swipe on the machine page walks, split back into the runs this list draws.
     // Taken from [visibleMachines] rather than partitioned here so the page and the list cannot
-    // drift apart — the split below is presentation, the order is not.
+    // drift apart — the split below ([_rows]) is presentation, the order is not.
     final ordered = visibleMachines(notifier);
     if (ordered.isEmpty &&
         (notifier.machinesLoading || notifier.machinesRefreshing)) {
@@ -101,54 +174,138 @@ class _Body extends StatelessWidget {
       );
     }
     if (ordered.isEmpty) {
-      return const EmptyState(
+      // ⚠️ With the way to set one up, as the list's own last row offers it: reached from Settings
+      // on a phone with no computer yet, this was a sentence and nothing to press.
+      return EmptyState(
         icon: LucideIcons.laptopMinimal300,
         title: 'No computers yet',
         message:
             'Set up Harness on your computer, signed in to this account, and it '
             'appears here.',
+        action: FilledButton(
+          key: const ValueKey('machines-set-up'),
+          onPressed: () => _setUpComputer(context),
+          child: const Text('Set up a computer'),
+        ),
       );
     }
 
     final tty = Tty.of(context);
-    return RefreshIndicator(
-      onRefresh: notifier.retryMachines,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.paddingOf(context).bottom + 24,
-        ),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(Tty.origin, 0, Tty.origin, 8),
-            child: Text(
-              'Your harnesses run on these.',
-              style: tty.style(size: TtySize.meta, color: tty.faint),
-            ),
-          ),
-          for (final state in ordered) _row(context, state, tty),
-          const SizedBox(height: 8),
-          FindAddRow(
-            label: 'Set up another computer',
-            onTap: () => Navigator.of(context).push(
-              phoneRoute(
-                (route) => ConnectComputerPage(
-                  notifier: notifier,
-                  signedIn: false,
-                  onBack: () => Navigator.of(route).maybePop(),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: notifier.retryMachines,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              // The bar under the list keeps clear of the home indicator; the list only of the bar.
+              padding: const EdgeInsets.only(bottom: 16),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    Tty.origin,
+                    0,
+                    Tty.origin,
+                    8,
+                  ),
+                  child: Text(
+                    'Your harnesses run on these.',
+                    style: tty.style(size: TtySize.meta, color: tty.faint),
+                  ),
                 ),
-              ),
+                ..._rows(context, ordered, tty),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+        _ConnectBar(
+          key: const ValueKey('machines-connect-bar'),
+          notifier: notifier,
+          home: home,
+          onSetUp: () => _setUpComputer(context),
+        ),
+      ],
     );
   }
 
-  Widget _row(BuildContext context, MachineState state, Tty tty) {
+  /// [ordered]'s rows — each run of computers that want the same thing under one line that says it
+  /// once, `asleep · turn them on, or run harness start there`, rather than the same words under
+  /// every row: six asleep computers said it six times, half the screen of one sentence.
+  ///
+  /// A run of one keeps its own second line: a header over a single row is two lines saying what
+  /// one did, and in the singular. The working ones each say their own thing — how many harnesses —
+  /// and are never gathered. Runs, not sorting: [visibleMachines] already puts each kind together.
+  List<Widget> _rows(
+    BuildContext context,
+    List<MachineState> ordered,
+    Tty tty,
+  ) {
+    final rows = <Widget>[];
+    var start = 0;
+    while (start < ordered.length) {
+      final status = phoneMachineStatusOf(ordered[start]);
+      var end = start + 1;
+      while (end < ordered.length &&
+          phoneMachineStatusOf(ordered[end]) == status) {
+        end++;
+      }
+      final group = _groupOf(status);
+      final gathered = group != null && end - start > 1;
+      if (group != null && gathered) {
+        rows.add(_GroupLine(word: group.word, hint: group.hint));
+      }
+      for (final state in ordered.sublist(start, end)) {
+        rows.add(_row(context, state, tty, ownLine: !gathered));
+      }
+      start = end;
+    }
+    return rows;
+  }
+
+  /// What a run of computers in [status] is called over it, and what to do about them, said once —
+  /// null for the ones that need nothing.
+  static ({String word, String hint})? _groupOf(PhoneMachineStatus status) =>
+      switch (status) {
+        PhoneMachineStatus.needsPassword => (
+          word: 'locked',
+          hint: 'tap one to unlock: scan its code',
+        ),
+        PhoneMachineStatus.offline => (
+          word: 'asleep',
+          hint: 'turn them on, or run harness start there',
+        ),
+        PhoneMachineStatus.ready || PhoneMachineStatus.connecting => null,
+      };
+
+  /// A row whose second line its group's own line says instead — one line, a thumb's height.
+  static const double _gatheredRowHeight = 48;
+
+  /// Connect your computer over this list — the download link, the steps, and a scan that pairs —
+  /// for a computer not on the account yet.
+  void _setUpComputer(BuildContext context) => unawaited(
+    Navigator.of(context).push(
+      phoneRoute(
+        (route) => ConnectComputerPage(
+          notifier: notifier,
+          signedIn: false,
+          onBack: () => Navigator.of(route).maybePop(),
+        ),
+      ),
+    ),
+  );
+
+  /// [ownLine] false: its run's [_GroupLine] says what the second line would have, so it has none.
+  Widget _row(
+    BuildContext context,
+    MachineState state,
+    Tty tty, {
+    bool ownLine = true,
+  }) {
     final status = phoneMachineStatusOf(state);
     final count = state.agents.length;
-    final (String word, Color color, String detail) = switch (status) {
+    final machineId = state.machine.machineId;
+    var (String word, Color color, String detail) = switch (status) {
       PhoneMachineStatus.ready => (
         'ready',
         tty.green,
@@ -168,31 +325,310 @@ class _Body extends StatelessWidget {
         'turn it on, or run harness start there',
       ),
     };
+    // Something asked of it by hand is still on its way: the row says so, rather than the state it
+    // is about to leave.
+    if (notifier.machineRemoving(machineId)) {
+      (word, color) = ('removing…', tty.faint);
+    } else if (notifier.machineRetrying(machineId)) {
+      (word, color) = ('trying…', tty.faint);
+    }
     return FindRow(
       title: state.machine.displayName,
-      detail: detail,
+      detail: ownLine ? detail : null,
+      minHeight: ownLine ? FindRow.height : _gatheredRowHeight,
       state: word,
       stateColor: color,
-      enabled: status != PhoneMachineStatus.offline,
-      onTap: status == PhoneMachineStatus.offline
-          ? null
-          : () => _open(context, state),
+      // ⚠️ An asleep computer is tappable now. It used to be drawn inert, with nothing a tap could do
+      // for it — and it is exactly the one somebody wants to try again, rename, or take off the
+      // account.
+      onTap: () => _open(context, state),
     );
   }
 
-  void _open(BuildContext context, MachineState state) {
-    if (state.needsLink) {
-      Navigator.of(context).push(
-        phoneRoute(
-          (_) =>
-              LinkPage(notifier: notifier, machineId: state.machine.machineId),
+  /// One sheet for every computer, whatever it reads — see [openMachineActions]. A locked one has
+  /// "Unlock…" at its head, the act its row offers; one place decides what a computer offers, so no
+  /// state can lose the rename or the removal.
+  void _open(BuildContext context, MachineState state) =>
+      openMachineActions(context, notifier, state.machine.machineId);
+}
+
+/// Over a run of computers that want the same thing: what they are, then what to do about them —
+/// `asleep · turn them on, or run harness start there` — said once for the run.
+class _GroupLine extends StatelessWidget {
+  const _GroupLine({required this.word, required this.hint});
+
+  final String word;
+  final String hint;
+
+  @override
+  Widget build(BuildContext context) {
+    final tty = Tty.of(context);
+    return Semantics(
+      header: true,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(Tty.origin, 16, Tty.origin, 4),
+        // Wraps rather than clips: at a large text size the hint is two lines, and the half cut off
+        // was the half that said what to do.
+        child: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: word,
+                style: tty.style(
+                  color: tty.text,
+                  size: TtySize.meta,
+                  weight: FontWeight.w600,
+                ),
+              ),
+              TextSpan(text: ' · $hint'),
+            ],
+          ),
+          style: tty.style(color: tty.faint, size: TtySize.meta),
         ),
+      ),
+    );
+  }
+}
+
+/// The foot of Computers, under the list and kept there however long it grows: Connect computer —
+/// the camera at once, for a computer already showing its QR code, the button the desktop's Add
+/// Phone tells somebody to tap — and Set up another computer, for one with no Harness on it yet.
+///
+/// Pinned, not the list's last rows: at the end of a list they sat after every computer, read as
+/// two more of them, and went below the fold at nine. Down here they are where a thumb already is.
+/// The button is Connect your computer's own, so the two screens show one thing by one name.
+///
+/// How a scan goes is said on a line over the button — under the list, where the computer it pairs
+/// turns up; once paired, the computer is in the list.
+class _ConnectBar extends StatefulWidget {
+  const _ConnectBar({
+    super.key,
+    required this.notifier,
+    required this.home,
+    required this.onSetUp,
+  });
+
+  final AppNotifier notifier;
+
+  /// This list is the home screen, which a computer turning up takes away: the code goes to the
+  /// home screen to pair by, as on Connect your computer at home — [scanAndPairComputer]'s
+  /// `handOff`.
+  final bool home;
+
+  /// Set up another computer: Connect your computer, pushed over this list.
+  final VoidCallback onSetUp;
+
+  @override
+  State<_ConnectBar> createState() => _ConnectBarState();
+}
+
+class _ConnectBarState extends State<_ConnectBar> {
+  /// What the last scan came to, while it is worth saying: pairing, or why it did not.
+  String? _said;
+  bool _failed = false;
+
+  /// A scan under way, from the camera to its answer: one at a time, so a one-time code is never
+  /// spent on two pairings.
+  bool _scanning = false;
+
+  void _say(String? message, {bool failed = false}) => setState(() {
+    _said = message;
+    _failed = failed;
+  });
+
+  Future<void> _scan() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    try {
+      await scanAndPairComputer(
+        context,
+        widget.notifier,
+        say: _say,
+        handOff: widget.home,
+        // ⚠️ Said on the camera, because nothing here says it. The camera only scans (owner,
+        // 2026-10-08) and leaves the steps on the computer to the page it is opened from — Set up
+        // another computer has them under its own Connect computer. Opened from here, somebody who
+        // came to the phone first faced a camera and "Scan the code on your computer" with no code
+        // on the computer and no word of how to bring one up. That page's steps, word for word.
+        steps: ComputerSteps(account: widget.notifier.currentUser?.email),
       );
-      return;
+    } finally {
+      if (mounted) setState(() => _scanning = false);
     }
-    // The same sheet the terminal's `⋯` used to open for a machine — reload its agents, re-enter its
-    // password, unlink this phone. One place decides what a machine offers, so a machine tapped here
-    // and a machine tapped from there cannot drift apart.
-    openMachineActions(context, notifier, state.machine.machineId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tty = Tty.of(context);
+    final said = _said;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: tty.ground,
+        // The new-device banner's rule: the list scrolls under this edge, and without it the last
+        // row ran into the button.
+        border: Border(top: BorderSide(color: tty.dim.withValues(alpha: 0.25))),
+      ),
+      child: Padding(
+        // SafeArea leaves the foot to this page: the bar keeps clear of the home indicator itself.
+        padding: EdgeInsets.only(
+          top: 12,
+          bottom: MediaQuery.paddingOf(context).bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: Tty.origin),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (said != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        _failed ? '✗ $said' : said,
+                        key: const ValueKey('machines-connect-status'),
+                        style: tty.style(
+                          size: TtySize.meta,
+                          color: _failed ? tty.red : tty.faint,
+                        ),
+                      ),
+                    ),
+                  TtyPrimaryButton(
+                    key: const ValueKey('machines-connect-computer'),
+                    icon: LucideIcons.qrCode300,
+                    label: 'Connect computer',
+                    // Green and still while a scan is looked up or paired; the line over it says
+                    // which.
+                    busy: _scanning,
+                    onPressed: () => unawaited(_scan()),
+                  ),
+                  const SizedBox(height: 8),
+                  // "QR code", not "Add Phone code": a desktop menu's name read as a noun stack
+                  // under a button named for the other side — and the camera takes a computer's
+                  // sign-in QR too.
+                  Text(
+                    'Scan the QR code on your computer.',
+                    style: tty.style(size: TtySize.meta, color: tty.faint),
+                  ),
+                ],
+              ),
+            ),
+            FindAddRow(label: 'Set up another computer', onTap: widget.onSetUp),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The list read again — what a pull does ([AppNotifier.retryMachines]) — as a glyph beside
+/// Settings.
+///
+/// While a read the person asked for is running ([busy]) the glyph turns and a press does nothing;
+/// it keeps its ink rather than greying out, because it is working, not unavailable — the rail's
+/// reload says the same (`AppIconButton.spinning`). The deaf poll's own reads do not turn it: every
+/// few seconds, that would be a glyph that never stops.
+class _RefreshButton extends StatefulWidget {
+  const _RefreshButton({
+    required this.busy,
+    required this.trailing,
+    required this.onPressed,
+  });
+
+  final bool busy;
+
+  /// Last in its row, with no Settings after it (the list pushed from Settings): the glyph sits on
+  /// the right gutter, in Settings' own box. Otherwise it stands left of Settings, which keeps its
+  /// place on the gutter.
+  final bool trailing;
+
+  final VoidCallback onPressed;
+
+  @override
+  State<_RefreshButton> createState() => _RefreshButtonState();
+}
+
+class _RefreshButtonState extends State<_RefreshButton>
+    with SingleTickerProviderStateMixin {
+  /// One turn — the rail's reload's (`AppIconButton`).
+  static const Duration _spinPeriod = Duration(milliseconds: 900);
+
+  late final AnimationController _spin = AnimationController(
+    vsync: this,
+    duration: _spinPeriod,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.busy) _spin.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_RefreshButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.busy == oldWidget.busy) return;
+    if (widget.busy) {
+      _spin.repeat();
+    } else {
+      // The turn under way lands upright instead of freezing at whatever angle the reply arrived:
+      // a glyph stopped askew reads as stuck.
+      _spin
+          .animateTo(1, duration: _spinPeriod * (1 - _spin.value))
+          .whenComplete(() {
+            if (mounted && !widget.busy) _spin.value = 0;
+          });
+    }
+  }
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tty = Tty.of(context);
+    return Semantics(
+      button: true,
+      enabled: !widget.busy,
+      label: 'Refresh',
+      excludeSemantics: true,
+      child: GestureDetector(
+        key: const ValueKey('machines-refresh'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (widget.busy) return;
+          HapticFeedback.selectionClick();
+          widget.onPressed();
+        },
+        // A thumb's 44. Beside Settings the glyph keeps to the box's right edge: Settings' box
+        // already leaves room left of its own glyph, and centred here the two sat a button apart.
+        child: SizedBox(
+          width: widget.trailing ? 52 : 44,
+          height: 44,
+          child: Padding(
+            padding: EdgeInsets.only(
+              right: widget.trailing ? Tty.origin - 2 : 2,
+            ),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: RotationTransition(
+                turns: _spin,
+                child: Icon(
+                  LucideIcons.refreshCw300,
+                  size: 20,
+                  color: tty.faint,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

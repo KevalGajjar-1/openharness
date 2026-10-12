@@ -94,104 +94,128 @@ class _DeviceDetailPageState extends State<DeviceDetailPage> {
     final lastSeen = widget.lastSeen;
     final now = DateTime.now();
     final fp = _row.fingerprint;
+    final canPop = Navigator.of(context).canPop();
     return Scaffold(
       backgroundColor: tty.ground,
       body: SafeArea(
         bottom: false,
-        child: ListView(
-          padding: EdgeInsets.fromLTRB(
-            Tty.origin,
-            12,
-            Tty.origin,
-            MediaQuery.paddingOf(context).bottom + 24,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TtyText(_name, size: TtySize.title, weight: FontWeight.w600),
-            const SizedBox(height: 12),
-            SettingsGroup(
-              children: [
-                SettingsRow(
-                  title: 'Kind',
-                  value: isMachine ? 'Computer' : 'App',
+            // Always pushed — from Your devices, the new-device banner or its notification — so it
+            // carries the way back as Your devices does: above the title, outside the list.
+            if (canPop)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TtyBackButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
                 ),
-                SettingsRow(
-                  title: 'Added',
-                  value: fullDateTime(
-                    DateTime.fromMillisecondsSinceEpoch(member.addedAt),
-                  ),
+              ),
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(
+                  Tty.origin,
+                  canPop ? 8 : 12,
+                  Tty.origin,
+                  MediaQuery.paddingOf(context).bottom + 24,
                 ),
-                if (lastSeen != null)
-                  SettingsRow(
-                    title: 'Last active',
-                    value: relativeAgo(
-                      DateTime.fromMillisecondsSinceEpoch(lastSeen),
-                      now,
-                    ),
-                  ),
-                if (isMachine && member.machineId.isNotEmpty)
-                  SettingsRow(
-                    title: 'Machine',
-                    value: member.machineId.substring(
-                      0,
-                      member.machineId.length < 8 ? member.machineId.length : 8,
-                    ),
-                  ),
-                // Another of the person's devices said "It's mine" for it while it was new here: where
-                // the banner would have been, the page says where it was settled.
-                if (_row.confirmed case final confirmed?)
-                  SettingsRow(
-                    key: const Key('device-detail-confirmed'),
-                    title: 'Confirmed',
-                    value: 'on ${confirmed.label.trim().isEmpty ? 'another device' : confirmed.label.trim()}',
-                  ),
-              ],
-            ),
-            if (fp.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              FingerprintBlock(
-                fp,
-                large: true,
-                copyKey: const Key('device-detail-copy'),
-              ),
-              const SizedBox(height: 8),
-              // Wraps: the explanation is a sentence, not a terminal line.
-              Text(
-                fingerprintHowToCompare(computer: isMachine),
-                style: tty.style(color: tty.dim),
-              ),
-            ],
-            if (_row.suspended) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Not trusted here: added after this device’s list and another’s split. '
-                'Review the list to trust it again.',
-                style: tty.style(color: tty.red),
-              ),
-            ],
-            if (_error case final error?) ...[
-              const SizedBox(height: 12),
-              Text(error, style: tty.style(color: tty.red)),
-            ],
-            if (widget.isNew || !_row.self) ...[
-              const SizedBox(height: 16),
-              SettingsGroup(
                 children: [
-                  if (widget.isNew)
-                    SettingsRow(
-                      key: const Key('device-detail-mine'),
-                      title: 'It’s mine',
-                      onTap: _removing ? null : _mine,
+                  TtyText(_name, size: TtySize.title, weight: FontWeight.w600),
+                  const SizedBox(height: 12),
+                  SettingsGroup(
+                    children: [
+                      SettingsRow(
+                        title: 'Kind',
+                        value: isMachine ? 'Computer' : 'App',
+                      ),
+                      SettingsRow(
+                        title: 'Added',
+                        value: fullDateTime(
+                          DateTime.fromMillisecondsSinceEpoch(member.addedAt),
+                        ),
+                      ),
+                      if (lastSeen != null)
+                        SettingsRow(
+                          title: 'Last active',
+                          value: relativeAgo(
+                            DateTime.fromMillisecondsSinceEpoch(lastSeen),
+                            now,
+                          ),
+                        ),
+                      if (isMachine && member.machineId.isNotEmpty)
+                        SettingsRow(
+                          title: 'Machine',
+                          value: member.machineId.substring(
+                            0,
+                            member.machineId.length < 8
+                                ? member.machineId.length
+                                : 8,
+                          ),
+                        ),
+                      // Another of the person's devices said "It's mine" for it while it was new
+                      // here: where the banner would have been, the page says where it was settled.
+                      if (_row.confirmed case final confirmed?)
+                        SettingsRow(
+                          key: const Key('device-detail-confirmed'),
+                          title: 'Confirmed',
+                          value:
+                              'on ${confirmed.label.trim().isEmpty ? 'another device' : confirmed.label.trim()}',
+                        ),
+                    ],
+                  ),
+                  if (fp.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    FingerprintBlock(
+                      fp,
+                      large: true,
+                      copyKey: const Key('device-detail-copy'),
                     ),
-                  if (!_row.self)
-                    SettingsRow(
-                      key: const Key('device-detail-remove'),
-                      title: _removing ? 'Removing…' : 'Remove this device',
-                      destructive: true,
-                      onTap: _removing ? null : () => unawaited(_remove()),
+                    const SizedBox(height: 8),
+                    // Wraps: the explanation is a sentence, not a terminal line.
+                    Text(
+                      fingerprintHowToCompare(computer: isMachine),
+                      style: tty.style(color: tty.dim),
                     ),
+                  ],
+                  if (_row.suspended) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Not trusted here: added after this device’s list and another’s split. '
+                      'Review the list to trust it again.',
+                      style: tty.style(color: tty.red),
+                    ),
+                  ],
+                  if (_error case final error?) ...[
+                    const SizedBox(height: 12),
+                    Text(error, style: tty.style(color: tty.red)),
+                  ],
+                  if (widget.isNew || !_row.self) ...[
+                    const SizedBox(height: 16),
+                    SettingsGroup(
+                      children: [
+                        if (widget.isNew)
+                          SettingsRow(
+                            key: const Key('device-detail-mine'),
+                            title: 'It’s mine',
+                            onTap: _removing ? null : _mine,
+                          ),
+                        if (!_row.self)
+                          SettingsRow(
+                            key: const Key('device-detail-remove'),
+                            title: _removing
+                                ? 'Removing…'
+                                : 'Remove this device',
+                            destructive: true,
+                            onTap: _removing
+                                ? null
+                                : () => unawaited(_remove()),
+                          ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
-            ],
+            ),
           ],
         ),
       ),

@@ -61,14 +61,14 @@ class FocusHintsSeen {
 }
 
 /// Focus's first-time hints: the three things a phone can do here that nothing on screen says —
-/// swipe right for your harnesses, swipe left for a new one, the mic to talk. Laid over the
+/// swipe right for your harnesses, swipe left for your computers, the mic to talk. Laid over the
 /// terminal once, in the terminal's own type; any touch puts them away for good.
 ///
 /// ```
 ///  tap the title       ─ rename, restart, paste…
 ///
 ///  → swipe right                swipe left ←
-///    all your harnesses       start a new one
+///    all your harnesses        your computers
 ///
 ///                 talk to it
 ///                    ( mic )
@@ -130,15 +130,25 @@ class _FocusHintsState extends State<FocusHints> {
               ? CrossAxisAlignment.center
               : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
+          // Text that wraps, not one-line [TtyText]s: the two swipe hints share the width, and on
+          // a 320pt phone or at the largest text size "all your harnesses" was cut at the edge.
+          // A line that fits is drawn exactly as before.
           children: [
-            TtyText(
+            Text(
               big,
-              size: TtySize.title,
-              weight: FontWeight.w600,
-              color: tty.green,
+              textAlign: align,
+              style: tty.style(
+                size: TtySize.title,
+                weight: FontWeight.w600,
+                color: tty.green,
+              ),
             ),
             const SizedBox(height: 2),
-            TtyText(small, size: TtySize.meta, color: tty.text),
+            Text(
+              small,
+              textAlign: align,
+              style: tty.style(size: TtySize.meta, color: tty.text),
+            ),
           ],
         );
     // ⚠️ **The touch goes THROUGH.** A hint that swallowed the swipe it teaches ("swipe right")
@@ -150,8 +160,8 @@ class _FocusHintsState extends State<FocusHints> {
       child: IgnorePointer(
         child: Semantics(
           label:
-              'Tips: swipe right for all your harnesses, swipe left to start '
-              'one, tap the title for its menu, the mic to talk.',
+              'Tips: swipe right for all your harnesses, swipe left for your '
+              'computers, tap the title for its menu, the mic to talk.',
           child: Material(
             color: tty.ground.withValues(alpha: 0.95),
             child: Stack(
@@ -167,21 +177,42 @@ class _FocusHintsState extends State<FocusHints> {
                   right: 16,
                   top: 0,
                   bottom: 0,
-                  child: Row(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Expanded(
-                        child: hint('→ swipe right', 'all your harnesses'),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: hint('→ swipe right', 'all your harnesses'),
+                          ),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: hint(
+                                'swipe left ←',
+                                'your computers',
+                                align: TextAlign.right,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: hint(
-                            'swipe left ←',
-                            'start a new one',
-                            align: TextAlign.right,
+                      // ⚠️ What [FocusHints.onDone] asks for next — the notification permission —
+                      // said before the OS asks it: the prompt used to come out of nowhere, the
+                      // moment the tips were touched away. Worded as what notices are for, not as
+                      // a promise of a prompt, which an OS that already has the answer never shows.
+                      if (widget.onDone != null) ...[
+                        const SizedBox(height: 28),
+                        Text(
+                          'Notifications tell you when a harness needs you, '
+                          'and when a new device joins your account.',
+                          textAlign: TextAlign.center,
+                          style: tty.style(
+                            size: TtySize.meta,
+                            color: tty.faint,
                           ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),

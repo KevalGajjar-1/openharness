@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
+import '../core/test_run.dart';
 import 'bytes.dart';
 import 'primitives.dart';
 
@@ -176,6 +178,37 @@ Map<String, dynamic>? unwrapPayload(
     sealed,
   );
   return clear == null ? null : jsonObjectOf(clear);
+}
+
+/// From this many characters of `ct` an envelope is opened off the UI isolate ([unwrapPayloadOffThread]).
+/// Below it — every event, every small reply — spawning an isolate costs more than the open.
+const int unwrapOffThreadFrom = 48 * 1024;
+
+/// Whether [env]'s ciphertext is large enough to open off the UI isolate.
+bool opensOffThread(Object? env) {
+  if (kUnderTest || env is! Map) return false;
+  final ct = env['ct'];
+  return ct is String && ct.length >= unwrapOffThreadFrom;
+}
+
+/// [unwrapPayload] on a background isolate: base64, ChaCha20-Poly1305 and the JSON of a large
+/// payload — a machine's whole agent list, a transcript, a file — are pure Dart, and done on the UI
+/// isolate they stalled the screen for as long as they took. A pure function of its arguments, so
+/// the isolate answers exactly what this one would; one that will not start is the work done here.
+Future<Map<String, dynamic>?> unwrapPayloadOffThread(
+  List<int> key,
+  Map<String, dynamic> env,
+  String frameType,
+  String? dbSessionId,
+) async {
+  final keyBytes = Uint8List.fromList(key);
+  try {
+    return await Isolate.run(
+      () => unwrapPayload(keyBytes, env, frameType, dbSessionId),
+    );
+  } on Object {
+    return unwrapPayload(key, env, frameType, dbSessionId);
+  }
 }
 
 bool isWrapped(Object? payload) =>

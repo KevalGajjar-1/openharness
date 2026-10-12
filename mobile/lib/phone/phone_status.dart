@@ -38,13 +38,33 @@ PhoneMachineStatus phoneMachineStatusOf(MachineState machine) {
   return answering ? PhoneMachineStatus.ready : PhoneMachineStatus.connecting;
 }
 
+/// The machine list's own word on whether a machine is up — its `/api/machines` status, not the
+/// socket.
+bool phoneAccountSaysOnline(String? status) =>
+    switch (status?.trim().toLowerCase()) {
+      'running' || 'online' || 'connected' || 'ready' => true,
+      _ => false,
+    };
+
+/// Whether [machine] is away for real: offline by its socket's word, and the account's own record
+/// agrees.
+///
+/// ⚠️ **Both, because the socket alone flaps.** One that drops while it is still being dialled
+/// marks the node offline for a moment, for a machine that answers seconds later — saying "asleep"
+/// over that would flash a wrong word at every redial. A machine the account also lists as down is
+/// one with nothing on the way: switched off, or Harness not running there yet (a computer just
+/// restarted was measured taking 70s to reach the relay).
+bool phoneMachineAway(MachineState machine) =>
+    phoneMachineStatusOf(machine) == PhoneMachineStatus.offline &&
+    !phoneAccountSaysOnline(machine.machine.status);
+
 /// Whether [machine]'s agents belong on the agent screens: it is answering, or it answered and its
 /// socket is only dialling again.
 ///
 /// ⚠️ **The second half is what keeps a terminal on screen through a dropped socket.** Backgrounding
 /// the app drops it every time, and a machine counted only while [PhoneMachineStatus.ready] took its
 /// agents out of the list for the length of the redial — the pager, whose pages ARE that list, was
-/// thrown away and the screen fell back to "Connecting to your machine…" on every return to the app.
+/// thrown away and the screen fell back to "Connecting to your computer…" on every return to the app.
 /// A first connect has no list yet, so it still waits like one.
 /// ⚠️ **Agents restored from the last run count too, and that is the whole
 /// point of restoring them.** A warm-started machine is `connecting` (its socket

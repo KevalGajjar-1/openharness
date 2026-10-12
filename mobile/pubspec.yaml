@@ -2,7 +2,7 @@ name: harness_mobile
 description: "Harness viewer for iOS and Android."
 publish_to: 'none'
 
-version: 1.0.0+50
+version: 1.0.3+64
 
 environment:
   sdk: ^3.13.0
@@ -30,8 +30,9 @@ dependencies:
   dio: ^5.11.0
   # The relay socket every machine is reached over (`ws/`).
   web_socket_channel: ^3.0.3
-  # Sign-in hands the SSO URL to the system browser (`viewer/sign_in_browser.dart`)
-  # and the terminal opens links a program printed (`terminal/terminal_link_opener.dart`).
+  # "Continue with Google / Apple" opens the SSO page in an Android Custom Tab
+  # (`viewer/sign_in_browser.dart`; iOS's is native, `SignInPageChannel`), and the terminal
+  # opens links a program printed (`terminal/terminal_link_opener.dart`).
   url_launcher: ^6.3.2
   # X25519/HKDF/ChaCha20-Poly1305 for the end-to-end encryption this app
   # terminates itself, being a viewer (`e2ee/`).
@@ -115,6 +116,10 @@ flutter:
     # NOT listed: Flutter cannot draw an SVG without a package this app does not
     # depend on, so bundling it would only add its weight to every install.
     - assets/app_icon.png
+    # The marks on the welcome screen's two accounts (`phone/welcome/sign_in_provider_button.dart`),
+    # PNG at 1x/2x/3x for the reason above: drawn from `desktop/assets/sign-in/*.svg` by
+    # `scripts/render_svg.swift` (Apple's 814x1000 mark centred in a square tile first).
+    - assets/sign-in/
     # "See how it works" — recorded from the sample on a simulator by
     # `integration_test/demo_video_test.dart`, trimmed and encoded at 604px, ~630 KB.
     - assets/video/how_it_works.mp4

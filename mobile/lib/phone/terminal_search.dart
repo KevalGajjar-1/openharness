@@ -47,7 +47,9 @@ import 'phone_search_results.dart';
 /// ⚠️ **Full height, and a keyboard lifts only its foot.** It runs up under the status bar; a
 /// keyboard, when it comes, takes the drawer's foot onto its own top rather than covering the rows.
 ///
-/// The field takes focus on opening so a query can be typed immediately.
+/// ⚠️ **The field waits for a tap.** Find opens on its list with the keyboard down: the rows are
+/// what it is opened to see, and a keyboard raised on every open took half of them away for a look
+/// that needed no typing. A tap on the field — or the mic — is what starts a search.
 ///
 /// ⚠️ **Not a route.** Pushed, the sheet would sit in a navigator above the shell, and an agent
 /// opened from it would be pushed over the shell rather than take the home screen (see
@@ -144,7 +146,7 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
   /// height.
   final _sheetKey = GlobalKey(debugLabel: 'Terminal search sheet');
 
-  /// Whether the field has been tapped: Cancel beside it instead of `+`.
+  /// Whether a search is under way: the field tapped, or a query spoken into the mic ([_talk]).
   ///
   /// ⚠️ **Entered on focus, left on Cancel — not tied to focus both ways.** The keyboard goes away
   /// for reasons that are not "stop searching" — the return key puts it away on purpose. The query
@@ -259,8 +261,9 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
   }
 
   /// `+`: away first, then the new-agent form. Null while no machine can take one.
-  /// `+ New Harness` — in the project the query matched when there is one; else on the machine of
-  /// the harness on screen, as a swipe left does; else the command's first ready machine.
+  /// `+ New Harness` and the button at the foot — in the project the query matched when there is
+  /// one (the row only); else on the machine of the harness on screen; else the command's first
+  /// ready machine.
   void Function(({String machineId, String folder, String label})? place)?
   _newAgent() {
     final showing = widget.showing;
@@ -447,11 +450,13 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
             builder: (context, _) {
               final newAgent = _newAgent();
               final hasText = _controller.text.isNotEmpty;
+              // `:` — the models of the harness on screen, not harnesses: no New Harness under them.
+              final models = _search.isModelMode && widget.showing != null;
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   SizedBox(height: media.padding.top + 8),
-                  // The field takes the keyboard on entry, like ⌘P.
+                  // No autofocus: the keyboard comes with a tap on the field — see the class note.
                   // No Cancel: a swipe left is the way out, as it was the way in.
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: Tty.origin),
@@ -461,7 +466,6 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
                           child: TtyField(
                             controller: _controller,
                             focus: _focus,
-                            autofocus: true,
                             hint: _search.canGoBack
                                 ? 'Search in ${_search.scopeName}'
                                 : _search.hint.replaceAll('…', ''),
@@ -506,7 +510,7 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
                     ),
                   const SizedBox(height: 4),
                   Expanded(
-                    child: switch ((_search.isModelMode, widget.showing)) {
+                    child: switch ((models, widget.showing)) {
                       // `:` — the models the harness on screen can run on.
                       (true, final showing?) => FindModels(
                         notifier: widget.notifier,
@@ -520,6 +524,7 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
                         notifier: widget.notifier,
                         controller: _search,
                         showing: widget.showing,
+                        opening: widget.animation,
                         onOpen: _close,
                         onNewHarness: newAgent == null
                             ? null
@@ -527,6 +532,37 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
                       ),
                     },
                   ),
+                  // ⚠️ **Stuck to the foot, outside the list.** The list's own `+ New Harness` row
+                  // comes after every harness on the account — a few hundred rows down, where no
+                  // thumb goes. This one is always in reach while the keys are down. On the machine
+                  // of the harness on screen, as that row does with nothing typed.
+                  //
+                  // ⚠️ **Gone while a keyboard is up.** The keys take half the screen already, and
+                  // the rows left are what the query is typed to find. Hiding it costs nothing on
+                  // opening only because Find opens with the keys DOWN (no autofocus): while the
+                  // field took the keyboard on every open, the iPhone — whose keys have no button
+                  // to put them away, and a scroll keeps them (`phone_search_results.dart`) —
+                  // never showed it at all. Read off the keyboard's height, not the field's focus:
+                  // with a hardware keyboard nothing covers the foot.
+                  if (newAgent != null && !models)
+                    ValueListenableBuilder<double>(
+                      valueListenable: _keyboard,
+                      builder: (context, keyboard, button) =>
+                          keyboard > 0 ? const SizedBox.shrink() : button!,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          Tty.origin,
+                          8,
+                          Tty.origin,
+                          8,
+                        ),
+                        child: TtyPrimaryButton(
+                          key: const ValueKey('find-new-harness'),
+                          label: 'New Harness',
+                          onPressed: () => newAgent(null),
+                        ),
+                      ),
+                    ),
                   // Over the home indicator while the keyboard is down; on the keys once it is up.
                   SizedBox(height: widget.bottomInset),
                 ],
@@ -550,6 +586,11 @@ class _TerminalSearchOverlayState extends State<TerminalSearchOverlay>
         voice.submit((text) async {
           if (!mounted) return false;
           final query = text.trim().replaceAll(RegExp(r'[.!?]+$'), '');
+          // ⚠️ A search started by voice is a search, field tapped or not. The field no longer
+          // takes focus on opening, so without this a spoken query left [_searching] off: a row
+          // that then narrowed the search (a project, a machine) moved the query without the
+          // field following, and Back closed Find instead of stepping out of the narrowing.
+          if (!_searching) setState(() => _searching = true);
           _controller.value = TextEditingValue(
             text: query,
             selection: TextSelection.collapsed(offset: query.length),
