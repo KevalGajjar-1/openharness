@@ -28,12 +28,12 @@ they show as `harnessd`, `harnessd-core` and `harnessd-<process>` (`src/harnessd
 | engine-claude, engine-codex | history, last-turn readers, live transcript parsers, runtime profiles/catalogs, screen interpretation, submission verification readings, model control, question navigation, and (Codex) the shared app-server connection | on demand: an attach or read for that engine |
 | search | session search | always |
 | viewers | the harness viewers, their remote streams and rendered surfaces, and the Store | always |
-| edge | the shell service, workspaces, usage, the monitor, the project readers, the change-agent handoff, the recaps, the agent cleanup | always |
+| edge | the shell service, workspaces, usage, the monitor, the project readers, the change-agent handoff, the recaps, the agent cleanup, Agent Messages (which runs no timer while it is off or the computer is signed out) | always |
 | gateway | the relay and its E2EE (`src/gateway/`) | on demand: as the core starts when signed in or anything is paired here, or when something needs it (a pairing, a window's E2EE request, a key command, the Wi-Fi device) |
 | models | grid, local models, the Model Manager | on demand: once grid is in use here (a managed grid, saved grid pictures, local models), or on a models request |
 | updater | checks, downloads and stages a new build (`src/services/updaterProcess.ts`) | by the master, for the installed copy only |
 | devices | the dials, the window bridges, the fleet, the voice router, the Wi-Fi device | on demand: once there is a device |
-| orchestrator, messages (Agent Messages), sharing, memory, router | the experiments | on demand: on a request, or saved state at start; messages also at start while Settings ▸ Agents has it on (the default) |
+| orchestrator, sharing, memory, router | the experiments | on demand: on a request, or saved state at start |
 
 `HARNESSD_SERVICES` names a subset to run in their own processes, by service or by process.
 `HARNESSD_SERVICES=none` runs every service in the core's process, for debugging or a quick way back. How

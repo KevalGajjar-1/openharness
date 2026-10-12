@@ -168,18 +168,52 @@ while the send was under way.
 
 ## How it works
 
-Agent Messages is the `messages` experiment, in a process of its own (`messages`). Its contract with the core is
-the one Swarm's had: `core.turns.deliver` under `team:` delivery ids, and `MessagesPort.canWrite`, asked in line
-as one is written. Its process starts with the core while the setting is on (`EXPERIMENTS.messages.setting`,
-core/experiments.ts), and when Settings ▸ Agents leaves it on through the daemon (`PATCH /api/agent-settings`): on
-one machine nothing else would start it, and its agents would never get the note or hear of `harness send` (a
-fresh Mac, 2026-10-12). That is the price of on by default: one more process at idle on every computer, signed in
-or not (61 MiB resident after 20 idle seconds, from the release bundle on a Mac, beside search's 78; 2026-10-12).
-Off, it costs nothing until its first request or its saved state (`agent-messages/`) starts it; another machine's
-window starts it with its first request for the tab's log. `harness settings` writes the file without the daemon:
-a running service reads it within 2 seconds, and one that is not running starts at its next request or the next
-start. (It began as Swarm's `collaboration` experiment in the `teams` process, rewritten in place; both were
-renamed when Swarm's last code went.)
+Agent Messages is the `messages` service, in the edge host (`SERVICE_HOSTS` in cli/src/harnessd/services.ts), beside
+workspaces, usage, the monitor and the other light services. Its contract with the core is the one Swarm's had:
+`core.turns.deliver` under `team:` delivery ids, and `MessagesPort.canWrite`, asked in line as one is written. Out of
+the core's process it asks the core for what it uses and nothing more (core/messagesLink.ts, `MESSAGES_QUERIES`): the
+agents as the apps are shown them, how this daemon is reached and whether it is signed in, the account's tabs (one
+GET), and its log's change notice for the windows; and it may write turns into agents (`TURN_DELIVERERS`).
+
+It was the `messages` experiment, in a process of its own, until October 12. That process ran on every computer that
+had it on, signed in or not: 61 MiB resident after 20 idle seconds, from the release bundle on a Mac, nearly all of it a
+second Node and the bundle rather than messaging. The owner agreed to move it into the edge host, which always runs.
+
+Measured from the bundle, signed in, with a Claude Code and a Codex agent in one tab, 30 idle seconds after a warm-up
+(`cli/e2e/footprint.e2e.ts`, one Mac, 2026-10-12; runs of one build differ by about 3 MiB), every process of the daemon:
+
+| Agent Messages | before (3cff043360) | in the edge host | the tabs read in 30 s |
+|---|---|---|---|
+| on, active (both agents have their note) | 683 MiB | 614 MiB | 2, both builds |
+| off | 600 MiB | 599 MiB | 0, both builds |
+| never written (on by that day's default) | 679 MiB | 611 MiB | 2, both builds |
+
+On, it costs 69 MiB less: the messages process's 62 MiB is gone, the edge host holds it for 1 MiB more (73 MiB), and the
+master is 4 to 8 MiB smaller, which this measurement does not explain (it was 81 MiB with the experiment off as well).
+Off, it costs what no process costs: the edge host is 0.4 MiB larger for its code, and nothing reads the tabs. On costs
+the gateway 15 MiB too (72 to 87 MiB), for the account requests the tabs are read through.
+
+Off costs nothing there. Only while this computer is signed in and has Agent Messages on does it read the tabs (every
+15 s), look at its deliveries (every 2 s) and at its notes, its outbox and other machines' deliveries (every 5 s).
+Turned off, it takes the notes back, holds what waits for this computer's agents out of the hook's reach and fails it
+after 5 minutes, as before, and then runs no timer at all; what this computer sent that still waits for another
+machine is handed over once it is on again. It hears the switch turned on two ways. Settings ▸ Agents writes it
+through the daemon, which tells the service (`MessagesPort.settingsChanged`). `harness settings` writes the file
+(`agent-settings.json`) on its own, and a watch on that one file hears it, never on the data folder, whose log and
+indexes are written many times a second (messages/settingWatch.ts). A file that was never written is not watched, nor
+polled for: the first `harness settings` that writes it is heard at the service's next request (`harness send`) or
+the core's next start. Signed
+out, it runs nothing either: there is no account to read tabs from, and signing in starts a new core, which it
+reconnects to and wakes for. Its requests are answered on or off. With `HARNESSD_SERVICES=none` it runs in the core's
+process, and named alone (`HARNESSD_SERVICES=messages`) in an edge host of its own. (It began as Swarm's
+`collaboration` experiment in the `teams` process, rewritten in place; both were renamed when Swarm's last code
+went.)
+
+A core and a master of different builds still carry each message once. Where it runs is the master's to say, by
+service name (`serviceProcessesEnv`), so a core of either build routes it to the one process that runs it and runs
+none of it itself; the questions it asks the core are the experiment's, so either core answers either process. This
+build's core asks for it as it starts, which starts its own process under a master from before (a master that could
+not re-execute on the update) and nothing under this build's (`cli/e2e/messagesSkew.e2e.ts`).
 
 ### Identity
 
@@ -192,10 +226,11 @@ already type into any pane.
 ### Who may message whom
 
 `GET /api/agent-messages` answers the account's tabs, each with its owned panes (`machineId`, `agentId`), and the
-machines' names. The service reads it as Swarm did: polled every 15 s, read again on the account's
-`desk_changed`, and fresh before each send. It reads this computer's setting from the data folder at most every
-2 seconds; a change counts as a change of the directory at its next read, and the notes and waiting deliveries
-heed it at their next look.
+machines' names. The service reads it as Swarm did, while it is on and signed in: polled every 15 s, read again on the
+account's `desk_changed`, and fresh before each send. It reads this computer's setting from the data folder at most
+every 2 seconds while it runs, and through the file's watch while it is off; a change counts as a change of the
+directory at its next read, and the notes and waiting deliveries heed it at their next look. Off, no tab carries a
+message, so what waits is held, and a hand-over from another machine fails, without reading the tabs.
 
 The backend still keeps one record per tab, `agent_message_tabs` (`{userId, tabId, enabled}`), answers each
 tab's flag beside its panes, and sets it at `PATCH /api/agent-messages/tabs/:tabId`, for older windows that draw
@@ -281,17 +316,22 @@ Experimental → Swarm collaboration, the Swarm conversation views on desktop an
    by default, and no tab's flag; the desktop drops the tab's 💬 and its **Agent Messages** menu item, keeps
    **Show Agent Messages**, and shows the switch in Settings ▸ Agents. The backend's per-tab records stay, unread,
    for older windows.
+5. Into the edge host (2026-10-12): no process of its own, and off or signed out it runs nothing (How it works).
 
 ## Verification
 
-- Unit: the service, directory, store, mailbox and both delivery routes (`messages/*.spec.ts`); which experiments
-  start with the core, by saved state or setting, at 100% (`npm run test:core`); the hook script; the backend routes.
-- End to end on the real daemon with the fake engines (`e2e/agentMessages.e2e.ts`): on by default, a fresh daemon
-  starts it with no request and gives two agents in one tab their note; turned off, no process until used, or until
-  Settings ▸ Agents turns it on (an older window's tab switch starts nothing); on by saved state; `send` from a pane
-  through a signed-in daemon whose directory the fake backend answers; an idle recipient gets a typed prompt;
-  working Claude Code and Codex agents get the hook's context at the next tool call with nothing typed; turned off
-  in Settings ▸ Agents, it refuses; a hand-over from a process on this machine is refused.
+- Unit: the service, directory, store, mailbox and both delivery routes (`messages/*.spec.ts`), off and signed out
+  running nothing (`messages/service.spec.ts`, "off costs nothing"), the setting's watch (`settingWatch.spec.ts`);
+  what the core answers it and the ask at start, at 100% (`core/messagesLink.spec.ts`, `npm run test:core`); where the
+  master runs it under either build (`harnessd/services.spec.ts`); the hook script; the backend routes.
+- End to end on the real daemon with the fake engines (`e2e/agentMessages.e2e.ts`): in the edge host with no process
+  of its own; on, a fresh daemon reads the tabs with no request and gives two agents in one tab their note; turned
+  off, it never reads them, and wakes when Settings ▸ Agents turns it on or `harness settings` writes the file (an older window's tab switch wakes nothing); `send` from a pane through a signed-in daemon whose directory the
+  fake backend answers; an idle recipient gets a typed prompt, from the edge host, from the core's process and from an
+  edge host of its own; working Claude Code and Codex agents get the hook's context at the next tool call with nothing
+  typed; turned off in Settings ▸ Agents, it refuses; a hand-over from a process on this machine is refused.
+- A core and a master of different builds (`e2e/messagesSkew.e2e.ts`, opt-in with a build from before): each message
+  typed once, under either.
 - In unit tests (`messages/*.spec.ts`): drafts, dialogs and refusals that may have typed; parking; restarts and a
   new core giving attempts back; a moved, stopped or restarted harness; the hand-over to another machine and its
   status over a fake relay. Not yet end to end: two daemons over the real relay.

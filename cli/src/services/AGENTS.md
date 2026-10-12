@@ -54,12 +54,11 @@ that process. A process per risk, not per feature (`SERVICE_HOSTS` in `src/harne
 | `engine-claude`, `engine-codex` | history, live parsers, runtime profiles, screens, submission readings, model control, question navigation and Codex's app-server connection (`src/engines/worker/`) | engine behavior outside core; snapshots and revocable model- and question-control grants | on demand |
 | `search` | search | native `node:sqlite`, the index's memory | always |
 | `viewers` | viewers, store | the viewer servers, the remote viewer streams and rendered surfaces, minutes-long installs | always |
-| `edge` | workspaces, usage, monitor, projects, handoff, recaps, windowNames, shell, connectors, agentCleanup | light pure-JS services: isolated from the core, not from each other | always |
+| `edge` | workspaces, usage, monitor, projects, handoff, recaps, windowNames, shell, connectors, agentCleanup, messages | light pure-JS services: isolated from the core, not from each other | always |
 | `gateway` | gateway | network, crypto and pure-JS WebRTC: the attack surface | on demand |
 | `models` | models | grid's installs, downloads and commands | on demand |
 | `devices` | devices, wifi | the dials' serial ports, the fleet's lane, the voice router's worker, the Wi-Fi device | on demand |
 | `orchestrator` | orchestrator | an experiment | on demand |
-| `messages` | messages | an experiment: Agent Messages | on demand |
 | `sharing` | sharing | an experiment: Share | on demand |
 | `memory` | memory | an experiment: Memories across machines | on demand |
 | `router` | router | an experiment: where ⌘B sends a task, decided by Jev | on demand |
@@ -145,11 +144,19 @@ master too old to run it starts it beside itself, still in its own process (`src
   The core retains its reported list for stale replies during a restart, bound to the current account.
   The Store prepares bundled harnesses before reporting `prepared`; package agents wait held until
   preparation is available, after the core reports ready. The lean bundle shares one asset file, loaded by the Store and never by the core.
-- A service that writes turns into agents (a team's question, the orchestrator's guidance) delivers each
-  under an id of its own through `core.turns.deliver`, hears what became of it through `onDelivery`, and
+- A service that writes turns into agents (Agent Messages' typed messages, the orchestrator's guidance) delivers
+  each under an id of its own through `core.turns.deliver`, hears what became of it through `onDelivery`, and
   takes one back with `cancelDelivery` (core/deliveries.ts). In its own process `services/turnsLink.ts`
   asks the core over its link, in order, and hears only its own deliveries; the core lets a process deliver
-  only when it is an experiment (below).
+  only when `TURN_DELIVERERS` (`src/core/api.ts`) names it: the experiments (below) and Agent Messages.
+- A service that graduates from an experiment keeps the same questions to the core and is answered by a link of its
+  own, for what it uses alone, never by the experiments' hooks: Agent Messages in the edge host
+  (`src/core/messagesLink.ts`, `MESSAGES_QUERIES` in `src/core/api.ts`) is shown the agents, told how this daemon is
+  reached and whether it is signed in, reads the account's tabs and nothing else of the backend, sends the windows
+  its log's change notice and nothing else, and hears `desk_changed`. It never creates an agent, stops a turn or
+  watches a terminal. Off on this computer, or signed out, it runs no timer: a Settings ▸ Agents write through the
+  daemon wakes it (`MessagesPort.settingsChanged`), so does `harness settings` through a watch on the setting's file
+  when there is one (`src/messages/settingWatch.ts`), and so does a core it reconnects to signed in.
 - A service that drives hardware: the devices (src/services/devicesProcess.ts, src/core/devicesLink.ts).
   The dial reads a dozen facts in line while it builds each frame, so the process keeps a copy of what it
   reads (this computer's agents, its name, the sign-in, whether a window is there), asked of the core as
@@ -184,9 +191,10 @@ like any other. Named in `HARNESSD_SERVICES`, it starts with the others.
 
 - **What asks.** A request for a service that has not connected yet (`serviceLinks` `onDemand`, in
   `src/core/main.ts`) asks for it and waits for it, within the request's own wait. The service is welcomed
-  before its queued requests are delivered. Each experiment with saved state in the data folder, or with its
-  Settings ▸ Agents switch on (Agent Messages, on by default), is asked for as the core starts, and when a
-  Settings ▸ Agents write leaves that switch on (`src/core/experiments.ts`). The devices are asked for once there is a device:
+  before its queued requests are delivered. Each experiment with saved state in the data folder is asked for as the
+  core starts (`src/core/experiments.ts`). So is Agent Messages, which starts nothing under this build's master (it is
+  in the edge host) and starts its own process under a master from before it moved there (`src/core/messagesLink.ts`).
+  The devices are asked for once there is a device:
   a dial's port in /dev, a paired Wi-Fi device, or its session (`src/core/devicesWake.ts`). Models is asked
   for as the core starts when grid is in use here: a managed grid, whose pin it follows, saved grid pictures,
   which agents' grid notes are read from, or local models (`src/core/modelsWake.ts`); otherwise its first
@@ -205,12 +213,14 @@ like any other. Named in `HARNESSD_SERVICES`, it starts with the others.
 
 ## Experiments
 
-An experiment (the orchestrator, Agent Messages, Share, memory, the router) is a service that costs nothing until it is
-on: its own process, which the master starts only when the core asks for it (`want`), when one of
-its requests arrives or, as the core starts, when its saved state is in the data folder or its Settings ▸ Agents
-switch is on (Agent Messages, on by default since 2026-10-12, so its agents get its note). Off, nothing of it runs or
-is loaded anywhere; one failing costs its own process and nothing else. `e2e/experiments.e2e.ts` proves it:
-off, on by request, on by saved state, killed, hung and crashing on every start.
+An experiment (the orchestrator, Share, memory, the router) is a service that costs nothing until it is on: its own
+process, which the master starts only when the core asks for it (`want`), when one of its requests arrives or, as the
+core starts, when its saved state is in the data folder. Off, nothing of it runs or is loaded anywhere; one failing
+costs its own process and nothing else. `e2e/experiments.e2e.ts` proves it: off, on by request, on by saved state,
+killed, hung and crashing on every start.
+
+Agent Messages was one until 2026-10-12: a process of its own on every computer it was on, 62 MiB resident at idle for
+a few MiB of messaging. It is a service in the edge host now (above), off costing nothing there.
 
 To add one:
 
@@ -223,8 +233,7 @@ To add one:
    also reads the backend as the account (`core.account.backend`) and has its welcomes signed by the gateway
    (`core.account.observerKey`), so it holds no credential, and watches terminals read-only
    (`core.terminals.watch`, `services/watchLink.ts`).
-2. Its entry in `EXPERIMENTS` (`src/core/api.ts`): its requests, its saved state, and its Settings ▸ Agents
-   `setting` if the person turns it on and off there (`src/lib/agentSettings.ts`).
+2. Its entry in `EXPERIMENTS` (`src/core/api.ts`): its requests and its saved state.
 3. Its process in `SERVICE_HOSTS` (`src/harnessd/services.ts`) with `onDemand: true`, and its runner in
    `SERVICE_RUNNERS` (`src/serviceProcess.ts`).
 4. Its start for the core's own process, in `services/inline.ts`, and one line in `core/main.ts` that starts
@@ -235,6 +244,12 @@ from what the process last reported (`src/core/orchestratorLink.ts`), as the vie
 (`src/services/messages.ts`) shows the rest: whether one of its typed deliveries may still be written, which
 the core asks as it writes it, is reported for a few seconds at a time, so a process that stops reporting
 leaves none writable (`messagesProcess.ts`, `core/messagesLink.ts`).
+
+Graduating one to a service is moving it into a host that is always running (`SERVICE_HOSTS`), taking it out of
+`EXPERIMENTS` and answering what it asks with a link of its own, as Agent Messages did. Where it runs is the master's
+to say, by service name (`serviceProcessesEnv`), so a core of either build routes it to the one process that runs it
+and runs none of it itself; the new core still asks for it as it starts, which starts its old process under a master
+from before (`src/harnessd/services.spec.ts`, `e2e/messagesSkew.e2e.ts`).
 
 ## Do not
 

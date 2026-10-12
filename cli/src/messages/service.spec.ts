@@ -28,6 +28,7 @@ interface Setup {
   agents?: RegisteredSession[]
   rpc?: Rpc
   backendStatus?: number
+  signedIn?: () => boolean
 }
 
 function setup(over: Setup = {}) {
@@ -48,6 +49,8 @@ function setup(over: Setup = {}) {
     return { statuses: [] }
   })
   const changed = vi.fn()
+  /** The watches on Settings ▸ Agents' file, armed while Agent Messages are off (settingWatch.ts): heard at a write. */
+  const watchers = new Set<() => void>()
   const core = fakeCore({
     dataDir: root,
     daemon: { machineId: () => 'm1', port: 18473 },
@@ -63,18 +66,24 @@ function setup(over: Setup = {}) {
     account: {
       backend,
       onNotice: (listener) => { noticeListeners.add(listener); return () => noticeListeners.delete(listener) },
+      ...(over.signedIn ? { signedIn: over.signedIn } : {}),
     },
     clients: { windows: (frame) => { windows.push(frame) } },
   })
-  const service = startAgentMessages(core, { stateDir: join(root, 'state'), inboxRoot: join(root, 'inbox-root'), rpc: over.rpc ? over.rpc : rpc, now: () => clock, changed })
+  const service = startAgentMessages(core, { stateDir: join(root, 'state'), inboxRoot: join(root, 'inbox-root'), rpc: over.rpc ? over.rpc : rpc, now: () => clock, changed,
+    watchSetting: (_path, heard) => { watchers.add(heard); return () => { watchers.delete(heard) } } })
   const ask = (payload: Record<string, unknown>, asker = OWNER_LOCAL) => service.requests.agent_messages!(payload, asker)
   return {
-    service, ask, delivered, windows, backend, rpcCalls, agents, tabs, directory, changed,
+    service, ask, delivered, windows, backend, rpcCalls, agents, tabs, directory, changed, watchers,
     inbox: new PaneInbox(join(root, 'inbox-root')),
     tick: (ms: number) => { clock += ms },
     /** Settings ▸ Agents on this computer, as the person turns Agent Messages on or off: read at the service's next
-     *  look, once what it read last is no longer fresh. */
-    setting: (on: boolean) => { writeAgentSettings(root, { agentMessages: on }); clock += SETTING_FRESH_MS },
+     *  look, once what it read last is no longer fresh, and heard by the watch on its file while they are off. */
+    setting: (on: boolean) => {
+      writeAgentSettings(root, { agentMessages: on })
+      clock += SETTING_FRESH_MS
+      for (const heard of [...watchers]) heard()
+    },
     deliveryEvent: (event: TurnDelivery) => { for (const l of deliveryListeners) l(event) },
     notice: (notice: BackendNotice) => { for (const l of noticeListeners) l(notice) },
   }
@@ -707,5 +716,151 @@ describe('the roster note and the directory', () => {
     expect(await broken.requests.agent_messages!({ action: 'send', pane: '%1', to: 'a', text: 'b' }, OWNER_LOCAL)).toEqual({ error: 'MESSAGES_UNAVAILABLE', detail: expect.any(String) })
     broken.stop()
     t.service.stop()
+  })
+})
+
+describe('off costs nothing', () => {
+  // It runs in the edge host on every computer (2026-10-12). Off, or signed out, a read of the account's tabs every
+  // 15 s and three timers carried messages it never could.
+  const waitingFromBefore = (id = 'm0000w01') => {
+    const store = new MessageStore(join(root, 'state'))
+    store.record({ id, tabId: 'app', at: 1, text: 'from before',
+      from: { machineId: 'm2', agentId: 'phone', name: 'phone', engine: 'claude', machine: 'laptop' }, to: [{ machineId: 'm1', agentId: 'api', name: 'api' }] })
+    store.status({ messageId: id, machineId: 'm1', agentId: 'api', state: 'queued', at: 1 })
+    store.state.local.push({ key: deliveryKey(id, 'api'), messageId: id, agentId: 'api', pane: '%2', session: 's-api', state: 'queued', tries: 0, nextTryAt: 0, at: 1 })
+    new PaneInbox(join(root, 'inbox-root')).put('%2', deliveryKey(id, 'api'), { session: 's-api', text: 'from before' })
+    store.save()
+    return deliveryKey(id, 'api')
+  }
+  const statusOf = async (t: ReturnType<typeof setup>, id: string) =>
+    ((await t.ask({ action: 'history' })).messages as Array<{ id: string; statuses: Array<{ state: string; reason?: string }> }>).find((m) => m.id === id)!.statuses[0]
+
+  it('off from the start: reads no tabs and puts no note; holds what waits, fails it later, then runs no timer; on, it wakes', async () => {
+    vi.useFakeTimers()
+    const key = waitingFromBefore()
+    const t = setup()
+    t.setting(false)
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // Held out of the hook's reach at once, the tabs unread: off, no tab carries a message, whatever they say.
+    expect(t.inbox.waiting('%2', key)).toBe(false)
+    expect(await statusOf(t, 'm0000w01')).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
+    t.notice({ type: 'desk_changed', revision: 9 })
+    t.notice({ type: 'machines_changed', reason: 'renamed' })
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    expect(await statusOf(t, 'm0000w01')).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
+    t.tick(HELD_OUTSIDE_MS)
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    expect(await statusOf(t, 'm0000w01')).toMatchObject({ state: 'failed', reason: 'Agent Messages were turned off on its computer' })
+    // Settled: nothing runs, and a minute goes by with no read and no note.
+    await vi.advanceTimersByTimeAsync(PUMP_MS)
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(t.backend).not.toHaveBeenCalled()
+    expect(t.inbox.waiting('%1', 'anything')).toBe(false)
+    expect(t.watchers.size).toBe(1)
+    // The file is heard more than once before it is read: read once.
+    for (const heard of [...t.watchers]) { heard(); heard() }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.backend).not.toHaveBeenCalled()
+    // Turned on in Settings ▸ Agents: the watch wakes it, and the notes go out at its next look.
+    t.setting(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.backend).toHaveBeenCalledOnce()
+    expect(t.watchers.size).toBe(0)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    const notes = (pane: string) => (require('node:fs').readdirSync(t.inbox.paneDir(pane)!) as string[]).filter((n) => n.startsWith('0note-'))
+    expect(notes('%1')).toHaveLength(1)
+    expect(notes('%2')).toHaveLength(1)
+    // Its tabs every 15 s, its deliveries every 2 s, its notes and outbox every 5 s.
+    expect(vi.getTimerCount()).toBe(3)
+    t.service.stop()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(t.watchers.size).toBe(0)
+  })
+
+  it('signed out: reads no tabs, runs no timer and watches nothing; signed in at its next core, it wakes', async () => {
+    vi.useFakeTimers()
+    let signedIn = false
+    const t = setup({ signedIn: () => signedIn })
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(TICK_MS * 4)
+    expect(t.backend).not.toHaveBeenCalled()
+    expect(t.watchers.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    // Its requests are answered all the same.
+    expect(await t.ask({ action: 'history' })).toEqual({ messages: [] })
+    signedIn = true
+    t.service.reconnected!()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.backend).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(3)
+    // Turned off at its next look, then signed out: the watch goes with the rest.
+    t.setting(false)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(t.watchers.size).toBe(1)
+    signedIn = false
+    t.service.reconnected!()
+    expect(t.watchers.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    t.service.stop()
+  })
+
+  it('hands over what it sent another machine once it is on again, not while it is off', async () => {
+    vi.useFakeTimers()
+    let away = true
+    const handed: string[] = []
+    const t = setup({ rpc: async (_target, payload) => {
+      if (payload.action === 'who') return { agents: [{ agentId: 'phone', name: 'phone', engine: 'claude' }] }
+      if (payload.action === 'deliver') {
+        handed.push((payload.message as { id: string }).id)
+        if (away) throw new MessageError('DISCONNECTED', 'away')
+        return { statuses: [{ messageId: (payload.message as { id: string }).id, agentId: 'phone', state: 'queued' }] }
+      }
+      return { statuses: [] }
+    } })
+    t.service.start()
+    const reply = await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'when you are back' })
+    expect(handed).toEqual([reply.id])
+    t.setting(false)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    away = false
+    t.tick(10 * 60_000)
+    await vi.advanceTimersByTimeAsync(TICK_MS * 3)
+    expect(handed).toEqual([reply.id])
+    t.setting(true)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(handed).toEqual([reply.id, reply.id])
+    t.service.stop()
+  })
+
+  it('wakes when told Settings ▸ Agents was written through the daemon, with no file to hear', async () => {
+    // A computer whose switches are all at their defaults has no file to watch: the daemon's write tells it.
+    vi.useFakeTimers()
+    const t = setup()
+    t.setting(false)
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    t.service.settingsChanged()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.backend).not.toHaveBeenCalled()
+    // Written on, with no watch to hear it: told, it reads its switch again and wakes.
+    writeAgentSettings(root, { agentMessages: true })
+    t.service.settingsChanged()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.backend).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(3)
+    t.service.stop()
+  })
+
+  it('hears its setting\'s own file while off, with no watch given', async () => {
+    writeAgentSettings(root, { agentMessages: false })
+    const backend = vi.fn(async () => ({ status: 503, body: {} }))
+    const real = startAgentMessages(fakeCore({ dataDir: root, account: { backend } }), { stateDir: join(root, 's3'), inboxRoot: join(root, 'i3') })
+    real.start()
+    writeAgentSettings(root, { agentMessages: true })
+    for (let i = 0; i < 250 && !backend.mock.calls.length; i++) await new Promise((settle) => setTimeout(settle, 20))
+    expect(backend).toHaveBeenCalled()
+    real.stop()
   })
 })

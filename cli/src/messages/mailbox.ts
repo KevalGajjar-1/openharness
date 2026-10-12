@@ -77,6 +77,8 @@ export interface MailboxDeps {
   changed(status: DeliveryStatus, delivery: LocalDelivery): void
   /** Whether a typed attempt may be written changed: its process tells the core (services/messagesProcess.ts). */
   writable?(): void
+  /** Whether Agent Messages sleep here (off, or signed out): then the pump stops once nothing waits. */
+  asleep?(): boolean
   now?(): number
 }
 
@@ -127,13 +129,37 @@ export class Mailbox {
     // Finished deliveries are only kept a day: their outcome is in the history.
     this.deps.store.state.local = this.local.filter((d) => d.state === 'queued' || this.now() - d.at < FINISHED_KEEP_MS)
     this.save()
-    this.timer = setInterval(() => { try { this.pump() } catch { /* the next pump looks again */ } }, PUMP_MS)
-    this.timer.unref?.()
+    this.resume()
   }
 
   stop(): void {
+    this.pause()
+  }
+
+  /**
+   * Look every PUMP_MS from now on, unless it already does: while Agent Messages are on, and while they sleep with a
+   * delivery still waiting here, which the pump holds out of the hook's reach and fails once it has waited
+   * HELD_OUTSIDE_MS (messages/service.ts). Then it stops by itself.
+   */
+  resume(): void {
+    if (!this.started || this.timer) return
+    this.timer = setInterval(() => {
+      try { this.pump() } catch { /* the next pump looks again */ }
+      // Off costs nothing: once what waited has settled, nothing is looked at until Agent Messages wake.
+      if (this.deps.asleep?.() && !this.waiting()) this.pause()
+    }, PUMP_MS)
+    this.timer.unref?.()
+  }
+
+  /** Look no more until resumed: Agent Messages sleep, with nothing here to settle or no account to settle it by. */
+  pause(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+  }
+
+  /** Whether any delivery here still waits to be delivered or failed. */
+  waiting(): boolean {
+    return this.local.some((d) => d.state === 'queued')
   }
 
   /**

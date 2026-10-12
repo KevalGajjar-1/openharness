@@ -459,6 +459,43 @@ describe('Agent Messages\' mailbox', () => {
     expect(pump).toHaveBeenCalledTimes(2)
   })
 
+  it('asleep, looks only until nothing waits, then stops by itself; paused, looks at nothing until resumed', () => {
+    // Off costs nothing: Agent Messages run in the edge host on every computer, and a look every two seconds at a
+    // mailbox with nothing in it was a timer for nothing (2026-10-12).
+    vi.useFakeTimers()
+    let asleep = false
+    const t = setup({ asleep: () => asleep })
+    t.mailbox.resume()
+    const pump = vi.spyOn(t.mailbox, 'pump')
+    vi.advanceTimersByTime(PUMP_MS * 2)
+    expect(pump, 'not started: nothing to look at').not.toHaveBeenCalled()
+    t.mailbox.start()
+    t.mailbox.resume()
+    t.setAgent(null)
+    const delivery = t.accept()
+    pump.mockClear()
+    asleep = true
+    expect(t.mailbox.waiting()).toBe(true)
+    vi.advanceTimersByTime(PUMP_MS * 2)
+    expect(pump).toHaveBeenCalledTimes(2)
+    // What waited has settled: one more look, and none after it.
+    t.refuse('Agent Messages were turned off on its computer')
+    vi.advanceTimersByTime(PUMP_MS)
+    expect(delivery.state).toBe('failed')
+    expect(t.mailbox.waiting()).toBe(false)
+    vi.advanceTimersByTime(PUMP_MS * 5)
+    expect(pump).toHaveBeenCalledTimes(3)
+    // Awake, it looks with nothing waiting too; paused, not at all.
+    asleep = false
+    t.mailbox.resume()
+    vi.advanceTimersByTime(PUMP_MS * 2)
+    expect(pump).toHaveBeenCalledTimes(5)
+    t.mailbox.pause()
+    t.mailbox.pause()
+    vi.advanceTimersByTime(PUMP_MS * 2)
+    expect(pump).toHaveBeenCalledTimes(5)
+  })
+
   it('keeps going when the inbox cannot be written or the store saved', () => {
     const t = setup()
     vi.spyOn(t.inbox, 'put').mockImplementation(() => { throw new Error('disk full') })

@@ -382,7 +382,12 @@ export const SERVICE_HOSTS: Readonly<Record<string, ServiceHostSpec>> = {
   // most) and asks, as the core did while they ran in it, and a few timers per open turn. The window
   // names hold at most 400 short names; their model runs in its own process (lib/oneshot.ts). The agent cleanup
   // holds the harnesses the person joined (a thousand ids at most) and looks at the live ones once a minute.
-  edge: { services: ['workspaces', 'usage', 'monitor', 'projects', 'handoff', 'recaps', 'windowNames', 'shell', 'connectors', 'agentCleanup'], heapLimitMiB: 384, rssLimitMiB: 768 },
+  // Agent Messages (services/messagesProcess.ts) holds its mailbox, the last 2,000 messages of each tab and the
+  // account's tabs, and runs no timer while it is off here or this computer is signed out. It had a process of its
+  // own as an experiment, 62 MiB resident at idle on every computer it was on, nearly all of it a second Node and
+  // the bundle rather than messaging: here it costs the edge host about 1 MiB on, and 0.4 MiB off
+  // (e2e/footprint.e2e.ts, 2026-10-12).
+  edge: { services: ['workspaces', 'usage', 'monitor', 'projects', 'handoff', 'recaps', 'windowNames', 'shell', 'connectors', 'agentCleanup', 'messages'], heapLimitMiB: 384, rssLimitMiB: 768 },
   // The orchestrator (services/orchestratorProcess.ts), an experiment: started only once it is on, for a
   // saved project or a request (core/api.ts `EXPERIMENTS`). Its projects' files and the frames of their
   // Directors; the agents it runs are the core's.
@@ -394,10 +399,6 @@ export const SERVICE_HOSTS: Readonly<Record<string, ServiceHostSpec>> = {
   // The router (services/routerProcess.ts), an experiment: started at its first request. A few decisions in
   // flight, each one bounded Jev answer.
   router: { services: ['router'], heapLimitMiB: 128, rssLimitMiB: 384, onDemand: true },
-  // Agent Messages (services/messagesProcess.ts), an experiment: its mailbox, history and the account's tabs.
-  // Started with the core while Settings ▸ Agents has it on, the default; else at its first request or for its
-  // saved state (core/api.ts `EXPERIMENTS`).
-  messages: { services: ['messages'], heapLimitMiB: 256, rssLimitMiB: 512, onDemand: true },
   // Share, an experiment (services/sharingProcess.ts): its invitations, its observers' sessions and their
   // ciphers; the headless Chrome it captures a shared viewer in is a process of its own, outside this budget.
   sharing: { services: ['sharing'], heapLimitMiB: 256, rssLimitMiB: 512, onDemand: true },

@@ -1,14 +1,19 @@
 /**
- * Agent Messages in its own process (`harness __service messages`): an experiment, started only once it is on
- * (core/api.ts `EXPERIMENTS`). The same service as in the core's process (services/messages.ts,
- * messages/service.ts), on the core's API as a process reaches it (services/processCoreApi.ts), and what a mailbox
- * in another process needs besides:
+ * Agent Messages out of the core's process: in the edge host (`harness __service …,messages`, harnessd/services.ts),
+ * or, under a master from before 2026-10-12, in a process of its own (`harness __service messages`) that the core
+ * asks for as it starts. The same service as in the core's process (services/messages.ts, messages/service.ts), on
+ * the core's API as a process reaches it (services/processCoreApi.ts), asking only what core/messagesLink.ts answers
+ * it, and what a mailbox in another process needs besides:
  * - The core asks in line, as it writes a typed delivery, whether it may still be written. This process tells the
  *   core which may (`writable`), before each is handed over and whenever that can change, each for a few seconds
  *   at a time: a process that stops telling, hung or gone, leaves none writable, and a delivery waits rather than
  *   being written against its mailbox's word.
  * - The agents it reads as the apps are shown them, asked again as each request starts and whenever its
  *   mailbox reads them and they are a second old.
+ * - Whether this daemon is signed in, as the core says it with its address: signed out, the service runs nothing.
+ *   A core from before says nothing of it, and is taken as signed in, as the service took every core then.
+ * - That Settings ▸ Agents was written through the daemon (`service_event` kind `settings`), which a core from before
+ *   never says: off, the service then hears it only from the setting's file.
  */
 import type { BackendNotice, DaemonAddress } from '../core/api.js'
 import { startAgentMessages } from '../messages/service.js'
@@ -49,6 +54,7 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
   let live: ShownAgent[] = []
   let readAt = -Infinity
   let daemon: DaemonAddress | null = null
+  let signedIn = true
   let reading: Promise<void> | null = null
   const ask = (query: string, payload: Payload): Promise<Payload> =>
     core ? core.query(query, payload) : Promise.reject(new Error('not connected to the core'))
@@ -66,7 +72,9 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
     await readAgents()
     if (daemon && askedOn === core) return
     const on = core
-    daemon = daemonIn(await ask('daemon', {}).catch(() => null)) ?? daemon
+    const answer = await ask('daemon', {}).catch(() => null)
+    daemon = daemonIn(answer) ?? daemon
+    if (typeof answer?.signedIn === 'boolean') signedIn = answer.signedIn
     askedOn = on
   }
 
@@ -84,6 +92,7 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
   })
   const api = {
     ...base,
+    account: { ...base.account, signedIn: () => signedIn },
     turns: {
       ...base.turns,
       deliver: (agentId: string, text: string, deliveryId: string) => {
@@ -147,6 +156,8 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
     },
     onEvent: (payload) => {
       if (deliveries.heard(payload)) { tell(); return }
+      // Settings ▸ Agents written through the daemon: the running service reads its switch again.
+      if (payload.kind === 'settings') { if (started) messages.settingsChanged(); return }
       // Heard once the service runs for a known machine: the tabs it would read are that machine's.
       if (started && payload.kind === 'notice' && payload.notice && typeof payload.notice === 'object') {
         for (const listener of noticeListeners) listener(payload.notice as BackendNotice)
@@ -157,7 +168,7 @@ export function runMessagesService(options: MessagesServiceOptions): ServiceProc
       told = ''
       // Its queues resume once it knows the agents and the daemon, and the core hears what may be written.
       void ready().then(() => {
-        // A core that restarted holds none of the typed attempts handed to the last one.
+        // A core that restarted holds none of the typed attempts handed to the last one, and may be signed in or out.
         current().reconnected?.()
         tell()
       })

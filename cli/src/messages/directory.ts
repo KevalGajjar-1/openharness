@@ -5,9 +5,9 @@
  * Each tab's own flag, which the backend still answers for older windows, is not read: the tab's switch was a chat
  * icon beside its × that was easy to hit by mistake, and the owner made it one setting, on by default (2026-10-12).
  *
- * Read when the service starts, every 15 seconds while it runs, again on the account's `desk_changed`, and fresh
- * before a send. An unreadable directory never clears what was read: a failed read keeps the last one, and before
- * any read nothing may be sent.
+ * Read every 15 seconds while this computer is signed in with Agent Messages on (`start`, `stop`: service.ts runs it
+ * only then), again on the account's `desk_changed`, and fresh before a send. An unreadable directory never clears
+ * what was read: a failed read keeps the last one, and before any read nothing may be sent.
  */
 
 export interface Member { machineId: string; agentId: string }
