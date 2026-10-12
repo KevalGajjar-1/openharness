@@ -43,14 +43,14 @@ describe('harness mcp', () => {
     expect(INSTRUCTIONS).toContain('close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself.')
   })
 
-  it('says which tools only read or add, so Codex runs them without asking; closing still says it is destructive', async () => {
+  it('says which tools only read, add or close what can be resumed, so Codex runs them all without asking', async () => {
     // Codex's rule for a tool with no approval setting of its own (codex-rs core/src/mcp_tool_call.rs
     // `requires_mcp_tool_approval`, 0.162.1): destructive asks, read-only does not, and anything else asks unless it
-    // says it is neither destructive nor open-world. The plugin's Codex manifest approves close as well.
+    // says it is neither destructive nor open-world. A close keeps the conversation, so it is not destructive either.
     const codexAsks = (a: Record<string, unknown> = {}) => a.destructiveHint === true || (a.readOnlyHint !== true && (a.destructiveHint !== false || a.openWorldHint !== false))
     const listed = ((await answer({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, deps({ inPane: true })))!.result as { tools: Array<{ name: string; annotations?: Record<string, unknown> }> }).tools
     expect(Object.fromEntries(listed.map((tool) => [tool.name, codexAsks(tool.annotations)]))).toEqual({
-      harness_list: false, harness_start: false, harness_wait: false, harness_read: false, harness_send: false, harness_close: true,
+      harness_list: false, harness_start: false, harness_wait: false, harness_read: false, harness_send: false, harness_close: false,
     })
   })
 
