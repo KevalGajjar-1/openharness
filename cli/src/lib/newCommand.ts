@@ -255,6 +255,9 @@ export interface NewOrigin {
   created(machineId: string, agent: Record<string, unknown>): Promise<string | null>
   /** How to read, wait for and message what was started. */
   next(agent: Record<string, unknown>): string
+  /** The caller's own harness, by agent id, when it is one on this computer: a harness started here records it, and the
+   *  windows open it beside the caller's pane. Absent for an agent outside Harness. */
+  parentAgentId?: string
 }
 
 const ERRORS: Record<string, string> = {
@@ -459,7 +462,11 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       }
       const asked = origin && args.prompt ? { ...args, prompt: origin.prompt(args.prompt, machineId) } : args
       // Started by an agent: the machine records it, and the pull requests it opens say so (lib/agentAttribution.ts).
-      const payload: Record<string, unknown> = { ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}) }
+      // Started by a harness on this computer: which one, so the windows open it beside that harness.
+      const parent = origin && local ? origin.parentAgentId ?? null : null
+      const payload: Record<string, unknown> = {
+        ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}), ...(parent ? { parentAgentId: parent } : {}),
+      }
       let result = await session.request('agent_create', payload)
       // A launch the daemon holds (a native launch waiting its turn) is still on its way: asked after until it is not,
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it

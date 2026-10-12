@@ -103,9 +103,38 @@ limits, `close` and measurement read it.
 
 It is a file the CLI appends to, not a field in the core's registry, so this first version changes nothing in the
 core and can be removed whole. Like Agent Messages it is a collaboration scope, not a sandbox: any process of the
-same user can write it. If agents use this, the record moves into the registry beside `forkedFrom`, and the
-windows can show it in the pane header. The registry keeps one fact of it already, for the pull request line below:
-the row's `startedBy` is `agent`. Who, and the depth, stay in the file.
+same user can write it. The registry keeps two facts of it: the row's `startedBy` is `agent`, for the pull request
+line below, and, when the starter is a harness on the same machine, its agent id (`parentAgentId`, sent by `harness
+new` with `agent_create`; one the machine does not know is left out). The depth, and starters outside Harness or on
+another machine, stay in the file.
+
+### The person sees it (October 11)
+
+Found in a clean VM with CLI 0.3.75: a Codex harness asked for a second opinion from Claude Code ran `harness new
+claude …`, and the child ran and answered but appeared nowhere in the app, only in the Harnesses count and ⌘O. The
+owner chose, from a mockup: **the child opens as a pane in the same tab, beside the agent that started it, marked
+with who started it.**
+
+```
+┌─ code ─────────────────────────────────────────┐
+│┌ lead (Codex) ─────────┐┌ python-opinion ─────┐│
+││ › get a second opinion││ started by lead     ││
+││   from claude code…   ││ Claude Code · Opus  ││
+││ • Ran harness new     ││ › Give your opinion ││
+││ • Waiting…            ││ • I recommend spaces││
+│└───────────────────────┘└─────────────────────┘│
+└────────────────────────────────────────────────┘
+```
+
+Every agent frame carries `parentAgentId` (null for the rest). A desktop window that first sees such a harness live,
+after it has read that machine's list once, and shows its starter in a tab, adds it right after the starter in that
+tab (the tab in front if it shows the starter) without moving focus or taking the terminal
+(`desktop/lib/state/started_children.dart`). Never what the first list brings (the window's restore), one the window
+has shown before (the person closed it), a stopped one, or one started more than five minutes ago (a laptop waking).
+Every window showing the starter does this, and it is still one pane: the desk's `pane.add` is idempotent, and a
+window the desk reaches first finds it already in a tab. The header says `started by <starter's current name>` where
+it says `forked from` for a fork. Not yet: the phone, and harnesses started by agents outside Harness (no pane to open
+beside), which stay in ⌘O as before.
 
 The task a harness is started with carries one header line, so the new harness knows it is from an agent and not
 the person (the lamp team's tmux paste read as the owner's), and that its answer is read where it is:
@@ -312,5 +341,5 @@ answer itself). Not yet run: Codex as the starting agent, a red team, a held-out
 ## Not now
 
 An MCP server (a thin wrapper once the CLI holds), agents outside Harness (a Claude Code plugin, `npx`, the MCP
-registries), the windows' tree of who started whom, `ps` across all machines (today: this one, and what you
+registries), the windows' tree of who started whom beyond the pane beside its starter, `ps` across all machines (today: this one, and what you
 started elsewhere).

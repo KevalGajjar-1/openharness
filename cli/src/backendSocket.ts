@@ -168,6 +168,9 @@ export class BackendSocket {
     /** `agent` when another agent started it (`harness new` from its pane); absent for the person. Kept on the
      *  row: every launch of it adds a line to the pull requests it opens (lib/agentAttribution.ts). */
     startedBy?: StartedBy | null
+    /** The harness here whose agent started it, when one in a Harness pane did (registry `parentAgentId`); only with
+     *  `startedBy: 'agent'`. The windows open the new harness beside it and say who started it. */
+    parentAgentId?: string | null
   }) =>
     Promise<{ ok: true; session: RegisteredSession } | { ok: false; error: string; detail?: string }>) | null = null
   /** Called on `remote_terminal_handoff` — cli.ts names the agent whose tile is that tmux pane, or null. */

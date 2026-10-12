@@ -318,6 +318,11 @@ describe('agent_create, refused before any pane exists', () => {
     const refused = { error: 'INVALID_STARTED_BY', detail: 'startedBy is agent, or absent for the person' }
     expect(await ask({ engine: 'claude', cwd: '/w', startedBy: 'person' })).toStrictEqual(refused)
     expect(await ask({ engine: 'claude', cwd: '/w', startedBy: true })).toStrictEqual(refused)
+    // Which harness started it: an agent id, and only beside startedBy agent.
+    const noParent = { error: 'INVALID_STARTED_BY', detail: 'parentAgentId is the agent id of the harness that started it, with startedBy agent' }
+    expect(await ask({ engine: 'claude', cwd: '/w', parentAgentId: 'a1' })).toStrictEqual(noParent)
+    expect(await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent', parentAgentId: '../a1' })).toStrictEqual(noParent)
+    expect(await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent', parentAgentId: 7 })).toStrictEqual(noParent)
     expect(create).not.toHaveBeenCalled()
   })
 })
@@ -342,6 +347,18 @@ describe('agent_create, launched', () => {
     const [byAgent, byPerson] = vi.mocked(create!).mock.calls.map(([input]) => input)
     expect(byAgent).toMatchObject({ engine: 'claude', cwd: '/w', startedBy: 'agent' })
     expect(Object.keys(byPerson!)).not.toContain('startedBy')
+  })
+
+  it('hands on which harness here started it, and leaves out one this machine does not know', async () => {
+    const { ask, create } = setup()
+    await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent', parentAgentId: 'a1' })
+    // Closed and forgotten while it ran `harness new`: its child still starts, beside nothing.
+    await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent', parentAgentId: 'gone' })
+    await ask({ engine: 'claude', cwd: '/w', startedBy: 'agent', parentAgentId: null })
+    const [known, unknown, none] = vi.mocked(create!).mock.calls.map(([input]) => input)
+    expect(known).toMatchObject({ startedBy: 'agent', parentAgentId: 'a1' })
+    expect(Object.keys(unknown!)).not.toContain('parentAgentId')
+    expect(Object.keys(none!)).not.toContain('parentAgentId')
   })
 
   it('opens a terminal in the home folder, bypasses permission unless told not to, and takes blank choices as none', async () => {

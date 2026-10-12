@@ -2280,6 +2280,33 @@ describe('who started it', () => {
     expect(registry.byAgent(pending.agentId)?.startedBy).toBe('agent')
   })
 
+  it('keeps which harness here started it, beside startedBy, through a reload and the hook that rebuilds the row', async () => {
+    const transcriptPath = join(dataDir, 'session-child.jsonl')
+    writeFileSync(transcriptPath, '{}\n')
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const child = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%9' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    expect(child.parentAgentId).toBe('lead-1')
+    // Only beside startedBy: the person's harness has no starter, and neither has a malformed id.
+    expect(registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%10' }], cwd: '/tmp/w', parentAgentId: 'lead-1' })).not.toHaveProperty('parentAgentId')
+    expect(registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%11' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: '../x' })).not.toHaveProperty('parentAgentId')
+    const row = JSON.parse(JSON.stringify(child))
+    expect(strictPersistedRow(row)?.parentAgentId).toBe('lead-1')
+    expect(strictPersistedRow({ ...row, startedBy: undefined })).not.toHaveProperty('parentAgentId')
+    expect(strictPersistedRow({ ...row, parentAgentId: 7 })).not.toHaveProperty('parentAgentId')
+    const bound = registry.register({ sessionId: 'session-child', transcriptPath, tmuxPane: '%9', cwd: '/tmp/w' })
+    expect(bound?.entry.agentId).toBe(child.agentId)
+    expect(bound?.entry.parentAgentId).toBe('lead-1')
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(child.agentId)?.parentAgentId).toBe('lead-1')
+    writeFileSync(join(dataDir, 'registry.json'), JSON.stringify([{ ...row, parentAgentId: 'a b' }]), { mode: 0o600 })
+    const { registry: edited } = await loadRegistryModule()
+    edited.load()
+    expect(edited.byAgent(child.agentId)).toBeTruthy()
+    expect(edited.byAgent(child.agentId)).not.toHaveProperty('parentAgentId')
+  })
+
   it('drops anything but another agent from a hand-edited row', async () => {
     const { registry, strictPersistedRow } = await loadRegistryModule()
     registry.load()

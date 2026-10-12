@@ -70,6 +70,14 @@ describe('agentFrame', () => {
     expect(JSON.stringify(frame)).not.toContain('p-sess')
   })
 
+  it('names the harness here that started it, and says null, never nothing, for every other', async () => {
+    const row = session(null)
+    expect(await agentFrame(row, { selectedModel: null, terminalAvailable: true })).toHaveProperty('parentAgentId', null)
+    row.startedBy = 'agent'
+    row.parentAgentId = 'lead-1'
+    expect((await agentFrame(row, { selectedModel: null, terminalAvailable: true })).parentAgentId).toBe('lead-1')
+  })
+
   // The SCM seam (scm/scmProjects.ts) names the project's SCM and changes nothing else on it: every
   // field a client reads is exactly what agentProject reports. A folder no SCM claims is `none`.
   it('names the project\'s SCM beside exactly what agentProject reports, and none outside any repository', async () => {

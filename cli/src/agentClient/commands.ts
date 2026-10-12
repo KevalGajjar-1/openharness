@@ -576,6 +576,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   // The person's say, on the machine the agent runs on (Settings ▸ Agents, `harness settings`).
   if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF)
   return {
+    // A harness in a pane here: the new one is opened beside it in the windows. An agent outside Harness has no pane.
+    ...(caller.outside ? {} : { parentAgentId: caller.agentId }),
     check: async () => {
       const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now())
       if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)
