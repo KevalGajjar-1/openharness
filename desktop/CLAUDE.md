@@ -346,8 +346,11 @@ closes. Idle-only closes retain the daemon's activity guard; newly active work g
 of the remaining sessions. Failures identify confirmed stops separately from uncertain ones
 and default to Keep open. Close pane / Close Tab dismisses the captured views through the
 normal recently-closed history path without another stop request; unconfirmed sessions may
-still be running, and their views in other tabs remain open. Previously queued daemon close
-plans remain compatible. Layout cleanup, moving panes, switching tabs, and sign-out retain
+still be running, and their views in other tabs remain open. A session reviewed before its
+engine bound a conversation (Codex's first seconds) that has bound one since is the same session
+(`Agent.continuesSession`): its Stop names the reviewed identity, no conversation, and the daemon
+decides (CLI `closeAgentService.ts` `matches`); another conversation once one was bound is a
+change. Previously queued daemon close plans remain compatible. Layout cleanup, moving panes, switching tabs, and sign-out retain
 their view-only behavior. Older daemons retain their existing behavior until updated.
 
 `HarnessMonitor` supplies the global running-harness count without process sampling
