@@ -212,7 +212,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     crate::account::enforce_entry(app);
     if crate::account::entry_required(app) {
         app.overlay_drawn = Some(area);
-        if let Some(Modal::Picker { kind: PickerKind::Account, mut picker }) = app.modal.take() {
+        if let Some(pane) = crate::os_welcome::entry_wifi(app).and_then(|id| app.panes.get_mut(&id)) {
+            if let Some(cursor) = pane_body(frame.buffer_mut(), pane, area, true, (None, None)) {
+                frame.set_cursor_position(cursor);
+            }
+        } else if let Some(Modal::Picker { kind: PickerKind::Account, mut picker }) = app.modal.take() {
             crate::account::draw(frame.buffer_mut(), app, area, &mut picker);
             app.modal = Some(Modal::Picker { kind: PickerKind::Account, picker });
         }

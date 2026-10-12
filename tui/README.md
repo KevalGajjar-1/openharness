@@ -184,11 +184,13 @@ with the desktop and phone. With no daemon available, hn opens local shells inst
 PTY supervisor keeps them running through detach, reconnect and a client crash. These local
 sessions stay on this computer and remain intact when Harness reconnects.
 
-Ordinary `hn` requires a Harness account before opening the workspace, including on existing signed-out
+`hn` requires a Harness account before opening the workspace, including in Harness OS and on existing signed-out
 installations. Continue with Google, Apple or email in your browser, or approve a phone QR code
 when using SSH. Escape cancels an attempt and returns to the sign-in choices; Ctrl+C detaches.
 Signing in opens your saved workspace automatically. Already signed-in computers open offline too.
-The Harness OS keeps its separate installer and Wi-Fi onboarding in this change.
+Harness OS connects to Wi-Fi or Ethernet before opening the same sign-in page. Its installer
+works offline; Super+W keeps network settings accessible before sign-in. After first setup,
+an already signed-in account can reopen its workspace during a temporary outage.
 Explicit sign-out and a session the server rejects both return to required sign-in, as Desktop
 does. The background server keeps running throughout, preserving local work behind the page.
 `harness login` remains available from a shell. Signing in keeps local work in place; changing

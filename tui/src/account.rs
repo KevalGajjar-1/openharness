@@ -55,10 +55,9 @@ pub struct State {
 
 pub fn entry_required(app: &App) -> bool { app.account.entry_required && !app.headless }
 
-/// Each ordinary interactive launch needs an account. The OS keeps its separate installer
-/// and Wi-Fi onboarding; detached servers keep their sessions running.
+/// Every interactive workspace needs an account, including the OS's bundled TUI.
+/// Detached servers keep their sessions running.
 pub fn begin_entry(app: &mut App) {
-    if app.os_session { return }
     app.account.mandatory = true;
     app.account.entry_required = true;
     enforce_entry(app);
@@ -92,7 +91,7 @@ pub fn enforce_entry(app: &mut App) {
         if visible(app) { app.modal = None; }
         app.redraw_all = true;
         app.maybe_start_shell();
-    } else if !visible(app) {
+    } else if !visible(app) && crate::os_welcome::entry_wifi(app).is_none() {
         crate::input::picker(app, PickerKind::Account, "Sign in to Harness", "");
     }
 }
@@ -104,6 +103,9 @@ pub fn entry_input(app: &mut App, event: &crossterm::event::Event) -> bool {
     if !entry_required(app) { return false }
     enforce_entry(app);
     if !entry_required(app) { return false }
+    if let Some(pane) = crate::os_welcome::entry_wifi(app) {
+        return crate::input::system_form_input(app, pane, event);
+    }
     let mut accept = false;
     match event {
         Event::Key(key) => {
@@ -833,19 +835,22 @@ mod tests {
     }
 
     #[test]
-    fn required_account_does_not_cover_the_os_installer_or_wifi_onboarding() {
+    fn os_workspaces_require_the_same_account_as_other_terminals() {
         let mut app = app();
         app.os_session = true;
         app.os_live = true;
         begin_entry(&mut app);
         tick(&mut app);
-        assert!(!entry_required(&app));
-        assert!(!visible(&app));
+        assert!(entry_required(&app));
+        assert!(visible(&app));
         app.os_live = false;
         app.os_first_use = true;
         begin_entry(&mut app);
+        assert!(entry_required(&app));
+        assert!(visible(&app));
+        app.account.status = Status::Unknown;
+        daemon_status(&mut app, &json!({"signedIn":true,"offline":true}));
         assert!(!entry_required(&app));
-        assert!(!visible(&app));
     }
 
     #[test]

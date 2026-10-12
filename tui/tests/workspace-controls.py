@@ -33,6 +33,31 @@ ENV.update(HOME=str(BASE), HN_TMPDIR=str(BASE), HN_SOCKET_NAME=PREFIX, PORT=str(
            TERM='xterm-256color', COLORTERM='truecolor', SHELL='/bin/sh', HARNESS_TUI_DESK='sync',
            HARNESS_TUI_NOTIFY='off', HN_DESKTOP='off', SSH_CONNECTION='disposable-fixture',
            HARNESS_CLI=sys.executable, HARNESS_CLI_ARGS=json.dumps([str(BASE / 'cli.py')]))
+if '--os-required-sign-in' in sys.argv:
+    ENV['HARNESS_OS'] = '1'
+    ENV['HARNESS_OS_FIRST_USE'] = '1'
+    # Run the shipped OS network form, replacing only NetworkManager/sudo in this
+    # private fixture. No host network or account is touched.
+    binaries = BASE / 'bin'
+    binaries.mkdir()
+    network = ROOT.parent / 'os/network.py'
+    (binaries / 'sudo').write_text('#!' + sys.executable + '\n' + f'''
+import importlib.util, os, sys
+from pathlib import Path
+assert sys.argv[1:] == ['/usr/bin/python3', '/usr/lib/harness-os/network.py', '--first-use']
+spec = importlib.util.spec_from_file_location('network', {str(network)!r})
+network = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(network)
+network.os.geteuid = lambda: 0
+network.nmcli = lambda *args, **kwargs: ''
+network.scan = lambda **kwargs: []
+network.wired_devices = lambda: []
+network.connected = lambda: (Path(os.environ['HOME']) / 'network-ready').exists()
+sys.argv = ['network.py', '--first-use']
+raise SystemExit(network.main())
+''')
+    (binaries / 'sudo').chmod(0o700)
+    ENV['PATH'] = str(binaries) + os.pathsep + ENV['PATH']
 CONF = BASE / 'tmux.conf'
 CONF.write_text('set -g automatic-rename off\n')
 OUTPUT = Path(os.environ['HN_WORKSPACE_OUTPUT']) if os.environ.get('HN_WORKSPACE_OUTPUT') else None
@@ -581,6 +606,14 @@ try:
                          '--port', str(PORT), '-f', str(CONF)])
     tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'test', '-x', '170', '-y', '44', command)
     started = True
+    if '--os-required-sign-in' in sys.argv:
+        shown('Connect to Wi-Fi')
+        keys('Escape', 'C-b', 'c')
+        shown('Connect to Wi-Fi')
+        assert 'Sign in to Harness' not in screen()
+        assert 'Alpha task terminal' not in screen()
+        snapshot('os-network-before-sign-in')
+        (BASE / 'network-ready').touch()
     shown('Sign in to Harness')
     shown('Continue with email')
     assert 'Alpha task terminal' not in screen(), 'required sign-in covers saved work'
@@ -588,6 +621,19 @@ try:
     keys('Escape', 'C-b', 'c')
     shown('Sign in to Harness')
     snapshot('required-sign-in')
+    if '--os-required-sign-in' in sys.argv:
+        hn('os-action', 'wifi')
+        shown('New terminal terminal')
+        assert 'Alpha task terminal' not in screen() and 'Beta task terminal' not in screen()
+        network_pane = value('#{pane_id}')
+        tabs = hn('list-windows', '-F', '#{window_id}').splitlines()
+        keys('C-b', 'c')
+        for action in ('new', 'terminal', 'connect'):
+            hn('os-action', action)
+        assert hn('list-windows', '-F', '#{window_id}').splitlines() == tabs
+        snapshot('os-wifi-during-required-sign-in')
+        hn('kill-pane', '-t', network_pane)
+        shown('Sign in to Harness')
     for cols, rows in [(80, 24), (40, 12), (170, 44)]:
         tmux('resize-window', '-t', 'test', '-x', str(cols), '-y', str(rows))
         wait(lambda: value('#{client_width}x#{client_height}') == f'{cols}x{rows}', 'sign-in follows terminal resize')
@@ -613,16 +659,26 @@ try:
     (BASE / 'approve').unlink()
     (BASE / 'login-events').unlink()
     print('PASS required sign-in: saved work stays covered; cancel retries; email returns to saved panes', flush=True)
+    if '--os-required-sign-in' in sys.argv:
+        # The unchanged OS launcher clears this flag once its first workspace is
+        # set up. Subsequent launches retain ordinary offline account behavior.
+        command = command.replace('HARNESS_OS_FIRST_USE=1', 'HARNESS_OS_FIRST_USE=0')
+        (BASE / 'network-ready').unlink()
     local, remote = api()['local'], api()['remote']
     panes = hn('list-panes', '-F', '#{pane_id}').splitlines()
     assert len(panes) == 2, panes
     alpha, beta = panes
     workspace = value('#{window_id}')
     snapshot('workspace')
-    if '--required-sign-in' in sys.argv:
+    if '--required-sign-in' in sys.argv or '--os-required-sign-in' in sys.argv:
         hn('signout', '-y')
         shown('Sign in to Harness')
         shown('Continue with Google')
+        if '--os-required-sign-in' in sys.argv:
+            for action in ('new', 'terminal', 'connect'):
+                hn('os-action', action)
+                shown('Sign in to Harness')
+                assert len(hn('list-panes', '-F', '#{pane_id}').splitlines()) == 2
         keys('Escape')
         shown('Sign in to Harness')
         snapshot('required-sign-in-after-signout')

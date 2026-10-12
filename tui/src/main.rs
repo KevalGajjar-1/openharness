@@ -393,6 +393,8 @@ async fn run(config: config::Config) -> io::Result<()> {
     // (A name hn does not know is used anyway: it writes what every terminal since xterm reads.)
     if matches!(std::env::var("TERM").as_deref(), Err(_) | Ok("") | Ok("dumb")) { eprintln!("open terminal failed: terminal does not support clear"); std::process::exit(1) }
 
+    os_welcome::prepare_network()?;
+
     // NO_COLOR is about a program's own output; the panes mirror OTHER programs' screens, whose
     // colours are content. crossterm would otherwise drop every colour, theirs included.
     crossterm::style::force_color_output(true);
