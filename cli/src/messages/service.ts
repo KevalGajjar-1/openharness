@@ -57,6 +57,13 @@ export const WHO_MS = 60_000
 export const SWEEP_AFTER_MS = 10 * 60_000
 
 const PANE = /^%\d{1,9}$/
+/** Whether `wanted` is the whole of a name the engine cut short: Codex titles its terminal with the folder cut to fit
+ *  ("claude-code-2026-10-1..."), and an agent that wrote the folder out in full was told no teammate had that name
+ *  (a fresh Mac, 2026-10-12). Both arguments in lower case. */
+const cutShort = (name: string, wanted: string): boolean => {
+  const stem = name.replace(/\s*(?:\.{3}|…)$/u, '')
+  return stem !== name && stem.length >= 3 && wanted.startsWith(stem)
+}
 const key = (m: Member): string => `${m.machineId}/${m.agentId}`
 const same = (a: Member, b: Member): boolean => a.machineId === b.machineId && a.agentId === b.agentId
 /** Where a message between a harness and one it started is kept: they need share no tab. */
@@ -170,6 +177,25 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   }
 
   /**
+   * Teammates each with a name it can be told apart by, from `me`'s side. A name is a session's title, and two can
+   * share one: two Codex agents in a tab both titled themselves after the task one gave the other, so the roster
+   * named the teammate as the agent itself (a fresh Mac, 2026-10-12). A name shared with anyone here, the sender
+   * included, gets the start of its id, which `harness send` takes on its own.
+   */
+  function distinct(me: Member, members: Member[]): Array<ReturnType<typeof teammate>> {
+    const mates = members.map(teammate)
+    const counts = new Map<string, number>()
+    for (const name of [teammate(me).name, ...mates.map((m) => m.name)]) counts.set(name.toLowerCase(), (counts.get(name.toLowerCase()) ?? 0) + 1)
+    return mates.map((m) => (counts.get(m.name.toLowerCase()) ?? 0) > 1 ? { ...m, name: `${m.name} (${m.member.agentId.slice(0, 8)})` } : m)
+  }
+
+  /** This harness's own name as its teammates see it: with the start of its id when one of them shares it. */
+  function ownName(me: Member, members: Member[]): string {
+    const name = teammate(me).name
+    return members.some((m) => teammate(m).name.toLowerCase() === name.toLowerCase()) ? `${name} (${me.agentId.slice(0, 8)})` : name
+  }
+
+  /**
    * Ask other machines for their agents' names, those not known or too old; a machine asked lately, answering or
    * not, is not asked again yet. The notes are looked at again only when a name changed: looked at on every
    * answer, a teammate no machine can name (a stopped harness here) asked again at once, without end.
@@ -208,9 +234,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const me = { machineId: self(), agentId }
     const peers = directory.peers(me)
     if (!peers.length) return null
-    const tabs = directory.tabsOf(me).map((t) => t.name)
-    const mates = peers.map(teammate)
-    const text = note(tabs.join('", "'), mates)
+    const mates = distinct(me, peers)
+    const text = note(directory.tabsOf(me), mates)
     return { text, signature: createHash('sha256').update(text).digest('hex').slice(0, 12) }
   }
 
@@ -227,8 +252,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   }
 
   /** The harnesses an agent started, or the one that started it, as `harness send` alone lists them. */
-  function linkedNote(links: Member[]): string {
-    const mates = links.map(teammate)
+  function linkedNote(me: Member, links: Member[]): string {
+    const mates = distinct(me, links)
     const width = Math.max(...mates.map((t) => t.name.length))
     return ['[Harness] The harness that started you, and those you started:',
       ...mates.map((t) => `  ${t.name.padEnd(width)}  ${[engineName(t.engine), t.machine, t.where].filter(Boolean).join(' · ')}`),
@@ -289,7 +314,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const peers = [...inTabs, ...links]
     if (!directory.tabsOf(me).length && !links.length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
     await learnNames(peers, true)
-    const mates = peers.map(teammate)
+    const mates = distinct(me, peers)
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])
       .map((n) => String(n).trim()).filter(Boolean)
     const text = typeof payload.text === 'string' ? payload.text : ''
@@ -297,7 +322,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     // was compacted asks this to learn again what it was told: seen on a real team, one rebuilt it from its team
     // history in five commands.
     if (!names.length && !text) {
-      const started = links.length ? linkedNote(links) : null
+      const started = links.length ? linkedNote(me, links) : null
       return { roster: [rosterOf(session.agentId)?.text, started].filter(Boolean).join('\n\n') || 'No teammates in this tab yet.', recent: recentFor(me) }
     }
     if (!names.length) throw new MessageError('USAGE', 'Name who to message: harness send <name> "text"')
@@ -307,7 +332,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     for (const name of names) {
       const wanted = name.toLowerCase()
       const exact = mates.filter((m) => m.name.toLowerCase() === wanted)
-      const prefix = exact.length ? exact : mates.filter((m) => m.name.toLowerCase().startsWith(wanted))
+      const prefix = exact.length ? exact : mates.filter((m) => m.name.toLowerCase().startsWith(wanted) || cutShort(m.name.toLowerCase(), wanted))
       // Or the start of its id: a name is the session's title until someone names it, and a title can hold a comma,
       // which the recipient list splits on (a harness that started another tells it its id to answer to).
       const found = prefix.length || wanted.length < 6 ? prefix : mates.filter((m) => m.member.agentId.toLowerCase().startsWith(wanted))
@@ -331,7 +356,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const tab = directory.shared(me, recipients[0]) ?? STARTED_TAB
     const message: Message = {
       id: messageId(), tabId: tab.id, to: recipients, text, at: now(),
-      from: { ...me, name: core.agents.displayName(session) || session.agentId.slice(0, 8), engine: session.engine, machine: machineName(self()) },
+      from: { ...me, name: ownName(me, peers), engine: session.engine, machine: machineName(self()) },
     }
     store.record(message)
     for (const r of recipients) store.status({ messageId: message.id, machineId: r.machineId, agentId: r.agentId, state: 'queued', at: now() })

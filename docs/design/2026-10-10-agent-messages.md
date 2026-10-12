@@ -99,7 +99,12 @@ harness send <name>[,<name>…] "text"      # or --text-file PATH, a file in the
 harness send                              # who is in this tab, the rules, and your last messages
 ```
 
-`<name>` is a harness's name as the roster shows it; a unique prefix is enough. The command prints the message
+`<name>` is a harness's name as the roster shows it; a unique prefix is enough. A name is the session's title, so two harnesses
+can share one (two Codex agents titled themselves after the same task): a name shared with anyone in the tab,
+the sender included, is shown with the start of its id, `Ask teammate to create notes (07934321)`, and the id
+alone works too. A title the engine cut short (`claude-code-2026-10-1...`, Codex's own terminal title) also
+answers to the whole name. The note names a tab the person named; any other, which the windows label
+themselves (`code`, a project), is "this tab" (`named` in the backend's directory). The command prints the message
 ID and each recipient's state.
 
 When a tab with Agent Messages on has two or more harnesses, each agent receives a short note through the

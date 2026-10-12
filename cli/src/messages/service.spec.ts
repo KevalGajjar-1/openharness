@@ -149,6 +149,63 @@ describe('harness send', () => {
     expect((await t.ask({ action: 'send', pane: '%1', to: 'api-b', text: 'x' })).recipients).toEqual([{ name: 'api-b', state: 'queued' }])
   })
 
+  it('tells apart teammates that share a title, the sender included, by the start of their ids', async () => {
+    // Two Codex agents titled themselves after the same task, and the roster named the teammate as the agent itself
+    // (a fresh Mac, 2026-10-12).
+    const titled = (agentId: string, pane: string) => ({ ...session(agentId, pane, 'codex'), title: 'Ask teammate to create notes' }) as unknown as RegisteredSession
+    const t = setup({
+      agents: [titled('efedc3c7-lead', '%1'), titled('07934321-one', '%2'), titled('11112222-two', '%3')],
+      tabs: [{ id: 'app', name: 'app', enabled: true, panes: ['efedc3c7-lead', '07934321-one', '11112222-two'].map((agentId) => ({ machineId: 'm1', agentId })) }],
+    })
+    const roster = String((await t.ask({ action: 'send', pane: '%1' })).roster)
+    expect(roster).toContain('Ask teammate to create notes (07934321)')
+    expect(roster).toContain('Ask teammate to create notes (11112222)')
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'Ask teammate to create notes', text: 'x' })).error).toBe('AMBIGUOUS_RECIPIENT')
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'Ask teammate to create notes (07934321)', text: 'x' })).recipients)
+      .toEqual([{ name: 'Ask teammate to create notes (07934321)', state: 'queued' }])
+    expect((await t.ask({ action: 'send', pane: '%1', to: '11112222', text: 'x' })).recipients)
+      .toEqual([{ name: 'Ask teammate to create notes (11112222)', state: 'queued' }])
+    // Its header names the sender as its teammates' roster does, so a reply finds it.
+    const history = await t.ask({ action: 'history' }) as { messages: Array<{ from: { name: string } }> }
+    expect(history.messages.map((m) => m.from.name)).toEqual(['Ask teammate to create notes (efedc3c7)', 'Ask teammate to create notes (efedc3c7)'])
+    // A title no one else has stays as it is.
+    const plain = setup()
+    expect(String((await plain.ask({ action: 'send', pane: '%1' })).roster)).toMatch(/^ {2}api {2}/m)
+  })
+
+  it('takes the whole name of a teammate whose engine cut its title short', async () => {
+    // Codex titles its terminal with the folder cut to fit; an agent wrote the folder out and was told no one had
+    // that name (a fresh Mac, 2026-10-12).
+    const t = setup({
+      agents: [session('lead', '%1'), { ...session('cx', '%2', 'codex'), title: 'claude-code-2026-10-1...' } as unknown as RegisteredSession,
+        { ...session('dots', '%3', 'codex'), title: '...' } as unknown as RegisteredSession],
+      tabs: [{ id: 'app', name: 'app', enabled: true, panes: ['lead', 'cx', 'dots'].map((agentId) => ({ machineId: 'm1', agentId })) }],
+    })
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'claude-code-2026-10-12-02-15', text: 'x' })).recipients)
+      .toEqual([{ name: 'claude-code-2026-10-1...', state: 'queued' }])
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'claude-code-2026-10-1…', text: 'x' })).recipients)
+      .toEqual([{ name: 'claude-code-2026-10-1...', state: 'queued' }])
+    // A title that is nothing but an ellipsis is no stem for every name.
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'zzz', text: 'x' })).error).toBe('UNKNOWN_RECIPIENT')
+  })
+
+  it('names in the note only a tab the person named; the windows label any other themselves', async () => {
+    // The note said tab "New Tab" for a tab the window showed as "code" (a fresh Mac, 2026-10-12).
+    const pair = [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }]
+    const roster = async (tabs: Array<Record<string, unknown>>) =>
+      String((await setup({ tabs: tabs as unknown as Setup['tabs'] }).ask({ action: 'send', pane: '%1' })).roster).split('\n')[0]
+    expect(await roster([{ id: 'a', name: 'claude-code-2026-10-12-02-15', named: false, enabled: true, panes: pair }]))
+      .toBe('[Harness] Agent Messages are on in this tab. Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }, { id: 'b', name: 'web', named: true, enabled: true, panes: pair }]))
+      .toBe('[Harness] Agent Messages are on in tabs "app", "web". Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }, { id: 'b', name: 'New Tab', named: false, enabled: true, panes: pair }]))
+      .toBe('[Harness] Agent Messages are on in tab "app" and this one. Teammates:')
+    // A backend from before `named`: only the window's own default name is no name.
+    expect(await roster([{ id: 'a', name: 'New Tab', enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in this tab. Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
+  })
+
   it('refuses in a tab with Agent Messages off, and when the directory cannot be read', async () => {
     const off = setup({ tabs: [{ id: 'app', name: 'app', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }] }] })
     expect(await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
