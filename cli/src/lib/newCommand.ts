@@ -132,6 +132,12 @@ export function parseNewArgs(argv: string[], env: { cwd: string; home: string })
   if (projectName !== null && projectName !== '' && projectFolderSlug(projectName) === null) {
     throw new NewUsageError(`“${projectName}” leaves no usable folder name.`)
   }
+  // A terminal opens in a folder and never makes one (the machine's INVALID_PROJECT_SOURCE), so the project was left
+  // out of what is sent: `harness new terminal my-game` opened a terminal in the home folder, with no ~/harnesses/my-game
+  // and no word about it (CLI 0.3.76, 2026-10-12).
+  if (words[0] === 'terminal' && projectName !== null) {
+    throw new NewUsageError('A terminal opens in a folder; it does not make a project. Name a folder (harness new terminal ~/code/x), or none to open it here.')
+  }
   let cwd: string | null = null
   if (folder !== null) {
     // `~` is this machine's home only when this machine is the target; for another machine it is
@@ -416,6 +422,14 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
   const began = clock()
   try {
     const origin = (await deps.origin?.()) ?? null
+    // A terminal is the person's: `ps`, `show`, `wait` and `close` never list one (agentClient/model.ts `isAgent`). An
+    // agent that started one was told "Read it: harness show vt1", then "No harness named vt1", could not close it, and
+    // had it count toward its eight for as long as it stayed open; its task would be typed into a shell, header and all
+    // (the released CLI 0.3.76 on a Mac, 2026-10-12).
+    if (origin && args.agent === 'terminal') {
+      throw new Error('An agent cannot start a terminal: it could not read it, wait for it or close it afterwards. '
+        + 'Run the command in your own shell, or start an agent for the work (harness new codex <project> -- <task>). Nothing was started.')
+    }
     let machineId = deps.localMachineId
     let machineLabel = 'this computer'
     let local = true
