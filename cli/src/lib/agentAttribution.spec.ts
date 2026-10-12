@@ -13,6 +13,8 @@ afterEach(() => rmSync(dataDir, { recursive: true, force: true }))
 const place = { cwd: null, read: () => null }
 const claudeLine = ['--settings', JSON.stringify({ attribution: { pr: `🤖 Generated with [Claude Code](https://claude.com/claude-code)\n${AGENT_ATTRIBUTION_LINE}` } })]
 const claudeTold = ['--append-system-prompt', HARNESS_INSTRUCTIONS]
+/** The pull request line told as an instruction too: a setting alone was dropped once a task spelled out the body. */
+const claudePrTold = expect.stringContaining(`its body must include this exact line once, near the end and after any other attribution line: \`${AGENT_ATTRIBUTION_LINE}\``)
 const codexValue = (...texts: string[]) => ['-c', `developer_instructions=${JSON.stringify(texts.join('\n\n'))}`]
 
 describe('what Harness tells an agent as it starts', () => {
@@ -22,7 +24,9 @@ describe('what Harness tells an agent as it starts', () => {
   })
 
   it('tells every harness how to use Harness, and adds the pull request line only to one another agent started', () => {
-    expect(agentLaunchArgs('claude', 'agent', place, dataDir)).toEqual([...claudeLine, ...claudeTold])
+    const told = agentLaunchArgs('claude', 'agent', place, dataDir)
+    expect(told).toEqual([...claudeLine, '--append-system-prompt', claudePrTold])
+    expect(told[3].startsWith(`${HARNESS_INSTRUCTIONS}\n\nWhen you create or update a pull request`)).toBe(true)
     expect(agentLaunchArgs('claude', null, place, dataDir)).toEqual(claudeTold)
     expect(agentLaunchArgs('claude', undefined, place, dataDir)).toEqual(claudeTold)
     // Codex keeps both in one config value: a second -c of the same key would replace the first.
@@ -39,12 +43,19 @@ describe('what Harness tells an agent as it starts', () => {
   it('follows the person\'s switches: no instructions once agents may not start agents, no line once that is off', () => {
     writeAgentSettings(dataDir, { agentsStartAgents: false })
     expect(agentLaunchArgs('claude', null, place, dataDir)).toEqual([])
-    expect(agentLaunchArgs('claude', 'agent', place, dataDir)).toEqual(claudeLine)
+    // The pull request line, and its instruction, without Harness's own instructions.
+    expect(agentLaunchArgs('claude', 'agent', place, dataDir)).toEqual([...claudeLine, '--append-system-prompt', claudePrTold])
+    expect(agentLaunchArgs('claude', 'agent', place, dataDir)[3].startsWith('When you create or update a pull request')).toBe(true)
     expect(agentLaunchArgs('codex', null, place, dataDir)).toEqual([])
     writeAgentSettings(dataDir, { agentsStartAgents: true, pullRequestLine: false })
     expect(agentLaunchArgs('claude', 'agent', { cwd: '/w', read: () => null }, dataDir)).toEqual(claudeTold)
     writeAgentSettings(dataDir, { agentsStartAgents: false })
     expect(agentLaunchArgs('claude', 'agent', { cwd: '/w', read: () => { throw new Error('read nothing') } }, dataDir)).toEqual([])
+  })
+
+  it('tells Claude Code nothing of the line where the person hid its attribution', () => {
+    const hidden = { cwd: null, read: (path: string) => path.endsWith('settings.json') ? JSON.stringify({ attribution: false }) : null }
+    expect(agentLaunchArgs('claude', 'agent', hidden, dataDir)).toEqual(claudeTold)
   })
 
   it('keeps the person\'s own Codex instructions first, and says nothing they already say', () => {
