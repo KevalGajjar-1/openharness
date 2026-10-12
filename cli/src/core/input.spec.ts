@@ -8,12 +8,13 @@ import type { AutonomousDeviceInput } from './deviceInput.js'
 import { deviceErrorText } from './cardText.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import type { SessionInputDelivery } from '../lib/sessionInput.js'
-import { TERMINAL_LEASE_REFUSED, type ProcessIdentity, type TerminalActionResult } from '../lib/terminalTypes.js'
+import { TERMINAL_LEASE_REFUSED, type ProcessIdentity, type TerminalActionResult, type TerminalWrite, type SubmitOptions } from '../lib/terminalTypes.js'
 import { CLAUDE_REWIND_LIST, CODEX_BROWSING_SCROLLBACK } from '../lib/__fixtures__/rewindPickers.js'
 import { createInput, createMessageRequest, deviceInputDeps, messageWriter, sessionInputDeps, type InputDeps } from './input.js'
 import { createScreens } from './engines/screens.js'
 import { screenFor } from '../engines/screens.js'
 import { readerEngine } from '../engines/worker/protocol.js'
+import { createTerminalWriter } from './terminals/writer.js'
 
 const ok: TerminalActionResult = { state: 'succeeded', dispatch: 'executed' }
 const fixture = (name: string) => readFileSync(new URL(`../lib/__fixtures__/${name}`, import.meta.url), 'utf8')
@@ -50,7 +51,10 @@ function deps(over: Partial<InputDeps> = {}) {
     terminal: {
       captureTerminal: vi.fn(async () => pane),
       validateTerminal: vi.fn(async () => true),
-      submitTerminalAction: vi.fn(async (id: string, text: string) => { calls.push(`submit ${id} ${text}`); return ok }),
+      submitTerminalAction: vi.fn(async (id: string, text: string, options?: SubmitOptions) => {
+        const paste = async () => { calls.push(`submit ${id} ${text}`); return ok }
+        return options?.dispatch ? options.dispatch(paste) : paste()
+      }),
       keyTerminalAction: vi.fn(async (id: string, key: string) => { calls.push(`key ${id} ${key}`); return ok }),
       pinTerminalControl: vi.fn(() => () => { calls.push('unpin') }),
     },
@@ -70,9 +74,9 @@ function deps(over: Partial<InputDeps> = {}) {
 
 /** A device pane lock that runs each write at once and remembers whose pane it was. */
 const lock = (calls: string[]): Pick<AutonomousDeviceInput, 'legacyWrite'> => ({
-  legacyWrite: <T,>(id: string, write: () => Promise<T>): Promise<T> => {
+  legacyWrite: <T,>(id: string, write: (ticket: TerminalWrite) => Promise<T>): Promise<T> => {
     calls.push(`lock ${id}`)
-    return write()
+    return write({ allowed: () => true, dispatch: operation => operation() })
   },
 })
 
@@ -80,6 +84,26 @@ const delivery = (deliveryId: string) => ({ deliveryId }) as unknown as SessionI
 
 describe('the session input controller\'s dependencies', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('refuses a missing owner or a revoked ticket before asking any optional reader', async () => {
+    const run = deps(), writer = createTerminalWriter(), ticket = writer.ticket('a1')
+    await writer.interrupt('a1', async () => {})
+    await expect(messageWriter(run.deps)('nobody', 'hi')).resolves.toMatchObject({ dispatch: 'not_started' })
+    await expect(messageWriter(run.deps)('a1', 'hi', undefined, ticket)).resolves.toMatchObject({ reason: 'terminal control revoked' })
+    expect(run.deps.readScreen).toBe(readInlineScreen)
+    expect(run.deps.terminal.captureTerminal).not.toHaveBeenCalled()
+    const ticketFor = vi.spyOn(writer, 'ticket')
+    const wired = sessionInputDeps(run.deps, () => ({ ...lock([]), writes: writer }))
+    wired.write!('s1'); wired.write!('unresolved')
+    expect(ticketFor.mock.calls).toEqual([['a1'], ['unresolved']])
+    const fresh = writer.ticket('a1')
+    vi.mocked(run.deps.terminal.validateTerminal).mockImplementationOnce(async () => {
+      await writer.interrupt('a1', async () => {})
+      return true
+    })
+    await expect(messageWriter(run.deps)('a1', 'hi', undefined, fresh)).resolves.toMatchObject({ reason: 'terminal control revoked' })
+    expect(run.deps.terminal.captureTerminal).not.toHaveBeenCalled()
+  })
 
   it('finds a session and checks its pane through what it was given', async () => {
     const { deps: given } = deps()
@@ -328,7 +352,9 @@ describe('the device input\'s dependencies', () => {
     const wired = deviceInputDeps(given, () => ({ acquireControl: vi.fn(), submit: vi.fn(), cancelDelivery: vi.fn() }))
     expect(wired.getSession('a1')?.sessionId).toBe('s1')
     expect(wired.validateRuntime).toBe(given.terminal.validateTerminal)
-    expect(wired.sendKey).toBe(given.terminal.keyTerminalAction)
+    const write: TerminalWrite = { allowed: () => true, dispatch: operation => operation() }
+    await wired.sendKey('a1', 'Enter', write)
+    expect(given.terminal.keyTerminalAction).toHaveBeenCalledWith('a1', 'Enter', write.allowed, write)
     expect(wired.capture).toBe(given.terminal.captureTerminal)
     // Its writes are read first, as every message's is.
     expect(await wired.inject('a1', 'hello')).toBe(ok)
@@ -401,7 +427,7 @@ describe('createInput', () => {
     // What each controller was given (its constructor's dependencies) reaches the other one.
     const given = (controller: object) => (controller as unknown as { deps: Record<string, (...args: unknown[]) => unknown> }).deps
     expect(await given(inputs.input).inject('a1', 'hello')).toBe(ok)
-    expect(lockWrite).toHaveBeenCalledWith('a1', expect.any(Function))
+    expect(lockWrite).toHaveBeenCalledWith('a1', expect.any(Function), undefined)
     const release = given(inputs.deviceInput).acquireControl('a1') as (() => void) | null
     expect(acquire).toHaveBeenCalledWith('a1', { forAnswer: true })
     expect(release).toBeTypeOf('function')

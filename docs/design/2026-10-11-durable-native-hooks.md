@@ -793,6 +793,47 @@ publication occurred. Physical Cancel, explicit durable rearm and the atomic
 history/input/task/recap activation remain required; this checkpoint does not
 activate them or provide final PR approval.
 
+## Shared pane writer before native activation
+
+The October 12 writer checkpoint separates revocable message preparation from
+actual pane commands. Cancel settles logical waiters immediately; it waits only
+for already dispatched pane I/O. The physical lease lasts until the command
+settles, including after an interrupt caller's deadline. Each paste, literal and
+key retains its original ticket through validation, worker reads, retries and
+queue draining. Released pins cannot write or release a replacement pin. A
+launch may bind its first conversation once without adopting unrelated route,
+process, activity or identity-hold changes.
+
+The same gate reaches SessionInput, device input, TerminalControl, the backend
+coordinator and tmux. Device cancellation and forgetting revoke preparation at
+the final dispatch boundary; a later worker rejection releases only the original
+item without reporting another delivery. Queued work, lane storage and actual
+unfinished preparations are bounded separately. Cancel does not turn an
+abandoned worker promise into free capacity.
+
+Independent review closed stale literal ownership, replaced pins, final proof
+deadline ordering, first-bind compatibility, cancelled-device dispatch, detached
+preparation capacity and cancelled-read cleanup findings. Scoped approval covers
+the writer/input delta over `d23fa3843`, conditional on the now-completed checks;
+it is not approval of native activation or the whole PR. Receipt
+`20261012T075135.919301Z-78474` passes types and 390 cases, including the unchanged
+journal golden and architecture checks, at 100% statements, branches, functions
+and lines in all four changed core files (50.1 seconds of checks).
+`20261012T075514.342679Z-92902` passes the composition/unit baseline and all ten
+assertion mutations (11.9 seconds). The preceding mutation receipt caught nine
+faults by assertion and one only by timeout; its corrected test asserts the
+physical write before awaiting the optional reader. Earlier failed coverage,
+fixture and typecheck receipts remain failed.
+
+Correction and review work for this checkpoint ran approximately 07:27–07:56 UTC
+October 12, with validation and review overlapping. Merge and publication remain
+zero. Native turn activation, durable Cancel/rearm and atomic history, input,
+task and recap integration remain open. Native input admission must preserve a
+visible, retryable hold for writer-capacity refusal; the legacy controller's
+revoked-write exception handling is not that admission boundary. Full core/master
+gates, private end-to-end acceptance and input-cost comparison are still required
+on the final integrated implementation.
+
 Core must durably retain the immutable native body, delivery ID, native time,
 original routing hints and proved engine process incarnation before acknowledging
 owned pending work. A write that cannot be confirmed receives an unowned retry

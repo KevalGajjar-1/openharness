@@ -22,7 +22,7 @@ import { passingHold } from '../lib/messageHolds.js'
 import type { ScreenReader } from '../lib/screenReader.js'
 import type { SubmissionReader } from '../lib/submissionReader.js'
 import type { ScreenReading } from '../engines/facets/screen.js'
-import { TERMINAL_LEASE_REFUSED, terminalActionNotStarted, type TerminalActionResult } from '../lib/terminalTypes.js'
+import { TERMINAL_LEASE_REFUSED, terminalActionNotStarted, type TerminalActionResult, type TerminalWrite } from '../lib/terminalTypes.js'
 import type { TerminalControl } from './terminals/control.js'
 import { launchBound } from './engines/sessionBinding.js'
 
@@ -35,6 +35,7 @@ export interface InputDeps {
   resolve: (id: string) => RegisteredSession | undefined
   byAgent: (agentId: string) => RegisteredSession | undefined
   terminal: Pick<TerminalControl, 'captureTerminal' | 'validateTerminal' | 'submitTerminalAction' | 'keyTerminalAction' | 'pinTerminalControl'>
+    & Partial<Pick<TerminalControl, 'writer' | 'writeTicket'>>
   /** The turns delivered under a caller's own id (core/deliveries.ts): the Wi-Fi device's, Agent Messages', the orchestrator's. */
   deliveries: {
     /** A delivery settled: its caller hears of it. */
@@ -68,23 +69,35 @@ export interface InputDeps {
  * reason. `submitTerminalAction` is called here and nowhere else in this file, and input.spec.ts keeps
  * it so.
  */
-export function messageWriter({ readScreen, resolve, terminal: { captureTerminal, validateTerminal, submitTerminalAction }, promptTyped }: Pick<InputDeps, 'resolve' | 'terminal' | 'promptTyped' | 'readScreen'>) {
-  return async (id: string, text: string, hold?: (session: RegisteredSession, screen: ScreenReading | null) => string | null): Promise<TerminalActionResult> => {
-    const session = resolve(id)
-    if (!session) return terminalActionNotStarted('terminal agent is unavailable')
+export function messageWriter({ readScreen, resolve, terminal: { captureTerminal, validateTerminal, submitTerminalAction, writeTicket }, promptTyped }: Pick<InputDeps, 'resolve' | 'terminal' | 'promptTyped' | 'readScreen'>) {
+  return async (id: string, text: string, hold?: (session: RegisteredSession, screen: ScreenReading | null) => string | null,
+    write?: TerminalWrite): Promise<TerminalActionResult> => {
+    const found = resolve(id)
+    if (!found) return terminalActionNotStarted('terminal agent is unavailable')
+    const session = structuredClone(found)
+    const owner = writeTicket?.(session.agentId)
+    const allowed = () => (!write || write.allowed()) && (!owner || owner.allowed())
+    if (!allowed()) return terminalActionNotStarted('terminal control revoked')
     // The engine first, then its screen. A check of the engine can wait, seconds, for an answer: a probe
     // a held event loop timed out, a restart still recording its new engine (TerminalBackendCoordinator
     // validateRuntime). Read before that wait, the screen was judged as it was then, and a permission
     // prompt opened meanwhile, or a new engine's first screen, took the paste and its Enter. An engine
     // not there is refused as a lease is, which the caller asks again.
     if (!await validateTerminal(session)) return terminalActionNotStarted(TERMINAL_LEASE_REFUSED)
+    if (!allowed()) return terminalActionNotStarted('terminal control revoked')
     const capture = await captureTerminal(id)
     const screen = await readScreen(session, capture)
+    if (!allowed()) return terminalActionNotStarted('terminal control revoked')
     if (!screen) return terminalActionNotStarted(hold?.(session, null) ?? 'screen_unreadable')
     const reason = hold?.(session, screen) ?? screen.messageHold
     if (reason) return terminalActionNotStarted(reason)
-    promptTyped?.(session, capture, screen)
+    let typed = false
+    if (!write) promptTyped?.(session, capture, screen)
     return submitTerminalAction(id, text, {
+      ...(write ? { allowed, dispatch: <T>(operation: () => Promise<T>): Promise<T> => write.dispatch(() => {
+        if (!typed) { typed = true; promptTyped?.(session, capture, screen) }
+        return operation()
+      }) } : {}),
       beforeEnter: async () => {
         // A read that came back empty, or a composer caught between frames, is asked again for a moment
         // (a re-attach can blank one capture): only what is on screen holds the Enter back, never a
@@ -94,6 +107,7 @@ export function messageWriter({ readScreen, resolve, terminal: { captureTerminal
           // conversation since (sessionBinding.ts `launchBound`); under any other change, as typed, which
           // the reading's fence refuses.
           const next = await readScreen(launchBound(session, resolve(id)), await captureTerminal(id))
+          if (!allowed()) return 'terminal control revoked'
           const before = next ? next.messageHold : 'screen_unreadable'
           if (before === 'popup_open') return null
           if (!before || !passingHold(before) || tries >= ENTER_CHECK_TRIES) return before
@@ -111,7 +125,7 @@ const ENTER_CHECK_RETRY_MS = 250
 /** What `SessionInputController` is given: every write takes the device's pane lock first. */
 export function sessionInputDeps(
   deps: InputDeps,
-  deviceInput: () => Pick<AutonomousDeviceInput, 'legacyWrite'>,
+  deviceInput: () => Pick<AutonomousDeviceInput, 'legacyWrite'> & Partial<Pick<AutonomousDeviceInput, 'writes'>>,
 ): SessionInputDeps {
   const { resolve, terminal, deliveries, device, clients, agentIdFor, commandcode, emit } = deps
   const { captureTerminal, validateTerminal, keyTerminalAction } = terminal
@@ -130,15 +144,16 @@ export function sessionInputDeps(
       return screen ? screen.teamHold : 'team_waiting_unavailable'
     },
     validateRuntime: validateTerminal,
+    write: id => terminal.writeTicket?.(id) ?? deviceInput().writes?.ticket(resolve(id)?.agentId ?? id),
     // Typed into the pane as it stands, a draft or a running turn included, under the pane's write lock.
-    inject: (id, text) => deviceInput().legacyWrite(id, () => writeMessage(id, text)),
+    inject: (id, text, write) => deviceInput().legacyWrite(id, ticket => writeMessage(id, text, undefined, ticket), write),
     // An Agent Messages turn waits for a ready composer, and for its mailbox to still want it written.
-    injectTeam: (id, text, deliveryId) => deviceInput().legacyWrite(id, async () => {
+    injectTeam: (id, text, deliveryId, write) => deviceInput().legacyWrite(id, async ticket => {
       if (!resolve(id)) return terminalActionNotStarted('team_waiting_unavailable')
       return writeMessage(id, text, (session, screen) => (screen ? screen.teamHold : 'team_waiting_unavailable')
-        ?? (deliveries.canWrite(deliveryId) ? null : 'team_waiting_control'))
-    }),
-    sendKey: (id, key) => deviceInput().legacyWrite(id, () => keyTerminalAction(id, key)),
+        ?? (deliveries.canWrite(deliveryId) ? null : 'team_waiting_control'), ticket)
+    }, write),
+    sendKey: (id, key, write) => deviceInput().legacyWrite(id, ticket => keyTerminalAction(id, key, ticket?.allowed, ticket), write),
     capture: captureTerminal,
     onError: (sessionId, message) => {
       clients.send({ type: 'error', agentId: agentIdFor(sessionId), dbSessionId: sessionId, payload: { message } })
@@ -172,8 +187,10 @@ export function deviceInputDeps(
     getSession: id => resolve(id),
     validateRuntime: validateTerminal,
     // The Device holds the pane's write lock itself while it writes.
-    inject: messageWriter(deps),
-    sendKey: keyTerminalAction,
+    writer: deps.terminal.writer,
+    write: deps.terminal.writeTicket,
+    inject: (id, text, write) => messageWriter(deps)(id, text, undefined, write),
+    sendKey: (id, key, write) => keyTerminalAction(id, key, write?.allowed, write),
     capture: captureTerminal,
     submission: deps.submission,
     // Whatever a message is not typed into, the Device's waits for it to close, rather than be refused.

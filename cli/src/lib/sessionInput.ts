@@ -6,7 +6,7 @@ import { launchBound } from '../core/engines/sessionBinding.js'
 import type { RegisteredSession } from './registry.js'
 import { sid } from './log.js'
 import { isMessageHold, messageHoldText, messageWithheldText, passingHold, type MessageHold } from './messageHolds.js'
-import { enterWithheldReason, TERMINAL_LEASE_REFUSED, type TerminalActionResult } from './terminalTypes.js'
+import { enterWithheldReason, TERMINAL_LEASE_REFUSED, TerminalWriteHeld, type TerminalActionResult, type TerminalWrite } from './terminalTypes.js'
 
 const MAX_QUEUE_ITEMS = 8
 const MAX_QUEUE_BYTES = 24 * 1024
@@ -72,6 +72,7 @@ export interface SessionInputDelivery {
 }
 
 interface QueuedInput {
+  write?: TerminalWrite
   deliveryId?: string
   content: string
   bytes: number
@@ -79,6 +80,7 @@ interface QueuedInput {
 }
 
 interface InputState {
+  write?: TerminalWrite
   /** The writes this agent's messages are making, one after another in the order they arrived. */
   writes?: Promise<void>
   deliveryId?: string
@@ -101,6 +103,7 @@ interface InputState {
 }
 
 export interface SessionInputDeps {
+  write?: (id: string) => TerminalWrite | undefined
   readScreen: ScreenReader
   /** The reading of a typed prompt by the engines whose worker reads it (Claude Code, Codex): the pane after
    *  the paste, and a turn's prompt as recorded. Every verdict and every Enter stays here. */
@@ -111,10 +114,10 @@ export interface SessionInputDeps {
   getSession: (sessionId: string) => RegisteredSession | undefined
   validateRuntime: (session: RegisteredSession) => Promise<boolean>
   /** Boolean is retained for direct controller tests and legacy embedders. Production returns dispatch evidence. */
-  inject: (terminalTarget: string, content: string) => Promise<boolean | TerminalActionResult>
+  inject: (terminalTarget: string, content: string, write?: TerminalWrite) => Promise<boolean | TerminalActionResult>
   /** Host serializes the preflight and paste with other terminal writers. */
-  injectTeam?: (terminalTarget: string, content: string, deliveryId: string) => Promise<boolean | TerminalActionResult>
-  sendKey: (terminalTarget: string, key: string) => Promise<boolean | TerminalActionResult>
+  injectTeam?: (terminalTarget: string, content: string, deliveryId: string, write?: TerminalWrite) => Promise<boolean | TerminalActionResult>
+  sendKey: (terminalTarget: string, key: string, write?: TerminalWrite) => Promise<boolean | TerminalActionResult>
   capture?: (terminalTarget: string) => Promise<string | null>
   onError: (sessionId: string, message: string) => void
   /**
@@ -264,13 +267,13 @@ export class SessionInputController {
       if (!deliveryId?.startsWith('team:')) this.deps.onError(sessionId, 'This harness is no longer available.')
       return
     }
-    const state = this.state(sessionId)
+    const state = this.state(sessionId), authority = this.deps.write?.(session.agentId)
     this.dropExpired(sessionId, state)
     if (state.controlLocked
       || (deliveryId && (state.deliveryId || state.dispatching || state.turnOpen || state.awaitingFingerprint || state.settling))
       || (!this.typesWhileBusy(session.engine) && (state.turnOpen || state.awaitingFingerprint || state.settling))) {
       console.log(`[inject] ${sid(sessionId)} queued · engine=${session.engine} · depth=${state.queue.length + 1}`)
-      this.enqueue(sessionId, state, content, deliveryId)
+      this.enqueue(sessionId, state, content, deliveryId, authority)
       return
     }
     this.delivery(sessionId, deliveryId, 'queued')
@@ -282,7 +285,7 @@ export class SessionInputController {
     // agent as it is by then, which a restart in between may have changed.
     // With nothing in flight the write starts at once, so a cancel or a control request that follows
     // the submit sees it, as before.
-    const write = (): Promise<void> => this.inject(sessionId, this.controlSession(sessionId) ?? session, content, deliveryId)
+    const write = (): Promise<void> => this.inject(sessionId, this.controlSession(sessionId) ?? session, content, deliveryId, authority)
     const running = state.writes ? state.writes.then(write, write) : write()
     const settled: Promise<void> = running.catch(() => {}).then(() => { if (state.writes === settled) state.writes = undefined })
     state.writes = settled
@@ -390,10 +393,11 @@ export class SessionInputController {
   private async clearCursorEcho(sessionId: string, userMessage: string): Promise<void> {
     const session = this.controlSession(sessionId)
     if (session?.engine !== 'cursor' || !this.deps.capture) return
+    const write = this.state(sessionId).write ?? this.deps.write?.(session.agentId)
     try {
       const capture = await this.deps.capture(session.agentId)
       if (!capture || !cursorComposerContains(capture, userMessage)) return
-      await this.deps.sendKey(session.agentId, 'C-u')
+      await this.deps.sendKey(session.agentId, 'C-u', write)
       console.log(`[inject] ${sid(sessionId)} cleared the echoed prompt from the Cursor composer`)
     } catch {
       /* best-effort cosmetics — never let this break the turn */
@@ -474,7 +478,7 @@ export class SessionInputController {
   }
 
   /** Preserve the established injection path for every caller that opts out of receipts. */
-  private async injectLegacy(sessionId: string, session: RegisteredSession, content: string): Promise<void> {
+  private async injectLegacy(sessionId: string, session: RegisteredSession, content: string, write?: TerminalWrite): Promise<void> {
     const state = this.state(sessionId)
     if (!(await this.deps.validateRuntime(session))) {
       console.warn(`[inject] ${sid(sessionId)} abort · engine=${session.engine} · process not running`)
@@ -496,10 +500,10 @@ export class SessionInputController {
       // C-u (kill-to-start-of-line) is a no-op on an empty composer, so this costs nothing in the normal
       // case. It does discard a draft a human was typing in the terminal — but pasting into that draft
       // would corrupt it into a run-on prompt anyway, which is worse and harder to notice.
-      await this.deps.sendKey(session.agentId, 'C-u')
+      await this.deps.sendKey(session.agentId, 'C-u', write)
     }
-    const delivery = await this.injectWhenLeased(() => this.deps.inject(session.agentId, content),
-      () => this.controlSession(session.agentId) !== undefined)
+    const delivery = await this.injectWhenLeased(() => this.deps.inject(session.agentId, content, write),
+      () => this.controlSession(session.agentId) !== undefined && (!write || write.allowed()))
     const accepted = typeof delivery === 'boolean'
       ? delivery
       : delivery.state === 'succeeded' || delivery.dispatch === 'possibly_executed'
@@ -531,13 +535,16 @@ export class SessionInputController {
     this.armSubmitCheck(sessionId, session, state)
   }
 
-  private async inject(sessionId: string, session: RegisteredSession, content: string, deliveryId?: string): Promise<void> {
+  private async inject(sessionId: string, session: RegisteredSession, content: string, deliveryId?: string, write?: TerminalWrite): Promise<void> {
     const state = this.state(sessionId)
+    state.write = write
     if (!deliveryId) {
       // A local submission keeps its original scheduling. Overlap removes our ability
       // to attribute a later terminal turn to the lamp; it must not block local input.
       this.finishDelivery(sessionId, state, 'unknown', 'prompt_mismatch')
-      return this.injectLegacy(sessionId, session, content)
+      return this.injectLegacy(sessionId, session, content, write).catch(error => {
+        if (!(error instanceof TerminalWriteHeld)) throw error
+      })
     }
     state.deliveryId = deliveryId
     state.deliveryFingerprint = undefined
@@ -571,13 +578,13 @@ export class SessionInputController {
         // C-u (kill-to-start-of-line) is a no-op on an empty composer, so this costs nothing in the normal
         // case. It does discard a draft a human was typing in the terminal — but pasting into that draft
         // would corrupt it into a run-on prompt anyway, which is worse and harder to notice.
-        await this.deps.sendKey(session.agentId, 'C-u')
+        await this.deps.sendKey(session.agentId, 'C-u', write)
       }
       if (state.cancelled || this.states.get(sessionId) !== state) return
       state.writing = true
       const delivery = await this.injectWhenLeased(() => (deliveryId.startsWith('team:') && this.deps.injectTeam
-        ? this.deps.injectTeam(session.agentId, content, deliveryId) : this.deps.inject(session.agentId, content)),
-      () => !state.cancelled && this.states.get(sessionId) === state)
+        ? this.deps.injectTeam(session.agentId, content, deliveryId, write) : this.deps.inject(session.agentId, content, write)),
+      () => !state.cancelled && this.states.get(sessionId) === state && (!write || write.allowed()))
       state.writing = false
       if (state.cancelled || this.states.get(sessionId) !== state) return
       if (typeof delivery !== 'boolean' && delivery.state === 'failed' && delivery.dispatch === 'not_started' && delivery.reason.startsWith('team_waiting_')) {
@@ -669,6 +676,7 @@ export class SessionInputController {
   }
 
   private async retrySubmit(sessionId: string, session: RegisteredSession, state: InputState): Promise<void> {
+    const write = state.write
     if (state.deliveryId?.startsWith('team:')) {
       // Team traffic is automatic. A missing transcript start is not permission to press Enter
       // again: the message may already be in the engine's queue. Inbox/reply correlation can
@@ -785,7 +793,7 @@ export class SessionInputController {
     // to claim one anyway.
     console.log(`[inject] ${sid(sessionId)} resubmit Enter · engine=${session.engine} · retry=${state.retries}/${SUBMIT_MAX_RETRIES}`)
     // Only the submit key is retried. The prompt body is never pasted twice.
-    const delivery = await this.deps.sendKey(session.agentId, 'Enter')
+    const delivery = await this.deps.sendKey(session.agentId, 'Enter', write)
     state.ambiguousDispatch = typeof delivery === 'boolean'
       ? !delivery
       : delivery.dispatch === 'possibly_executed'
@@ -869,10 +877,10 @@ export class SessionInputController {
       if (!next.deliveryId?.startsWith('team:')) this.deps.onError(sessionId, 'This harness is no longer available.')
       return
     }
-    void this.inject(sessionId, session, next.content, next.deliveryId)
+    void this.inject(sessionId, session, next.content, next.deliveryId, next.write)
   }
 
-  private enqueue(sessionId: string, state: InputState, content: string, deliveryId?: string): void {
+  private enqueue(sessionId: string, state: InputState, content: string, deliveryId?: string, write?: TerminalWrite): void {
     const bytes = Buffer.byteLength(content, 'utf8')
     const queuedBytes = state.queue.reduce((sum, item) => sum + item.bytes, 0)
     if (state.queue.length >= MAX_QUEUE_ITEMS || queuedBytes + bytes > MAX_QUEUE_BYTES) {
@@ -880,7 +888,7 @@ export class SessionInputController {
       if (!deliveryId?.startsWith('team:')) this.deps.onError(sessionId, 'This agent already has too many queued messages. Try again after the current operation finishes.')
       return
     }
-    state.queue.push({ content, bytes, expiresAt: Date.now() + ITEM_TTL_MS, deliveryId })
+    state.queue.push({ content, bytes, expiresAt: Date.now() + ITEM_TTL_MS, deliveryId, write })
     this.delivery(sessionId, deliveryId, 'queued')
   }
 

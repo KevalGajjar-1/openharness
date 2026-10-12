@@ -9,8 +9,10 @@
  */
 import type { RegisteredSession } from '../../lib/registry.js'
 import type { TerminalBackendCoordinator } from '../../lib/terminalBackendCoordinator.js'
-import { TERMINAL_LEASE_REFUSED, terminalActionNotStarted, type SubmitOptions, type TerminalActionResult } from '../../lib/terminalTypes.js'
+import { TERMINAL_LEASE_REFUSED, TerminalWriteHeld, terminalActionNotStarted, type SubmitOptions, type TerminalActionResult, type TerminalWrite } from '../../lib/terminalTypes.js'
 import { paneReadIdentity } from '../transcripts/readIdentity.js'
+import { launchBound } from '../engines/sessionBinding.js'
+import { createTerminalWriter, type TerminalWriter } from './writer.js'
 
 export type TerminalControlBackend = Pick<TerminalBackendCoordinator,
   'acquireLease' | 'validateLease' | 'capture' | 'captureLease' | 'submitText' | 'submitTextLease'
@@ -20,22 +22,50 @@ export interface TerminalControlDeps {
   /** The agent a target names: its agent id, session id or pane. */
   resolve: (target: string) => RegisteredSession | undefined
   terminals: TerminalControlBackend
+  writer?: TerminalWriter
 }
 
-export function createTerminalControl({ resolve, terminals }: TerminalControlDeps) {
+export function createTerminalControl({ resolve, terminals, writer = createTerminalWriter() }: TerminalControlDeps) {
   const terminalSession = (target: string): RegisteredSession | undefined => resolve(target)
   const controlLeases = new Map<string, { lease: Awaited<ReturnType<typeof terminals.acquireLease>> & { state: 'succeeded' }; expiresAt: number }>()
   const pinnedControls = new Set<string>()
   const invalidControls = new Set<string>()
+  const pinnedWrites = new Map<string, TerminalWrite>()
+  const writeFor = (agentId: string): TerminalWrite => pinnedWrites.get(agentId) ?? writer.ticket(agentId)
+  // Retain the original owner through queueing, worker reads and retries. A launch
+  // may bind its first conversation once; that allowance cannot follow a rotation.
+  const writeTicket = (target: string): TerminalWrite => {
+    let original = terminalSession(target)
+    original = original && structuredClone(original)
+    const write = writeFor(original?.agentId ?? target)
+    const allowed = () => {
+      if (!original || !write.allowed()) return false
+      const current = resolve(original.agentId)
+      if (paneReadIdentity(original) !== paneReadIdentity(current)) {
+        if (!current || typeof current.boundAt !== 'number' || !current.sessionId || launchBound(original, current) !== current) return false
+        // Only first-binding fields may change. launchBound alone also accepts
+        // an unbound row and would launder a changed route or identity hold.
+        const beforeBinding = { ...current, sessionId: original.sessionId, boundAt: original.boundAt,
+          transcriptPath: original.transcriptPath, processIdentity: original.processIdentity }
+        if (paneReadIdentity(beforeBinding) !== paneReadIdentity(original)) return false
+        original = structuredClone(current)
+      }
+      return write.allowed()
+    }
+    return { allowed, dispatch: operation => write.dispatch(() => {
+      if (!allowed()) throw new TerminalWriteHeld('terminal control revoked')
+      return operation()
+    }) }
+  }
   const CONTROL_LEASE_IDLE_MS = 15_000
   const leasedTerminal = async (session: RegisteredSession): Promise<Extract<Awaited<ReturnType<typeof terminals.acquireLease>>, { state: 'succeeded' }> | null> => {
-    const pinned = pinnedControls.has(session.agentId)
+    const pin = pinnedWrites.get(session.agentId), pinned = !!pin
     if (pinned && invalidControls.has(session.agentId)) return null
     const current = controlLeases.get(session.agentId)
     if (current && (pinned || current.expiresAt > Date.now())) {
       if (!await terminals.validateLease(current.lease.value, session)) {
-        controlLeases.delete(session.agentId)
-        if (pinned) invalidControls.add(session.agentId)
+        if (controlLeases.get(session.agentId) === current) controlLeases.delete(session.agentId)
+        if (pin && pinnedWrites.get(session.agentId) === pin) invalidControls.add(session.agentId)
         return null
       }
       current.expiresAt = Date.now() + CONTROL_LEASE_IDLE_MS
@@ -45,18 +75,27 @@ export function createTerminalControl({ resolve, terminals }: TerminalControlDep
     const acquired = await terminals.acquireLease(session)
     if (acquired.state !== 'succeeded') return null
     const value = { lease: acquired, expiresAt: Date.now() + CONTROL_LEASE_IDLE_MS }
-    controlLeases.set(session.agentId, value)
+    if (!controlLeases.has(session.agentId) && pinnedWrites.get(session.agentId) === pin) controlLeases.set(session.agentId, value)
     return acquired
   }
   const pinTerminalControl = (target: string): (() => void) | null => {
     const session = terminalSession(target)
     if (!session || pinnedControls.has(session.agentId)) return null
-    pinnedControls.add(session.agentId)
-    invalidControls.delete(session.agentId)
+    const agentId = session.agentId, original = writer.ticket(agentId)
+    const allowed = () => pinnedWrites.get(agentId) === write && original.allowed()
+    const write: TerminalWrite = { allowed, dispatch: operation => original.dispatch(() => {
+      if (!allowed()) throw new TerminalWriteHeld('terminal control revoked')
+      return operation()
+    }) }
+    pinnedControls.add(agentId)
+    pinnedWrites.set(agentId, write)
+    invalidControls.delete(agentId)
     return () => {
-      pinnedControls.delete(session.agentId)
-      invalidControls.delete(session.agentId)
-      controlLeases.delete(session.agentId)
+      if (pinnedWrites.get(agentId) !== write) return
+      pinnedControls.delete(agentId)
+      pinnedWrites.delete(agentId)
+      invalidControls.delete(agentId)
+      controlLeases.delete(agentId)
     }
   }
   const invalidateTerminalControl = (agentId: string): void => {
@@ -90,13 +129,18 @@ export function createTerminalControl({ resolve, terminals }: TerminalControlDep
   const submitTerminalAction = async (target: string, text: string, options?: SubmitOptions): Promise<TerminalActionResult> => {
     const session = terminalSession(target)
     if (!session) return terminalActionNotStarted('terminal agent is unavailable')
-    const lease = await leasedTerminal(session)
+    const original = structuredClone(session)
+    const pin = pinnedWrites.get(original.agentId)
+    const write = writeTicket(original.agentId), previous = options
+    options = { ...previous, allowed: () => (!previous?.allowed || previous.allowed()) && write.allowed(),
+      dispatch: previous?.dispatch ?? write.dispatch }
+    const lease = await leasedTerminal(original)
     if (!lease) return terminalActionNotStarted(TERMINAL_LEASE_REFUSED)
     if (options?.allowed && !options.allowed()) return terminalActionNotStarted('terminal control revoked')
     const result = pinnedControls.has(session.agentId)
       ? await terminals.submitTextLease(lease.value, text, options)
-      : await terminals.submitTextForLease(session, lease.value, text, options)
-    if (result.state !== 'succeeded' && pinnedControls.has(session.agentId)) invalidateTerminalControl(session.agentId)
+      : await terminals.submitTextForLease(original, lease.value, text, options)
+    if (result.state !== 'succeeded' && pin && pinnedWrites.get(original.agentId) === pin) invalidateTerminalControl(original.agentId)
     return result
   }
   const submitTerminal = async (target: string, text: string, options?: SubmitOptions): Promise<boolean> => {
@@ -105,20 +149,31 @@ export function createTerminalControl({ resolve, terminals }: TerminalControlDep
   const typeTerminal = async (target: string, text: string): Promise<boolean> => {
     const session = terminalSession(target)
     if (!session) return false
-    const lease = await leasedTerminal(session)
+    const original = structuredClone(session), identity = paneReadIdentity(original), ticket = writeFor(original.agentId)
+    const pin = pinnedWrites.get(original.agentId)
+    const current = () => paneReadIdentity(resolve(original.agentId)) === identity && ticket.allowed()
+    const write = { allowed: current, dispatch: ticket.dispatch }
+    const lease = await leasedTerminal(original)
     if (!lease) return false
-    const succeeded = terminalActionSucceeded(await terminals.typeLiteralLease(lease.value, text))
-    if (!succeeded && pinnedControls.has(session.agentId)) invalidateTerminalControl(session.agentId)
+    if (!write.allowed()) return false
+    const succeeded = terminalActionSucceeded(await terminals.typeLiteralLease(lease.value, text, write))
+    if (!succeeded && pin && pinnedWrites.get(original.agentId) === pin) invalidateTerminalControl(original.agentId)
     return succeeded
   }
-  const keyTerminalAction = async (target: string, key: string, allowed?: () => boolean): Promise<TerminalActionResult> => {
+  const keyTerminalAction = async (target: string, key: string, allowed?: () => boolean, write?: TerminalWrite): Promise<TerminalActionResult> => {
     const session = terminalSession(target)
     if (!session) return terminalActionNotStarted('terminal session is unavailable')
-    const lease = await leasedTerminal(session)
+    const ticket = write ?? writeFor(session.agentId)
+    const original = structuredClone(session), identity = paneReadIdentity(original)
+    const pin = pinnedWrites.get(original.agentId)
+    // A native verifier can perform synchronous filesystem reads. Check the cheap
+    // original owner and interrupt deadline again after it, at the spawn boundary.
+    const current = () => (!allowed || allowed()) && paneReadIdentity(resolve(original.agentId)) === identity && ticket.allowed()
+    const lease = await leasedTerminal(original)
     if (!lease) return terminalActionNotStarted(TERMINAL_LEASE_REFUSED)
-    if (allowed && !allowed()) return terminalActionNotStarted('terminal control revoked')
-    const result = await terminals.sendLegacyKeyLease(lease.value, key)
-    if (result.state !== 'succeeded' && pinnedControls.has(session.agentId)) invalidateTerminalControl(session.agentId)
+    if (!current()) return terminalActionNotStarted('terminal control revoked')
+    const result = await terminals.sendLegacyKeyLease(lease.value, key, { allowed: current, dispatch: ticket.dispatch })
+    if (result.state !== 'succeeded' && pin && pinnedWrites.get(original.agentId) === pin) invalidateTerminalControl(original.agentId)
     return result
   }
   const keyTerminal = async (target: string, key: string, allowed?: () => boolean): Promise<boolean> => {
@@ -137,6 +192,7 @@ export function createTerminalControl({ resolve, terminals }: TerminalControlDep
   return {
     pinnedControls, pinTerminalControl, invalidateTerminalControl, captureTerminal, submitTerminalAction,
     submitTerminal, typeTerminal, keyTerminalAction, keyTerminal, validateTerminal, terminalGone,
+    writer, writeTicket,
   }
 }
 
