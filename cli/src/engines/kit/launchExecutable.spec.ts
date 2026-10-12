@@ -32,6 +32,20 @@ it('distinguishes complete absence from inaccessible or ambiguous candidates', a
   vi.stubEnv('PATH', 'relative')
   expect(await captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'held' })
 })
+it('searches the absolute folders of a PATH that also lists what is not one', async () => {
+  // The login PATH of a Mac with the .NET SDK: `~/.dotnet/tools`, unexpanded. An empty entry and `.` are as common.
+  const { bin, captureLaunchExecutable } = await fixture()
+  vi.stubEnv('PATH', ['~/.dotnet/tools', '', '.', 'relative', bin].join(':'))
+  expect(await captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'install' })
+  const file = join(bin, 'opencode'); writeFileSync(file, 'fixture', { mode: 0o700 })
+  const result = await captureLaunchExecutable('opencode', '')
+  expect(result).toMatchObject({ state: 'ready', executable: { command: file } })
+  // Nothing absolute to search, or more entries than a search is bounded to: still held.
+  vi.stubEnv('PATH', '~/.dotnet/tools::.')
+  expect(await captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'held' })
+  vi.stubEnv('PATH', Array(257).fill(bin).join(':'))
+  expect(await captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'held' })
+})
 it('never installs over an explicitly configured missing executable', async () => {
   await fixture()
   vi.stubEnv('OPENCODE_PATH', join(root, 'absent'))

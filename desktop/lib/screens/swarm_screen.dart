@@ -2963,43 +2963,17 @@ class _SwarmScreenState extends State<SwarmScreen> {
   /// Sign in: the sign-in screen, over the desk (`showSignInSheet`).
   Future<void> _signIn() => _dialog(() => showSignInSheet(context, app));
 
-  /// Whether the account has a phone already, as last read: Add Phone leaves
-  /// the menu then. Unknown shows it.
-  bool? _accountHasPhone;
-  String? _accountPhoneOwner;
-
-  Future<void> _readAccountPhone() async {
-    // No daemon to ask under test, and a request that never ends.
-    if (kUnderTest || app.isGuest) return;
-    final owner = app.currentUser?.email;
-    try {
-      final devices = await app.loadDevices();
-      if (!mounted || devices == null) return;
-      _accountHasPhone = devices.devices.any(
-        (device) => !device.isMachine && !device.self,
-      );
-      _accountPhoneOwner = owner;
-    } catch (_) {
-      // Unread, the row stays: it costs nothing to offer.
-    }
-  }
-
   /// The avatar's menu (`widgets/account_menu.dart`). Its rows open what the
   /// app already has, once the menu itself has closed: a [_dialog] made from
   /// inside one is refused.
   Future<void> _showAccountMenu() async {
     final user = app.currentUser;
-    final hasPhone =
-        _accountPhoneOwner == user?.email && _accountHasPhone == true;
-    // For the next opening: this one must not change under the pointer.
-    unawaited(_readAccountPhone());
     AccountMenuChoice? choice;
     await _dialog(() async {
       choice = await showAccountMenu(
         context,
         name: user?.name ?? '',
         email: user?.email ?? '',
-        showAddPhone: !hasPhone,
         topInset: _native ? 0 : _tabBarHeight,
       );
     });
@@ -3007,7 +2981,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
     switch (choice) {
       case AccountMenuChoice.addPhone:
         await _addPhone();
-        unawaited(_readAccountPhone());
       case AccountMenuChoice.customize:
         await _customize();
       case AccountMenuChoice.notifications:

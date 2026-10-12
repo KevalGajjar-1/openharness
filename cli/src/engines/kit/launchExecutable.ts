@@ -60,10 +60,12 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
   const environment = await launchEnvironment(shell)
   if (!environment || !environment.HOME || !isAbsolute(environment.HOME)) return held('Waiting to read the engine’s launch environment.')
   const command = engineBin(engine), override = enginePathOverride(engine)
-  const entries = environment.PATH?.split(delimiter) ?? []
-  if (entries.length === 0 || entries.length > 256 || entries.some(path => !isAbsolute(path) || path.length > 4096)) {
-    return held('Waiting for a bounded, absolute engine search path.')
-  }
+  // An entry that is not absolute names no fixed folder, so it is left out of the search, as an over-long
+  // one is. It is not a reason to hold: `~/.dotnet/tools` is on the login PATH of every Mac with the .NET SDK
+  // (its /etc/paths.d file says it that way), and 0.3.74 held every launch on such a computer for good.
+  const listed = environment.PATH?.split(delimiter) ?? []
+  const entries = listed.filter(path => isAbsolute(path) && path.length <= 4096)
+  if (entries.length === 0 || listed.length > 256) return held('Waiting for a bounded, absolute engine search path.')
   const recipe = override ? undefined : engineInstallRecipe(engine)
   const names = [...new Set([command, ...(recipe?.executable.names ?? [])])]
   const candidates = command.includes('/') ? [resolve(command)] : names.flatMap(name => entries.map(path => join(path, name)))
