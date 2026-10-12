@@ -22,7 +22,7 @@ const codexValue = (...texts: string[]) => ['-c', `developer_instructions=${JSON
 describe('what Harness tells an agent as it starts', () => {
   it('is the line the owner chose, and the instructions every harness gets', () => {
     expect(AGENT_ATTRIBUTION_LINE).toBe('🤝 Started by another agent in [Harness](https://harness.autonomous.ai) — agents that run agents.')
-    expect(HARNESS_INSTRUCTIONS).toBe('You are running in Harness, and the person can watch you. You can hand work to other agents (Claude Code, Codex) that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` (see `harness --help`). Only use or close harnesses you started.')
+    expect(HARNESS_INSTRUCTIONS).toBe('You are running in Harness, and the person can watch you. You can hand work to other agents (Claude Code, Codex) that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` (see `harness --help`). Start one only for work that can run in parallel, needs another model, or takes long; do quick work yourself, and close each one once you have its answer. Only use or close harnesses you started.')
   })
 
   it('tells every harness how to use Harness, and adds the pull request line only to one another agent started', () => {

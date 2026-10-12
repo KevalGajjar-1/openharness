@@ -20,12 +20,15 @@ export type StartedBy = 'agent'
 
 /**
  * What every harness is told as it starts, while the person lets agents start agents (Settings ▸ Agents): that it runs in
- * Harness, and the verbs that hand work to another agent. An agent that does not know Harness is there never uses it,
- * and every harness Harness starts is an agent that could (docs/design/2026-10-11-agent-client.md).
+ * Harness, the verbs that hand work to another agent, and when to: every harness started spends the person's tokens, so
+ * only for work that gains from it, and closed once answered (owner, October 12). An agent that does not know Harness is
+ * there never uses it, and every harness Harness starts is an agent that could (docs/design/2026-10-11-agent-client.md).
+ * It is in every system prompt: keep it short.
  */
 export const HARNESS_INSTRUCTIONS = 'You are running in Harness, and the person can watch you. You can hand work to other agents '
   + '(Claude Code, Codex) that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` '
-  + '(see `harness --help`). Only use or close harnesses you started.'
+  + '(see `harness --help`). Start one only for work that can run in parallel, needs another model, or takes long; '
+  + 'do quick work yourself, and close each one once you have its answer. Only use or close harnesses you started.'
 
 /**
  * A launch's argv for what Harness tells the agent: the instructions above while agents may start agents, and the pull

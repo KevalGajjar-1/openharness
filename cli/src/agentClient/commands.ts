@@ -418,10 +418,25 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
         machine: a.row.creation.machineId === o.where.machineId ? o.machine : a.row.creation.machineId.slice(0, 8), state: a.state,
         folder: null, branch: null, startedBy: 'you', yours: true, self: false, lastActive: new Date(a.row.at).toISOString(), about: askedLine(s.env, a),
       })))
-      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: o.machine, harnesses: rows }, null, 1) : formatRows(rows, o.caller, s.now()))
+      const note = o.caller ? openNote(s.env, rows) : null
+      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: o.machine, harnesses: rows }, null, 1)
+        : [formatRows(rows, o.caller, s.now()), note].filter(Boolean).join('\n'))
       return EXIT.ok
     } finally { o.daemon.close() }
   })
+}
+
+/** What `show` ends with for an idle harness of the caller's. */
+export const closeHint = (env: NodeJS.ProcessEnv, frame: Frame): string =>
+  `Close it once you have what you need: ${step(env, 'close', addressOf({ machineId: '', agentId: frame.id, name: frame.name ?? '', engine: '' }))}`
+
+/** What `ps` ends with for an agent with harnesses of its own open: how many, and how many sit idle. */
+export function openNote(env: NodeJS.ProcessEnv, rows: readonly Row[]): string | null {
+  const open = rows.filter((r) => r.yours && r.state !== 'stopped' && r.state !== 'failed')
+  if (!open.length) return null
+  const idle = open.filter((r) => r.state === 'idle').length
+  return `You have ${open.length} harness${open.length === 1 ? '' : 'es'} of your own open${idle ? `, ${idle} idle` : ''}. `
+    + `Close each once you have its answer: ${step(env, 'close', '<name>')}.`
 }
 
 // ── show ───────────────────────────────────────────────────────────────────────────────────────────
@@ -460,6 +475,8 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           if (result.truncated) s.out(`… ${answer.length - chars} more characters: ${step(s.env, 'show', result.name, { flag: `--chars ${answer.length}`, arg: `chars: ${answer.length}` })}`)
         }
         if (state === 'needs-input') s.out(`It is waiting for the person (a question or a permission). Only the person answers it.`)
+        // Idle and the caller's: a harness left open after its answer is read sits there for nobody (owner, October 12).
+        if (state === 'idle' && t.yours) s.out(closeHint(s.env, t.frame))
       }
       return EXIT.ok
     } finally { if (t?.remote) t.daemon.close(); o.daemon.close() }
@@ -606,7 +623,9 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           : r.state === 'timeout' ? `still working; wait again or read it: ${step(s.env, 'show', r.name)}`
           : r.state === 'installing' || r.state === 'starting' ? `${askedLine(s.env, following.find((a) => a.row.creation.creationId === r.id)!)}`
           : r.state === 'failed' ? `it never started: ${r.detail || 'its machine refused it'}`
-          : r.state === 'stopped' ? 'it was stopped' : 'it is gone'
+          // Harness closes one another agent started once it has sat idle half an hour (services/agentCleanup.ts): its
+          // answer is still there to read.
+          : r.state === 'stopped' ? `it was stopped; its answer is kept: ${step(s.env, 'show', r.name)}` : 'it is gone'
         s.out(`${r.name}: ${r.state} · ${next}`)
       }
       const states = results.map((r) => r.state)
@@ -685,8 +704,15 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
 
 // ── new, run by an agent ───────────────────────────────────────────────────────────────────────────
 
-/** Limits on starting harnesses (the design's "Limits"): runaway spawning is the risk. */
-export const SPAWN_LIMITS = { livePerHarness: 8, livePerMachine: 40, depth: 2, perWindow: 20, windowMs: 10 * 60_000 } as const
+/**
+ * Limits on starting harnesses (the design's "Limits"): runaway spawning is the risk, and every harness started is
+ * the person's tokens. Four at once and one level down (owner, October 12: "be very careful about when to start a new
+ * agent so we don't waste user token"): a harness another agent started does its work itself. They were eight and two.
+ */
+export const SPAWN_LIMITS = { livePerHarness: 4, livePerMachine: 40, depth: 1, perWindow: 20, windowMs: 10 * 60_000 } as const
+
+/** Said to a harness another agent started when it runs `harness new`. */
+export const DEPTH_REFUSAL = 'A harness another agent started may not start harnesses itself. Do the work yourself, or say in your answer what else is needed.'
 
 /** How long a harness the caller started by a name stops it starting another by that name: a retry, not new work. */
 export const DUPLICATE_WITHIN_MS = 10 * 60_000
@@ -699,9 +725,9 @@ const memberKey = (machineId: string, agentId: string): string => `${machineId}/
  * machine's, and the caller's on the other machines it reached.
  */
 export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
-  if (ledger.depthOf(caller) >= SPAWN_LIMITS.depth) {
-    return 'A harness started this far down may not start more. Do the work yourself, or say so in your answer.'
-  }
+  // Its depth by the record, or by the core's row when the record lost its line (a rotation, a write that failed): a
+  // harness the windows show beside its starter is one level down whatever the file says.
+  if (Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0) >= SPAWN_LIMITS.depth) return DEPTH_REFUSAL
   // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
   // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
   const mine = ledger.childrenOf(caller)

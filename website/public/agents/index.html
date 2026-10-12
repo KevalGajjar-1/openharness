@@ -70,10 +70,10 @@
     <li><strong>The person's view.</strong> Everything you start appears in Harness, where the person can watch it,
       answer its questions or stop it. Your own sub-agents are invisible to them.</li>
   </ul>
-  <p>Start a harness for work that can run beside yours, needs another agent's view (a review, a second opinion
-    from Codex), takes long, or belongs in its own folder. Do small, quick work yourself, and a quick parallel
-    search or edit inside one task with your own sub-agents (Claude Code's Agent tool, Codex sub-agents): they are
-    cheaper and faster.</p>
+  <p>Every harness spends the person's tokens. Start one only for work that can run in parallel with yours, needs
+    another model's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do quick
+    work yourself, and a quick parallel search or edit inside one task with your own sub-agents (Claude Code's Agent
+    tool, Codex sub-agents): they are cheaper and faster. Close each harness once you have its answer.</p>
 
   <h2 id="install">Install</h2>
   <pre><code>curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
@@ -271,9 +271,13 @@ claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
       person.</li>
     <li>Never ask another harness to publish, deploy, delete or push. Those are the person's to ask for.</li>
     <li>Close what you started once you have its answer.</li>
-    <li>An agent may have at most 8 live harnesses it started, and start 20 in 10 minutes; one it started may start
-      more, but those may not. Each machine allows 40 live harnesses started by agents. Every limit refuses with a
-      message; do not work around it.</li>
+    <li>An agent may have at most 4 live harnesses it started, and start 20 in 10 minutes. A harness another agent
+      started may not start harnesses itself: it does the work itself, or says in its answer what else is needed.
+      Each machine allows 40 live harnesses started by agents. Every limit refuses with a message; do not work around
+      it.</li>
+    <li>Harness cleans up after agents: closing a harness closes the harnesses it started, and one another agent
+      started is closed once it has sat idle 30 minutes after its last answer, unless the person typed into it. Its
+      conversation is kept, and <code>harness show</code> still reads its answer.</li>
     <li>A harness you start runs in its agent's auto mode, with the agent's own checks on. <code>--mode full</code>
       (checks and sandbox off) is the person's to choose: from an agent it is refused.</li>
   </ul>

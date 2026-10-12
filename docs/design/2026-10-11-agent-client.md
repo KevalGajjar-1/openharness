@@ -71,8 +71,14 @@ Every Claude Code and Codex harness Harness starts is told, as it starts (owner,
 ```
 You are running in Harness, and the person can watch you. You can hand work to other agents (Claude Code, Codex)
 that run in their own harnesses: `harness new`, `harness wait`, `harness show`, `harness close` (see `harness
---help`). Only use or close harnesses you started.
+--help`). Start one only for work that can run in parallel, needs another model, or takes long; do quick work
+yourself, and close each one once you have its answer. Only use or close harnesses you started.
 ```
+
+The sentence on when to start one, and to close it, was added on October 12 (owner: "we need to be very careful about
+when to start a new agent so we don't waste user token and we need to properly clean up after too"), once agents ran
+the verbs with no approval prompts. The skill, the MCP server's instructions and harness.autonomous.ai/agents say the
+same.
 
 Claude Code gets it with `--append-system-prompt`, joined into one with a grid's or a store harness's own (an engine may
 keep only the last of a repeated flag), and records it with the rest of the system prompt on the first request
@@ -232,12 +238,14 @@ the orchestrator's harnesses, and a machine whose daemon predates `startedBy`, w
 
 ## Limits
 
-Spawning is cheap, so runaway spawning is the risk (the Jev loops cost $60 at one caller). Every limit refuses
-with a clear error; nothing is dropped silently.
+Spawning is cheap, so runaway spawning is the risk (the Jev loops cost $60 at one caller), and every harness started
+spends the person's tokens. Every limit refuses with a clear error; nothing is dropped silently.
 
-- Live harnesses started by one harness: 8.
+- Live harnesses started by one harness: 4 (8 until October 12).
 - Live harnesses started by agents, per machine: 40.
-- Depth: an agent-started harness may start harnesses; one started two levels down may not.
+- Depth: one level. A harness another agent started may not start harnesses itself (two levels until October 12):
+  `A harness another agent started may not start harnesses itself. Do the work yourself, or say in your answer what
+  else is needed.` Told by its line in the record, or by the core's row (`parentAgentId`) when the record lost it.
 - `new` per harness: 20 in 10 minutes.
 - An agent never answers a permission dialog, and never closes a harness it did not start.
 - The person can turn agents starting agents off on a computer (Settings ▸ Agents, `harness settings
@@ -288,6 +296,42 @@ the verbs without asking.
 - **What it does not close.** A folder on Codex's PATH that its sandbox can write (a project's activated `.venv/bin`)
   could hold a `harness` of the agent's own, which the bare name would then reach outside the sandbox: a rule names
   a command, not a file.
+
+## Cleaning up (October 12)
+
+Owner, October 12: "we need to properly clean up after too". What an agent starts and forgets either goes on working
+for no one or sits in the person's windows. Harness closes those itself, in a service (`services/agentCleanup.ts`, in
+the edge host; `core/agentCleanupLink.ts` is the core's side). A close is `harness close`'s: the screen saved, the
+process stopped, the conversation kept, so the person can resume it and `harness show` still reads its answer. One log
+line for each (`[agent-cleanup] closed kid (3f2a9c1e): …`).
+
+- **With its starter.** Closing a harness closes the harnesses it started on this machine (registry `parentAgentId`),
+  at once and working or not: an orphan that keeps working spends tokens for a starter that will never read it. Every
+  stop goes through one place in the core (`core/agents/lifecycle.ts` `stopAgent`): a window's or the phone's close
+  (`agent_close`), Stop Harness (`agent_delete`), `harness close` and a purge, so the apps, the CLI and an agent
+  closing its own are all covered. The core tells the cleanup once the stop is done (`AgentCleanupPort.closed`).
+- **When idle.** A harness another agent started (`startedBy: agent`, so an agent outside Harness's too) that has sat
+  30 minutes (`IDLE_CLOSE_MS`) after its last answer is closed, once its screen says it is idle: never one that works,
+  waits for the person or holds a draft (`agent_close` `idle`). Looked at once a minute, by when its conversation last
+  moved (`lastActivityAt`, what the apps show as its age), so a look reads no screen until one has been quiet that
+  long; one that would not close is asked again five minutes later.
+- **Never the person's.** Neither touches a harness the person typed or pasted into from a window or the phone (a
+  `message` frame, or terminal input that is more than what the terminal sends by itself: focus, its attributes, the
+  mouse, `lib/typedInput.ts`). It is theirs from then on, kept in `<data>/agent-cleanup.json` across restarts. A harness
+  the person started is never one the cleanup may close: the core decides (`CoreApi.agents.closeStarted` refuses any
+  other).
+
+A close of a harness already closed, the same conversation, is answered closed (`closeAgentService.ts` `closedAlready`):
+a window closing a tab closes its panes one at a time, and the starter's close had already taken the next pane's
+harness with it; that pane's close was answered `AGENT_CHANGED` and shown as "Could not confirm that it stopped".
+
+Agents are told too: `harness show` on an idle harness of theirs ends with `Close it once you have what you need:
+harness close kid`, and `harness ps` ends with `You have 2 harnesses of your own open, 1 idle. Close each once you have
+its answer: harness close <name>.` (the MCP tools name `harness_close` instead). `wait` on one Harness closed says where
+its answer still is: `kid: stopped · it was stopped; its answer is kept: harness show kid`.
+
+Not covered: harnesses an agent started on another machine when its starter closes (each machine's cleanup sees only
+its own), and a harness the person drives from a tmux of their own, which no window carries.
 
 ## How it works
 
@@ -359,7 +403,10 @@ may message another only where the person turned Agent Messages on (the tab's ch
 - End to end on the real daemon with the fake engines (`e2e/agentClient.e2e.ts`, 10 s): from an agent's pane,
   `ps`, `new` with a task, `wait`, `show` (the header and the echoed answer), `send` both ways with no tab on
   (refused since October 11), `close` refused for its own harness and for one its child did not start, then allowed
-  for its child. The fake
+  for its child. Since October 12 also: a harness another agent started refused `new`, `show` and `ps` ending with
+  their hints, a window's close (`agent_close`) and the person's `harness close` each closing what the closed harness
+  started, and a harness the person sent a message to left open, with the cleanup in the edge host's process. The
+  30-minute close is unit-tested on a fake clock (`services/agentCleanup.spec.ts`). The fake
   engine now takes a first message on the command line, as both CLIs do; it used to drop it.
 - Live, on the owner's Mac from this session's own pane against the running daemon: `ps` (22 harnesses, 0.8 s),
   `new claude --name probe-child -- "Reply with the single word ready"` (0.4 s), `wait` (idle in 7 s), `show`

@@ -38,6 +38,9 @@ describe('harness mcp', () => {
     expect(send.description).toMatch(/teammate.*Agent Messages on.*Refused anywhere else, even to a harness you started/)
     expect(INSTRUCTIONS).toContain('starting a harness does not let you message it')
     expect(INSTRUCTIONS).not.toContain('Send follow-ups for the same work to the harness you started')
+    // When to start one at all, and to close it, as every harness is told as it starts (lib/agentAttribution.ts).
+    expect(INSTRUCTIONS).toContain('Every harness spends the person\'s tokens. Start one (harness_start) only for work that can run in parallel')
+    expect(INSTRUCTIONS).toContain('close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself.')
   })
 
   it('says which tools only read or add, so Codex runs them without asking; closing still says it is destructive', async () => {
