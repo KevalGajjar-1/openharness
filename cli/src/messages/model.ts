@@ -40,8 +40,9 @@ export interface DeliveryStatus {
   machineId: string
   agentId: string
   state: DeliveryState
-  /** How it was delivered: the messages hook at a tool call, or a prompt typed into an idle agent. */
-  via?: 'hook' | 'prompt'
+  /** How it was delivered: the messages hook at a tool call, a prompt typed into an idle agent, or the agent read
+   *  it itself (`harness send` alone lists what waits for it). */
+  via?: 'hook' | 'prompt' | 'read'
   reason?: string
   at: number
 }

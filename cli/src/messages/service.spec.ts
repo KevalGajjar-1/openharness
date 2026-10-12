@@ -141,6 +141,32 @@ describe('harness send', () => {
     expect((api.recent as Array<Record<string, unknown>>).at(-1)).toMatchObject({ id: twice.id, from: 'lead', state: 'queued' })
   })
 
+  it('gives an agent that reads its messages itself every one still waiting, whole and once, then its last few', async () => {
+    // A Codex lead running since before Agent Messages never ran the hook and, always working, was never typed to: it
+    // read `harness send` alone, which gave only its last five, each still "queued" (2026-10-12).
+    const t = setup()
+    const ids: string[] = []
+    for (let i = 1; i <= 7; i++) {
+      const sent = await t.ask({ action: 'send', pane: '%1', to: 'api', text: `finding ${i}\nwith its details` })
+      ids.push(String(sent.id))
+      // api is working: each typed attempt goes back to the hook, which never runs.
+      t.deliveryEvent({ deliveryId: t.delivered.at(-1)![2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
+    }
+    const first = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    const unread = first.filter((m) => m.unread === true)
+    expect(unread.map((m) => m.id)).toEqual(ids)
+    expect(unread.every((m) => m.state === 'delivered' && m.text === `finding ${ids.indexOf(String(m.id)) + 1}\nwith its details`)).toBe(true)
+    const history = await t.ask({ action: 'history', tabId: 'app' }) as { messages: Array<{ statuses: Array<Record<string, unknown>> }> }
+    expect(history.messages.flatMap((m) => m.statuses).filter((s) => s.agentId === 'api').every((s) => s.state === 'delivered' && s.via === 'read')).toBe(true)
+    // Read once: the next look gives nothing new, and its last five as before.
+    const again = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    expect(again.filter((m) => m.unread)).toEqual([])
+    expect(again.map((m) => m.id)).toEqual(ids.slice(-5))
+    // The sender sees them delivered.
+    const lead = (await t.ask({ action: 'send', pane: '%1' })).recent as Array<Record<string, unknown>>
+    expect(lead.every((m) => m.state === 'delivered')).toBe(true)
+  })
+
   it('tells two teammates with the same start apart only by more of the name', async () => {
     const t = setup({
       agents: [session('lead', '%1'), session('api-a', '%2'), session('api-b', '%3')],

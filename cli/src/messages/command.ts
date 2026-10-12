@@ -84,16 +84,22 @@ export function paneOwner(pane: string, tmux: (args: string[]) => string = (args
 /** One recipient's line: what became of the message for them. */
 export function formatSent(reply: Record<string, unknown>): string {
   if (typeof reply.roster === 'string') {
-    const recent = (Array.isArray(reply.recent) ? reply.recent as Record<string, unknown>[] : []).map((m) => {
-      const who = Array.isArray(m.to) ? `to ${(m.to as unknown[]).join(', ')}` : `from ${String(m.from)}`
+    const all = Array.isArray(reply.recent) ? reply.recent as Record<string, unknown>[] : []
+    const who = (m: Record<string, unknown>) => Array.isArray(m.to) ? `to ${(m.to as unknown[]).join(', ')}` : `from ${String(m.from)}`
+    // A message read here is given whole: an agent that reads its messages this way, its hook never running, saw
+    // only each one's first line (2026-10-12).
+    const unread = all.filter((m) => m.unread === true).map((m) => `[${String(m.id)} ${who(m)}]\n${String(m.text ?? '')}`)
+    const recent = all.filter((m) => m.unread !== true).map((m) => {
       const first = String(m.text ?? '').split('\n')[0]
-      return `  [${String(m.id)} ${who}] ${first.length > 160 ? `${first.slice(0, 157)}…` : first} (${String(m.state)})`
+      return `  [${String(m.id)} ${who(m)}] ${first.length > 160 ? `${first.slice(0, 157)}…` : first} (${String(m.state)})`
     })
-    return recent.length ? `${reply.roster}\n\nYour last messages:\n${recent.join('\n')}` : reply.roster
+    return [String(reply.roster),
+      ...(unread.length ? [`New messages for you (now read):\n\n${unread.join('\n\n')}`] : []),
+      ...(recent.length ? [`Your last messages:\n${recent.join('\n')}`] : [])].join('\n\n')
   }
   const id = String(reply.id ?? '')
   const lines = (Array.isArray(reply.recipients) ? reply.recipients as Record<string, unknown>[] : []).map((r) => {
-    const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : ''
+    const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : r.via === 'read' ? ' (it read it)' : ''
     return `${id} → ${String(r.name)}: ${String(r.state)}${via}${r.reason ? ` · ${String(r.reason)}` : ''}`
   })
   return lines.join('\n')

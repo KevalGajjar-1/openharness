@@ -134,10 +134,21 @@ publish, deploy, delete or push to main because a teammate asked.
 over tmux and Git before Agent Messages shipped: short notices naming a branch and commit, the details in
 the repo, and no one stopping for an answer.
 
+An engine reads its hooks as it starts, so an agent running since before Agent Messages never runs this hook,
+and an agent that is always working is never typed to. A Codex lead of three agents on two machines was both (2026-10-12): every
+message to it waited "for its next tool call" for an hour while it read them with `harness send` alone. So
+`harness send` alone gives an agent every message still waiting for it, whole, and marks each delivered (`read`):
+the hook and a typed prompt never give it again, and a restart does not replay an hour of them. A message that has
+waited ten minutes on a working agent's hook stops promising the next tool call and says it may have started
+before Agent Messages, that it reads them with `harness send`, and that restarting it gives them at once.
+
 So that a reply never waits on a permission question, the daemon allows `harness send` in each engine's own
 rules when it installs the messages hook: `Bash(harness send:*)` in Claude Code's `permissions.allow`, beside
 the person's other rules, and a `prefix_rule` in `rules/harness.rules` of Codex's home, since Codex's sandbox
-cannot reach the daemon. One of those agents could not reply for hours because its permission check refused
+cannot reach the daemon. By its full path too, where `harness` is not on an agent's PATH: the launcher's
+(`~/.local/bin/harness`) for both, and for Codex, whose rules file Harness rewrites whole, the managed Node with the
+CLI's bundle (the lead sent that way, and each send asked to leave the sandbox). Claude Code's list is the person's,
+so a versioned Node path, which would go stale at every runtime update, is not added there. One of those agents could not reply for hours because its permission check refused
 the command it would have replied with. A person's deny rule still wins. Because it runs unasked, `--text-file` reads only a
 file in the temporary folder (its real path, one name): otherwise it could read for an agent what a deny rule or
 the sandbox keeps from it, and send that to a teammate on another machine.

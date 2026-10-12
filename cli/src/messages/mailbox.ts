@@ -37,6 +37,15 @@ export const ATTEMPT_MS = 120_000
 export const PARK_MS = 20_000
 /** How long a parked attempt is left with the core before it is forgotten: the core may have lost it. */
 export const PARKED_MAX_MS = 10 * 60_000
+/**
+ * How long a message waits on a working agent's hook before its reason stops promising the next tool call. An
+ * engine reads its hooks as it starts: Codex agents running since before Agent Messages never ran the hook, and
+ * every message to their lead read "arrives at its next tool call" for an hour while it polled `harness send`
+ * (2026-10-12).
+ */
+export const HOOKLESS_MS = 10 * 60_000
+export const HOOKLESS_REASON = 'working, and no tool call has taken it: it may have started before Agent Messages. '
+  + 'It reads its messages with `harness send`; restarting it gives it them at once'
 /** How long a finished delivery is kept: its outcome lives on in the history. */
 export const FINISHED_KEEP_MS = 24 * 3600_000
 
@@ -176,7 +185,7 @@ export class Mailbox {
     delivery.attempt = undefined
     delivery.nextTryAt = this.now() + (attempt.parked ? 0 : Math.min(MAX_BACKOFF_MS, PUMP_MS * 2 ** Math.min(delivery.tries, 4)))
     if (!attempt.parked) this.deps.inbox.restore(delivery.pane, delivery.key)
-    this.report(delivery, WAITING[event.reason ?? ''] ?? event.reason ?? 'waiting')
+    this.report(delivery, event.reason === 'team_waiting_idle' ? this.idleReason(delivery) : WAITING[event.reason ?? ''] ?? event.reason ?? 'waiting')
     this.save()
   }
 
@@ -191,6 +200,7 @@ export class Mailbox {
     }
     for (const delivery of this.local) {
       if (delivery.state !== 'queued') continue
+      if (delivery.reason === WAITING.team_waiting_idle) this.report(delivery, this.idleReason(delivery))
       if (delivery.pane && taken.has(`${delivery.pane.slice(1)}-${delivery.key}`) && this.deps.inbox.claimed(delivery.pane, delivery.key)) { this.finish(delivery, 'hook'); continue }
       if (delivery.attempt) { this.watch(delivery); continue }
       if (!this.deps.ready()) continue
@@ -242,7 +252,7 @@ export class Mailbox {
       attempt.parked = true
       attempt.parkedAt = now
       this.deps.inbox.restore(delivery.pane, delivery.key)
-      this.report(delivery, WAITING.team_waiting_idle)
+      this.report(delivery, this.idleReason(delivery))
       this.save()
       this.deps.writable?.()
     } else if ((attempt.parked && now - (attempt.parkedAt ?? now) > PARKED_MAX_MS)
@@ -256,12 +266,34 @@ export class Mailbox {
     }
   }
 
+  /**
+   * The agent read what waits for it (`harness send` alone): each of [messageIds] it was not given yet is
+   * delivered, its inbox file withdrawn, so neither its hook nor a typed prompt gives it again. One being typed
+   * this moment is left to that attempt. Answers the ids it marked.
+   */
+  read(agentId: string, messageIds: readonly string[]): string[] {
+    const wanted = new Set(messageIds)
+    const marked: string[] = []
+    for (const delivery of this.local) {
+      if (delivery.state !== 'queued' || delivery.agentId !== agentId || !wanted.has(delivery.messageId)) continue
+      if (delivery.attempt && !delivery.attempt.parked) continue
+      this.finish(delivery, 'read')
+      marked.push(delivery.messageId)
+    }
+    return marked
+  }
+
+  /** Why a message waits for a working agent: its next tool call, until that has not come for a long while. */
+  private idleReason(delivery: LocalDelivery): string {
+    return this.now() - delivery.at >= HOOKLESS_MS ? HOOKLESS_REASON : WAITING.team_waiting_idle
+  }
+
   private put(delivery: LocalDelivery, message: Message, agent: MailboxAgent): void {
     try { this.deps.inbox.put(agent.pane, delivery.key, { session: agent.session, text: this.deps.text(delivery, message) }) }
     catch { /* the next pump puts it again */ }
   }
 
-  private finish(delivery: LocalDelivery, via: 'hook' | 'prompt', reason?: string): void {
+  private finish(delivery: LocalDelivery, via: 'hook' | 'prompt' | 'read', reason?: string): void {
     delivery.state = 'delivered'
     delivery.via = via
     delivery.reason = reason

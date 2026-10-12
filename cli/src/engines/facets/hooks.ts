@@ -87,7 +87,13 @@ export interface HookSettings {
  * added to a list in the settings file (`list`, the person's other rules kept), or a rules file of the
  * engine's that Harness owns whole (`file`, in the settings' home).
  */
-export type SendAllowance = { list: readonly [string, string]; rule: string } | { file: string; rule: string }
+/**
+ * A rule may name `{launcher}` (the `harness` in `~/.local/bin`), `{node}` and `{cli}` (the managed Node and the CLI's
+ * bundle), filled in with this computer's paths as it is installed: an agent runs `harness send` by its full path too,
+ * where a rule for `harness send` alone does not apply. A Codex lead sent that way, so each send asked to leave the
+ * sandbox (2026-10-12).
+ */
+export type SendAllowance = { list: readonly [string, string]; rules: readonly string[] } | { file: string; rules: readonly string[] }
 
 /**
  * An engine's record of hooks a person reviewed: in its config file in the same home, a table per hook keyed
