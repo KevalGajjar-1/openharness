@@ -18,12 +18,13 @@ describe("/app — the phone app's download code", () => {
     await expect(AppPage()).rejects.toThrow(`redirect ${GOOGLE_PLAY_URL}`);
   });
 
-  it("offers a computer both stores instead of a dead end", async () => {
+  it("offers a computer this page's code to scan and both stores, instead of a dead end", async () => {
     mocks.userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)";
     render(await AppPage());
     expect(mocks.redirect).not.toHaveBeenCalled();
-    expect(screen.getByRole("heading", { name: "Get Harness on your phone" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "App Store" })).toHaveAttribute("href", APP_STORE_URL);
-    expect(screen.getByRole("link", { name: "Google Play" })).toHaveAttribute("href", GOOGLE_PLAY_URL);
+    expect(screen.getByRole("heading", { name: "Run your fleet from your phone." })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "QR code for harness.autonomous.ai/app" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download on the App Store" })).toHaveAttribute("href", APP_STORE_URL);
+    expect(screen.getByRole("link", { name: "Get it on Google Play" })).toHaveAttribute("href", GOOGLE_PLAY_URL);
   });
 });
