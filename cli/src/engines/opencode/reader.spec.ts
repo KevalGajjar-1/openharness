@@ -3,7 +3,8 @@ import { execFileSync } from 'child_process'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { OpencodeReader, opencodeV2TurnOpen, readOpencodeMessages } from './reader.js'
+import { OpencodeReader, readOpencodeMessages } from './reader.js'
+import { opencodeV2TurnOpen } from '../launchControl.js'
 import type { LiveEvent } from '../../lib/normalize.js'
 
 const hasSqlite = (() => {

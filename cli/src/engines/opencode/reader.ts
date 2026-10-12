@@ -84,23 +84,6 @@ export async function readOpencodeMessages(
   return order.map((id) => byId.get(id)!)
 }
 
-/**
- * Whether an OpenCode 2 session is in a turn, by its own record. OpenCode 2 keeps its conversation in
- * `session_message` (the `message` table this reader polls stays empty, so its turn never opens there)
- * and writes a `user` row as a turn starts and an `idle` row as it ends — `outcome` succeeded,
- * interrupted or failed alike. Measured on 2.0.24's store: 550 `idle` rows since it began writing
- * them (2026-09-28), and no session since left with a `user` after its last `idle`. Null when the
- * store cannot be read.
- */
-export async function opencodeV2TurnOpen(dbPath: string, sessionId: string): Promise<boolean | null> {
-  if (!ID_RE.test(sessionId)) return null
-  const result = await sqliteReadAll(dbPath,
-    "SELECT type FROM session_message WHERE session_id = ? AND type IN ('user', 'idle') ORDER BY seq DESC LIMIT 1;",
-    [sessionId], { maxBuffer: MAX_BUFFER })
-  if (!result.ok) return null
-  return str(result.rows[0]?.type) === 'user'
-}
-
 export class OpencodeSqliteMissing extends Error {
   constructor() { super('no SQLite reader (node:sqlite absent and no sqlite3 CLI on PATH) — OpenCode sessions cannot be mirrored') }
 }
