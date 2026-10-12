@@ -831,6 +831,10 @@ describe('harness new, run by an agent', () => {
     expect(origin.parentAgentId).toBe('kid')
     await expect(origin.check()).rejects.toThrow(DEPTH_REFUSAL)
     expect(d.requests.filter((r) => r.type === 'agent_create')).toEqual([])
+    // Started from another machine, or by an agent outside Harness: no starter here, and no line in this machine's
+    // record. The core's row still says another agent started it.
+    d.frames = [frame('far', { startedBy: 'agent' })]
+    await expect((await agentOrigin(harness(d, { pane: '%far' }).deps))!.check()).rejects.toThrow(DEPTH_REFUSAL)
   })
 
   it('counts harnesses asked for and still installing as running, toward every limit', () => {

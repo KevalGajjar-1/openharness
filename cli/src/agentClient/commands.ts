@@ -725,8 +725,8 @@ const memberKey = (machineId: string, agentId: string): string => `${machineId}/
  * machine's, and the caller's on the other machines it reached.
  */
 export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
-  // Its depth by the record, or by the core's row when the record lost its line (a rotation, a write that failed): a
-  // harness the windows show beside its starter is one level down whatever the file says.
+  // Its depth by the record, or by the core's row when the record has no line for it: rotated away, a write that failed,
+  // or a start from another machine or from outside Harness, recorded only where the starter ran.
   if (Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0) >= SPAWN_LIMITS.depth) return DEPTH_REFUSAL
   // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
   // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.

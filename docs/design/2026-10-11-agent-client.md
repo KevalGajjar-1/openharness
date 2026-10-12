@@ -245,7 +245,9 @@ spends the person's tokens. Every limit refuses with a clear error; nothing is d
 - Live harnesses started by agents, per machine: 40.
 - Depth: one level. A harness another agent started may not start harnesses itself (two levels until October 12):
   `A harness another agent started may not start harnesses itself. Do the work yourself, or say in your answer what
-  else is needed.` Told by its line in the record, or by the core's row (`parentAgentId`) when the record lost it.
+  else is needed.` Told by its line in the record, or by the core's row when the record has none: every frame says
+  `startedBy: agent` for a harness another agent started, from another machine or from outside Harness too (the
+  record is kept where the starter ran, and only `parentAgentId` was in the frame before; the review of #1234).
 - `new` per harness: 20 in 10 minutes.
 - An agent never answers a permission dialog, and never closes a harness it did not start.
 - The person can turn agents starting agents off on a computer (Settings ▸ Agents, `harness settings
@@ -309,12 +311,17 @@ line for each (`[agent-cleanup] closed kid (3f2a9c1e): …`).
   at once and working or not: an orphan that keeps working spends tokens for a starter that will never read it. Every
   stop goes through one place in the core (`core/agents/lifecycle.ts` `stopAgent`): a window's or the phone's close
   (`agent_close`), Stop Harness (`agent_delete`), `harness close` and a purge, so the apps, the CLI and an agent
-  closing its own are all covered. The core tells the cleanup once the stop is done (`AgentCleanupPort.closed`).
+  closing its own are all covered. The core tells the cleanup once the stop is done (`AgentCleanupPort.closed`). Not
+  once the starter is live again (resumed while the notice was held for a process that was down), and once for two
+  notices of one stop. A close that fails is tried twice more, five seconds apart.
 - **When idle.** A harness another agent started (`startedBy: agent`, so an agent outside Harness's too) that has sat
   30 minutes (`IDLE_CLOSE_MS`) after its last answer is closed, once its screen says it is idle: never one that works,
   waits for the person or holds a draft (`agent_close` `idle`). Looked at once a minute, by when its conversation last
-  moved (`lastActivityAt`, what the apps show as its age), so a look reads no screen until one has been quiet that
-  long; one that would not close is asked again five minutes later.
+  moved (the latest dated work in its transcript), so a look reads no screen until one has been quiet that long; one
+  that would not close is asked again five minutes later. A run of its process counts as moving: a resume or a
+  restore writes nothing a conversation's time is read from, and a child the person resumed to read was closed again
+  within a minute (the review of #1234). So the cleanup closes nothing in its first half hour after it starts, and an
+  engine that keeps no dated transcript (only Claude Code and Codex declare one) is never closed for being idle.
 - **Never the person's.** Neither touches a harness the person typed or pasted into from a window or the phone (a
   `message` frame, or terminal input that is more than what the terminal sends by itself: focus, its attributes, the
   mouse, `lib/typedInput.ts`). It is theirs from then on, kept in `<data>/agent-cleanup.json` across restarts. A harness
@@ -331,7 +338,9 @@ its answer: harness close <name>.` (the MCP tools name `harness_close` instead).
 its answer still is: `kid: stopped · it was stopped; its answer is kept: harness show kid`.
 
 Not covered: harnesses an agent started on another machine when its starter closes (each machine's cleanup sees only
-its own), and a harness the person drives from a tmux of their own, which no window carries.
+its own); a cascade cut short by a restart (it is kept in memory; the idle close catches what then goes quiet); a
+harness the person drives from a tmux of their own, which no window carries; and a harness the person typed into
+before this version, which nothing recorded (closable, conversation kept, once idle half an hour after the upgrade).
 
 ## How it works
 

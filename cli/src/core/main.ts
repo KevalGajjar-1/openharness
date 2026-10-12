@@ -210,6 +210,7 @@ import { cursorDataDir } from '../engines/cursor/contract.js'
 import { TranscriptPager } from '../lib/transcriptPages.js'
 import { AgentCreationReceipts } from '../lib/agentCreationReceipt.js'
 import { agentFrame, lastActivityAt, type AgentFrame } from '../lib/agentFrame.js'
+import { transcriptActivityAt } from '../lib/transcriptActivity.js'
 import { forgetAgentProject } from '../lib/agentProject.js'
 import { createUsageLink } from './usageLink.js'
 import type { UsageSnapshots } from './usageLink.js'
@@ -829,7 +830,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The window's `agent_close`, for the agent cleanup (services/agentCleanup.ts): createCoreApi lets it close only
     // a harness another agent started. Read when it closes one, never now: the close service is built further down.
     closeAgent: (request) => backendRef?.closeAgentService?.request(request) ?? Promise.resolve({ error: 'UNSUPPORTED' }),
-    activityAt: lastActivityAt,
+    activityAt: (session) => transcriptActivityAt(session.transcriptPath, session.engine),
     dsh: (session) => backendRef?.dshFrameProvider?.(session) ?? null,
     windows: (frame) => backendRef?.sendLocal(frame),
     daemon: { command: daemonCommand(), port: env.PORT, machineId: () => backendRef?.machineId ?? '', autonomousEnv: session?.autonomousEnv ?? env.AUTONOMOUS_ENV },

@@ -54,7 +54,8 @@ const settle = () => new Promise((done) => setTimeout(done, 0))
 
 describe('closing the harnesses a closed harness started', () => {
   it('closes them now, working or not, with one line each, and only those another agent started there', async () => {
-    const sessions = [row('lead'), kid('a'), kid('b'), kid('other', { parentAgentId: 'someone' }), row('mine', { parentAgentId: 'lead' })]
+    // Lead itself is gone: it was closed.
+    const sessions = [kid('a'), kid('b'), kid('other', { parentAgentId: 'someone' }), row('mine', { parentAgentId: 'lead' })]
     const { cleanup, closeStarted, log } = setup(sessions)
     cleanup.port.closed('lead')
     await settle()
@@ -63,7 +64,21 @@ describe('closing the harnesses a closed harness started', () => {
       '[agent-cleanup] closed a (a): the harness that started it was closed. Its conversation is kept.',
       '[agent-cleanup] closed b (b): the harness that started it was closed. Its conversation is kept.',
     ])
-    expect(sessions.map((s) => s.agentId)).toEqual(['lead', 'other', 'mine'])
+    expect(sessions.map((s) => s.agentId)).toEqual(['other', 'mine'])
+  })
+
+  it('closes nothing once its starter is back, and once for two notices of one stop', async () => {
+    // Its starter resumed while the notice was held for a process that was down: its harnesses are its again.
+    const back = setup([row('lead'), kid('a')])
+    back.cleanup.port.closed('lead')
+    await settle()
+    expect(back.closeStarted).not.toHaveBeenCalled()
+    // Two stops of one harness tell this twice.
+    const twice = setup([kid('a')])
+    twice.cleanup.port.closed('lead')
+    twice.cleanup.port.closed('lead')
+    await settle()
+    expect(twice.closeStarted.mock.calls).toEqual([['a', 'now']])
   })
 
   it('leaves one the person typed into: it is theirs now', async () => {
@@ -112,11 +127,32 @@ describe('closing the harnesses a closed harness started', () => {
 describe('closing a harness another agent started once it has sat idle', () => {
   it(`closes one idle ${IDLE_CLOSE_MS / MIN} minutes after its last answer, once its screen is idle, with one line`, async () => {
     const sessions = [kid('done'), kid('fresh'), row('mine'), kid('unknown')]
-    const { cleanup, closeStarted, log } = setup(sessions, { done: IDLE_CLOSE_MS, fresh: IDLE_CLOSE_MS - MIN, mine: 10 * IDLE_CLOSE_MS, unknown: null })
+    const { cleanup, closeStarted, lastActivity, log, advance } = setup(sessions, { done: IDLE_CLOSE_MS, fresh: IDLE_CLOSE_MS - MIN, mine: 10 * IDLE_CLOSE_MS, unknown: null })
+    // Just started, it has seen every harness just now: nothing is closed, nor asked about, for half an hour.
+    await cleanup.look()
+    expect(closeStarted).not.toHaveBeenCalled()
+    expect(lastActivity).not.toHaveBeenCalled()
+    advance(IDLE_CLOSE_MS)
     await cleanup.look()
     // The person's own harness is never asked about, and one whose last move is not known is left alone.
     expect(closeStarted.mock.calls).toEqual([['done', 'idle']])
-    expect(log.mock.calls).toEqual([['[agent-cleanup] closed done (done): another agent started it, and it has been idle 30 minutes since its last answer. Its conversation is kept.']])
+    expect(log.mock.calls).toEqual([['[agent-cleanup] closed done (done): another agent started it, and it has sat idle 30 minutes. Its conversation is kept.']])
+  })
+
+  it('counts a harness starting again (resumed, restored) as moving: the person resumed it to read it', async () => {
+    // A resume writes nothing a conversation's time is read from: the one resumed was closed again within a minute.
+    const resumed = kid('kid', { processIdentity: { pid: 1, startMarker: 'a', executable: 'claude' } })
+    const sessions = [resumed]
+    const { cleanup, closeStarted, advance } = setup(sessions, { kid: 3 * IDLE_CLOSE_MS })
+    await cleanup.look()
+    advance(IDLE_CLOSE_MS - MIN)
+    sessions[0] = { ...resumed, processIdentity: { pid: 2, startMarker: 'b', executable: 'claude' } }
+    advance(MIN)
+    await cleanup.look()
+    expect(closeStarted).not.toHaveBeenCalled()
+    advance(IDLE_CLOSE_MS)
+    await cleanup.look()
+    expect(closeStarted.mock.calls).toEqual([['kid', 'idle']])
   })
 
   it('never closes one the person typed or pasted into, even across a restart', async () => {
@@ -125,9 +161,13 @@ describe('closing a harness another agent started once it has sat idle', () => {
     first.cleanup.port.typed('joined')
     first.cleanup.port.typed('joined')
     await first.cleanup.look()
+    first.advance(IDLE_CLOSE_MS)
+    await first.cleanup.look()
     expect(first.closeStarted).not.toHaveBeenCalled()
     expect(JSON.parse(readFileSync(joinedPath(dir), 'utf8'))).toEqual({ version: 1, joined: { joined: NOW } })
     const restarted = setup(sessions, { joined: 10 * IDLE_CLOSE_MS })
+    await restarted.cleanup.look()
+    restarted.advance(IDLE_CLOSE_MS)
     await restarted.cleanup.look()
     expect(restarted.closeStarted).not.toHaveBeenCalled()
   })
@@ -146,6 +186,8 @@ describe('closing a harness another agent started once it has sat idle', () => {
     // (A refusal for its state is quiet; one for anything else is said once: see below.)
     const { cleanup, closeStarted, log, advance } = setup(sessions, { busy: IDLE_CLOSE_MS }, { refuse })
     await cleanup.look()
+    advance(IDLE_CLOSE_MS)
+    await cleanup.look()
     advance(ASK_AGAIN_MS - MIN)
     await cleanup.look()
     expect(closeStarted).toHaveBeenCalledTimes(1)
@@ -154,12 +196,17 @@ describe('closing a harness another agent started once it has sat idle', () => {
     await cleanup.look()
     expect(closeStarted).toHaveBeenCalledTimes(2)
     expect(log.mock.calls.map(([line]) => line)).toEqual([expect.stringMatching(/^\[agent-cleanup\] closed busy \(busy\): .* idle 3\d minutes/)])
-    // Refused, then gone: nothing is kept for it.
+    // Refused, then gone: nothing is kept for it, and back it is a new run, seen from then.
     const gone = setup([kid('x')], { x: IDLE_CLOSE_MS }, { refuse: { x: { error: 'SESSION_NOT_IDLE' } } })
+    await gone.cleanup.look()
+    gone.advance(IDLE_CLOSE_MS)
     await gone.cleanup.look()
     ;(gone.core.agents.live as ReturnType<typeof vi.fn>).mockReturnValue([])
     await gone.cleanup.look()
     ;(gone.core.agents.live as ReturnType<typeof vi.fn>).mockReturnValue([kid('x')])
+    await gone.cleanup.look()
+    expect(gone.closeStarted).toHaveBeenCalledTimes(1)
+    gone.advance(IDLE_CLOSE_MS)
     await gone.cleanup.look()
     expect(gone.closeStarted).toHaveBeenCalledTimes(2)
   })
@@ -168,12 +215,16 @@ describe('closing a harness another agent started once it has sat idle', () => {
     const sessions = [kid('broken')]
     const { cleanup, closeStarted, log, advance, core } = setup(sessions, { broken: IDLE_CLOSE_MS }, { refuse: { broken: { error: 'CLOSE_FAILED', detail: 'Could not save its screen.' } } })
     await cleanup.look()
+    advance(IDLE_CLOSE_MS)
+    await cleanup.look()
     advance(ASK_AGAIN_MS)
     await cleanup.look()
     expect(closeStarted).toHaveBeenCalledTimes(2)
     expect(log.mock.calls.map(([line]) => line)).toEqual([expect.stringMatching(/^\[agent-cleanup\] could not close broken \(broken\) \(another agent started it, .*\): Could not save its screen\.$/)])
     ;(core.agents.live as ReturnType<typeof vi.fn>).mockReturnValueOnce([])
     await cleanup.look()
+    await cleanup.look()
+    advance(IDLE_CLOSE_MS)
     await cleanup.look()
     expect(log).toHaveBeenCalledTimes(2)
   })
@@ -182,8 +233,10 @@ describe('closing a harness another agent started once it has sat idle', () => {
     let release!: () => void
     const held = new Promise<void>((done) => { release = done })
     const sessions = [kid('a'), kid('b')]
-    const { cleanup, closeStarted, lastActivity, tick } = setup(sessions, { a: IDLE_CLOSE_MS, b: IDLE_CLOSE_MS })
-    lastActivity.mockImplementationOnce(async () => { await held; return NOW - IDLE_CLOSE_MS })
+    const { cleanup, closeStarted, lastActivity, tick, advance } = setup(sessions, { a: IDLE_CLOSE_MS, b: IDLE_CLOSE_MS })
+    await cleanup.look()
+    advance(IDLE_CLOSE_MS)
+    lastActivity.mockImplementationOnce(async () => { await held; return NOW })
     const first = cleanup.look()
     await cleanup.look()
     expect(lastActivity).toHaveBeenCalledTimes(1)
@@ -248,8 +301,12 @@ describe('what the cleanup keeps and how it runs', () => {
     const sessions = [kid('a')]
     const core = fakeCore({ dataDir: dir, agents: { live: vi.fn(() => sessions) } })
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const cleanup = createAgentCleanup(core, { every: () => () => {}, wait: async () => {} })
+    let clock = NOW
+    const cleanup = createAgentCleanup(core, { every: () => () => {}, wait: async () => {}, now: () => clock })
     await cleanup.look()
+    clock += IDLE_CLOSE_MS
+    await cleanup.look()
+    expect(core.agents.live).toHaveBeenCalledTimes(2)
     await cleanup.closeStartedBy('lead')
     expect(log).toHaveBeenCalledWith('[agent-cleanup] could not close a (a) (the harness that started it was closed): UNSUPPORTED')
   })

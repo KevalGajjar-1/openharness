@@ -31,7 +31,7 @@ export interface ClosingDeps {
   /** Once the engine's worker is linked again, or the wait is over (core/engines/engineLinks.ts). */
   engineReady: (engine: string, ms: number) => Promise<void>
   /** The agents stopped and kept: a close of one already closed is answered closed. */
-  stoppedAgents?: Pick<StoppedAgentStore, 'get'>
+  stoppedAgents?: Pick<StoppedAgentStore, 'get' | 'resumeReservedAt'>
 }
 
 /** How long a close waits for an engine worker that restarted under its read, before reading once more. */
@@ -77,12 +77,16 @@ export function createAgentClosing({
     },
     stop: stopAgent,
     changed: announceSession,
-    // Not live, and kept as stopped with the conversation the close names: it was closed.
+    // Not live, not being resumed, and kept as stopped with the conversation the close names: it was closed. A record
+    // that cannot be read says nothing, and the close is answered as changed, as before.
     closedAlready: request => {
-      if (registry.byAgent(request.agentId)) return false
-      const stopped = stoppedAgents?.get(request.agentId)
-      return !!stopped && new Date(stopped.registeredAt).toISOString() === request.createdAt
-        && (!request.sessionId || stopped.sessionId === request.sessionId)
+      if (!stoppedAgents || registry.byAgent(request.agentId)) return false
+      try {
+        if (stoppedAgents.resumeReservedAt(request.agentId) !== null) return false
+        const stopped = stoppedAgents.get(request.agentId)
+        return !!stopped && new Date(stopped.registeredAt).toISOString() === request.createdAt
+          && (!request.sessionId || stopped.sessionId === request.sessionId)
+      } catch { return false }
     },
   })
   const cleanupPreview = async (): Promise<Record<string, unknown>> => {

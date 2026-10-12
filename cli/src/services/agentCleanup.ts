@@ -10,7 +10,9 @@
  * - **When idle.** A harness another agent started that has sat `IDLE_CLOSE_MS` after its last answer is closed, once
  *   its screen says it is idle (`idle`): never one that works, waits for the person or holds a draft. Looked at every
  *   `LOOK_EVERY_MS`, by when its conversation last moved (`CoreApi.agents.lastActivity`), so a look costs no screen
- *   read until one has been quiet that long.
+ *   read until one has been quiet that long. Its process starting again counts as moving: a resume writes nothing a
+ *   conversation's time is read from, and a harness the person resumed to read its answer was closed again within a
+ *   minute (the review of #1234).
  * - **Never the person's.** Neither touches a harness the person typed or pasted into from a window or the phone: it is
  *   theirs from then on, and kept so in `<data>/agent-cleanup.json` across restarts. A harness the person started is
  *   never one this may close: the core refuses (`CoreApi.agents.closeStarted`).
@@ -61,6 +63,9 @@ function readJoined(file: string): Map<string, number> {
   }
 }
 
+/** One run of a harness's process: a resume, a restore or a restart is another. */
+const incarnation = (s: RegisteredSession): string => `${s.agentId}|${s.processIdentity?.pid ?? ''}|${s.processIdentity?.startMarker ?? ''}`
+
 const label = (s: RegisteredSession): string => `${s.defaultName || s.title || 'a harness'} (${s.agentId.slice(0, 8)})`
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const STARTER_CLOSED = 'the harness that started it was closed'
@@ -76,6 +81,12 @@ export function createAgentCleanup(core: CoreApi, deps: AgentCleanupDeps = {}) {
   const askAgainAt = new Map<string, number>()
   /** The ones whose close failed for more than their state, said once each. */
   const said = new Set<string>()
+  /** When each run of a harness was first seen here: one seen since less than IDLE_CLOSE_MS is not closed, whatever
+   *  its conversation says. A cleanup that just started has seen every run just now, so it closes nothing for its
+   *  first half hour: not the harnesses the person typed into before it kept them (`joined`). */
+  const seen = new Map<string, number>()
+  /** The starters whose harnesses are being closed: two stops of one harness tell this twice. */
+  const cascading = new Set<string>()
   let looking = false
   let stopped = false
 
@@ -102,9 +113,17 @@ export function createAgentCleanup(core: CoreApi, deps: AgentCleanupDeps = {}) {
   /** The harnesses [parentId] started here, closed now: told after it stopped. Tried again a moment later when one
    *  would not close, and said once the tries are spent. */
   const closeStartedBy = async (parentId: string): Promise<void> => {
+    if (cascading.has(parentId)) return
+    cascading.add(parentId)
+    try { await closeOrphans(parentId) } finally { cascading.delete(parentId) }
+  }
+  const closeOrphans = async (parentId: string): Promise<void> => {
     for (let attempt = 1; ; attempt++) {
       await refresh()
-      const orphans = core.agents.live().filter((s) => s.parentAgentId === parentId && s.startedBy === 'agent' && !joined.has(s.agentId))
+      const live = core.agents.live()
+      // Its starter is back (resumed while this notice was held, or between tries): its harnesses are its again.
+      if (live.some((s) => s.agentId === parentId)) return
+      const orphans = live.filter((s) => s.parentAgentId === parentId && s.startedBy === 'agent' && !joined.has(s.agentId))
       const left: Array<[RegisteredSession, AgentCloseResult]> = []
       // One at a time: each close saves a screen and stops a process, and a starter may have several.
       for (const s of orphans) {
@@ -130,15 +149,21 @@ export function createAgentCleanup(core: CoreApi, deps: AgentCleanupDeps = {}) {
       const gone = (id: string) => !live.some((s) => s.agentId === id)
       for (const id of askAgainAt.keys()) if (gone(id)) askAgainAt.delete(id)
       for (const id of said) if (gone(id)) said.delete(id)
+      const runs = new Set(live.map(incarnation))
+      for (const run of seen.keys()) if (!runs.has(run)) seen.delete(run)
+      for (const s of live) if (!seen.has(incarnation(s))) seen.set(incarnation(s), now())
       for (const s of live) {
         if (stopped) return
         if (s.startedBy !== 'agent' || joined.has(s.agentId) || (askAgainAt.get(s.agentId) ?? 0) > now()) continue
-        // When its conversation last moved: its last answer, or later. Not known, it is left alone.
+        // Not before this run of it has been here that long; then by when its conversation last moved, its last answer
+        // or later. Not known (an engine that keeps no dated transcript), it is left alone.
+        const since = seen.get(incarnation(s))!
+        if (now() - since < IDLE_CLOSE_MS) continue
         const last = await (core.agents.lastActivity?.(s.agentId) ?? Promise.resolve(null))
         if (last === null) continue
-        const quiet = now() - last
+        const quiet = now() - Math.max(last, since)
         if (quiet < IDLE_CLOSE_MS) continue
-        const why = `another agent started it, and it has been idle ${Math.round(quiet / 60_000)} minutes since its last answer`
+        const why = `another agent started it, and it has sat idle ${Math.round(quiet / 60_000)} minutes`
         const result = await close(s, 'idle', why)
         if (result.closed) continue
         askAgainAt.set(s.agentId, now() + ASK_AGAIN_MS)

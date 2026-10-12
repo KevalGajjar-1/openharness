@@ -175,8 +175,10 @@ export interface CoreApi {
      *  (`SESSION_NOT_IDLE`); `now` does not. Any other harness is refused (`NOT_AGENT_STARTED`): the agent cleanup
      *  (services/agentCleanup.ts) closes those, and nothing else. Absent where the core does not let a service close. */
     closeStarted?(agentId: string, mode: 'idle' | 'now'): Promise<AgentCloseResult>
-    /** When a live agent's conversation last moved, epoch ms, as the apps' `updatedAt` says it (lib/agentFrame.ts
-     *  `lastActivityAt`); null for none live. Absent where the core is not asked it. */
+    /** When a live agent's conversation last moved, epoch ms: the latest dated work in its transcript
+     *  (lib/transcriptActivity.ts), what the apps' `updatedAt` is when there is one. Null for none live, and for an
+     *  engine that keeps no dated transcript: a hook's time or the bind's is not when it last answered. Absent where
+     *  the core is not asked it. */
     lastActivity?(agentId: string): Promise<number | null>
   }
   /** A device's or another machine's turns for an agent on this one: the doors the web and the hooks use. */
@@ -1404,8 +1406,8 @@ export interface CoreApiDeps {
   activitySnapshot?: CoreApi['agents']['activitySnapshot']
   /** One `agent_close` (core/agents/close.ts), for `closeStarted`; absent, a service closes nothing. */
   closeAgent?: (request: AgentCloseRequest) => Promise<AgentCloseResult>
-  /** When an agent's conversation last moved (lib/agentFrame.ts `lastActivityAt`), for `lastActivity`. */
-  activityAt?: (session: RegisteredSession) => Promise<number>
+  /** When an agent's conversation last moved (lib/transcriptActivity.ts), for `lastActivity`. */
+  activityAt?: (session: RegisteredSession) => Promise<number | null>
   signedIn: CoreApi['account']['signedIn']
   environment: CoreApi['account']['environment']
   machines: CoreApi['account']['machines']
