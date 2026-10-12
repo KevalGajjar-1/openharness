@@ -2567,10 +2567,12 @@ class AppNotifier extends ChangeNotifier {
     final revision = _authRevision;
     final removal = machine?._agentRemovals[agent.id];
     return (mode) async {
+      // A harness reviewed before it bound its first conversation is the
+      // same one once it has (`Agent.continuesSession`); the request below
+      // still names the reviewed identity, so the daemon decides whether a
+      // harness that bound since may close.
       bool sameAgent(Agent? current) =>
-          current != null &&
-          current.createdAt == agent.createdAt &&
-          current.sessionId == agent.sessionId;
+          current != null && current.continuesSession(agent);
       final current = machine?.agents
           .where((a) => a.id == agent.id)
           .firstOrNull;
@@ -2639,7 +2641,9 @@ class AppNotifier extends ChangeNotifier {
           (observed == null || !observed.isStopped)) {
         _upsertAgent(
           machine,
-          agent.copyWith(
+          // The latest row seen, so a conversation bound since the review is
+          // kept on the stopped harness for reopening.
+          (observed ?? current!).copyWith(
             status: 'stopped',
             terminalAvailable: false,
             clearClosePlan: true,

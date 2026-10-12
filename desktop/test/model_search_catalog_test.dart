@@ -164,7 +164,7 @@ void main() {
       await app.modelManager.refresh();
       expect(
         grouped.catalogHeading,
-        'Get for ${thisComputerName()} · 22 GB VRAM free',
+        'Get for ${thisComputerName()} · 22 GB VRAM for models',
       );
     } finally {
       grouped.dispose();
