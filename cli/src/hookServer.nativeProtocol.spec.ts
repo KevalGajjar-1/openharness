@@ -150,6 +150,72 @@ it('holds native generation input before effects if eager generation control is 
   expect(await f.post(raw, {}, '/api/hook/session-start')).toMatchObject({ status: 400 })
 })
 
+it('reads fresh native authority without replaying notifications or changing readiness', async () => {
+  const raw = JSON.stringify(cursorBody()), observed = vi.fn(), recovered = vi.fn()
+  let revision = 1
+  const reader = vi.fn(async () => {
+    const captured = revision
+    return { key, evidence: nativeEvidence, verify() { if (captured !== revision) throw Error('fixture old proof expired') } }
+  })
+  const f = await fixture({ onNativeGenerations: observed, onNativeRecoveryReady: recovered, readNativeHookOwner: reader })
+  await f.settle(raw)
+  await vi.waitFor(() => expect(observed.mock.calls.some(call => !call[2])).toBe(true))
+  f.started.startRecovery()
+  const before: NativeGenerationSource = observed.mock.calls.at(-1)![1]
+  expect(f.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true)
+  observed.mockClear(); recovered.mockClear(); reader.mockClear()
+  revision++
+  expect(() => before.verify()).toThrow('old proof expired')
+  const owner = { ...before.owner }, reading = f.started.readNativeGenerations(owner)
+  owner.sessionId = 'caller changed after starting the read'
+  await expect(reading).resolves.toMatchObject({ owner: before.owner, facts: before.facts })
+  const fresh = await reading
+  expect(fresh.owner).toEqual(before.owner)
+  expect(fresh.facts).toEqual(before.facts)
+  expect(() => fresh.verify()).not.toThrow()
+  expect(reader).toHaveBeenCalledTimes(2)
+  expect(observed).not.toHaveBeenCalled(); expect(recovered).not.toHaveBeenCalled()
+  expect(f.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true)
+}, 20_000)
+
+it.each(['unconfirmed', 'pending', 'process changed', 'binding changed'] as const)(
+  'withholds fresh generation authority while %s', async problem => {
+    const raw = JSON.stringify(cursorBody()), observed = vi.fn()
+    const f = await fixture({ onNativeGenerations: observed })
+    await f.settle(raw)
+    await vi.waitFor(() => expect(observed.mock.calls.some(call => !call[2])).toBe(true))
+    const owner = { agentId, sessionId, processKey: key }
+    if (problem === 'unconfirmed') fault.unavailable = true
+    else if (problem === 'pending') {
+      fault.afterGeneration = () => { fault.unavailable = true }
+      await f.post(JSON.stringify(cursorBody({ hookEvent: 'preToolUse', generationId: 'generation-two' })),
+        { 'x-harness-hook-delivery-id': 'fixture-pending-generation-02' })
+      fault.afterGeneration = undefined; fault.unavailable = false
+    } else if (problem === 'process changed') fault.afterSourceConfirmation = () => { live = false }
+    else fault.afterSourceConfirmation = () => { registry.byAgent(agentId)!.sessionId = 'rebound-conversation' }
+    observed.mockClear()
+    const result = await f.started.readNativeGenerations(owner).then(source => ({ source, error: undefined }), error => ({ source: undefined, error }))
+    expect(result.source).toBeUndefined()
+    expect(String(result.error)).toContain(problem === 'unconfirmed' ? 'confirmation unavailable'
+      : problem === 'pending' ? 'admission is still pending' : problem === 'process changed' ? 'original engine unavailable' : 'binding changed')
+    expect(observed).not.toHaveBeenCalled()
+  }, 20_000,
+)
+
+it('does not allocate or notify for a foreign generation read and revokes returned authority on close', async () => {
+  const raw = JSON.stringify(cursorBody()), observed = vi.fn(), f = await fixture({ onNativeGenerations: observed })
+  await f.settle(raw)
+  const owner = { agentId, sessionId, processKey: key }, count = records().length
+  for (const changed of [{ agentId: 'foreign-agent' }, { sessionId: 'foreign-session' }, { processKey: 'foreign-process' }]) {
+    await expect(f.started.readNativeGenerations({ ...owner, ...changed })).rejects.toThrow('native generation')
+  }
+  expect(records()).toHaveLength(count)
+  const source = await f.started.readNativeGenerations(owner)
+  await close()
+  expect(() => source.verify()).toThrow()
+  await expect(f.started.readNativeGenerations(owner)).rejects.toThrow('binding is unavailable')
+}, 15_000)
+
 it('retains the exact native response with its generation while legacy response fields are refused', async () => {
   const responseText = 'First line\nSecond line é📘'
   const raw = JSON.stringify(cursorBody({ hookEvent: 'afterAgentResponse', responseText }))

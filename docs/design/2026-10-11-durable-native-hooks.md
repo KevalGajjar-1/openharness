@@ -672,6 +672,24 @@ fixture and build-shutdown changes. This is not controller or final PR approval.
 Generation effects, durable Cancel integration and actual private completion
 acceptance remain open. No merge or release occurred.
 
+The October 12, 02:49 UTC read-port checkpoint supplies a fresh confirmed source
+for an exact agent, conversation and process incarnation after asynchronous
+work. It uses the already-recovered journal and re-probes native ownership after
+confirmation. Pending admission cannot lend effect authority. The read never
+replays the controller callback, changes readiness, or releases an attach barrier;
+its proof still revokes on a changed binding, appended fact or shutdown.
+
+Types and all 144 protocol, mapper, source, projection, unchanged journal golden
+and architecture cases pass in `20261012T024133.185963Z-62112`. The complete
+mutation run catches 24 assertion failures; the last mutable-request fault rejects
+correctly but its test initially awaited without an explicit success assertion
+(`20261012T024356.320544Z-71496`, failed aggregate). That assertion and the selected
+HTTP/mapper baselines pass with the final mutant in
+`20261012T024824.075630Z-95582`. This is combined evidence for all 25 faults, not an
+uninterrupted passing mutation run. Independent review approved this read-port
+scope over `82bdb13be`, conditional on those completed checks. Controller wiring,
+durable Cancel and final acceptance remain open; no merge or release occurred.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,

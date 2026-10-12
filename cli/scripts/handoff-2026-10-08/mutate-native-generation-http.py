@@ -12,14 +12,14 @@ unit = 'src/engines/kit/nativeHookGeneration.spec.ts'
 selected = ('native Stop before binding|generation input before effects|interrupted generation write|'
             'restored source when|source consumer fails|original native process proof|lost its original retained registration|'
             'both generation copies disappear|reprobes native birth|matching native Stop at|'
-            'interrupted Stop intake|ordinary and direct evidence')
+            'interrupted Stop intake|ordinary and direct evidence|fresh native authority|fresh generation authority')
 mutations = [
     ('native observation is dropped before binding', server, [
         ('if (generation) await context.journal.recordGeneration(generation)', '')], http, 'native Stop before binding'),
     ('generation Stop enters legacy session-wide handling', server, [
         ('const carriesStop = !carriesGeneration && !!nativeDeliveryId', 'const carriesStop = !!nativeDeliveryId')], http, 'native Stop before binding'),
     ('attach is released before generation restoration', server, [
-        ('    ready(context, !pending)\n    return snapshot', '    return snapshot'),
+        ('      ready(context, !pending)\n', ''),
         ('    const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)',
          '    const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)\n    ready(context, !pending)')], http, 'native Stop before binding'),
     ('missing eager consumer still accepts generation intake', server, [
@@ -27,11 +27,11 @@ mutations = [
     ('legacy endpoint accepts unowned generation fields', 'src/engines/kit/nativeHookBody.ts', [
         ('if (body.generationId !== undefined && !native) return false', '')], http, 'generation input before effects'),
     ('effect proof omits the complete frontier', server, [
-        ('        source.verify()\n        verifyNativeOwner()', '        verifyNativeOwner()')], http, 'restored source when'),
+        ('        retained.verify()\n        verifyNativeOwner()', '        verifyNativeOwner()')], http, 'restored source when'),
     ('effect proof follows a rebound conversation', server, [
         ('latest.sessionId !== original.sessionId || durableKey(latest)', 'durableKey(latest)')], http, 'restored source when'),
     ('effect proof omits original process authority', server, [
-        ('        source.verify()\n        verifyNativeOwner()', '        source.verify()')], http, 'original native process proof'),
+        ('        retained.verify()\n        verifyNativeOwner()', '        retained.verify()')], http, 'original native process proof'),
     ('unjoined native facts enter eager control', server, [
         ('if (!intake || JSON.stringify(nativeHookGeneration(intake)) !== JSON.stringify(fact)) {', 'if (false) {')], http, 'lost its original retained registration'),
     ('submission is mistaken for execution', mapping, [
@@ -63,6 +63,16 @@ mutations = [
     ('intake races an existing direct Stop', 'src/engines/kit/nativeHookJournal.ts', [
         ("if ([...before.generations.values()].some(fact => fact.source.type === 'native'\n        && fact.source.identityV1 !== undefined && fact.source.deliveryId === intake.id))",
          'if (false)')], 'src/engines/kit/nativeHookJournal.spec.ts', 'original direct representation'),
+    ('fresh read revokes readiness as a side effect', server, [
+        ('if (publish) ready(context, false)', 'ready(context, false)')], http, 'fresh native authority'),
+    ('fresh read replays the controller callback', server, [
+        ('if (publish) handlers.onNativeGenerations!', 'handlers.onNativeGenerations!')], http, 'fresh native authority'),
+    ('fresh read republishes admission and attach state', server, [
+        ('confirmedState(context, captured, false)', 'confirmedState(context, captured, true)')], http, 'fresh native authority'),
+    ('fresh read lends authority during pending admission', server, [
+        ("if (state.pending) throw new IdentityReadUnavailable('native generation admission is still pending')", '')], http, 'fresh generation authority while pending'),
+    ('fresh read follows a mutable requested binding', server, [
+        ('const original = Object.freeze({ ...input })', 'const original = input')], http, 'fresh native authority'),
 ]
 environment = {**os.environ, 'TZ': 'UTC', 'TMPDIR': '/tmp'}
 for key in list(environment):

@@ -16,7 +16,7 @@ import { IdentityReadUnavailable } from './engines/kit/identityScan.js'
 import { createPendingAdmissions, type AdmissionDecision } from './core/engines/pendingAdmission.js'
 import { paneReadIdentity } from './core/transcripts/readIdentity.js'
 import { createNativeGenerationSource } from './core/turns/nativeGenerationSource.js'
-import type { NativeGenerationSource } from './core/turns/nativeGenerations.js'
+import type { NativeGenerationOwner, NativeGenerationSource } from './core/turns/nativeGenerations.js'
 import { nativeHookGeneration } from './engines/kit/nativeHookGeneration.js'
 import { nativeGenerationFactState, type NativeGenerationFactRecord } from './engines/kit/nativeGenerationFact.js'
 import { processIdentityKey } from './lib/terminalRuntime.js'
@@ -353,7 +353,8 @@ export function startHookServer(
   handlers: HookServerHandlers,
   options: HookServerOptions = {},
 ): Promise<{ server: http.Server; port: number; localSocket: LocalSocketServer | null; startRecovery(): void;
-  stopRecovery(): void; recoveryReady(row: RegisteredSession): boolean }> {
+  stopRecovery(): void; recoveryReady(row: RegisteredSession): boolean;
+  readNativeGenerations(owner: NativeGenerationOwner): Promise<NativeGenerationSource> }> {
   const hookCredential = loadOrCreateHookCredential(env.ADAPTER_DATA_DIR)
   const admissions = createPendingAdmissions({ isProcessCurrent: (key, scope) => admissionProcessScope(registry.byAgent(key)) === scope })
   let admissionArrival = 0
@@ -501,8 +502,8 @@ export function startHookServer(
       context.restored.add(id)
     }
   }
-  const confirmedSnapshot = async (context: DurableProcess, row: RegisteredSession) => {
-    ready(context, false)
+  const confirmedState = async (context: DurableProcess, row: RegisteredSession, publish: boolean) => {
+    if (publish) ready(context, false)
     context.confirming++
     try {
     const snapshot = await context.journal.snapshot()
@@ -546,15 +547,16 @@ export function startHookServer(
       }
     }
     const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)
-    if ([...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
-      if (!handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
+    let source: NativeGenerationSource | undefined
+    if (!publish || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
+      if (publish && !handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
       const original = { agentId: owner.agentId, sessionId: owner.sessionId, processKey: context.key }
-      const source = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()
+      const retained = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()
       // Confirmation can outlive a kernel incarnation even while Registry is
       // unchanged. verify() checks the budget; this final read re-probes it.
       if (handlers.readNativeHookOwner) verifyNativeOwner = (await handlers.readNativeHookOwner(row, context.owner)).verify
       const verify = () => {
-        source.verify()
+        retained.verify()
         verifyNativeOwner()
         const latest = registry.byAgent(original.agentId)
         if (closed || !latest?.active || latest.sessionId !== original.sessionId || durableKey(latest) !== original.processKey) {
@@ -562,13 +564,42 @@ export function startHookServer(
         }
       }
       verify()
-      handlers.onNativeGenerations(structuredClone(owner), Object.freeze({ ...source, verify }), pending)
+      source = Object.freeze({ ...retained, verify })
+      if (publish) handlers.onNativeGenerations!(structuredClone(owner), source, pending)
       verify()
     }
-    restoreDeliveryOrder(context, row, snapshot.deliveries)
-    ready(context, !pending)
-    return snapshot
+    if (publish) {
+      restoreDeliveryOrder(context, row, snapshot.deliveries)
+      ready(context, !pending)
+    }
+    return { snapshot, source, pending }
     } finally { context.confirming-- }
+  }
+  const confirmedSnapshot = async (context: DurableProcess, row: RegisteredSession) =>
+    (await confirmedState(context, row, true)).snapshot
+  /** Async effects must obtain a fresh complete source. Reusing the notification
+   * proof after a drain can outlive its kernel budget; reading must not notify
+   * the controller recursively or release an attach/admission barrier. */
+  const readNativeGenerations = async (input: NativeGenerationOwner): Promise<NativeGenerationSource> => {
+    const original = Object.freeze({ ...input })
+    const row = registry.byAgent(original.agentId)
+    if (closed || !row?.active || row.engine !== 'cursor' || row.sessionId !== original.sessionId) {
+      throw new IdentityReadUnavailable('the original native generation binding is unavailable')
+    }
+    const captured = structuredClone(row)
+    const context = durableProcesses.get(original.processKey)
+    if (!context || durableKey(captured) !== original.processKey) {
+      throw new IdentityReadUnavailable('the original native generation process is not recovered')
+    }
+    const state = await confirmedState(context, captured, false)
+    if (state.pending) throw new IdentityReadUnavailable('native generation admission is still pending')
+    const source = state.source!
+    if (source.owner.agentId !== original.agentId || source.owner.sessionId !== original.sessionId
+      || source.owner.processKey !== original.processKey) {
+      throw new IdentityReadUnavailable('the original native generation binding changed during confirmation')
+    }
+    source.verify()
+    return source
   }
   const verifiedMutation = async (body: BoundHookBody): Promise<RegisteredSession | null> => {
     if (closed) return null
@@ -1789,13 +1820,13 @@ export function startHookServer(
       console.log(`[hooks] listening on 127.0.0.1:${actual} (SessionStart/SessionEnd callbacks)`)
       if (!options.deferNativeRecovery) startRecovery()
       const socketPath = options.socketPath
-      if (!socketPath) { resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady }); return }
+      if (!socketPath) { resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations }); return }
       // The private socket is mandatory when opting into multi-user startup. A duplicate daemon
       // must not survive on a random port while another one owns this user's socket.
       listenLocalSocket(handle, socketPath).then(
         (localSocket) => {
           console.log(`[hooks] listening on ${socketPath}`)
-          resolve({ server, port: actual, localSocket, startRecovery, stopRecovery, recoveryReady })
+          resolve({ server, port: actual, localSocket, startRecovery, stopRecovery, recoveryReady, readNativeGenerations })
         },
         (error: unknown) => {
           if (options.allowPortFallback) {
@@ -1805,7 +1836,7 @@ export function startHookServer(
             return
           }
           console.warn(`[hooks] local socket unavailable (${socketPath}): ${error instanceof Error ? error.message : error}`)
-          resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady })
+          resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations })
         },
       )
     })
