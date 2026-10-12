@@ -336,11 +336,13 @@ struct Screen {
     widget: bool, anchor_x: u16, previous: Option<Buffer>,
     /// The row an erase waits at for the next draw, which writes it inside its synchronized update.
     erase: Option<u16>,
+    /// The last draw put the list upward (the query at the bottom, the first row nearest it).
+    upward: bool,
 }
 impl Screen {
     fn new(out: File, picker: &Picker) -> io::Result<Self> {
         terminal::enable_raw_mode()?;
-        let mut screen=Self {out,top:0,height:0,cols:0,raw:true,widget:false,anchor_x:0,previous:None,erase:None};
+        let mut screen=Self {out,top:0,height:0,cols:0,raw:true,widget:false,anchor_x:0,previous:None,erase:None,upward:false};
         let (cols, rows)=terminal::size().unwrap_or((80,24));
         // cursor::position retries reader errors indefinitely. Initialize the
         // event source first so an unusable input descriptor returns to the shell.
@@ -381,6 +383,7 @@ impl Screen {
         let valid=items.filter(|v| v.preview_id.as_deref()==preview_id && preview_id.is_some());
         let lines=valid.map(|v|v.preview.iter().map(|s|Line::raw(clean(s))).collect()).unwrap_or_default();
         let bottom=valid.is_some_and(|v|v.preview_bottom);
+        self.upward=bottom;
         let cursor=paint_list(&mut next,area,picker,loading,failure,lines,bottom);
         let bytes=render_diff(self.previous.as_ref(),&next,cursor,self.erase.take())?;
         self.out.write_all(&bytes)?;
@@ -447,12 +450,25 @@ impl Drop for Screen {
     }
 }
 
-fn edit(picker:&mut Picker,key:event::KeyEvent)->crate::input::End {
+/// What a computer row that cannot be used right now says on its right (`list-compose` host rows).
+pub(crate) const OFFLINE:&str="offline";
+/// The offline computer Enter is on, by name: it is listed so ↑ ↓ reach it, never chosen.
+fn offline_choice(picker:&Picker,kind:&str)->Option<String> {
+    picker.current().filter(|r|kind=="host" && r.right==OFFLINE).map(|r|r.label.clone())
+}
+/// The row step ↑ takes: away from the query, toward the row drawn above. fzf's own lists follow its
+/// --layout; the command panel's look is drawn top-down below the query, or [upward] with the query at
+/// the bottom (a composer low in its pane). Following --layout there too, a fresh pane's list went
+/// up on ↓ and stood still on its first row.
+fn up_step(picker:&Picker,upward:bool)->i64 {
+    if picker.shell_panel { if upward {1} else {-1} } else if theme::fzf().reverse {-1} else {1}
+}
+fn edit(picker:&mut Picker,key:event::KeyEvent,upward:bool)->crate::input::End {
     use crate::input::End;
     let ctrl=key.modifiers.contains(KeyModifiers::CONTROL);
     let alt=key.modifiers.contains(KeyModifiers::ALT);
     let shift=key.modifiers.contains(KeyModifiers::SHIFT);
-    let up=if theme::fzf().reverse {-1} else {1};
+    let up=up_step(picker,upward);
     let name=crate::input::fzf_key_name(&key);
     if let Some(end)=crate::input::finder_binding(picker,&name,up) { return end }
     match key.code {
@@ -693,7 +709,7 @@ pub fn run(args:&[String])->io::Result<i32> {
                 picker.flash=None;
                 if key.code==KeyCode::Char('l')&&key.modifiers.contains(KeyModifiers::CONTROL) {screen.clear()?;}
                 if !(composing && kind=="folder" && folder_key(&mut picker,items.as_ref(),key)) {
-                    end=edit(&mut picker,key);
+                    end=edit(&mut picker,key,screen.upward);
                 }
                 dirty=true;
             },_=>{},
@@ -709,7 +725,8 @@ pub fn run(args:&[String])->io::Result<i32> {
         }
         if old_query!=picker.query {
             due=Instant::now()+Duration::from_millis(150);failures=0;
-            if let Some(action)=crate::input::finder_binding(&mut picker,"change",if theme::fzf().reverse {-1}else{1}) {end=action;}
+            let up=up_step(&picker,screen.upward);
+            if let Some(action)=crate::input::finder_binding(&mut picker,"change",up) {end=action;}
             if composing && kind=="folder" && folder_parts(old_query.strip_prefix(':').unwrap_or(&old_query)).0!=folder_parts(picker.query.strip_prefix(':').unwrap_or(&picker.query)).0 {
                 // A late reply from the old folder must never be selectable in
                 // the new one, even though both requests use the same scope.
@@ -749,6 +766,7 @@ pub fn run(args:&[String])->io::Result<i32> {
                     continue
                 }
                 if let Some(current)=&draft { if kind!="sessions" {
+                    if let Some(name)=offline_choice(&picker,kind) {picker.say(format!("{name} is offline. Start Harness there, then choose it."));continue}
                     if let Some(row)=picker.current().filter(|r|!r.disabled) {
                         if kind=="host" && host_changed(current,row,items.as_ref()) {
                             let (line,cursor)=current.change_host(&row.id).map_err(io::Error::other)?;
@@ -837,6 +855,51 @@ mod tests {
     use ratatui::style::{Color,Modifier};
     fn look(bg:&str,fg:&str,accent:&str,lists:&str)->Look {
         Look{background:bg.into(),foreground:fg.into(),accent:accent.into(),lists:lists.into()}
+    }
+    /// ↓ goes down the rows as they are drawn: the panel top-down under the query (a fresh pane's
+    /// `@ computer`, agents), or upward with the query at the bottom. fzf's own list keeps --layout.
+    #[test]
+    fn arrows_move_the_way_the_composer_is_drawn() {
+        let key=|code| event::KeyEvent::new(code,KeyModifiers::NONE);
+        for (kind,query) in [("agent",""),("host","@")] {
+            let mut picker=Picker::new("","");
+            picker.query=query.into();picker.qend();
+            compose_scope_with(&mut picker,kind,true);
+            picker.set_rows(vec![Row::new("local","This computer"),Row::new("office","Office"),Row::new("m2","M2")]);
+            assert_eq!(picker.current_id().as_deref(),Some("local"));
+            edit(&mut picker,key(KeyCode::Down),false);
+            assert_eq!(picker.current_id().as_deref(),Some("office"),"{kind}: top-down, ↓ moves down");
+            edit(&mut picker,key(KeyCode::Down),false);
+            edit(&mut picker,key(KeyCode::Up),false);
+            assert_eq!(picker.current_id().as_deref(),Some("office"),"{kind}: ↑ moves back up");
+            edit(&mut picker,key(KeyCode::Up),false);
+            edit(&mut picker,key(KeyCode::Up),true);
+            assert_eq!(picker.current_id().as_deref(),Some("office"),"{kind}: upward, ↑ moves away from the query");
+        }
+        // `@ computer` with one connected and the rest offline: ↓ reaches them; Enter on one says so.
+        let mut hosts=Picker::new("","");
+        hosts.query="@".into();hosts.qend();
+        compose_scope_with(&mut hosts,"host",true);
+        let mut offline=Row::new("grid-dev","grid-dev").right(OFFLINE);offline.label_dim=8;
+        hosts.set_rows(vec![Row::new("Mac Auto","Mac Auto").right("connected"),Row::new("box","box").right("connected"),offline]);
+        // Drawn dim, as the list's other quiet text: the cursor is on the first row, so the two
+        // unselected rows compare.
+        let area=Rect::new(0,0,60,8);
+        let mut buf=Buffer::empty(area);
+        crate::ui::inline_fzf(&mut buf,area,&mut hosts,false,vec![],false);
+        let fg=|name:&str|(0..8).find_map(|y|{let line=row_text(&buf,y,60);line.find(name).map(|x|buf[(line[..x].chars().count() as u16,y)].fg)}).unwrap();
+        assert_ne!(fg("grid-dev"),fg("box"),"an offline computer is dim");
+        assert_eq!(offline_choice(&hosts,"host"),None);
+        edit(&mut hosts,key(KeyCode::Down),false);
+        edit(&mut hosts,key(KeyCode::Down),false);
+        assert_eq!(hosts.current_id().as_deref(),Some("grid-dev"),"an offline computer is reachable");
+        assert_eq!(offline_choice(&hosts,"host").as_deref(),Some("grid-dev"));
+        assert_eq!(offline_choice(&hosts,"folder"),None);
+        let mut fzf=Picker::new("","");
+        fzf.set_rows(vec![Row::new("1","one"),Row::new("2","two")]);
+        assert!(!fzf.shell_panel);
+        edit(&mut fzf,key(KeyCode::Up),false);
+        assert_eq!(fzf.current_id().as_deref(),Some(if theme::fzf().reverse {"1"} else {"2"}),"fzf's list follows --layout");
     }
     fn reset_look() {
         crate::term_out::set_theme_colours(None);crate::term_out::set_accent_override(None);apply_look(&look("","","",""));
@@ -1278,7 +1341,7 @@ mod tests {
     fn a_ctrl_l_or_resize_redraw_erases_inside_its_synchronized_update() {
         let path=std::env::temp_dir().join(format!("hn-picker-screen-{}-{}",std::process::id(),uuid::Uuid::new_v4()));
         let out=OpenOptions::new().create_new(true).read(true).write(true).open(&path).unwrap();
-        let mut screen=Screen{out,top:4,height:6,cols:40,raw:false,widget:false,anchor_x:0,previous:None,erase:None};
+        let mut screen=Screen{out,top:4,height:6,cols:40,raw:false,widget:false,anchor_x:0,previous:None,erase:None,upward:false};
         let mut picker=Picker::new("","");
         picker.set_rows(vec![Row::new("1","one"),Row::new("2","two")]);
         // (No items yet: loading.)
@@ -1311,12 +1374,12 @@ mod tests {
         picker.set_rows(vec![Row::new("1","日本 café suffix")]);
         picker.type_text(" suffix");picker.qhome();picker.type_text("日本 café");
         assert_eq!(picker.query,"日本 café suffix");assert_eq!(picker.qcursor,7);
-        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('a'),KeyModifiers::CONTROL));
-        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('f'),KeyModifiers::CONTROL));
-        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('d'),KeyModifiers::CONTROL));
+        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('a'),KeyModifiers::CONTROL),false);
+        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('f'),KeyModifiers::CONTROL),false);
+        edit(&mut picker,event::KeyEvent::new(KeyCode::Char('d'),KeyModifiers::CONTROL),false);
         assert_eq!(picker.query,"日 café suffix");
         assert_eq!(picker.qcursor,1);
-        assert!(matches!(edit(&mut picker,event::KeyEvent::new(KeyCode::Esc,KeyModifiers::NONE)),crate::input::End::Abort));
+        assert!(matches!(edit(&mut picker,event::KeyEvent::new(KeyCode::Esc,KeyModifiers::NONE),false),crate::input::End::Abort));
     }
     #[test]
     fn preview_updates_do_not_rebuild_an_unchanged_catalog() {

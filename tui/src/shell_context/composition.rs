@@ -209,8 +209,10 @@ pub(super) fn list(app: &mut App, request: Request) {
                 } else {
                     m.id.as_str()
                 };
-                let mut row = Row::new(id, &m.name).extra(&m.id).right(if m.usable() { "connected" } else { "offline" });
-                row.disabled = !m.usable();
+                // An offline computer stays a row the arrows reach (disabled, the list stood still
+                // on the one connected computer), dim; choosing it says why it cannot be used.
+                let mut row = Row::new(id, &m.name).extra(&m.id).right(if m.usable() { "connected" } else { crate::shell_picker::OFFLINE });
+                if !m.usable() { row.label_dim = m.name.chars().count() }
                 row
             })
             .collect();
