@@ -2164,6 +2164,9 @@ class Registry {
     // The archived conversation owns the original Harness ID. Preserve the physical shell under
     // a new identity, without sending input, stopping processes or claiming its route twice.
     const entry = separateShell ? { ...original, agentId: randomUUID(), dsh: null, dshRuntime: null, agent: null, defaultName: this.automaticName('Terminal', new Date()) } : original
+    // The shell under a new identity is the person's, not a harness an agent started: kept, a window took the new id for
+    // a new child and opened the shell beside the agent, even after the person had closed the child (review of #1217).
+    if (separateShell) delete entry.parentAgentId
     this.releaseBinding(entry)
     delete entry.resumeOnly
     delete entry.externalResume

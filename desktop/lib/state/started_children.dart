@@ -36,11 +36,15 @@ bool startedChildLive(Agent child) =>
 
 /// The tab [child] opens in and the pane it opens beside, or null: it is not
 /// live, not new, already shown here, or its starter is in no tab here with
-/// room for one more. The tab in front wins when it shows the starter; a tab
-/// that is not for harnesses (the Store, an orchestrator) never takes one.
+/// room for one more. A tab that is not for harnesses (the Store, an
+/// orchestrator) never takes one.
+///
+/// Where the starter is in two tabs, the first in the row, never the one in
+/// front: the row's order is the desk's, the same on every computer, and two
+/// computers that each chose their own front tab would leave the child in both
+/// (review of #1217).
 ({Swarm tab, TerminalPane parent})? startedChildPlacement({
   required Iterable<Swarm> tabs,
-  required Swarm activeTab,
   required String machineId,
   required Agent child,
   required DateTime now,
@@ -59,7 +63,7 @@ bool startedChildLive(Agent child) =>
       tab.kind == 'harness' &&
       tab.panes.length < maxPanes &&
       paneOf(tab, child.parentAgentId!) != null;
-  final tab = takes(activeTab) ? activeTab : tabs.where(takes).firstOrNull;
+  final tab = tabs.where(takes).firstOrNull;
   if (tab == null) return null;
   return (tab: tab, parent: paneOf(tab, child.parentAgentId!)!);
 }

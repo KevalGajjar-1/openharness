@@ -7489,7 +7489,15 @@ class AppNotifier extends ChangeNotifier {
             .toList(),
         nameRevision,
       );
-      if (agentsEqual(machine.agents, agents)) return;
+      if (agentsEqual(machine.agents, agents)) {
+        // A whole list read, even one that changes nothing: what pushes
+        // brought before it was the window's restore, and what comes after it
+        // is new (`_openStartedChild`). Left unset when the first load failed
+        // and pushes filled the list, no harness an agent started would ever
+        // open beside it (review of #1217).
+        machine.agentsListedOnce = true;
+        return;
+      }
       _replaceAgents(machine, agents);
       notifyListeners();
     } catch (_) {
@@ -13891,9 +13899,10 @@ class AppNotifier extends ChangeNotifier {
   /// in no tab here nothing changes; it is in ⌘O as before.
   ///
   /// Every window that shows the starter does this, on every computer, and
-  /// that is still one pane: the desk's `pane.add` is idempotent per tab,
-  /// machine and agent (`desk_sync.dart`), and a window that hears of the pane
-  /// from the desk first finds the child already in a tab and leaves it.
+  /// that is still one pane: each picks the same tab (the first in the desk's
+  /// order that shows the starter), the desk's `pane.add` is idempotent per
+  /// tab, machine and agent (`desk_sync.dart`), and a window that hears of the
+  /// pane from the desk first finds the child already in a tab and leaves it.
   /// Placing it in the daemon instead would need the desk's layout rules
   /// there, and a signed-out computer has no desk at all.
   void _openStartedChild(
@@ -13913,7 +13922,6 @@ class AppNotifier extends ChangeNotifier {
     if (!arrived || hasOpenedHarness(machineId, child.id)) return;
     final place = startedChildPlacement(
       tabs: swarms,
-      activeTab: activeSwarm,
       machineId: machineId,
       child: child,
       now: DateTime.now(),
@@ -17629,6 +17637,10 @@ class AppNotifier extends ChangeNotifier {
   @visibleForTesting
   Future<void> restorePaneLayoutForTest({bool claimOnAttach = false}) =>
       _restorePaneLayout(claimOnAttach: claimOnAttach);
+
+  @visibleForTesting
+  Future<void> syncAgentsIfChangedForTest(String machineId) =>
+      _syncAgentsIfChanged(machineStates[machineId]!);
 
   @visibleForTesting
   Future<void> handleMachineEventForTest(

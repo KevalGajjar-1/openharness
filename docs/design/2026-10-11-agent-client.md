@@ -128,9 +128,10 @@ with who started it.**
 
 Every agent frame carries `parentAgentId` (null for the rest). A desktop window that first sees such a harness live,
 after it has read that machine's list once, and shows its starter in a tab, adds it right after the starter in that
-tab (the tab in front if it shows the starter) without moving focus or taking the terminal
-(`desktop/lib/state/started_children.dart`). Never what the first list brings (the window's restore), one the window
+tab (the first in the row where two show it, so every computer picks the same one) without moving focus or taking the
+terminal (`desktop/lib/state/started_children.dart`). Never what the first list brings (the window's restore), one the window
 has shown before (the person closed it), a stopped one, or one started more than five minutes ago (a laptop waking).
+The shell an exited engine leaves under a new id does not inherit the starter.
 Every window showing the starter does this, and it is still one pane: the desk's `pane.add` is idempotent, and a
 window the desk reaches first finds it already in a tab. The header says `started by <starter's current name>` where
 it says `forked from` for a fork. Not yet: the phone, and harnesses started by agents outside Harness (no pane to open

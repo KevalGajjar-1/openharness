@@ -2307,6 +2307,19 @@ describe('who started it', () => {
     expect(edited.byAgent(child.agentId)).not.toHaveProperty('parentAgentId')
   })
 
+  it('does not hand who started it to the shell its engine leaves behind under a new id', async () => {
+    const { registry } = await loadRegistryModule()
+    registry.load()
+    const child = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%12' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    // A new id with a starter is a new child to every window: it would open the person's shell beside the agent.
+    const shell = registry.releaseEngine(child.agentId, true)!
+    expect(shell.agentId).not.toBe(child.agentId)
+    expect(shell).not.toHaveProperty('parentAgentId')
+    // The same pane under its own id keeps it: that is still the harness the agent started.
+    const kept = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%13' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    expect(registry.releaseEngine(kept.agentId)).toMatchObject({ agentId: kept.agentId, parentAgentId: 'lead-1' })
+  })
+
   it('drops anything but another agent from a hand-edited row', async () => {
     const { registry, strictPersistedRow } = await loadRegistryModule()
     registry.load()

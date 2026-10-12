@@ -106,7 +106,7 @@ void main() {
     expect(app.allPanes.where((p) => p.agentId == 'kid'), hasLength(1));
   });
 
-  test('in the tab in front when that one shows the starter too', () async {
+  test('where two tabs show the starter, the first in the row, the same on every computer', () async {
     final machine = _Machine();
     final app = createApp(connectionForTest: (_) => machine, connected: true);
     addTearDown(app.dispose);
@@ -118,8 +118,26 @@ void main() {
     final second = app.activeSwarm;
 
     await _push(app, _agent('kid', parent: 'a0'));
-    expect(_agents(second), ['a0', 'kid']);
-    expect(_agents(first), ['a0']);
+    expect(_agents(first), ['a0', 'kid']);
+    expect(_agents(second), ['a0']);
+    expect(app.activeSwarm, same(second));
+  });
+
+  test('a list read after pushes filled it still counts as the window\'s first', () async {
+    final machine = _Machine();
+    final app = createApp(connectionForTest: (_) => machine, connected: true);
+    addTearDown(app.dispose);
+    await app.addAgentToSwarm('m', 'a0');
+    // The first load failed; pushes alone made the list, and the safety-net
+    // read finds nothing to change.
+    final lead = _agent('a0', name: 'lead', createdAt: DateTime.now());
+    machine.listed = [lead];
+    app.stateOf('m')!.agents = [];
+    await _push(app, lead);
+    await app.syncAgentsIfChangedForTest('m');
+    expect(app.stateOf('m')!.agents, hasLength(1));
+    await _push(app, _agent('kid', parent: 'a0'));
+    expect(_agents(app.activeSwarm), ['a0', 'kid']);
   });
 
   test('a list that brings it first places it too, once the window has read one', () async {
@@ -223,11 +241,9 @@ void main() {
       ..panes.add(pane(5, 'lead', machineId: 'other'));
     ({Swarm tab, TerminalPane parent})? place(
       Iterable<Swarm> tabs,
-      Agent agent, {
-      Swarm? active,
-    }) => startedChildPlacement(
+      Agent agent,
+    ) => startedChildPlacement(
       tabs: tabs,
-      activeTab: active ?? tabs.first,
       machineId: 'm',
       child: agent,
       now: now,
