@@ -35,7 +35,6 @@ ENV.update(HOME=str(BASE), HN_TMPDIR=str(BASE), HN_SOCKET_NAME=PREFIX, PORT=str(
            HARNESS_CLI=sys.executable, HARNESS_CLI_ARGS=json.dumps([str(BASE / 'cli.py')]))
 if '--os-required-sign-in' in sys.argv:
     ENV['HARNESS_OS'] = '1'
-    ENV['HARNESS_OS_FIRST_USE'] = '1'
     # Run the shipped OS network form, replacing only NetworkManager/sudo in this
     # private fixture. No host network or account is touched.
     binaries = BASE / 'bin'
@@ -60,6 +59,21 @@ raise SystemExit(network.main())
     ENV['PATH'] = str(binaries) + os.pathsep + ENV['PATH']
 CONF = BASE / 'tmux.conf'
 CONF.write_text('set -g automatic-rename off\n')
+launch = [str(HN), '-L', PREFIX, '--port', str(PORT), '-f', str(CONF)]
+if '--os-required-sign-in' in sys.argv:
+    # Use the actual OS launcher and onboarding script. Only installed paths
+    # and the account adapter point at this disposable fixture.
+    ENV['HARNESS_TUI_TMUX_CONF'] = str(CONF)
+    launcher = BASE / 'os-launcher'
+    source = (ROOT.parent / 'os/root/usr/bin/hn').read_text()
+    source = source.replace('. /usr/lib/harness-os/runtime-path', 'harness_runtime=' + shlex.quote(str(BASE)))
+    source = source.replace('export HARNESS_CLI=/usr/bin/harness', 'export HARNESS_CLI=' + shlex.quote(ENV['HARNESS_CLI']))
+    source = source.replace("export HARNESS_CLI_ARGS='[]'", 'export HARNESS_CLI_ARGS=' + shlex.quote(ENV['HARNESS_CLI_ARGS']))
+    source = source.replace('/usr/bin/python3 /usr/lib/harness-os/onboarding.py',
+                            shlex.join([sys.executable, str(ROOT.parent / 'os/onboarding.py')]))
+    launcher.write_text(source)
+    launcher.chmod(0o700)
+    launch = [str(launcher)]
 OUTPUT = Path(os.environ['HN_WORKSPACE_OUTPUT']) if os.environ.get('HN_WORKSPACE_OUTPUT') else None
 if OUTPUT:
     OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -602,8 +616,7 @@ try:
     else:
         raise AssertionError('mock startup timeout')
     command = shlex.join(['env', '-u', 'TMUX', '-u', 'TMUX_PANE', '-u', 'HN_SOCKET',
-                         *[f'{k}={v}' for k, v in ENV.items()], str(HN), '-L', PREFIX,
-                         '--port', str(PORT), '-f', str(CONF)])
+                         *[f'{k}={v}' for k, v in ENV.items()], *launch])
     tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'test', '-x', '170', '-y', '44', command)
     started = True
     if '--os-required-sign-in' in sys.argv:
@@ -660,9 +673,11 @@ try:
     (BASE / 'login-events').unlink()
     print('PASS required sign-in: saved work stays covered; cancel retries; email returns to saved panes', flush=True)
     if '--os-required-sign-in' in sys.argv:
-        # The unchanged OS launcher clears this flag once its first workspace is
-        # set up. Subsequent launches retain ordinary offline account behavior.
-        command = command.replace('HARNESS_OS_FIRST_USE=1', 'HARNESS_OS_FIRST_USE=0')
+        # Simulate the completed first workspace. The real OS launcher now skips
+        # initial networking so subsequent signed-in launches can work offline.
+        state = BASE / '.local/state/harness-os'
+        state.mkdir(parents=True, exist_ok=True)
+        (state / 'onboarded').touch()
         (BASE / 'network-ready').unlink()
     local, remote = api()['local'], api()['remote']
     panes = hn('list-panes', '-F', '#{pane_id}').splitlines()

@@ -94,6 +94,13 @@ The same terminal process, heartbeat and project must survive. This is a quick
 integration check, followed by a fresh final image test. It does not establish
 physical laptop suspend, radio, audio or battery behavior.
 
+`checks=sign-in` reuses a verified image and installs the candidate OS launcher,
+onboarding script and exact-source TUI into a disposable BIOS installation. It
+checks that the real network form runs before the TUI, connecting Ethernet opens
+required sign-in, workspace shortcuts stay gated and Wi-Fi settings can return
+to sign-in. The receipt identifies the base image and each candidate file. This
+does not exercise a live account, physical Wi-Fi radio or a complete new image.
+
 The focused sleep test uses QEMU standard VGA (`bochs-drm`), whose pinned LTS
 driver implements display suspend/resume. The normal install tests retain
 `virtio-vga`. Preview 4's Virtio display resumed with a working guest and terminal

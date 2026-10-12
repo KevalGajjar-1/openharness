@@ -188,7 +188,7 @@ sessions stay on this computer and remain intact when Harness reconnects.
 installations. Continue with Google, Apple or email in your browser, or approve a phone QR code
 when using SSH. Escape cancels an attempt and returns to the sign-in choices; Ctrl+C detaches.
 Signing in opens your saved workspace automatically. Already signed-in computers open offline too.
-Harness OS connects to Wi-Fi or Ethernet before opening the same sign-in page. Its installer
+Harness OS connects to Wi-Fi or Ethernet before launching the TUI at that same sign-in page. Its installer
 works offline; Super+W keeps network settings accessible before sign-in. After first setup,
 an already signed-in account can reopen its workspace during a temporary outage.
 Explicit sign-out and a session the server rejects both return to required sign-in, as Desktop

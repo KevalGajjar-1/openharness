@@ -21,18 +21,6 @@ pub struct State {
 
 pub fn live(app: &App) -> bool { app.os_session && app.os_live && !app.headless }
 
-/// The existing OS network form needs the terminal before the account page.
-/// Run it before hn owns input; an ordinary TUI update needs no OS script change.
-pub fn prepare_network() -> std::io::Result<()> {
-    if std::env::var("HARNESS_OS").as_deref() != Ok("1")
-        || std::env::var("HARNESS_OS_FIRST_USE").as_deref() != Ok("1")
-        || std::env::var("HARNESS_OS_LIVE").as_deref() == Ok("1") { return Ok(()) }
-    let status = std::process::Command::new("sudo")
-        .args(["/usr/bin/python3", "/usr/lib/harness-os/network.py", "--first-use"]).status()?;
-    if status.success() { Ok(()) }
-    else { Err(std::io::Error::other("Could not open Wi-Fi. Restart Harness to try again.")) }
-}
-
 /// Only the locally created OS Wi-Fi form may cover required sign-in. Never
 /// expose the other panes or route workspace shortcuts while it is visible.
 pub fn entry_wifi(app: &App) -> Option<u64> {
