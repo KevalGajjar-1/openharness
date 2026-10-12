@@ -1951,6 +1951,8 @@ private final class SwarmTabStrip: NSView {
   private var activityTimer: Timer?
   private var activityObservers: [NSObjectProtocol] = []
   private var motionObserver: NSObjectProtocol?
+  private var modifierMonitor: Any?
+  private var shortcutHintsVisible = false
   private var lastBackgroundClick: (time: TimeInterval, point: NSPoint)?
   // Dragging is explicit below. AppKit must not also start a titlebar gesture.
   override var mouseDownCanMoveWindow: Bool { false }
@@ -2134,6 +2136,7 @@ private final class SwarmTabStrip: NSView {
         if notification.name == NSApplication.didResignActiveNotification ||
            (notification.name == NSWindow.didResignKeyNotification && notification.object as? NSWindow === self.window) {
           self.setDaemonHover(false)
+          self.setShortcutHintsVisible(false)
         }
         self.syncActivityAnimation()
       })
@@ -2142,6 +2145,13 @@ private final class SwarmTabStrip: NSView {
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) {
         [weak self] _ in self?.syncActivityAnimation()
       }
+    // Observe only; AppKit and Flutter retain every shortcut and IME event.
+    modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+      guard let self, let window = self.window,
+            event.window === window || (event.window == nil && window.isKeyWindow) else { return event }
+      self.setShortcutHintsVisible(event.modifierFlags.contains(.command))
+      return event
+    }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -2150,12 +2160,19 @@ private final class SwarmTabStrip: NSView {
     daemonRevealTimer?.invalidate()
     activityObservers.forEach(NotificationCenter.default.removeObserver)
     if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
+    if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
   }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil { setDaemonHover(false) }
     syncActivityAnimation()
+    setShortcutHintsVisible(window?.isKeyWindow == true && NSEvent.modifierFlags.contains(.command))
+  }
+
+  private func setShortcutHintsVisible(_ visible: Bool) {
+    shortcutHintsVisible = visible
+    for tab in tabs { tab.showsShortcutHint = visible && actionsEnabled }
   }
 
   /// Tabs whose status slot moves: a working spinner.
@@ -2345,7 +2362,7 @@ private final class SwarmTabStrip: NSView {
     tabOrderChanged = tabOrderChanged || ids != previousOrder
     for tab in tabs where !ids.contains(tab.swarmId) { tab.removeFromSuperview() }
     let previous = Dictionary(tabs.map { ($0.swarmId, $0) }, uniquingKeysWith: { first, _ in first })
-    tabs = rows.compactMap { row in
+    tabs = rows.enumerated().compactMap { index, row in
       guard let id = row["id"] as? String else { return nil }
       let tab = previous[id] ?? SwarmTabButton(id: id)
       tab.palette = palette
@@ -2356,6 +2373,9 @@ private final class SwarmTabStrip: NSView {
       tab.displayLabel = row["label"] != nil && !row.keys.contains("shortcutHint")
         ? displayLabel.replacingOccurrences(of: #"^\d+:"#, with: "", options: .regularExpression)
         : displayLabel
+      tab.shortcutHint = row.keys.contains("shortcutHint")
+        ? row["shortcutHint"] as? String : (index < 9 ? "⌘\(index + 1)" : nil)
+      tab.showsShortcutHint = shortcutHintsVisible && actionsEnabled
       tab.foreground = palette.navigationForeground
       tab.selected = id == activeId
       tab.keyboardFocus = tabsFocused && id == activeId
@@ -2749,6 +2769,10 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   let swarmId: String
   var name = "New Tab" { didSet { if name != oldValue { invalidateLabel(); updateAccessibility() } } }
   var displayLabel = "New Tab" { didSet { if displayLabel != oldValue { invalidateLabel() } } }
+  var shortcutHint: String? { didSet { if shortcutHint != oldValue { invalidateLabel() } } }
+  var showsShortcutHint = false {
+    didSet { if showsShortcutHint != oldValue { needsLayout = true; needsDisplay = true } }
+  }
   /// Whether the tab's menu offers Show Agent Messages (docs/design/2026-10-10-agent-messages.md): false
   /// where the row says nothing (the Store tab). The tab itself shows nothing of Agent Messages.
   var canShowAgentMessages = false {
@@ -2760,9 +2784,14 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       closeButton.foreground = foreground
     }
   }
-  /// The status slot: the activity mark.
+  private var displaysShortcut: Bool { actionsEnabled && showsShortcutHint && shortcutHint?.isEmpty == false }
+  private var indicatorWidth: CGFloat {
+    min(72, max(activityLabel == nil ? 0 : Self.activityWidth,
+      displaysShortcut ? shortcutLayout?.size.width ?? 0 : 0))
+  }
+  /// The status slot holds the same small shortcut label while Command is down.
   private var statusSpace: CGFloat {
-    !(activityMark?.isEmpty ?? true) ? Self.activityWidth + Self.gap : 0
+    !(activityMark?.isEmpty ?? true) || displaysShortcut ? indicatorWidth + Self.gap : 0
   }
   private var naturalTitleWidth: CGFloat { max(labelLayout.size.width, emphasizedLabelLayout.size.width) }
   var minimumWidth: CGFloat { Self.restingInset * 2 + statusSpace + 16 }
@@ -2793,11 +2822,18 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     return NSRect(x: x, y: 0, width: width, height: bounds.height)
   }
   private var titleRect: NSRect { titleRect(revealed: isRevealed) }
+  private var indicatorRect: NSRect {
+    if bounds.width < minimumWidth {
+      let width = min(indicatorWidth, max(0, bounds.width - 16))
+      return NSRect(x: bounds.midX - width / 2, y: 0, width: width, height: bounds.height)
+    }
+    return NSRect(x: titleRect.maxX + Self.gap, y: 0, width: indicatorWidth, height: bounds.height)
+  }
   private var activityRect: NSRect {
     if bounds.width < minimumWidth {
       return NSRect(x: bounds.midX - Self.activityWidth / 2, y: 0, width: Self.activityWidth, height: bounds.height)
     }
-    return NSRect(x: titleRect.maxX + Self.gap, y: 0, width: Self.activityWidth, height: bounds.height)
+    return NSRect(x: indicatorRect.midX - Self.activityWidth / 2, y: 0, width: Self.activityWidth, height: bounds.height)
   }
   /// Flutter holds the keyboard after Close; accessibility explains Return.
   var keyboardFocus = false { didSet { if keyboardFocus != oldValue { needsDisplay = true; updateAccessibility() } } }
@@ -2829,6 +2865,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   }
   private var cachedLabel: MeasuredLabel?
   private var cachedEmphasizedLabel: MeasuredLabel?
+  private var cachedShortcutLabel: MeasuredLabel?
   var actionsEnabled = true {
     didSet {
       selectButton.isEnabled = actionsEnabled
@@ -2932,6 +2969,7 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   private func invalidateLabel() {
     cachedLabel = nil
     cachedEmphasizedLabel = nil
+    cachedShortcutLabel = nil
     updateAccessoryVisibility()
     needsDisplay = true
     needsLayout = true
@@ -2956,6 +2994,18 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
       range: NSRange(location: 0, length: emphasized.length))
     let measured = MeasuredLabel(emphasized)
     cachedEmphasizedLabel = measured
+    return measured
+  }
+  private var shortcutLayout: MeasuredLabel? {
+    guard let shortcutHint, !shortcutHint.isEmpty else { return nil }
+    if let cachedShortcutLabel { return cachedShortcutLabel }
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = .center
+    paragraph.lineBreakMode = .byTruncatingTail
+    let measured = MeasuredLabel(NSAttributedString(string: shortcutHint, attributes: [
+      .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+      .foregroundColor: foreground.withAlphaComponent(0.75), .paragraphStyle: paragraph]))
+    cachedShortcutLabel = measured
     return measured
   }
   private var tabShape: NSBezierPath {
@@ -3010,11 +3060,15 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
         width: titleRect.width, height: text.size.height))
     }
     let status = NSRect(x: activityRect.minX, y: contentCenterY - 8, width: activityRect.width, height: 16)
-    if let activityMark {
+    if !displaysShortcut, let activityMark {
       NSGraphicsContext.saveGraphicsState()
       bounds.clip()
       HarnessNativeActivity.draw(activityMark, in: status, color: activity?.color ?? .systemOrange)
       NSGraphicsContext.restoreGraphicsState()
+    }
+    if displaysShortcut, let shortcut = shortcutLayout {
+      shortcut.text.draw(in: NSRect(x: indicatorRect.minX, y: contentCenterY - shortcut.size.height / 2,
+        width: indicatorRect.width, height: shortcut.size.height))
     }
   }
   // Overflowed tabs might not be drawn. Their names and selection still need

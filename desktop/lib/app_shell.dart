@@ -367,8 +367,8 @@ class _RootShellState extends ConsumerState<RootShell>
         // whatever the status says meanwhile, until the tour opens Harness.
         final touring = app.setupTourShowing;
         if (touring) screen = SetupTourScreen(app: app);
-        // Then, once: a computer new to Harness with no account is offered one
-        // before its first workspace.
+        // Every signed-out desktop launch requires an account before opening
+        // the workspace, including computers that already have Harness.
         final signInStep = !touring && app.signInStepShowing;
         if (signInStep) screen = SignInStepScreen(app: app);
         // Preserve the fragment pin while dialogs navigate; an OAuth callback can restore it later.

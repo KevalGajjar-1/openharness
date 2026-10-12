@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 
@@ -11,7 +12,9 @@ import 'desktop_chrome.dart';
 /// The Flutter counterpart of the AppKit tab: a centered name/status group
 /// and, at its trailing edge, the close action.
 ///
-/// At rest the name and status have the whole tab; hovering reveals ×. Agent
+/// At rest the name and status have the whole tab; hovering reveals ×.
+/// Holding Command replaces the status with the tab's shortcut, as before.
+/// Agent
 /// Messages has nothing on a tab: traffic between its agents shows nothing,
 /// since messages arrive when they arrive, and its on/off is Settings ▸
 /// Agents'. The 💬 that sat beside × was easy to hit by mistake and turned
@@ -22,6 +25,7 @@ class DesktopWorkspaceTab extends StatefulWidget {
     required this.id,
     required this.label,
     required this.selected,
+    required this.showShortcuts,
     required this.onSelect,
     required this.onClose,
     this.tooltip,
@@ -29,13 +33,15 @@ class DesktopWorkspaceTab extends StatefulWidget {
     this.activityLabel,
     this.highlighted = false,
     this.onRename,
+    this.shortcutHint,
   });
 
   final String id, label;
   final bool selected, highlighted;
+  final ValueListenable<bool> showShortcuts;
   final VoidCallback? onSelect, onClose;
   final VoidCallback? onRename;
-  final String? tooltip, activityLabel;
+  final String? shortcutHint, tooltip, activityLabel;
 
   /// The status cell: an [ActivityMark].
   final Widget? activity;
@@ -60,6 +66,24 @@ class DesktopWorkspaceTab extends StatefulWidget {
   static const _revealedInset = closeWidth + grid.AppDesktop.tabCloseInset;
   static const _statusWidth = 16.0, _indicatorGap = 6.0;
 
+  static TextStyle _hintStyle({Color? color}) =>
+      DesktopChrome.metadata(color: color).copyWith(
+        fontFamilyFallback: [...grid.AppType.sansFallback, 'Apple Symbols'],
+      );
+
+  static double indicatorWidth(
+    BuildContext context,
+    String? hint, {
+    required bool hasActivity,
+  }) => math
+      .max(
+        hasActivity ? _statusWidth : 0.0,
+        hint == null || hint.isEmpty
+            ? 0.0
+            : _measure(context, hint, _hintStyle()),
+      )
+      .clamp(0.0, 72.0);
+
   static double labelWidth(BuildContext context, String label) =>
       _measure(context, label, DesktopChrome.control());
 
@@ -69,11 +93,15 @@ class DesktopWorkspaceTab extends StatefulWidget {
     BuildContext context,
     String label, {
     bool hasActivity = false,
+    String? shortcutHint,
   }) =>
       labelWidth(context, label) +
       _restingInset +
       _revealedInset +
-      (hasActivity ? _statusWidth + _indicatorGap : 0);
+      ((hasActivity || (shortcutHint?.isNotEmpty ?? false))
+          ? indicatorWidth(context, shortcutHint, hasActivity: hasActivity) +
+                _indicatorGap
+          : 0);
 
   /// The name's left edge and width: centered with its status, and when
   /// revealed moved left only as far as × needs, then shortened. A name with
@@ -83,8 +111,9 @@ class DesktopWorkspaceTab extends StatefulWidget {
     required double labelWidth,
     required bool hasActivity,
     required bool revealed,
+    double indicatorWidth = _statusWidth,
   }) {
-    final status = hasActivity ? _statusWidth + _indicatorGap : 0.0;
+    final status = hasActivity ? indicatorWidth + _indicatorGap : 0.0;
     final right = revealed ? _revealedInset : _restingInset;
     final width = math.min(
       labelWidth,
@@ -198,111 +227,141 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
           explicitChildNodes: true,
           selected: widget.selected,
           child: LayoutBuilder(
-            builder: (context, constraints) {
-              final revealed = enabled && _hovered;
-              final hasActivity = widget.activity != null;
-              final (groupLeft, labelWidth) = DesktopWorkspaceTab.titleLayout(
-                tabWidth: constraints.maxWidth,
-                labelWidth: DesktopWorkspaceTab.labelWidth(
+            builder: (context, constraints) => ValueListenableBuilder(
+              valueListenable: widget.showShortcuts,
+              builder: (context, showHints, _) {
+                final revealed = enabled && _hovered;
+                final showHint =
+                    enabled &&
+                    showHints &&
+                    (widget.shortcutHint?.isNotEmpty ?? false);
+                final hasActivity = widget.activity != null || showHint;
+                final indicator = DesktopWorkspaceTab.indicatorWidth(
                   context,
-                  widget.label,
-                ),
-                hasActivity: hasActivity,
-                revealed: revealed,
-              );
-              return Stack(
-                children: [
-                  Positioned.fill(
-                    child: Semantics(
-                      button: true,
-                      enabled: enabled,
-                      label: [widget.label, ?widget.activityLabel].join(', '),
-                      onTap: widget.onSelect,
-                      customSemanticsActions: {
-                        if (widget.onClose != null)
-                          const CustomSemanticsAction(label: 'Close tab'):
-                              widget.onClose!,
-                      },
-                      child: FocusableActionDetector(
+                  showHint ? widget.shortcutHint : null,
+                  hasActivity: widget.activity != null,
+                );
+                final (groupLeft, labelWidth) = DesktopWorkspaceTab.titleLayout(
+                  tabWidth: constraints.maxWidth,
+                  labelWidth: DesktopWorkspaceTab.labelWidth(
+                    context,
+                    widget.label,
+                  ),
+                  hasActivity: hasActivity,
+                  revealed: revealed,
+                  indicatorWidth: indicator,
+                );
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Semantics(
+                        button: true,
                         enabled: enabled,
-                        onShowFocusHighlight: (value) =>
-                            setState(() => _focused = value),
-                        actions: {
-                          ActivateIntent: CallbackAction<ActivateIntent>(
-                            onInvoke: (_) {
-                              widget.onSelect?.call();
-                              return null;
-                            },
-                          ),
+                        label: [widget.label, ?widget.activityLabel].join(', '),
+                        onTap: widget.onSelect,
+                        customSemanticsActions: {
+                          if (widget.onClose != null)
+                            const CustomSemanticsAction(label: 'Close tab'):
+                                widget.onClose!,
                         },
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: widget.onSelect,
-                          onDoubleTap: widget.onRename,
-                          child: ExcludeSemantics(
-                            child: Stack(
-                              children: [
-                                Positioned(
-                                  left: groupLeft,
-                                  width: labelWidth,
-                                  top: 0,
-                                  bottom: 0,
-                                  child: Center(
-                                    child: Text(
-                                      widget.label,
-                                      key: ValueKey('tab-label:${widget.id}'),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: DesktopChrome.control(color: ink),
-                                    ),
-                                  ),
-                                ),
-                                if (widget.activity case final activity?)
+                        child: FocusableActionDetector(
+                          enabled: enabled,
+                          onShowFocusHighlight: (value) =>
+                              setState(() => _focused = value),
+                          actions: {
+                            ActivateIntent: CallbackAction<ActivateIntent>(
+                              onInvoke: (_) {
+                                widget.onSelect?.call();
+                                return null;
+                              },
+                            ),
+                          },
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: widget.onSelect,
+                            onDoubleTap: widget.onRename,
+                            child: ExcludeSemantics(
+                              child: Stack(
+                                children: [
                                   Positioned(
-                                    left:
-                                        groupLeft +
-                                        labelWidth +
-                                        DesktopWorkspaceTab._indicatorGap,
-                                    width: DesktopWorkspaceTab._statusWidth,
+                                    left: groupLeft,
+                                    width: labelWidth,
                                     top: 0,
                                     bottom: 0,
-                                    child: Center(child: activity),
+                                    child: Center(
+                                      child: Text(
+                                        widget.label,
+                                        key: ValueKey('tab-label:${widget.id}'),
+                                        textAlign: TextAlign.center,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: DesktopChrome.control(
+                                          color: ink,
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                              ],
+                                  if (hasActivity)
+                                    Positioned(
+                                      left:
+                                          groupLeft +
+                                          labelWidth +
+                                          DesktopWorkspaceTab._indicatorGap,
+                                      width: indicator,
+                                      top: 0,
+                                      bottom: 0,
+                                      child: Center(
+                                        child: showHint
+                                            ? Text(
+                                                widget.shortcutHint!,
+                                                key: ValueKey(
+                                                  'tab-shortcut:${widget.id}',
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style:
+                                                    DesktopWorkspaceTab._hintStyle(
+                                                      color: ink,
+                                                    ),
+                                              )
+                                            : widget.activity,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    right: grid.AppDesktop.tabCloseInset,
-                    top: 0,
-                    bottom: 0,
-                    child: _accessory(
-                      visible: revealed,
-                      width: DesktopWorkspaceTab.closeWidth,
-                      child: IconButton(
-                        key: ValueKey('tab-close:${widget.id}'),
-                        tooltip: 'Close tab',
-                        onPressed: widget.onClose,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                          width: DesktopWorkspaceTab.closeWidth,
-                          height: 32,
-                        ),
-                        style: _accessoryStyle(foreground, quietOpacity),
-                        icon: const Icon(
-                          AppIcons.close,
-                          size: AppIcons.closeSize,
+                    Positioned(
+                      right: grid.AppDesktop.tabCloseInset,
+                      top: 0,
+                      bottom: 0,
+                      child: _accessory(
+                        visible: revealed,
+                        width: DesktopWorkspaceTab.closeWidth,
+                        child: IconButton(
+                          key: ValueKey('tab-close:${widget.id}'),
+                          tooltip: 'Close tab',
+                          onPressed: widget.onClose,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: DesktopWorkspaceTab.closeWidth,
+                            height: 32,
+                          ),
+                          style: _accessoryStyle(foreground, quietOpacity),
+                          icon: const Icon(
+                            AppIcons.close,
+                            size: AppIcons.closeSize,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),

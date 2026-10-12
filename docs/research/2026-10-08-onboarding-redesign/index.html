@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Onboarding Redesign</title>
+<title>Desktop onboarding · Required sign-in</title>
 <style>
   :root {
     --page: #0f0f0e; --text: #f5f5f0; --muted: #9a9a90; --line: rgba(255,250,240,.10);
@@ -196,7 +196,7 @@
     display: grid; place-items: center; color: var(--amber); flex: none; }
   .get .gi svg { width: 1.5cqw; height: 1.5cqw; }
   .get b { display: block; font-size: 1.5cqw; font-weight: 600; }
-  .sicard { background: var(--surface); border: 1px solid var(--line); border-radius: 1.3cqw; padding: 2cqw; box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.45); display: grid; gap: 1cqw; }
+  .sibuttons { display: grid; gap: 1cqw; margin: 0 2cqw; }
   .sibtn { display: flex; align-items: center; justify-content: center; gap: .9cqw; height: 4.1cqw; border-radius: 1cqw; font-size: 1.32cqw; font-weight: 600;
     background: #fff; color: #1f1f1f; border: 1px solid #dadce0; }
   .sibtn.apple { background: #000; color: #fff; border-color: #3a3a36; }
@@ -206,34 +206,35 @@
   .sior i { flex: 1; height: 1px; background: var(--line); }
   .sihint { text-align: center; font-size: 1cqw; color: var(--muted); }
   .siseal { text-align: center; font-size: .95cqw; color: var(--muted); border-top: 1px solid var(--line); padding-top: 1cqw; margin-top: .2cqw; }
-  .sifoot { display: flex; justify-content: space-between; margin-top: 1.2cqw; padding: 0 calc(2cqw + 1px); font-size: 1.15cqw; color: #bdbdb4; }
+  .sifoot { display: flex; justify-content: center; margin-top: 1.2cqw; padding: 0 calc(2cqw + 1px); font-size: 1.15cqw; color: #bdbdb4; }
   .zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; place-items: center; z-index: 9; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Onboarding redesign, for approval</h1>
-  <p class="lede">Renders. They replace the setup checklist, the New Harness box and the
-    picker's badges you marked up. The copy, numbers and session names in them are examples.</p>
-  <div class="update"><b>Update 2026-10-11. Approved and built.</b> Two changes so people find sign-in:
-    <a href="#signin-step">1b · a sign-in page as the last step</a> before Harness opens, with Skip, and
-    <a href="#top-right">5 · a Sign in button top right</a> that becomes your avatar, with Devices and Store as icons beside it.
-    The first workspaces in sections 2 and 3 now show that top right. Sections 1 to 4 are otherwise as approved on 2026-10-08 and shipped in Desktop 1.2.60
-    (<a href="../2026-10-09-onboarding-shipped/index.html">onboarding as shipped</a>).</div>
+  <h1>Desktop onboarding: an account comes first</h1>
+  <p class="lede">Updated flow for review · 2026-10-12. Setup finishes, you sign in, then your workspace opens.
+    The screens below show each step; names and sessions are examples.</p>
+  <div class="update"><b>The flow:</b>
+    <a href="#setup-tour">1 · Setup &amp; tour</a> →
+    <a href="#signin-step">2 · Required sign-in</a> →
+    <a href="#first-workspace">3 · Your workspace</a>.<br>
+    Google, Apple or email. No Skip. Existing signed-out installations enter at sign-in;
+    signed-in installations go straight to their workspace.</div>
   <div class="principles">
     <div><b>Teach while it installs</b>Five short slides on what Harness does, with the install as one quiet line underneath, like an OS installer.</div>
-    <div><b>Land in work, not in a form</b>No setup field and no New Harness box. Harness opens straight into panes that are already working.</div>
+    <div><b>One account, then your work</b>Sign in once before entering Harness. Your first workspace opens automatically after sign-in.</div>
     <div><b>Use what they already have</b>If you have Claude Code or Codex, nothing else is downloaded, and your recent sessions open in tabs by project.</div>
     <div><b>No status clutter</b>No Installed, Installs on start or Needs sign-in labels. An install or sign-in happens when you pick that agent.</div>
   </div>
 
   <!-- ===================== 1. SETUP TOUR ===================== -->
-  <h2>1. First launch: a tour while Harness sets up</h2>
-  <p class="lede">Seven slides, about 6 s each, in order of importance; the arrow or dots move them by hand. Setup now includes the agents: Harness's own Node and CLI (about 30 MB), and, for someone
+  <h2 id="setup-tour">1. First launch: a tour while Harness sets up</h2>
+  <p class="lede">Five slides, about 6 s each, in order of importance; the arrow or dots move them by hand. Setup now includes the agents: Harness's own Node and CLI (about 30 MB), and, for someone
     with no agents, OpenCode, Codex and Claude Code (about 290 MB). That took about 30–40 s on the VM's connection and would be nearer 2 minutes on 25 Mbit/s; on a slow connection the slides keep cycling.
     The bottom line is the only sign of the install: one sentence, a thin bar and the real time left. ▸ opens the log; a failure turns that line red, with Retry.
-    Harness opens by itself, at the end of the slide on screen, once everything is downloaded: no button, nothing to click, and no install screen anywhere afterwards.
-    <b style="color:var(--text)">Changed 2026-10-11:</b> on a computer that is not signed in, the sign-in page (1b) comes at that moment, before Harness opens.</p>
+    Once everything is downloaded, the current slide finishes and the required sign-in page opens.
+    A computer already signed in goes straight to its workspace.</p>
   <div class="stack">
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -243,7 +244,7 @@
           <div class="kicker">Welcome to Harness</div>
           <h4>All your machines,<br>one window.</h4>
           <div class="copy">Your laptop, the desktop under your desk, a box in the cloud. Run agents on any of them and switch between them like tabs.</div>
-          <div class="pager"><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="pager"><i class="on"></i><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="art">
           <svg class="lines" viewBox="0 0 100 80" preserveAspectRatio="none">
@@ -272,7 +273,7 @@
           <div class="kicker">Every agent</div>
           <h4>All your agents,<br>side by side.</h4>
           <div class="copy">Claude Code, Codex, OpenCode and a dozen more in one grid. Give each job to the agent that is best at it.</div>
-          <div class="pager"><i></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="pager"><i></i><i class="on"></i><i></i><i></i><i></i></div>
         </div>
         <div class="art" style="display:grid;place-items:center">
           <div class="card panes4" style="position:relative">
@@ -290,65 +291,6 @@
   </div>
   <p class="cap"><b>2 · Agents.</b></p>
 
-  <div class="win">
-    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
-    <div class="tour">
-      <div class="stage">
-        <div>
-          <div class="kicker">Keyboard first</div>
-          <h4>⌘P finds<br>any harness.</h4>
-          <div class="copy">One search over every harness on all your machines, with all your agents. A few letters, Return, you're in it.</div>
-          <div class="pager"><i></i><i></i><i class="on"></i><i></i><i></i><i></i><i></i></div>
-        </div>
-        <div class="art" style="display:grid;place-items:center">
-          <div style="width:44cqw">
-            <div class="keys"><span class="key">⌘</span><span class="key">P</span></div>
-            <div class="palette">
-              <div class="q">checkout<span class="cur"></span></div>
-              <div class="r on"><img src="../../../desktop/assets/engine-icons/codex.png" alt=""><div><div>write e2e tests for checkout</div><div class="rm">ios-app · 3 days ago</div></div><span class="mtag">MacBook</span></div>
-              <div class="r"><img src="../../../desktop/assets/model-icons/claude.png" alt=""><div><div>redesign the checkout flow</div><div class="rm">web · yesterday</div></div><span class="mtag">Studio desktop</span></div>
-              <div class="r"><img src="../../../desktop/assets/engine-icons/opencode.png" alt=""><div><div>checkout copy for the pricing page</div><div class="rm">docs · last week</div></div><span class="mtag">Cloud box</span></div>
-              <div class="r"><img src="../../../desktop/assets/model-icons/claude.png" alt=""><div><div>checkout webhook retries</div><div class="rm">api-server · 2 weeks ago</div></div><span class="mtag">Cloud box</span></div>
-            </div>
-            <div class="mini"><span>Every harness</span><span>·</span><span>all your machines</span><span>·</span><span>all your agents</span></div>
-          </div>
-        </div>
-      </div>
-      <div class="tagline">All your machines. All your agents. One command center.</div>
-      <div class="arrow">›</div>
-      <div class="foot"><div class="row"><span class="tri">▸</span><span>Setting up Harness on this Mac</span><span class="sp"></span><span>about 30 s left</span></div><div class="track"><i style="width:36%"></i></div></div>
-    </div>
-  </div>
-  <p class="cap"><b>3 · ⌘P.</b> Results from three machines and three agents in one list.</p>
-
-  <div class="win">
-    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
-    <div class="tour">
-      <div class="stage">
-        <div>
-          <div class="kicker">Keyboard first</div>
-          <h4>⌘N starts<br>a new harness.</h4>
-          <div class="copy">Any agent, on any of your machines, in any project. Pick them by keys, type what you want, press Return.</div>
-          <div class="pager"><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i></div>
-        </div>
-        <div class="art" style="display:grid;place-items:center">
-          <div style="width:44cqw">
-            <div class="keys"><span class="key">⌘</span><span class="key">N</span></div>
-            <div class="nh">
-              <div class="chips"><span class="chip"><img src="../../../desktop/assets/model-icons/claude.png" alt="">Claude Code ⌄</span><span class="chip">Studio desktop ⌄</span><span class="chip">api-server ⌄</span></div>
-              <div class="field">add a health check endpoint<span class="cur"></span></div>
-              <div class="go"><span class="hint">⏎ start</span></div>
-            </div>
-            <div class="mini"><span>Any agent</span><span>·</span><span>any machine</span><span>·</span><span>any project</span></div>
-          </div>
-        </div>
-      </div>
-      <div class="tagline">All your machines. All your agents. One command center.</div>
-      <div class="arrow">›</div>
-      <div class="foot"><div class="row"><span class="tri">▸</span><span>Setting up Harness on this Mac</span><span class="sp"></span><span>about 26 s left</span></div><div class="track"><i style="width:46%"></i></div></div>
-    </div>
-  </div>
-  <p class="cap"><b>4 · ⌘N.</b></p>
 
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -358,7 +300,7 @@
           <div class="kicker">Always there</div>
           <h4>Sessions that<br>keep going.</h4>
           <div class="copy">Close the lid, quit, restart. Every session on all your machines is where you left it, conversation and all.</div>
-          <div class="pager"><i></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i></div>
+          <div class="pager"><i></i><i></i><i class="on"></i><i></i><i></i></div>
         </div>
         <div class="art">
           <div class="card p" style="left:2cqw;top:2cqw;width:38cqw;height:26cqw;position:absolute">
@@ -373,7 +315,7 @@
       <div class="foot"><div class="row"><span class="tri">▸</span><span>Setting up Harness on this Mac</span><span class="sp"></span><span>about 22 s left</span></div><div class="track"><i style="width:58%"></i></div></div>
     </div>
   </div>
-  <p class="cap"><b>5 · Persistent sessions.</b></p>
+  <p class="cap"><b>3 · Persistent sessions.</b></p>
 
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -383,7 +325,7 @@
           <div class="kicker">On the go</div>
           <h4>Your agents<br>in your pocket.</h4>
           <div class="copy">The Harness phone app shows every session on all your machines. When an agent needs you, answer from anywhere.</div>
-          <div class="pager"><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i></i></div>
+          <div class="pager"><i></i><i></i><i></i><i class="on"></i><i></i></div>
         </div>
         <div class="art" style="display:grid;place-items:center">
           <div class="phone">
@@ -398,7 +340,7 @@
       <div class="foot"><div class="row"><span class="tri">▸</span><span>Setting up Harness on this Mac</span><span class="sp"></span><span>about 12 s left</span></div><div class="track"><i style="width:78%"></i></div></div>
     </div>
   </div>
-  <p class="cap"><b>6 · The Harness phone app.</b> Could carry a QR code to get the app.</p>
+  <p class="cap"><b>4 · The Harness phone app.</b> Could carry a QR code to get the app.</p>
 
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -408,17 +350,17 @@
           <div class="kicker">On your desk</div>
           <h4>The Harness<br>device.</h4>
           <div class="copy">It shows what every agent on all your machines is doing. Turn and press to answer the one that needs you.</div>
-          <div class="pager"><i></i><i></i><i></i><i></i><i></i><i></i><i class="on"></i></div>
+          <div class="pager"><i></i><i></i><i></i><i></i><i class="on"></i></div>
         </div>
         <div class="art device" style="height:30cqw"><img src="../../../desktop/assets/devices/harness-desk.webp" alt="The Harness device on a desk"></div>
       </div>
       <div class="tagline">All your machines. All your agents. One command center.</div>
       
-      <div class="foot"><div class="row"><span style="color:var(--green)">●</span><span style="color:var(--text)">Harness is ready. Opening…</span><span class="sp"></span></div><div class="track"><i style="width:100%;background:var(--green)"></i></div></div>
+      <div class="foot"><div class="row"><span style="color:var(--green)">●</span><span style="color:var(--text)">Harness is ready.</span><span class="sp"></span></div><div class="track"><i style="width:100%;background:var(--green)"></i></div></div>
     </div>
   </div>
-  <p class="cap"><b>7 · The Harness device.</b> Everything is downloaded here, so Harness opens by itself at the end of this slide.
-    <b>Changed 2026-10-11:</b> not signed in, the line reads "Harness is ready." and the sign-in page (1b) is next.</p>
+  <p class="cap"><b>5 · The Harness device.</b> Everything is downloaded here. At the end of this slide,
+    the required sign-in page is next. If already signed in, the workspace opens.</p>
 
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -427,7 +369,7 @@
         <div>
           <div class="kicker">Every agent</div>
           <h4>All your agents,<br>side by side.</h4>
-          <div class="pager"><i></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="pager"><i></i><i class="on"></i><i></i><i></i><i></i></div>
         </div>
         <div></div>
       </div>
@@ -445,10 +387,10 @@
     OpenCode downloads only when the Mac has no Claude Code, Codex or OpenCode at all (in #1067, including programs installed but never run). Help ▸ Welcome Tour can show the slides again.</p>
 
   <!-- ===================== 1b. SIGN IN (2026-10-11) ===================== -->
-  <h2 id="signin-step">1b. Last step: sign in <span class="new">New</span></h2>
-  <p class="lede">One page between the tour and the first workspace. It says what signing in adds in four lines, and has two buttons, with Skip and Continue with email as one quiet row under the card. Nothing else.
+  <h2 id="signin-step">1b. Sign in to continue <span class="new">Required</span></h2>
+  <p class="lede">One page between the tour and the first workspace. It says what signing in adds in four lines, and has two buttons, with Continue with email centered beneath them. There is no surrounding card. Sign-in is required. Nothing else.
     It shows at the moment Harness used to open by itself: the end of the slide on screen, once setup is done.
-    The first workspace is already built behind it, so no time is lost.</p>
+    Agent downloads continue during setup. The first agents start once an account arrives.</p>
   <div class="stack">
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="sp"></span></div>
@@ -464,38 +406,38 @@
           </div>
         </div>
         <div>
-          <div class="sicard">
+          <div class="sibuttons">
             <div class="sibtn"><img src="../../../desktop/assets/sign-in/google.svg" alt="">Continue with Google</div>
             <div class="sibtn apple"><img src="../../../desktop/assets/sign-in/apple.svg" alt="">Continue with Apple</div>
           </div>
-          <div class="sifoot"><span>Skip</span><span>Continue with email</span></div>
+          <div class="sifoot"><span>Continue with email</span></div>
         </div>
       </div>
       <div class="tagline">All your machines. All your agents. One command center.</div>
-      <div class="foot"><div class="row"><span style="color:var(--green)">●</span><span style="color:var(--text)">Harness is ready.</span><span class="sp"></span></div><div class="track"><i style="width:100%;background:var(--green)"></i></div></div>
+      <div class="foot"><div class="row"><span style="color:var(--green)">●</span><span style="color:var(--text)">Sign in to continue.</span><span class="sp"></span></div><div class="track"><i style="width:100%;background:var(--green)"></i></div></div>
     </div>
   </div>
-  <p class="cap"><b>The page.</b> Left: what an account adds. Right: Continue with Google and Continue with Apple. Under the card, one quiet row: Skip starts at the buttons' left edge and Continue with email ends at their right edge. No other words. Return presses Continue with Google.
+  <p class="cap"><b>The page.</b> Left: what an account adds. Right: Continue with Google and Continue with Apple. No background card surrounds the buttons. Continue with email is centered beneath them. No other words. Return presses Continue with Google.
     <b>After a click</b> the page stays exactly as it is: the browser opens, and when the account arrives Harness opens, signed in.</p>
   </div>
-  <p class="note" style="line-height:1.7"><b>Who sees it:</b> only a computer that has never had Harness, and only when nobody is signed in on it. A computer already signed in (from the terminal, say) skips it and Harness opens by itself as before. People who already use Harness never see it.<br>
+  <p class="note" style="line-height:1.7"><b>Who sees it:</b> every desktop computer without an account, including existing installations and relaunches after setup. A computer already signed in (from the terminal, say) opens Harness directly, including when offline.<br>
     <b>When:</b> at the end of the slide on screen once setup is done. On Linux, where setup has its own screen and no tour, it shows right after setup.<br>
-    <b>No time lost:</b> the first workspace (sections 2 and 3) is built behind this page, as it is behind the tour. The agents are already open when the page goes away.<br>
+    <b>Ready after sign-in:</b> agent downloads finish during setup. First-arrival agents start after sign-in; saved local panes are preserved.<br>
     <b>Sign in:</b> Google or Apple, in the browser, as today. When the account arrives, Harness opens on the same first workspace, signed in.<br>
     <b>Continue with email:</b> opens the browser on the Autonomous sign-in page, which takes an email and the code sent to it. Kept small on purpose: waiting for a code is slower, and most people will use Google or Apple. New to the desktop app; the sign-in page and the phone app already work this way.<br>
-    <b>While the browser is open:</b> nothing on the page changes. No "Waiting…" on the button, no Open browser, Copy link or Cancel. Every control stays live: press a button again to open the browser again, pick another way in to switch, or Skip.<br>
-    <b>Left off this page, to keep it to two buttons:</b> Scan with your phone, the "End-to-end encrypted" line, and the waiting state today's sign-in shows. All stay on the sign-in that Sign in (top right) opens.<br>
-    <b>Skip:</b> Harness opens without an account, as it does today. The page is not shown again; Sign in stays in the top right (section 5).<br>
-    <b>What it costs:</b> someone who skips makes one click before their first result, where there was none (−5 on the activation score in <code>2026-10-08-activation-sim.md</code>, for a prompt before the first result). And if nobody is at the keyboard when setup ends, Harness waits on this page instead of opening.<br>
-    <b>Not changed:</b> the seven slides, the first workspace itself, and Help ▸ Welcome Tour, which shows the slides only.</p>
+    <b>While the browser is open:</b> nothing on the page changes. No "Waiting…" on the button, no Open browser, Copy link or Cancel. Every control stays live: press a button again to open the browser again, or pick another way in to switch.<br>
+    <b>Two main buttons:</b> Google and Apple, with email centered beneath. The existing account recovery sheet keeps its additional ways to sign in.<br>
+    <b>Required:</b> there is no Skip. Cancelling or failing sign-in leaves this page available for another attempt. Explicit sign-out returns here; runtime expiry keeps local work available through the existing recovery flow.<br>
+    <b>Before the first result:</b> an account is now required. If nobody is at the keyboard when setup ends, Harness waits here. Closing and reopening the app returns to this step.<br>
+    <b>Shorter tour:</b> five slides: machines, agents, persistent sessions, the phone app and the device. The ⌘P and ⌘N slides are removed. Help ▸ Welcome Tour uses the same five slides.</p>
 
   <!-- ===================== 2. NEW USER ===================== -->
-  <h2>2. Arrival: someone with no agents yet</h2>
-  <p class="lede">No New Harness box, no starter game, no webview: one tab, three ordinary harness panes. OpenCode runs full height on the left, ready and focused, with a first task in its
+  <h2 id="first-workspace">2. After sign-in: someone with no agents yet</h2>
+  <p class="lede">Your account is connected and your avatar is in the toolbar. One tab, three ordinary harness panes. OpenCode runs full height on the left, ready and focused, with a first task in its
     message box. Codex and Claude Code, downloaded during the setup tour, simply open on the right, each on its own sign-in screen.
     No special panes: these are the same panes ⌘N makes, and each has the usual × to close it.</p>
   <div class="win">
-    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="signin">Sign in</span></div>
+    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="avatar">D</span></div>
     <div class="ws">
       <div class="panes" style="grid-template-columns: 1.25fr 1fr; grid-template-rows: 1fr 1fr">
         <div class="p" style="grid-row: 1 / span 2">
@@ -540,7 +482,7 @@
     so the first thing they see is two agents at once; tab 2 holds the next 3 most recently active, mixing both where they can. No strip or banner: the Claude Code and Codex limits stay in the footer, with a low one in amber.</p>
   <div class="win">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span>
-      <span class="tab on">harness-web</span><span class="tab">api-server</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="signin">Sign in</span></div>
+      <span class="tab on">harness-web</span><span class="tab">api-server</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="avatar">D</span></div>
     <div class="ws">
       <div class="panes" style="grid-template-columns: 1fr 1fr">
         <div class="p"><div class="h"><img src="../../../desktop/assets/engine-icons/codex.png" alt="">Codex<span class="m">harness-web · main</span></div><div class="b"><span class="dim">20 min ago</span><br><span class="u">› find why the build is slow</span><br><span class="ok">✓</span> 3 fixes, build 94 s → 31 s<br>Opened PR #418. Want me to also cache the lint step?<div class="composer"><span class="cur"></span></div></div></div>
@@ -552,7 +494,7 @@
   <p class="cap"><b>Tab 1: one Claude Code and one Codex</b>, each that agent's most recently active session. Typing in either picks the conversation up where it stopped.</p>
   <div class="win" style="margin-top:22px">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span>
-      <span class="tab">harness-web</span><span class="tab on">api-server</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="signin">Sign in</span></div>
+      <span class="tab">harness-web</span><span class="tab on">api-server</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="avatar">D</span></div>
     <div class="ws">
       <div class="panes" style="grid-template-columns: 1.2fr 1fr; grid-template-rows: 1fr 1fr">
         <div style="grid-row: 1 / span 2; display:grid"><div class="p"><div class="h"><img src="../../../desktop/assets/model-icons/claude.png" alt="">Claude Code<span class="m">api-server · rate-limits</span></div><div class="b"><span class="dim">yesterday</span><br><span class="u">› add per-key rate limits</span><br><span class="ok">✓</span> middleware.ts, limits.test.ts<br>All 214 tests pass. Shall I write the migration for the keys table?</div></div></div>
@@ -616,30 +558,30 @@
   </div>
 
   <!-- ===================== 5. TOP RIGHT (2026-10-11) ===================== -->
-  <h2 id="top-right">5. Top right: icons, then Sign in or you <span class="new">New</span></h2>
-  <p class="lede">Like Chrome's toolbar. Search, Devices and Harness Store become icons. Last comes the one thing with a word on it: Sign in.
-    Once signed in, that spot is your avatar. Today a guest finds sign-in only in Settings ▸ Account, the Machines panel and Add Phone.</p>
+  <h2 id="top-right">5. Your account in the toolbar</h2>
+  <p class="lede">Search, Devices and Harness Store are icons, followed by your avatar.
+    The workspace opens with an account. If a session expires while you are working, local panes remain available and Sign in offers recovery.</p>
   <div class="stack">
   <div>
   <div class="win strip">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="oldpill"><img src="../../../desktop/assets/devices/harness-mark.png" alt="">Devices</span><span class="oldpill"><img src="../../../desktop/assets/store/polymath.png" alt="">Harness Store</span></div>
     <div class="slice"></div>
   </div>
-  <p class="cap"><b>Today.</b> Search, then Devices and Harness Store as pills with their names. No sign-in anywhere on screen.</p>
+  <p class="cap"><b>Previous toolbar, for reference.</b> Search, then Devices and Harness Store as pills with their names.</p>
   </div>
   <div>
   <div class="win strip">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="signin">Sign in</span></div>
     <div class="slice"></div>
   </div>
-  <p class="cap"><b>New, not signed in.</b> Search · Devices · Harness Store as icons, then <b>Sign in</b>: the only filled button in the row. It opens the sign-in the app has today, over the workspace.</p>
+  <p class="cap"><b>Session recovery only.</b> If a session expires during use, <b>Sign in</b> opens account recovery over the existing workspace. A fresh signed-out launch uses the required page above.</p>
   </div>
   <div>
   <div class="win strip">
     <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">code</span><span class="tab"><span class="plus">+</span></span><span class="sp"></span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span><span class="ic"><img src="../../../desktop/assets/devices/harness-mark.png" alt="Devices"></span><span class="ic"><img src="../../../desktop/assets/store/polymath.png" alt="Harness Store"></span><span class="avatar">D</span></div>
     <div class="slice"></div>
   </div>
-  <p class="cap"><b>New, signed in.</b> The same spot is your avatar: your initial in a circle. A click opens its menu, below.</p>
+  <p class="cap"><b>Normal workspace.</b> Your avatar: your initial in a circle. A click opens its menu, below.</p>
   </div>
   <div>
   <div class="win strip">
@@ -659,12 +601,16 @@
   </div>
   </div>
   <p class="note" style="line-height:1.7"><b>Icons:</b> each keeps its own mark and its click; the name moves to the tooltip, with the shortcut where there is one ("Explore Harness Store · ⌘S").<br>
-    <b>Sign in:</b> shown whenever this computer has no account, on every tab. It is the same sheet Settings ▸ Account opens, so there is still one sign-in.<br>
+    <b>Session recovery:</b> Sign in is available over local work after runtime expiry. Launching signed out or choosing Sign out returns to the required onboarding page.<br>
     <b>Avatar:</b> the first letter of your name, or of your email. Its tooltip is your name and email. Not your Google or Apple photo yet: the Mac title bar is native and does not load pictures from the web.<br>
     <b>Where:</b> Mac and Linux, same order. Linux keeps its bell between Search and Devices. The browser app is not changed.<br>
     <b>Narrow window:</b> tabs give way first, as today; Devices is the first icon to drop; Sign in or the avatar always stays.<br>
-    <b>The menu:</b> Add Phone opens Add Phone. It stays once a phone is linked (changed 2026-10-12: as built it showed at the first click and was gone at the second). Customize Harness opens what the app menu's Customize Harness opens. Notifications opens Settings ▸ Notifications. Settings opens Settings. Sign out signs out. Kept to these five; no machine list, no numbers.</p>
+    <b>The menu:</b> Add Phone stays available once a phone is linked. Customize Harness opens customization. Notifications opens Settings ▸ Notifications. Settings opens Settings. Sign out returns to the required sign-in page and preserves saved local panes.</p>
 
+  <h2>Updated 2026-10-12</h2>
+  <p class="note"><b>Shorter flow:</b> five tour slides; ⌘P and ⌘N are removed. The sign-in buttons stand alone, with Continue with email centered below.<br><b>Required desktop account:</b> sign-in is mandatory after setup, including on existing signed-out installations. Skip is removed; successful sign-out returns to the page. Signed-in offline launches and local recovery after runtime expiry keep working. First-arrival agents start after sign-in. The browser and TUI are outside this desktop change.</p>
+
+  <details style="margin-top:32px"><summary style="color:var(--muted);cursor:pointer">Earlier design decisions · October 8–11 (superseded where noted above)</summary>
   <h2>Checked: can it be built (2026-10-08)</h2>
   <p class="note" style="font-size:15px;line-height:1.7">
     <b>Recent sessions and their order (screen 3): yes.</b> The daemon's <code>session_search</code>, asked with a time and no words, returns recent Claude Code and Codex sessions with engine,
@@ -684,7 +630,7 @@
     <b>Not changed:</b> the footer and everything outside onboarding. (Footers in these renders now match the app: usage on the left after Models.)<br>
     <b>Still open:</b> nothing; waiting for your approval.</p>
 
-  <h2>Decided 2026-10-11</h2>
+  <h2>Earlier decision · 2026-10-11</h2>
   <p class="note" style="font-size:15px;line-height:1.7">
     <b>Sign-in page (1b):</b> the last step on a computer new to Harness that is not signed in: four things an account adds, one line each, Continue with Google, Continue with Apple, and under them Skip (left) and Continue with email (right). The first workspace is built behind it. Shown once.<br>
     <b>Top right (5):</b> Search, Devices and Harness Store as icons; then Sign in, which becomes your avatar. Mac and Linux.<br>
@@ -692,6 +638,7 @@
     <b>Built as proposed, say if not:</b> (a) people already using Harness without an account get the button only, never the page; (b) Linux shows the page after its setup screen; (c) the browser app stays as it is; (d) the avatar is your initial, not your photo.<br>
     <b>Found while building:</b> the pressed button dims for the moment before its browser opens, and the line at the foot reads "Signing in…" once the browser has approved, so the wait is not silent. Continue with email is also on the sign-in that Sign in (top right) opens, except in a short window, where one more row would push the "you were signed out" line off the screen.<br>
     <b>Supersedes:</b> "Harness opens by itself … no button" above, for a computer that is not signed in. Signed in, that still holds.</p>
+  </details>
 </main>
 </body>
 </html>

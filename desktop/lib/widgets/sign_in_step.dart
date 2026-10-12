@@ -12,12 +12,13 @@ import 'setup_tour.dart';
 import 'sign_in_provider_button.dart';
 import 'window_chrome.dart';
 
-/// The sign-in step: the welcome's last page on a computer new to Harness that
-/// holds no account ([AppNotifier.signInStepShowing]).
+/// Required sign-in after setup on a computer that holds no account
+/// ([AppNotifier.signInStepShowing]).
 ///
 /// It stands where the tour stood and looks like its last slide: what an
 /// account adds on the left, one line each, and Continue with Google and
-/// Continue with Apple on the right. Under them, Skip and Continue with email.
+/// Continue with Apple on the right. The buttons stand alone, with Continue
+/// with email centered under them (owner, 2026-10-12).
 /// Nothing else is on the page, and nothing on it changes while the browser is
 /// open — every way in stays live instead (owner, 2026-10-11).
 /// Design: `docs/research/2026-10-08-onboarding-redesign/index.html`, 1b.
@@ -33,12 +34,11 @@ const signInStepBenefits = [
   (icon: AppIcons.panelsTopLeft, line: 'Same tabs on every computer'),
 ];
 
-/// The page itself, apart from the app: what it says and its five controls.
+/// The page itself, apart from the app: what it says and its three controls.
 class SignInStep extends StatelessWidget {
   const SignInStep({
     super.key,
     required this.onSignIn,
-    required this.onSkip,
     this.starting = false,
     this.startingProvider,
     this.finishing = false,
@@ -48,7 +48,6 @@ class SignInStep extends StatelessWidget {
   /// Continue with Google, Continue with Apple, or — with no provider —
   /// Continue with email, which is the sign-in page's own chooser.
   final ValueChanged<SignInProvider?> onSignIn;
-  final VoidCallback onSkip;
 
   /// A sign-in was pressed and its browser has not opened yet. The control
   /// that began it ([startingProvider]; none is email) steps back for that
@@ -61,10 +60,6 @@ class SignInStep extends StatelessWidget {
 
   /// Why the last sign-in did not finish.
   final String? error;
-
-  /// The card's padding: the row under it starts and ends where the buttons
-  /// inside it do.
-  static const _cardPadding = 24.0;
 
   @override
   Widget build(BuildContext context) {
@@ -82,7 +77,7 @@ class SignInStep extends StatelessWidget {
               Expanded(child: _stage(context, gutter)),
               _ReadyBar(
                 gutter: gutter,
-                line: finishing ? 'Signing in…' : 'Harness is ready.',
+                line: finishing ? 'Signing in…' : 'Sign in to continue.',
               ),
             ],
           );
@@ -174,70 +169,37 @@ class SignInStep extends StatelessWidget {
 
   Widget _waysIn(BuildContext context) => ConstrainedBox(
     constraints: const BoxConstraints(maxWidth: 440),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          // The app's raised-block recipe, as the sign-in card: fill plus a
-          // soft lift, no rim.
-          decoration: BoxDecoration(
-            color: grid.AppGlass.surfaceFill,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: grid.AppCard.shadow,
-          ),
-          padding: const EdgeInsets.all(_cardPadding),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            spacing: 12,
-            children: [
-              for (final provider in SignInProvider.values)
-                _stepsBack(
-                  starting && startingProvider == provider,
-                  SignInProviderButton(
-                    provider: provider,
-                    prominent: true,
-                    // Return signs in with the first.
-                    autofocus: provider == SignInProvider.values.first,
-                    onPressed: () => onSignIn(provider),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: _cardPadding),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        spacing: 12,
+        children: [
+          for (final provider in SignInProvider.values)
+            _stepsBack(
+              starting && startingProvider == provider,
+              SignInProviderButton(
+                provider: provider,
+                prominent: true,
+                // Return signs in with the first.
+                autofocus: provider == SignInProvider.values.first,
+                onPressed: () => onSignIn(provider),
+              ),
+            ),
+          Align(
+            alignment: Alignment.center,
+            child: _stepsBack(
+              starting && startingProvider == null,
               QuietLink(
-                key: const Key('sign-in-step-skip'),
-                label: 'Skip',
-                onPressed: onSkip,
+                key: const Key('sign-in-step-email'),
+                label: 'Continue with email',
+                onPressed: () => onSignIn(null),
               ),
-              const SizedBox(width: 16),
-              // The longer of the two gives way first, at a large text size in
-              // a small window.
-              Flexible(
-                child: _stepsBack(
-                  starting && startingProvider == null,
-                  QuietLink(
-                    key: const Key('sign-in-step-email'),
-                    label: 'Continue with email',
-                    onPressed: () => onSignIn(null),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-        if (error case final error?) ...[
-          const SizedBox(height: 10),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: _cardPadding),
-            child: Semantics(
+          if (error case final error?)
+            Semantics(
               liveRegion: true,
               child: Text(
                 error,
@@ -247,9 +209,8 @@ class SignInStep extends StatelessWidget {
                 ),
               ),
             ),
-          ),
         ],
-      ],
+      ),
     ),
   );
 
@@ -394,7 +355,6 @@ class _SignInStepScreenState extends State<SignInStepScreen> {
         _wasSigningIn = app.signingIn;
         return SignInStep(
           onSignIn: (provider) => unawaited(app.signInFromStep(provider)),
-          onSkip: app.skipSignInStep,
           // Its browser is not open yet: the CLI has to start before it can
           // name the page.
           starting: app.canCancelLogin && app.pendingAuthorizeUrl == null,

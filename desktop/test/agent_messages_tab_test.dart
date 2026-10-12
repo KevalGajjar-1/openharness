@@ -40,6 +40,8 @@ Widget _host(
                   id: tab.id,
                   label: tab.id,
                   selected: index == 0,
+                  showShortcuts: const AlwaysStoppedAnimation(false),
+                  shortcutHint: '⌘${index + 1}',
                   onSelect: () {},
                   onClose: () => onClose?.call(tab.id),
                   activityLabel: tab.working ? 'Working' : null,
@@ -105,7 +107,7 @@ void main() {
         findsNothing,
       );
       expect(_status('app'), findsOneWidget, reason: 'hover keeps the status');
-      expect(find.text('⌘1'), findsNothing, reason: 'tabs show no shortcut');
+      expect(find.text('⌘1'), findsNothing, reason: 'Command is not held');
       expect(
         tester.getRect(_label('app')),
         title,

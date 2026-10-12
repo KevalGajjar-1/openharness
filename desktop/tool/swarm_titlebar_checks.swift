@@ -124,6 +124,8 @@ private extension SwarmTabButton {
       let fresh = SwarmTabButton(id: "fresh-label-check")
       fresh.name = name
       fresh.displayLabel = displayLabel
+      fresh.shortcutHint = shortcutHint
+      fresh.showsShortcutHint = showsShortcutHint
       fresh.foreground = foreground
       fresh.canShowAgentMessages = canShowAgentMessages
       fresh.labelFont = labelFont
@@ -148,6 +150,12 @@ private extension SwarmTabButton {
     activity = HarnessNativeActivity(["mark": "⠋", "label": "Working", "working": true,
       "color": Int64(0xff64d2ff)])
     try compareWithFresh("Initial populated tab")
+    for hint: String? in ["⌘1", "⌃⌥⌘R", nil] {
+      shortcutHint = hint
+      showsShortcutHint = true
+      try compareWithFresh("Shortcut text and visibility")
+    }
+    showsShortcutHint = false
     for title in ["a-very-long-project-name-that-truncates", "", "设备 日本語", "🧑🏽‍💻 café مرحبا", "desktop"] {
       displayLabel = title
       try compareWithFresh("Rename displayed title")
@@ -385,6 +393,7 @@ private extension SwarmContextButton {
 private extension SwarmTabButton {
   // `label` is private to the tab; a same-file extension reads what it draws.
   var drawnFont: NSFont? { label.attribute(.font, at: 0, effectiveRange: nil) as? NSFont }
+  var drawsShortcut: Bool { displaysShortcut }
 
   func checkHoverStyleAndTooltips() throws {
     frame = NSRect(x: 0, y: 0, width: 160, height: 40)
@@ -1512,6 +1521,8 @@ private extension SwarmTabStrip {
     update(["enabled": true, "activeId": "work", "tabs": rows])
     try checkTitlebar(tabs.map(\.displayLabel) == ["New Tab", "Desktop", "1: Release planning", "Notes"],
       "Clean labels preserve numeric-looking custom names and omit generated prefixes")
+    try checkTitlebar(tabs.map(\.shortcutHint) == ["⌘1", "⌘2", "⌃⌥⌘R", nil],
+      "Hints use current bindings and keep an explicitly unbound tab empty")
     let initial = tabs.map(\.frame)
     var statusChanged: [String: Any] = ["enabled": true, "activeId": "work", "tabs": rows,
       "barStyle": ["family": "Menlo", "size": 28.0, "foreground": Int64(0xffdddddd)]]
@@ -1531,12 +1542,27 @@ private extension SwarmTabStrip {
       try checkTitlebar(name == "light" ? ink.redComponent < 0.2 : ink.redComponent > 0.8,
         "Tab labels remain readable on the UI surface with an independently chosen status foreground")
       try captureTabPresentation("native-tabs-\(name)-rest")
+      setShortcutHintsVisible(true)
+      try checkTitlebar(tabs.map(\.drawsShortcut) == [true, true, true, false] &&
+        tabs.map(\.frame) == initial,
+        "Command reveals the same small status-slot hints without resizing tabs")
+      try captureTabPresentation("native-tabs-\(name)-command")
+      setShortcutHintsVisible(false)
+      try checkTitlebar(tabs.allSatisfy { !$0.drawsShortcut },
+        "Releasing Command restores each tab's status")
       tabs[1].mouseEntered(with: hover)
       try checkTitlebar(tabs.map(\.frame) == initial && tabs.filter(\.isRevealed).count == 1,
         "Hover reveals one tab without moving any")
       try captureTabPresentation("native-tabs-\(name)-hover")
       tabs[1].mouseExited(with: hover)
     }
+    setShortcutHintsVisible(true)
+    update(["enabled": false, "activeId": "work", "tabs": rows])
+    try checkTitlebar(tabs.allSatisfy { !$0.drawsShortcut }, "A modal hides tab shortcuts")
+    update(["enabled": true, "activeId": "work", "tabs": rows])
+    try checkTitlebar(tabs[0].drawsShortcut, "Hints follow a held Command when controls re-enable")
+    NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+    try checkTitlebar(tabs.allSatisfy { !$0.drawsShortcut }, "Losing app focus clears held hints")
     let crowdedNames = ["New Tab", "Desktop", "Docs", "Web", "Notes", "API", "Tests", "Release"]
     let crowdedRows: [[String: Any]] = crowdedNames.enumerated().map { index, name in
       ["id": "dense-\(index)", "name": name, "label": name, "shortcutHint": "⌘\(index + 1)",

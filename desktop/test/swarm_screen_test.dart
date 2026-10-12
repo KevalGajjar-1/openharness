@@ -88,7 +88,7 @@ TerminalSession terminal(String id, List<TerminalBinaryFrame> input) =>
 
 void main() {
   testWidgets(
-    'tabs show names, reveal hover close only, and preserve Command-W',
+    'tabs reveal Command hints and hover close, and preserve Command-W',
     (tester) async {
       final app = createApp();
       final first = app.activeSwarm;
@@ -109,15 +109,15 @@ void main() {
       await mouse.moveTo(tester.getCenter(label));
       await tester.pumpAndSettle();
       expect(close.hitTestable(), findsOneWidget);
-      // Hover reveals ×; tabs show no shortcut, and a name with room keeps
+      // Hover reveals ×; hints wait for Command, and a name with room keeps
       // its place.
       expect(find.text('⌘1'), findsNothing);
       expect(find.text('⌘2'), findsNothing);
       expect(tester.getRect(label), nameBounds);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();
-      // Command no longer reveals tabs.
-      expect(find.text('⌘1'), findsNothing);
+      expect(find.text('⌘1'), findsOneWidget);
+      expect(find.text('⌘2'), findsOneWidget);
       expect(
         find.byKey(ValueKey('tab-close:${first.id}')).hitTestable(),
         findsNothing,
@@ -126,7 +126,18 @@ void main() {
       expect(app.activeSwarm, same(second));
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
       await tester.pump();
+      expect(find.text('⌘1'), findsNothing);
+      expect(find.text('⌘2'), findsNothing);
       expect(close.hitTestable(), findsOneWidget);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaRight);
+      await tester.pump();
+      expect(find.text('⌘1'), findsOneWidget);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(find.text('⌘1'), findsNothing, reason: 'focus loss clears hints');
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaRight);
+      await tester.pump();
       await mouse.removePointer();
       await tester.pump();
       expect(close.hitTestable(), findsNothing);

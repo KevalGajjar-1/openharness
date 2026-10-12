@@ -392,6 +392,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
   // editor mounted so its text-input connection and composition survive.
   late GlobalKey _searchInputKey;
   final _tabScroll = ScrollController();
+  final _tabShortcutHints = ValueNotifier(false);
   ({String activeId, List<String> order, double viewport, List<double> widths})?
   _tabGeometry;
   bool _tabRevealScheduled = false;
@@ -608,6 +609,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       },
       onHide: app.announceWindowForeground,
       onInactive: () {
+        _tabShortcutHints.value = false;
         app.announceWindowForeground();
       },
       // Whether the app is in front of anyone decides whether the model surfaces refresh at all
@@ -894,6 +896,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     _searchDialogScope.dispose();
     _searchText.dispose();
     _tabScroll.dispose();
+    _tabShortcutHints.dispose();
     _canvasFocus.dispose();
     _shellFocus.dispose();
     _startSearchFocus.dispose();
@@ -4260,6 +4263,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
   }
 
   bool _noteKey(KeyEvent event) {
+    // Paint hints only; the keymap still owns every shortcut and input event.
+    _tabShortcutHints.value = HardwareKeyboard.instance.isMetaPressed;
     // Off, this is not here at all: every key goes where it went before.
     if (event is! KeyDownEvent || _zoo.daemons == DaemonsSwitch.off) {
       return false;
@@ -8050,6 +8055,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                     DesktopWorkspaceTab.naturalWidth(
                                       context,
                                       labels[index],
+                                      shortcutHint: _keymap.hint(
+                                        'swarm.select_${index + 1}',
+                                      ),
                                       hasActivity: activity != null,
                                     ) >
                                     _tabWidths[index],
@@ -8060,6 +8068,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
                               ].join('\n');
                               return DesktopWorkspaceTab(
                                 id: swarm.id,
+                                showShortcuts: _tabShortcutHints,
+                                shortcutHint: _keymap.hint(
+                                  'swarm.select_${index + 1}',
+                                ),
                                 onRename: () => _rename(swarm.id),
                                 label: labels[index],
                                 selected: selected,

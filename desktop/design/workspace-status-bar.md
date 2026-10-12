@@ -120,8 +120,9 @@ shared 10-point upper corners, 8-point outward lower shoulders and 6-point top
 inset. Keep space after `+` available for dragging the window. Scroll overflow
 and reveal the selected tab on keyboard navigation. Narrow viewports can show
 smaller tabs while preserving their controls.
-Hovering a tab reveals × at its right; its status stays. Tabs show no shortcut
-hint, and holding Command changes nothing on them. A tab shows nothing of
+Hovering a tab reveals × at its right; its status stays. Holding Command replaces
+the status with the original small shortcut label (⌘1, ⌘2, ⌘3…), using the current
+keymap. Release or window deactivation restores the status. A tab shows nothing of
 [Agent Messages](../../docs/design/2026-10-10-agent-messages.md), at rest or
 hovered: traffic between its agents shows nothing on it, since messages arrive
 when they arrive, and there is no on/off on the tab. Its 💬 beside × was easy to

@@ -340,8 +340,10 @@ Messages' 💬 that sat left of it was removed, since it was easy to hit by mist
 and turned the tab off (owner, 2026-10-12); Settings ▸ Agents holds that switch
 now. At rest the name and status have the whole tab; on hover a name that would run
 into × moves left only as far as it needs, then truncates, so hover never
-crowds the name or status. Tabs show no shortcut hint, and holding Command
-changes nothing on them. An idle tab has no empty status slot; its name centers
+crowds the name or status. Holding Command shows the original small shortcut
+label in each tab's status slot. Release or window deactivation restores the
+status; remapped and unbound shortcuts follow the current keymap. An idle tab
+has no empty status slot when Command is released; its name centers
 on its own. Hover never changes tab width. Long names truncate and retain a
 full-name tooltip. Selection, dragging, middle-click close and the
 existing keyboard commands keep their meaning.
