@@ -1,0 +1,873 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone Onboarding</title>
+<style>
+  :root {
+    --page: #0f0f0e; --text: #f5f5f0; --muted: #9a9a90; --line: rgba(255,250,240,.10);
+    --bg: #141413; --surface: #1c1c1a; --elev: #262624; --sub: #3a3a36;
+    --amber: #ff9f0a; --green: #32d74b; --red: #ff453a; --blue: #0a84ff; --rose: #e879a0; --gold: #d4a574;
+    /* The phone app's own palette (mobile/lib/phone/tty.dart, dark): ground, raised, green, yellow. */
+    --pground: #181818; --praised: #2c2c2c; --pgreen: #0dbc79; --pyellow: #e5e510; --pfaint: #8e8e88;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text); font: 16px/1.5 var(--sans); }
+  main { max-width: 1180px; margin: 0 auto; padding: 40px 16px 96px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 { font-size: 22px; margin: 64px 0 6px; }
+  h3 { font-size: 16px; margin: 28px 0 8px; color: var(--muted); font-weight: 600; }
+  p.lede { color: var(--muted); margin: 0 0 18px; max-width: 820px; }
+  p.lede b { color: var(--text); font-weight: 600; }
+  code { font-family: var(--mono); font-size: .9em; color: #d8d8cf; }
+  a { color: var(--amber); }
+  .update { background: var(--surface); border: 1px solid rgba(255,159,10,.35); border-radius: 12px; padding: 14px 16px; margin: 18px 0 6px; font-size: 15px; max-width: 900px; }
+  .update b { color: var(--text); }
+  .principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 22px 0 6px; }
+  .principles div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 15px; }
+  .principles b { display: block; margin-bottom: 2px; }
+  .note { color: var(--muted); font-size: 14px; margin: 10px 2px 0; max-width: 900px; }
+  .note b { color: var(--text); font-weight: 600; }
+  .cap { margin: 8px 2px 0; font-size: 14px; color: var(--muted); }
+  .cap b { color: var(--text); }
+  .new { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #1a1205; background: var(--amber);
+    border-radius: 6px; padding: 1px 7px; vertical-align: 3px; margin-left: 6px; }
+  .same { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 0 6px; vertical-align: 2px; margin-left: 6px; }
+
+  /* Tables */
+  table { border-collapse: collapse; width: 100%; max-width: 980px; font-size: 14px; margin: 10px 0 0; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; }
+  td.num { font-family: var(--mono); white-space: nowrap; }
+  td .bad { color: #ff8a80; } td .good { color: var(--green); }
+
+  /* Today: real renders in a phone frame. */
+  .today { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 26px 18px; margin-top: 14px; }
+  .today figure { margin: 0; }
+  .frame { width: 100%; aspect-ratio: 390 / 844; border-radius: 26px; overflow: hidden; border: 5px solid #2a2a28; background: var(--pground); box-shadow: 0 14px 30px rgba(0,0,0,.5); }
+  .frame img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .today figcaption { font-size: 13.5px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+  .today figcaption b { color: var(--text); display: block; font-size: 14px; }
+  .today figcaption .x { color: #ff8a80; }
+
+  /* A phone drawn at 390x844 points and scaled with its container: 1cqw = 3.9pt. */
+  .flow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 10px; margin-top: 16px; }
+  .step { width: 244px; flex: none; }
+  .step .cap { font-size: 13.5px; }
+  .arrow { flex: none; align-self: center; color: var(--muted); font-size: 13px; text-align: center; width: 74px; line-height: 1.35; padding-bottom: 40px; }
+  .arrow i { display: block; font-style: normal; font-size: 22px; color: var(--amber); }
+  .ph { container-type: inline-size; width: 100%; aspect-ratio: 390 / 844; border-radius: 30px; background: var(--pground); border: 5px solid #2a2a28;
+    box-shadow: 0 14px 30px rgba(0,0,0,.5); position: relative; overflow: hidden; color: #f2f2ee; font-family: var(--mono); }
+  .ph .sb { position: absolute; top: 0; left: 0; right: 0; height: 12cqw; display: flex; align-items: center; justify-content: space-between; padding: 2cqw 8cqw 0;
+    font: 600 3.9cqw var(--sans); z-index: 3; }
+  .ph .sb .bat { width: 6.4cqw; height: 3cqw; border: .45cqw solid currentColor; border-radius: .9cqw; opacity: .9; position: relative; }
+  .ph .sb .bat::after { content: ""; position: absolute; inset: .4cqw 1.4cqw .4cqw .4cqw; background: currentColor; border-radius: .3cqw; }
+  .ph .island { position: absolute; top: 2.6cqw; left: 50%; width: 31cqw; height: 9cqw; transform: translateX(-50%); background: #000; border-radius: 5cqw; z-index: 4; }
+  .ph .home { position: absolute; bottom: 2.2cqw; left: 50%; width: 35cqw; height: 1.3cqw; border-radius: 1cqw; background: #e8e8e2; transform: translateX(-50%); opacity: .85; z-index: 4; }
+  .ph .in { position: absolute; inset: 14cqw 0 9cqw 0; padding: 3cqw 5.6cqw 0; display: flex; flex-direction: column; }
+  .ph .t17 { font-size: 4.36cqw; line-height: 1.38; }
+  .ph .t13 { font-size: 3.33cqw; line-height: 1.45; }
+  .ph .dim { color: var(--pfaint); }
+  .ph .b { font-weight: 600; }
+  .ph .sp { flex: 1; }
+  .ph .wm { font-size: 5.2cqw; font-weight: 600; display: flex; align-items: center; }
+  .ph .wm i { display: inline-block; width: 2.3cqw; height: 4.6cqw; background: var(--pgreen); margin-left: .5cqw; }
+  .ph .btn { background: var(--pgreen); color: #061a11; font-weight: 600; text-align: center; border-radius: 2.6cqw; padding: 3.7cqw 0; font-size: 4.1cqw; }
+  .ph .row2 { display: flex; justify-content: space-between; }
+  .ph .share { display: inline-block; width: 3.6cqw; height: 4.4cqw; vertical-align: -.7cqw; margin-left: 1.4cqw; }
+  .ph .hero { font-size: 7.2cqw; line-height: 1.22; font-weight: 600; letter-spacing: -.02em; margin-top: 10cqw; }
+  .ph .btn .qri { width: 4.6cqw; height: 4.6cqw; vertical-align: -1cqw; margin-right: 2cqw; }
+  .ph .steps { margin-top: 6cqw; display: grid; gap: 4.4cqw; }
+  .ph .steps .s { display: grid; grid-template-columns: 6.4cqw 1fr; gap: 3cqw; align-items: start; }
+  .ph .steps .n { width: 6cqw; height: 6cqw; border-radius: 50%; border: 1px solid #555; display: grid; place-items: center; font-size: 3cqw; color: var(--pfaint); }
+  .today figcaption .ok-mark { color: var(--green); }
+  .ph .field { background: var(--praised); border-radius: 2.2cqw; padding: 3.2cqw 3.6cqw; }
+
+  /* The scanner on the phone's first screen. */
+  .vf { position: relative; border-radius: 4cqw; overflow: hidden; aspect-ratio: 1 / .94; margin: 4cqw 0 4.6cqw;
+    background: radial-gradient(60cqw 50cqw at 50% 45%, #3b3a35, #151513 75%); }
+  .vf .lap { position: absolute; left: 13%; top: 16%; width: 74%; height: 56%; background: #0d0d0c; border: 1.2cqw solid #2b2b28; border-radius: 1.6cqw;
+    transform: perspective(60cqw) rotateX(9deg); box-shadow: 0 3cqw 6cqw rgba(0,0,0,.6); display: grid; place-items: center; }
+  .vf .lap .dlg { background: #1c1c1a; border-radius: 1.2cqw; padding: 2cqw; display: grid; place-items: center; gap: 1cqw; width: 52%; }
+  .vf .lap .dlg svg { width: 100%; height: auto; display: block; border-radius: .6cqw; }
+  .vf .lap .dlg span { font: 600 2cqw var(--sans); color: #ddd; }
+  .vf .base { position: absolute; left: 6%; right: 6%; top: 74%; height: 4cqw; background: linear-gradient(#3a3a36, #22221f); border-radius: 0 0 3cqw 3cqw; }
+  .vf .c { position: absolute; width: 11cqw; height: 11cqw; border: 1.1cqw solid #fff; opacity: .92; }
+  .vf .c.tl { left: 26%; top: 18%; border-right: 0; border-bottom: 0; border-radius: 2.4cqw 0 0 0; }
+  .vf .c.tr { right: 26%; top: 18%; border-left: 0; border-bottom: 0; border-radius: 0 2.4cqw 0 0; }
+  .vf .c.bl { left: 26%; top: 54%; border-right: 0; border-top: 0; border-radius: 0 0 0 2.4cqw; }
+  .vf .c.br { right: 26%; top: 54%; border-left: 0; border-top: 0; border-radius: 0 0 2.4cqw 0; }
+  .vf.allow { display: grid; place-items: center; background: #222; }
+  .vf.allow span { font-size: 3.6cqw; color: #ddd; border: 1px solid rgba(255,255,255,.25); border-radius: 6cqw; padding: 2cqw 4.4cqw; }
+
+  /* iOS Camera, pointed at the Mac. */
+  .ph.cam { background: #000; }
+  .ph.cam .shot { position: absolute; inset: 0; background: radial-gradient(90cqw 80cqw at 50% 42%, #3f3e39, #121210 70%); }
+  .ph.cam .lap { position: absolute; left: 8%; top: 24%; width: 84%; height: 34%; background: #0d0d0c; border: 1.4cqw solid #2b2b28; border-radius: 2cqw;
+    transform: perspective(70cqw) rotateX(10deg); display: grid; place-items: center; }
+  .ph.cam .lap svg { width: 30%; height: auto; border-radius: .6cqw; }
+  .ph.cam .chip { position: absolute; left: 50%; top: 61%; transform: translateX(-50%); background: #ffd60a; color: #1d1a00; font: 600 3.6cqw var(--sans);
+    border-radius: 5cqw; padding: 1.8cqw 4cqw; white-space: nowrap; display: flex; align-items: center; gap: 1.6cqw; box-shadow: 0 1cqw 3cqw rgba(0,0,0,.5); }
+  .ph.cam .chip i { width: 4.4cqw; height: 4.4cqw; border-radius: 1.1cqw; background: var(--pground); display: grid; place-items: center; font-style: normal; color: var(--pgreen); font: 700 2.6cqw var(--mono); }
+  .ph.cam .shutter { position: absolute; bottom: 12cqw; left: 50%; transform: translateX(-50%); width: 17cqw; height: 17cqw; border-radius: 50%; border: 1.2cqw solid #fff; }
+  .ph.cam .shutter::after { content: ""; position: absolute; inset: 1.2cqw; border-radius: 50%; background: #fff; }
+  .ph.cam .mode { position: absolute; bottom: 33cqw; left: 0; right: 0; text-align: center; font: 600 3.1cqw var(--sans); letter-spacing: .08em; color: #ffd60a; }
+
+  /* The website's /pair page, in Safari. */
+  .ph.web { background: #0f0f0e; font-family: var(--sans); }
+  .ph.web .url { position: absolute; left: 4cqw; right: 4cqw; bottom: 10cqw; height: 11cqw; border-radius: 3cqw; background: #2a2a28; display: grid; place-items: center; font: 500 3.6cqw var(--sans); color: #ddd; z-index: 2; }
+  .ph.web .store { display: flex; align-items: center; justify-content: center; gap: 2cqw; background: #000; border: 1px solid #555; border-radius: 2.6cqw; padding: 3cqw 0; font: 600 4cqw var(--sans); color: #fff; }
+  .ph.web .store img { width: 4.4cqw; height: 4.4cqw; filter: invert(1); }
+
+  /* The terminal (Focus) — the phone app's home screen. */
+  .term .tl { font-size: 3.33cqw; line-height: 1.55; white-space: pre-wrap; }
+  .term .ok { color: var(--pgreen); } .term .y { color: var(--pyellow); } .term .u { color: #fff; }
+  .term .hdr { margin-bottom: 3.6cqw; }
+  .term .prompt { border: 1px solid #555; border-radius: 1.4cqw; padding: 1.8cqw 2.4cqw; font-size: 3.33cqw; color: #ddd; margin-top: 2cqw; }
+  .term .bubble { position: absolute; left: 50%; bottom: 36cqw; transform: translateX(-50%); background: #f2f2ee; color: #111; border-radius: 3cqw; padding: 2.6cqw 4cqw;
+    font: 600 3.5cqw/1.35 var(--sans); text-align: center; white-space: nowrap; box-shadow: 0 2cqw 6cqw rgba(0,0,0,.6); z-index: 2; }
+  .term .bubble::after { content: ""; position: absolute; left: 50%; bottom: -2cqw; width: 4cqw; height: 4cqw; background: #f2f2ee; transform: translateX(-50%) rotate(45deg); }
+  .mic { position: absolute; left: 50%; bottom: 15cqw; width: 19cqw; height: 19cqw; transform: translateX(-50%); border-radius: 50%; background: #1f1f1f;
+    border: .5cqw solid #4a4a46; display: grid; place-items: center; z-index: 2; box-shadow: 0 1.5cqw 4cqw rgba(0,0,0,.6); }
+  .mic svg { width: 8cqw; height: 8cqw; }
+  .term .ask { position: absolute; left: 5.6cqw; right: 5.6cqw; bottom: 38cqw; background: #242424; border: 1px solid #3c3c3a; border-radius: 3cqw; padding: 3.6cqw 4cqw; z-index: 2;
+    font: 500 3.7cqw/1.4 var(--sans); }
+  .term .ask .bb { display: flex; gap: 2.4cqw; margin-top: 3cqw; }
+  .term .ask .bb span { flex: 1; text-align: center; border-radius: 2cqw; padding: 2.4cqw 0; background: #333; font-weight: 600; }
+  .term .ask .bb span.y { background: var(--pgreen); color: #061a11; }
+  .term .conn { position: absolute; left: 5.6cqw; right: 5.6cqw; top: 40%; text-align: left; }
+
+  /* A macOS window, from the desktop onboarding page (1280x800, scaled with cqw). */
+  .win { container-type: inline-size; width: 100%; aspect-ratio: 16 / 10; border-radius: 1cqw; overflow: hidden;
+    background: var(--bg); border: 1px solid rgba(255,255,255,.08); box-shadow: 0 2cqw 5cqw rgba(0,0,0,.55); position: relative; }
+  .win .bar { height: 4.6cqw; display: flex; align-items: center; gap: .6cqw; padding: 0 1.4cqw; border-bottom: 1px solid var(--line); background: #171716; }
+  .dots { display: flex; gap: .65cqw; margin-right: 1.6cqw; }
+  .dots i { width: 1.05cqw; height: 1.05cqw; border-radius: 50%; display: block; }
+  .dots i:nth-child(1) { background: #ff5f57; } .dots i:nth-child(2) { background: #febc2e; } .dots i:nth-child(3) { background: #28c840; }
+  .tab { font-size: 1.12cqw; color: var(--muted); padding: .6cqw 1.6cqw; border-radius: .6cqw; white-space: nowrap; display: flex; align-items: center; gap: .55cqw; }
+  .tab.on { background: var(--elev); color: var(--text); }
+  .bar .sp { flex: 1; }
+  .bar .ava { width: 2.6cqw; height: 2.6cqw; border-radius: 50%; background: #5b6b80; display: grid; place-items: center; font-size: 1.2cqw; font-weight: 700; }
+  .bar .ic { width: 2.4cqw; height: 2.4cqw; display: grid; place-items: center; color: var(--muted); }
+  .bar .ic svg { width: 1.6cqw; height: 1.6cqw; }
+  .tour { position: absolute; inset: 0; display: flex; flex-direction: column; }
+  .tour .stage { flex: 1; display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; padding: 0 5cqw; gap: 3cqw;
+    background: radial-gradient(70cqw 50cqw at 80% 40%, rgba(255,159,10,.10), transparent 60%), radial-gradient(60cqw 40cqw at 10% 90%, rgba(232,121,160,.07), transparent 60%); }
+  .tour .kicker { font-size: 1.1cqw; letter-spacing: .14em; text-transform: uppercase; color: var(--amber); font-weight: 600; margin-bottom: 1.2cqw; }
+  .tour h4 { font-size: 3.5cqw; line-height: 1.08; margin: 0 0 1.6cqw; letter-spacing: -.02em; font-weight: 700; }
+  .tour .copy { font-size: 1.55cqw; line-height: 1.5; color: #cfcfc6; max-width: 34cqw; }
+  .tour .pager { display: flex; gap: .7cqw; margin-top: 3cqw; align-items: center; }
+  .tour .pager i { width: .75cqw; height: .75cqw; border-radius: 50%; background: var(--sub); display: block; }
+  .tour .pager i.on { width: 2.4cqw; border-radius: 1cqw; background: var(--amber); }
+  .tour .foot { height: 7.6cqw; border-top: 1px solid var(--line); background: #121211; display: flex; flex-direction: column; justify-content: center; padding: 0 5cqw; gap: .8cqw; }
+  .tour .foot .row { display: flex; align-items: center; gap: 1cqw; font-size: 1.1cqw; color: var(--muted); }
+  .tour .foot .row .sp { flex: 1; }
+  .tour .foot .track { height: .45cqw; border-radius: .3cqw; background: var(--elev); overflow: hidden; }
+  .tour .foot .track i { display: block; height: 100%; background: linear-gradient(90deg, var(--amber), #ffb340); border-radius: .3cqw; }
+  .tour .tagline { position: absolute; left: 5cqw; bottom: 9.4cqw; font-size: 1.05cqw; letter-spacing: .02em; color: var(--gold); opacity: .9; }
+  .getapp { justify-self: center; background: var(--surface); border: 1px solid var(--line); border-radius: 1.6cqw; padding: 2.4cqw; display: grid; grid-template-columns: 15cqw auto; gap: 2.4cqw; align-items: center;
+    box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.45); }
+  .getapp svg { width: 15cqw; height: 15cqw; border-radius: .8cqw; display: block; }
+  .getapp .t { font-size: 1.7cqw; font-weight: 700; }
+  .getapp .s { font-size: 1.2cqw; color: var(--muted); margin-top: .5cqw; line-height: 1.5; }
+  .getapp .stores { display: flex; gap: .8cqw; margin-top: 1.4cqw; }
+  .getapp .stores span { font-size: 1.05cqw; border: 1px solid var(--line); border-radius: .7cqw; padding: .4cqw .9cqw; color: #cfcfc6; }
+
+  /* Workspace behind a dialog. */
+  .ws { position: absolute; inset: 4.6cqw 0 0 0; display: grid; grid-template-columns: 1.25fr 1fr; gap: .8cqw; padding: 1.2cqw; }
+  .pn { background: #161615; border: 1px solid var(--line); border-radius: .7cqw; font-family: var(--mono); font-size: 1cqw; line-height: 1.6; color: #a9a9a0; padding: 1cqw 1.2cqw; overflow: hidden; }
+  .pn .h { color: #d4d4cc; font-family: var(--sans); margin-bottom: .8cqw; }
+  .pn .ok { color: var(--green); }
+  .pn.focus { border-color: rgba(255,159,10,.55); }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+  .addph { position: absolute; left: 50%; top: 52%; transform: translate(-50%, -50%); width: 40cqw; background: var(--surface); border: 1px solid var(--line); border-radius: 1.4cqw;
+    padding: 2.4cqw 2.6cqw; box-shadow: 0 3cqw 6cqw rgba(0,0,0,.6); }
+  .addph .t { font-size: 1.9cqw; font-weight: 700; }
+  .addph .grid { display: grid; grid-template-columns: 15cqw 1fr; gap: 2.2cqw; align-items: center; margin-top: 1.8cqw; }
+  .addph svg { width: 15cqw; height: 15cqw; border-radius: .8cqw; display: block; }
+  .addph .l1 { font-size: 1.45cqw; font-weight: 600; }
+  .addph .l2 { font-size: 1.2cqw; color: var(--muted); margin-top: .6cqw; line-height: 1.5; }
+  .addph .st { margin-top: 1.8cqw; font-size: 1.15cqw; color: var(--muted); display: flex; justify-content: space-between; }
+  .addph .st .g { color: var(--green); }
+  .card { position: absolute; right: 1.4cqw; top: 6.2cqw; width: 25cqw; background: var(--surface); border: 1px solid var(--line); border-radius: 1cqw; padding: 1.3cqw 1.5cqw;
+    box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.5); font-size: 1.12cqw; }
+  .card .t { font-weight: 700; font-size: 1.25cqw; }
+  .card .d { color: var(--muted); margin-top: .3cqw; }
+  .card .b { display: inline-block; margin-top: .9cqw; background: var(--elev); border-radius: .6cqw; padding: .4cqw 1cqw; font-weight: 600; }
+  .card .x { position: absolute; right: 1.2cqw; top: .9cqw; color: var(--muted); }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 16px; }
+  @media (max-width: 860px) { .two { grid-template-columns: 1fr; } .arrow { width: 100%; padding: 0; } .arrow i { display: inline; } }
+
+  /* Routes: who arrives, and the steps to their session. */
+  .routes { margin-top: 14px; max-width: 1100px; }
+  .route { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .route .who { width: 230px; flex: none; }
+  .route .who b { display: block; font-size: 15px; }
+  .route .who span { color: var(--muted); font-size: 13px; }
+  .route .st { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; white-space: nowrap; }
+  .route .st.mac { border-color: rgba(255,159,10,.35); }
+  .route .st.to { background: rgba(13,188,121,.14); border-color: rgba(13,188,121,.55); color: #c4f3df; font-weight: 600; }
+  .route .ar { color: var(--muted); }
+  .route .n { margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .route .n b { color: var(--green); font-weight: 600; }
+  .legend { font-size: 13px; color: var(--muted); margin-top: 10px; display: flex; gap: 18px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; border: 1px solid var(--line); background: var(--surface); }
+  .legend i.mac { border-color: rgba(255,159,10,.5); }
+  .legend i.to { background: rgba(13,188,121,.14); border-color: rgba(13,188,121,.55); }
+
+  /* The welcome's picture: the computer, showing Add Phone. */
+  .ill { position: relative; aspect-ratio: 1 / .7; margin: 7cqw 0 6cqw; border-radius: 4cqw; background: radial-gradient(70cqw 50cqw at 50% 38%, #2c2b27, #181818 75%); }
+  .ill .lp { position: absolute; left: 9%; right: 9%; top: 8%; height: 62%; background: #0e0e0d; border: 1cqw solid #30302c; border-radius: 1.8cqw; overflow: hidden; }
+  .ill .lp .tb { height: 5.4cqw; display: flex; align-items: center; padding: 0 1.8cqw; gap: .8cqw; border-bottom: 1px solid #232321; }
+  .ill .lp .tb i { width: 1.2cqw; height: 1.2cqw; border-radius: 50%; background: #444; display: block; }
+  .ill .lp .tb .av { margin-left: auto; width: 3.4cqw; height: 3.4cqw; border-radius: 50%; background: #5b6b80; font: 700 1.9cqw var(--sans); display: grid; place-items: center; color: #fff;
+    box-shadow: 0 0 0 .7cqw rgba(13,188,121,.6); }
+  .ill .lp .dl { position: absolute; left: 50%; top: 57%; transform: translate(-50%, -50%); background: #1c1c1a; border: 1px solid #34342f; border-radius: 1.2cqw; padding: 1.6cqw 2.2cqw;
+    display: flex; gap: 2.2cqw; align-items: center; white-space: nowrap; }
+  .ill .lp .dl svg { width: 13cqw; height: 13cqw; display: block; border-radius: .4cqw; }
+  .ill .lp .dl b { font: 600 2.4cqw var(--sans); color: #eee; display: block; }
+  .ill .lp .dl span { font: 400 1.9cqw var(--sans); color: #9a9a92; display: block; margin-top: .6cqw; }
+  .ill .bs { position: absolute; left: 3%; right: 3%; top: 70%; height: 3.6cqw; background: linear-gradient(#3a3a36, #22221f); border-radius: 0 0 3cqw 3cqw; }
+  .ill .callout { position: absolute; right: 4%; top: -1%; font: 600 2.6cqw var(--sans); color: var(--pgreen); }
+  .ph .ql { font-size: 3.5cqw; color: var(--pfaint); }
+  .ph .ql b { color: #f2f2ee; font-weight: 600; }
+  .ph .center { text-align: center; }
+
+  /* The camera page and the sign-in sheet. */
+  .ph .camfull { margin: 2cqw -5.6cqw 0; aspect-ratio: 1 / 1.05; position: relative; overflow: hidden;
+    background: radial-gradient(60cqw 55cqw at 50% 45%, #3b3a35, #121210 75%); }
+  .ph .camfull .lap { position: absolute; left: 14%; top: 18%; width: 72%; height: 50%; background: #0d0d0c; border: 1.2cqw solid #2b2b28; border-radius: 1.6cqw;
+    transform: perspective(60cqw) rotateX(9deg); display: grid; place-items: center; }
+  .ph .camfull .lap svg { width: 34%; height: auto; border-radius: .5cqw; }
+  .ph .camfull .c { position: absolute; width: 12cqw; height: 12cqw; border: 1.1cqw solid #fff; opacity: .92; }
+  .ph .camfull .c.tl { left: 27%; top: 21%; border-right: 0; border-bottom: 0; border-radius: 2.4cqw 0 0 0; }
+  .ph .camfull .c.tr { right: 27%; top: 21%; border-left: 0; border-bottom: 0; border-radius: 0 2.4cqw 0 0; }
+  .ph .camfull .c.bl { left: 27%; top: 56%; border-right: 0; border-top: 0; border-radius: 0 0 0 2.4cqw; }
+  .ph .camfull .c.br { right: 27%; top: 56%; border-left: 0; border-top: 0; border-radius: 0 0 2.4cqw 0; }
+  .ph .dimall { position: absolute; inset: 0; background: rgba(0,0,0,.55); z-index: 2; }
+  .ph .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: #212121; border-radius: 5cqw 5cqw 0 0; padding: 6cqw 5.6cqw 13cqw; z-index: 3; }
+  .ph .sheet .grab { width: 10cqw; height: 1.2cqw; border-radius: 1cqw; background: #555; margin: -2.6cqw auto 4cqw; }
+  .ph .pbtn { border-radius: 2.6cqw; padding: 3.4cqw 0; text-align: center; font: 600 3.9cqw var(--sans); margin-top: 2.6cqw; display: flex; align-items: center; justify-content: center; gap: 2cqw; }
+  .ph .pbtn.g { background: #fff; color: #111; }
+  .ph .pbtn.a { background: #000; color: #fff; border: 1px solid #444; }
+  .ph .pbtn.e { color: #ddd; }
+  .ph .pbtn img { width: 4.2cqw; height: 4.2cqw; }
+
+  /* After the first message: ping when done. */
+  .term .notify { position: absolute; left: 5.6cqw; right: 5.6cqw; bottom: 37cqw; background: #242424; border: 1px solid #3c3c3a; border-radius: 3cqw; padding: 2.6cqw 2.6cqw 2.6cqw 3.6cqw;
+    display: flex; align-items: center; gap: 2.4cqw; font: 500 3.4cqw/1.35 var(--sans); z-index: 2; }
+  .term .notify svg { width: 4.4cqw; height: 4.4cqw; flex: none; }
+  .term .notify .on { margin-left: auto; background: var(--pgreen); color: #061a11; border-radius: 2cqw; padding: 1.8cqw 3.2cqw; font-weight: 600; white-space: nowrap; }
+  .term .work { color: var(--pyellow); }
+
+  /* Waiting for a computer. */
+  .ph .pulse { display: inline-block; width: 2.2cqw; height: 2.2cqw; border-radius: 50%; background: var(--pgreen); margin-right: 2cqw; vertical-align: .2cqw; box-shadow: 0 0 0 1cqw rgba(13,188,121,.2); }
+
+  .addph .st .g { color: var(--green); }
+  .kept { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin: 14px 0 0; font-size: 14px; color: var(--muted); max-width: 980px; line-height: 1.65; }
+  .kept b { color: var(--text); }
+
+  /* Sign-in buttons on the phone's first screen, after the desktop's sign-in step (#1188). */
+  .ph .sib { border-radius: 2.8cqw; padding: 3.6cqw 0; text-align: center; font: 600 4cqw var(--sans); display: flex; align-items: center; justify-content: center; gap: 2.2cqw; }
+  .ph .sib.g { background: #fff; color: #111; }
+  .ph .sib.a { background: #000; color: #fff; border: 1px solid #444; margin-top: 2.6cqw; }
+  .ph .sib img, .ph .sib svg { width: 4.4cqw; height: 4.4cqw; }
+  .ph .qrow { display: flex; justify-content: space-between; margin-top: 4cqw; font: 500 3.5cqw var(--sans); color: #bdbdb4; }
+  .ph .sans { font-family: var(--sans); }
+
+  /* iOS's own alert before a web sign-in, and Google's account chooser. */
+  .ph .ios-alert { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); width: 70%; background: rgba(44,44,46,.97); border-radius: 4cqw; z-index: 4;
+    font-family: var(--sans); text-align: center; overflow: hidden; }
+  .ph .ios-alert .t { font-weight: 600; font-size: 4cqw; padding: 4.4cqw 4cqw 1.4cqw; line-height: 1.3; }
+  .ph .ios-alert .m { font-size: 3.2cqw; color: #ddd; padding: 0 4.4cqw 4cqw; line-height: 1.35; }
+  .ph .ios-alert .b { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #555; }
+  .ph .ios-alert .b span { padding: 3cqw 0; color: #0a84ff; font-size: 4cqw; }
+  .ph .ios-alert .b span + span { border-left: 1px solid #555; font-weight: 600; }
+  .ph .gsheet { position: absolute; left: 0; right: 0; bottom: 0; top: 16%; background: #fff; color: #202124; border-radius: 4cqw 4cqw 0 0; z-index: 4; font-family: var(--sans); padding: 5cqw 6cqw; }
+  .ph .gsheet .url { font-size: 3cqw; color: #5f6368; text-align: center; margin-bottom: 5cqw; }
+  .ph .gsheet .g { font: 700 5cqw var(--sans); color: #4285f4; }
+  .ph .gsheet h5 { font: 500 5.6cqw/1.25 var(--sans); margin: 3cqw 0 1cqw; }
+  .ph .gsheet .s { font-size: 3.4cqw; color: #5f6368; }
+  .ph .gsheet .acct { display: flex; align-items: center; gap: 3cqw; padding: 3.4cqw 0; border-bottom: 1px solid #e3e3e3; font-size: 3.5cqw; }
+  .ph .gsheet .acct:first-of-type { margin-top: 4cqw; border-top: 1px solid #e3e3e3; }
+  .ph .gsheet .acct i { width: 7cqw; height: 7cqw; border-radius: 50%; display: grid; place-items: center; color: #fff; font: 600 3.4cqw var(--sans); font-style: normal; }
+  .ph .gsheet .acct b { display: block; font-weight: 500; }
+  .ph .gsheet .acct span { color: #5f6368; font-size: 3.1cqw; }
+  .ph .gsheet .acct.on { background: #e8f0fe; margin: 0 -6cqw; padding-left: 6cqw; padding-right: 6cqw; }
+
+  /* In-app banner: the computer arrived. */
+  .ph .banner { position: absolute; left: 3cqw; right: 3cqw; top: 13cqw; background: rgba(40,40,40,.97); border: 1px solid #444; border-radius: 4cqw; padding: 3cqw 3.6cqw; z-index: 4;
+    display: flex; gap: 3cqw; align-items: center; font-family: var(--sans); box-shadow: 0 2cqw 6cqw rgba(0,0,0,.6); }
+  .ph .banner .ic { width: 8cqw; height: 8cqw; border-radius: 2cqw; background: #181818; display: grid; place-items: center; color: var(--pgreen); font: 700 3.4cqw var(--mono); flex: none; }
+  .ph .banner b { font-size: 3.6cqw; display: block; }
+  .ph .banner span { font-size: 3.2cqw; color: #ccc; }
+
+  /* The lock screen, for the second phase. */
+  .ph.lock { background: radial-gradient(90cqw 70cqw at 30% 10%, #2a3550, #0d0f17 70%); font-family: var(--sans); }
+  .ph.lock .clock { position: absolute; top: 17cqw; left: 0; right: 0; text-align: center; }
+  .ph.lock .clock .d { font: 500 4cqw var(--sans); color: #dfe4f0; }
+  .ph.lock .clock .h { font: 600 22cqw/1 var(--sans); color: #eef2fb; letter-spacing: -.02em; }
+  .ph.lock .note { position: absolute; left: 3.4cqw; right: 3.4cqw; top: 60cqw; background: rgba(60,64,78,.72); border-radius: 4.4cqw; padding: 3.4cqw 3.8cqw; color: #fff; font-size: 3.5cqw; line-height: 1.35;
+    max-width: none; margin: 0; }
+  .ph.lock .note .top { display: flex; align-items: center; gap: 2cqw; font-size: 3.1cqw; color: #d6d9e3; margin-bottom: 1.2cqw; }
+  .ph.lock .note .top i { width: 5cqw; height: 5cqw; border-radius: 1.2cqw; background: #181818; color: var(--pgreen); display: grid; place-items: center; font: 700 2.4cqw var(--mono); font-style: normal; }
+  .ph.lock .note .top span { margin-left: auto; }
+  .ph.lock .acts { position: absolute; left: 3.4cqw; right: 3.4cqw; top: 87cqw; display: grid; gap: 1.6cqw; }
+  .ph.lock .acts span { background: rgba(60,64,78,.82); color: #fff; border-radius: 3.4cqw; padding: 3.2cqw 4cqw; font-size: 3.8cqw; }
+
+  /* The Mac's toast when the phone arrives. */
+  .toast { position: absolute; right: 1.4cqw; top: 6cqw; width: 24cqw; background: var(--surface); border: 1px solid rgba(50,215,75,.45); border-radius: 1cqw; padding: 1.2cqw 1.4cqw;
+    box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.5); font-size: 1.15cqw; display: flex; gap: 1cqw; align-items: center; }
+  .toast b { display: block; font-size: 1.25cqw; }
+  .toast span { color: var(--muted); }
+  .toast .ok { color: var(--green); font-size: 1.8cqw; }
+  .flow.tight .step { width: 222px; } .flow.tight .arrow { width: 58px; }
+  .phase2 { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #cfe0ff; border: 1px solid rgba(10,132,255,.5);
+    border-radius: 6px; padding: 0 6px; vertical-align: 2px; margin-left: 6px; }
+
+  /* The panel. */
+  .panel { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 6px; max-width: 980px; }
+  .panel div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 14.5px; color: #cfcfc6; }
+  .panel b { display: block; color: var(--text); margin-bottom: 4px; }
+  .panel q { color: var(--text); }
+  @media (max-width: 860px) { .panel { grid-template-columns: 1fr; } }
+
+  /* The start screen's window: Scan inside it, then the camera, then the computer's name. */
+  .ph .swin { margin: 10cqw 0 6cqw; aspect-ratio: 1 / .95; border-radius: 4.4cqw; background: #202020; border: 1px solid #343432; position: relative; overflow: hidden;
+    display: grid; place-items: center; }
+  .ph .swin .scanbtn { background: var(--pgreen); color: #061a11; font: 600 4.4cqw var(--mono); border-radius: 3cqw; padding: 3.4cqw 7cqw; display: flex; align-items: center; gap: 2.2cqw; }
+  .ph .swin .scanbtn svg { width: 5cqw; height: 5cqw; }
+  .ph .swin.cam { background: radial-gradient(60cqw 55cqw at 50% 45%, #3b3a35, #121210 75%); }
+  .ph .swin.cam .lap { position: absolute; left: 13%; top: 20%; width: 74%; height: 52%; background: #0d0d0c; border: 1.2cqw solid #2b2b28; border-radius: 1.6cqw;
+    transform: perspective(60cqw) rotateX(9deg); display: grid; place-items: center; }
+  .ph .swin.cam .lap svg { width: 34%; height: auto; border-radius: .5cqw; }
+  .ph .swin .c { position: absolute; width: 11cqw; height: 11cqw; border: 1.1cqw solid #fff; opacity: .92; }
+  .ph .swin .c.tl { left: 27%; top: 22%; border-right: 0; border-bottom: 0; border-radius: 2.4cqw 0 0 0; }
+  .ph .swin .c.tr { right: 27%; top: 22%; border-left: 0; border-bottom: 0; border-radius: 0 2.4cqw 0 0; }
+  .ph .swin .c.bl { left: 27%; top: 58%; border-right: 0; border-top: 0; border-radius: 0 0 0 2.4cqw; }
+  .ph .swin .c.br { right: 27%; top: 58%; border-left: 0; border-top: 0; border-radius: 0 0 2.4cqw 0; }
+  .ph .swin .got { font: 600 5.4cqw var(--mono); color: var(--pgreen); }
+  .ph .nocode { position: absolute; right: 5.6cqw; bottom: 11cqw; font: 500 3.6cqw var(--mono); color: var(--pfaint); }
+
+  /* "No code?": two lines, in the person's own words. */
+  .ph .rows { margin-top: 3cqw; }
+  .ph .rows div { display: flex; justify-content: space-between; align-items: center; padding: 4cqw 0; border-top: 1px solid #3a3a38; font: 500 3.9cqw var(--sans); color: #f2f2ee; }
+  .ph .rows div:last-child { border-bottom: 1px solid #3a3a38; }
+  .ph .rows div span { color: var(--pfaint); }
+
+  /* The session sliding in from the right. */
+  .ph .slide { position: absolute; inset: 0; left: 22%; background: var(--pground); border-left: 1px solid #333; box-shadow: -3cqw 0 6cqw rgba(0,0,0,.6); z-index: 3; padding: 14cqw 0 0 5cqw; }
+  .ph .slide .t17 { font-size: 4.36cqw; }
+
+  /* Before/after comparison. */
+  table.cmp td.num { font-family: var(--sans); white-space: normal; }
+  table.cmp td:first-child { width: 230px; }
+  table.cmp td:nth-child(2), table.cmp td:nth-child(3) { width: 40%; }
+  table.cmp td .bad { color: #ff8a80; } table.cmp td .good { color: var(--green); }
+  .verdicts { max-width: 980px; }
+  .verdicts td:first-child { white-space: nowrap; font-weight: 600; }
+
+  /* Research. */
+  table.study td:first-child { font-weight: 600; white-space: nowrap; }
+  table.study td:nth-child(3) { color: var(--text); }
+  .lessons { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 18px 0 6px; }
+  .lessons div { background: var(--surface); border: 1px solid rgba(255,159,10,.3); border-radius: 12px; padding: 14px 16px; font-size: 14.5px; color: #cfcfc6; }
+  .lessons b { display: block; color: var(--text); margin-bottom: 3px; }
+
+  /* Panes with the "continue on your phone" glyph. */
+  .pn .h { display: flex; align-items: center; gap: .6cqw; }
+  .pn .h .ph-glyph { margin-left: auto; width: 1.7cqw; height: 1.7cqw; border-radius: .35cqw; display: grid; place-items: center; color: var(--muted);
+    border: 1px solid rgba(255,250,240,.18); }
+  .pn .h .ph-glyph svg { width: 1.2cqw; height: 1.2cqw; }
+  .pn .h .ph-glyph.on { color: #fff; border-color: rgba(13,188,121,.8); background: rgba(13,188,121,.18); }
+  .hov { position: absolute; z-index: 5; width: 27cqw; background: #222220; border: 1px solid rgba(255,250,240,.16); border-radius: 1.1cqw; padding: 1.6cqw 1.8cqw;
+    box-shadow: 0 2cqw 5cqw rgba(0,0,0,.7); font-size: 1.15cqw; color: #cfcfc6; line-height: 1.5; }
+  .hov b { color: var(--text); font-size: 1.4cqw; display: block; margin-bottom: .5cqw; }
+  .hov .qrw { display: grid; grid-template-columns: 11cqw 1fr; gap: 1.6cqw; align-items: center; margin-top: 1.2cqw; }
+  .hov .qrw svg { width: 11cqw; height: 11cqw; border-radius: .5cqw; display: block; }
+  .hov .blur { width: 11cqw; height: 11cqw; border-radius: .5cqw; background: repeating-linear-gradient(45deg, #3a3a36 0 .5cqw, #2c2c29 .5cqw 1cqw); display: grid; place-items: center;
+    color: var(--text); font-weight: 600; font-size: 1.1cqw; }
+  .hov .tip { position: absolute; top: -.7cqw; width: 1.4cqw; height: 1.4cqw; background: #222220; border-left: 1px solid rgba(255,250,240,.16); border-top: 1px solid rgba(255,250,240,.16); transform: rotate(45deg); }
+
+  /* The phone as the key: a checklist that ticks itself off. */
+  .ph .checks { margin-top: 7cqw; display: grid; gap: 4.6cqw; }
+  .ph .checks .ck { display: grid; grid-template-columns: 7cqw 1fr; gap: 3cqw; align-items: start; }
+  .ph .checks .ck i { width: 6.4cqw; height: 6.4cqw; border-radius: 50%; display: grid; place-items: center; font-style: normal; font: 700 3.4cqw var(--mono); }
+  .ph .checks .ck i.done { background: var(--pgreen); color: #061a11; }
+  .ph .checks .ck i.now { border: .5cqw solid var(--pgreen); box-shadow: 0 0 0 1.2cqw rgba(13,188,121,.15); }
+  .ph .checks .ck i.next { border: .4cqw solid #555; }
+  .ph .checks .ck b { font: 600 4cqw var(--mono); display: block; }
+  .ph .checks .ck span { font-size: 3.3cqw; color: var(--pfaint); display: block; margin-top: .6cqw; line-height: 1.4; }
+  .ph .checks .ck .addr { color: #f2f2ee; font-size: 4cqw; margin-top: 1.4cqw; }
+  .ph .askfirst { position: absolute; left: 5.6cqw; right: 5.6cqw; bottom: 34cqw; border: 1px dashed #4a4a46; border-radius: 3cqw; padding: 3cqw 3.6cqw; font: 500 3.5cqw/1.4 var(--sans); color: #ddd; text-align: center; }
+
+  /* The website for a new computer. */
+  .webwin { container-type: inline-size; width: 100%; aspect-ratio: 16 / 10; border-radius: 1cqw; overflow: hidden; background: #fafaf7; color: #1a1a18; position: relative;
+    border: 1px solid rgba(255,255,255,.08); box-shadow: 0 2cqw 5cqw rgba(0,0,0,.55); font-family: var(--sans); }
+  .webwin .wbar { height: 4.6cqw; background: #e9e9e4; display: flex; align-items: center; gap: .6cqw; padding: 0 1.4cqw; }
+  .webwin .wbar .u { margin-left: 3cqw; flex: 1; max-width: 40cqw; background: #fff; border-radius: .8cqw; padding: .5cqw 1.2cqw; font-size: 1.15cqw; color: #555; }
+  .webwin .wbody { padding: 5cqw 7cqw; display: grid; grid-template-columns: 1.2fr 1fr; gap: 5cqw; align-items: center; }
+  .webwin h4 { font-size: 3.6cqw; line-height: 1.1; margin: 0 0 1.6cqw; letter-spacing: -.02em; }
+  .webwin p { font-size: 1.5cqw; color: #555; margin: 0 0 2.4cqw; line-height: 1.5; }
+  .webwin .dl { display: inline-block; background: #111; color: #fff; border-radius: 1cqw; padding: 1.3cqw 2.6cqw; font-weight: 600; font-size: 1.5cqw; }
+  .webwin .who { margin-top: 2cqw; font-size: 1.3cqw; color: #2b7a55; }
+
+  /* The mesh. */
+  .mesh { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 14px; margin-top: 16px; max-width: 980px; }
+  .mesh .node { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; text-align: center; font-size: 14px; color: var(--muted); }
+  .mesh .node b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+  .mesh .edge { text-align: center; font-size: 12.5px; color: var(--muted); line-height: 1.4; max-width: 180px; }
+  .mesh .edge i { display: block; font-style: normal; color: var(--amber); font-size: 18px; }
+  @media (max-width: 860px) { .mesh { grid-template-columns: 1fr; } }
+  .pqr { position: absolute; right: 1cqw; bottom: 1cqw; width: 25cqw; background: #1e1e1c; border: 1px solid rgba(255,250,240,.16); border-radius: .9cqw; padding: .9cqw;
+    display: grid; grid-template-columns: 8cqw 1fr; gap: 1.1cqw; align-items: center; font-family: var(--sans); font-size: 1.02cqw; line-height: 1.45; color: #bdbdb4; }
+  .pqr svg { width: 8cqw; height: 8cqw; border-radius: .4cqw; display: block; }
+  .pqr b { display: block; color: var(--text); font-size: 1.12cqw; margin-bottom: .3cqw; }
+  .pqr .px { position: absolute; right: .7cqw; top: .4cqw; color: var(--muted); font-size: 1.1cqw; }
+  .ask-mac { position: absolute; right: 1cqw; bottom: 1cqw; width: 26cqw; background: #222220; border: 1px solid rgba(13,188,121,.6); border-radius: .9cqw; padding: 1.2cqw 1.4cqw;
+    font-family: var(--sans); font-size: 1.15cqw; color: var(--text); box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.6); }
+  .ask-mac .bb { display: flex; gap: .8cqw; margin-top: 1cqw; justify-content: flex-end; }
+  .ask-mac .bb span { padding: .45cqw 1.3cqw; border-radius: .6cqw; background: var(--elev); font-weight: 600; }
+  .ask-mac .bb span.y { background: var(--green); color: #052; }
+  .flow.s2 .step { width: 196px; } .flow.s2 .step.mac { width: 318px; } .flow.s2 .arrow { width: 50px; }
+  .flow.s2 .ask-mac { width: 40cqw; font-size: 1.9cqw; } .flow.s2 .ask-mac .bb span { font-size: 1.8cqw; }
+  .h46 { height: 3.6cqw; display: flex; align-items: center; gap: .8cqw; padding: 0 1.1cqw; border-bottom: 1px solid var(--line); font: 600 1.02cqw var(--mono); color: var(--text); }
+  .h46 .sq { width: 1.13cqw; height: 1.13cqw; flex: none; display: block; margin-right: -.2cqw; }
+  .h46 .act { color: #5ac8fa; font-weight: 400; }
+  .h46 .sp { flex: 1; }
+  .h46 .meta { font-weight: 400; color: var(--muted); display: flex; gap: 1.6cqw; }
+  .pn.big { padding: 0; } .pn.big .body { padding: 1cqw 1.2cqw; }
+  .qtip { position: absolute; z-index: 5; background: #222220; border: 1px solid rgba(255,250,240,.16); border-radius: .8cqw; padding: .9cqw 1.2cqw; font: 500 1.1cqw/1.45 var(--sans);
+    color: var(--text); box-shadow: 0 1.5cqw 3cqw rgba(0,0,0,.6); white-space: nowrap; }
+  .qtip span { color: var(--muted); display: block; font-weight: 400; }
+  .lightstrip { position: relative; z-index: 2; margin-top: 14px; height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: #fbfbf8; border: 1px solid rgba(0,0,0,.12);
+    border-radius: 10px; color: #1d1d1b; font: 600 13px var(--mono); }
+  .lightstrip .sq { width: 14.5px; height: 14.5px; color: #1d1d1b; flex: none; margin-right: -2px; }
+  .lightstrip .act { color: #2a7bd6; font-weight: 400; } .lightstrip .sp { flex: 1; } .lightstrip .meta { font-weight: 400; color: #6b6b64; margin-left: 8px; }
+  .ph .net { width: 100%; height: auto; margin: 6cqw 0 2cqw; display: block; color: #cfcfc6; }
+  .ph .net.lit { --lap: #0dbc79; }
+  .flow-l { animation: netflow 1.6s linear infinite; } .flow-l.f2 { animation-delay: -.5s; } .flow-l.f3 { animation-delay: -1s; }
+  @keyframes netflow { to { stroke-dashoffset: -18; } }
+  @media (prefers-reduced-motion: reduce) { .flow-l { animation: none; } }
+  .webwin .netw { color: #555; --devfill: #f3f3ef; --phfill: #fff; --mesh: rgba(0,0,0,.14); --label: #777; }
+  .ph .stepdots { display: inline-flex; gap: 1.8cqw; align-items: center; }
+  .ph .stepdots i { width: 2.2cqw; height: 2.2cqw; border-radius: 50%; background: #444; display: block; }
+  .ph .stepdots i.on { width: 6cqw; border-radius: 2cqw; background: var(--pgreen); }
+  .ph .stepdots i.done { background: var(--pgreen); }
+  .ph .radar { position: relative; margin-top: 7cqw; height: 24cqw; display: grid; place-items: center; }
+  .ph .radar i { position: absolute; left: 50%; top: 50%; width: 10cqw; height: 10cqw; margin: -5cqw 0 0 -5cqw; border-radius: 50%; border: .5cqw solid var(--pgreen); opacity: .0;
+    animation: radar 2.4s ease-out infinite; }
+  .ph .radar i:nth-child(2) { animation-delay: .8s; } .ph .radar i:nth-child(3) { animation-delay: 1.6s; }
+  .ph .radar span { position: relative; top: 15cqw; font: 500 3.4cqw var(--mono); color: #ddd; }
+  @keyframes radar { 0% { transform: scale(.4); opacity: .8; } 100% { transform: scale(2.4); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .ph .radar i { animation: none; opacity: .4; } }
+
+  /* Section 3, finished: one picture in a fixed place, words below it (390 x 844 pt phone; 1 cqw = 3.9 pt). */
+  .flow.ob4 { gap: 22px 16px; }
+  .flow.ob4 .step { width: 212px; }
+  .ph.ob { background: #141414; }
+  .ph.ob .wm2 { position: absolute; left: 6.15cqw; top: 14cqw; font: 600 4.6cqw var(--mono); display: flex; align-items: center; color: #f2f2ee; }
+  .ph.ob .wm2 i, .webdark .wm3 i { display: inline-block; width: 2.1cqw; height: 4.2cqw; background: var(--pgreen); margin-left: .4cqw; animation: blink 1s steps(1) infinite; }
+  .webdark .wm3 i { width: .7cqw; height: 1.4cqw; margin-left: .15cqw; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .ph.ob .back { position: absolute; left: 5cqw; top: 13cqw; font: 400 6cqw var(--sans); color: #f2f2ee; }
+  .ph.ob .pic { position: absolute; left: 9cqw; top: 24.6cqw; width: 82cqw; height: auto; }
+  .ph.ob .status { position: absolute; left: 0; right: 0; top: 77cqw; text-align: center; font: 500 3.3cqw var(--mono); color: #cfcfc6; }
+  .ph.ob .status i { display: inline-block; width: 1.6cqw; height: 3.2cqw; background: var(--pgreen); margin-left: .4cqw; vertical-align: -.5cqw; animation: blink 1s steps(1) infinite; }
+  .ph.ob .words { position: absolute; left: 6.15cqw; right: 6.15cqw; top: 90cqw; }
+  .ph.ob .words h5 { margin: 0; font: 600 6.15cqw/1.2 var(--mono); letter-spacing: -.03em; color: #f2f2ee; white-space: nowrap; }
+  .ph.ob .words p { white-space: nowrap; margin: 2.2cqw 0 0; font: 400 3.6cqw/1.5 var(--mono); color: rgba(242,242,238,.6); max-width: none; }
+  .ph.ob .words p.after { margin-top: 3cqw; }
+  .ph.ob .cta { position: absolute; left: 6.15cqw; right: 6.15cqw; bottom: 17cqw; height: 14.4cqw; border-radius: 3.6cqw; background: var(--pgreen); color: #061a11;
+    font: 600 4.2cqw var(--mono); display: grid; place-items: center; }
+  .ph.ob .quiet { position: absolute; left: 0; right: 0; bottom: 9.6cqw; text-align: center; font: 500 3.3cqw var(--mono); color: var(--pfaint); }
+  .ph.ob .quiet b { color: #f2f2ee; font-weight: 600; }
+  .ph.ob .sib2 { position: absolute; left: 6.15cqw; right: 6.15cqw; height: 13.4cqw; border-radius: 3.6cqw; display: flex; align-items: center; justify-content: center; gap: 2.2cqw;
+    font: 600 4.1cqw var(--sans); }
+  .ph.ob .sib2 img { width: 4.6cqw; height: 4.6cqw; }
+  .ph.ob .sib2.apple { bottom: 32cqw; background: #fff; color: #000; }
+  .ph.ob .sib2.google { bottom: 16.6cqw; background: transparent; color: #f2f2ee; border: 1px solid #4a4a48; }
+  .ph.ob .addr2 { margin-top: 4.4cqw; height: 13.4cqw; border-radius: 3.6cqw; background: var(--pgreen); color: #061a11; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 4.4cqw; font: 600 3.9cqw var(--mono); }
+  .ph.ob .addr2 .share { width: 4cqw; height: 4.8cqw; color: #061a11; }
+  .timeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 12px; }
+  .timeline .tf { background: #141414; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .timeline .tf svg { width: 100%; height: auto; display: block; }
+  .timeline .tt { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+  .timeline .tt b { display: block; color: var(--text); font-family: var(--mono); font-size: 13px; }
+  .growbox { aspect-ratio: 320 / 200; display: grid; place-items: center; }
+  .growscreen { width: 46%; height: 92%; border-radius: 14px; border: 1.5px solid #ededed; background: radial-gradient(120% 90% at 50% 40%, rgba(13,188,121,.35), rgba(13,188,121,.06) 70%), #0c0c0c;
+    box-shadow: 0 0 28px rgba(13,188,121,.35); }
+  @media (max-width: 860px) { .timeline { grid-template-columns: 1fr 1fr; } }
+  .webdark { container-type: inline-size; width: 100%; aspect-ratio: 16 / 8.4; border-radius: 1cqw; overflow: hidden; background: #111110; color: var(--text); position: relative;
+    border: 1px solid rgba(255,255,255,.08); box-shadow: 0 2cqw 5cqw rgba(0,0,0,.55); font-family: var(--sans); }
+  .webdark .wbar { height: 4.6cqw; background: #1c1c1a; display: flex; align-items: center; gap: .6cqw; padding: 0 1.4cqw; }
+  .webdark .wbar .u { margin-left: 3cqw; flex: 1; max-width: 46cqw; background: #2a2a28; border-radius: .8cqw; padding: .5cqw 1.2cqw; font-size: 1.15cqw; color: #bbb; }
+  .webdark .wbody { padding: 5cqw 6cqw; display: grid; grid-template-columns: 1fr 1.05fr; gap: 4cqw; align-items: center; }
+  .webdark .wm3 { font: 600 1.5cqw var(--mono); display: flex; align-items: center; margin-bottom: 2.4cqw; }
+  .webdark h4 { font-size: 3.6cqw; line-height: 1.1; margin: 0 0 1.4cqw; letter-spacing: -.02em; }
+  .webdark p { font-size: 1.55cqw; color: #aaa; margin: 0 0 2.4cqw; line-height: 1.5; }
+  .webdark p.then { margin: 2cqw 0 0; font-size: 1.35cqw; }
+  .webdark .dl { display: inline-block; background: #f2f2ee; color: #111; border-radius: 1cqw; padding: 1.2cqw 2.4cqw; font-weight: 600; font-size: 1.5cqw; }
+  .webdark .pic { width: 100%; height: auto; }
+  .dock { display: flex; gap: 12px; justify-content: center; padding: 12px 18px; margin: 4px auto 0; width: fit-content; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 18px; }
+  .dock .di { width: 46px; height: 46px; border-radius: 11px; display: block; position: relative; }
+  .dock .di.safari { background: radial-gradient(circle at 50% 50%, #fff 0 18%, #0a84ff 19% 60%, #5ac8fa 61%); }
+  .dock .hb { position: absolute; left: -6px; top: -6px; width: 20px; height: 20px; border-radius: 50%; background: #2c2c2e; border: 1px solid #555; display: grid; place-items: center; color: #fff; }
+  .dock .hb svg { width: 12px; height: 12px; }
+  .h46s { margin-top: 16px; height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: #141413; border: 1px solid rgba(255,159,10,.55); border-radius: 10px;
+    font: 600 13px var(--mono); }
+  .h46s .act { color: #5ac8fa; font-weight: 400; } .h46s .sp { flex: 1; } .h46s .meta { font-weight: 400; color: var(--muted); }
+  .h46s .lk { color: var(--green); font-weight: 600; }
+  table.copy td:first-child { white-space: nowrap; font-weight: 600; }
+  table.copy td:nth-child(2) { color: var(--text); font-family: var(--mono); font-size: 13px; }
+  .ph.appstore { background: #000; font-family: var(--sans); }
+  .ph.appstore .asrow { display: grid; grid-template-columns: 26cqw 1fr; gap: 4cqw; align-items: center; }
+  .ph.appstore .asicon { width: 26cqw; height: 26cqw; border-radius: 6cqw; background: #141414; border: 1px solid #333; display: grid; place-items: center; font: 600 3.6cqw var(--mono); color: #f2f2ee; }
+  .ph.appstore .asicon i { display: inline-block; width: 1.6cqw; height: 3.2cqw; background: var(--pgreen); margin-left: .3cqw; vertical-align: -.5cqw; }
+  .ph.appstore b { display: block; font-size: 4.4cqw; color: #fff; } .ph.appstore span { display: block; font-size: 3.2cqw; color: #8e8e93; margin-top: .6cqw; }
+  .ph.appstore .get { display: inline-block; margin-top: 3cqw; background: #0a84ff; color: #fff; font-weight: 700; font-size: 3.6cqw; border-radius: 5cqw; padding: 1.4cqw 5cqw; }
+  .ph.appstore .asshots { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2.4cqw; margin-top: 8cqw; }
+  .ph.appstore .asshots span { aspect-ratio: 9 / 19; border-radius: 3cqw; background: linear-gradient(#1c1c1c, #0f2a20); border: 1px solid #222; }
+  .ph.ob .qrow2 { position: absolute; left: 6.15cqw; right: 6.15cqw; bottom: 9.6cqw; display: flex; justify-content: space-between; font: 500 3.3cqw var(--mono); color: var(--pfaint); }
+  .ph.ob .qrow2 b { color: #f2f2ee; font-weight: 600; }
+  .flow.ob4 .step { width: 236px; }
+  /* Text on top, the picture in the middle, actions at the foot: the same on every setup screen. */
+  .ph.ob .words { top: 18cqw !important; }
+  .ph.ob .pic { top: 80cqw !important; }
+  .ph.ob .status { top: 134cqw !important; }
+  .ph.ob .qrow2 { align-items: center; }
+  .ph.ob .qrow2 .scanic { width: 6.2cqw; height: 6.2cqw; color: #f2f2ee; }
+  .ph.ob .words h5 + .addr2 { margin-top: 5cqw; }
+  /* centred setup text */
+  .ph.ob .words { text-align: left; }
+  .ph.ob .words .addr2 { text-align: left; }
+  .ph.ob .status { top: 136cqw !important; }
+  /* Room at the top, the triangle in the middle. */
+  .ph.ob .words { top: 30cqw !important; }
+  .ph.ob .pic { left: 7cqw !important; width: 86cqw !important; top: 64cqw !important; }
+  .ph.ob .status { top: 148cqw !important; }
+  .growbox { aspect-ratio: 320 / 300 !important; }
+  .growscreen { width: 34% !important; height: 70% !important; }
+  /* Room around the sign-in. */
+  .ph.ob .sib2 { left: 9cqw; right: 9cqw; height: 13.4cqw; }
+  .ph.ob .sib2.apple { bottom: 41cqw; }
+  .ph.ob .sib2.google { bottom: 24.5cqw; }
+  .ph.ob .qrow2 { left: 9cqw; right: 9cqw; bottom: 12.5cqw; }
+  .ph.ob .words { top: 34cqw !important; left: 9cqw; right: 9cqw; }
+  .ph.ob .pic { top: 66cqw !important; }
+  .ph.ob .words.hero1 h5 { white-space: normal; line-height: 1.32; font-size: 5.6cqw; text-wrap: pretty; }
+  .ph.ob .words.hero1 { top: 30cqw !important; }
+  /* Google first, as on the desktop's sign-in. */
+  .ph.ob .sib2.google { bottom: 41cqw; background: #fff; color: #111; border: none; }
+  .ph.ob .sib2.apple { bottom: 24.5cqw; background: #000; color: #fff; border: 1px solid #4a4a48; }
+  .ph.ob .sib2.apple img { filter: none; }
+  .ph.ob .words.hero1 h5 + .addr2 { margin-top: 6cqw; }
+  .ph.ob .words.hero1 p { margin-top: 3cqw; }
+  .term .prompt.typed { color: #f2f2ee; line-height: 1.5; padding: 2.4cqw 2.8cqw; margin-top: 4cqw; }
+  .term .prompt.typed .caret { display: inline-block; width: 1.8cqw; height: 3.6cqw; background: #f2f2ee; vertical-align: -.6cqw; margin-left: .4cqw; animation: blink 1s steps(1) infinite; }
+  table.scen td:first-child { width: 22% !important; font-weight: 600; }
+  table.scen td:nth-child(2) { width: 40% !important; }
+  table.scen td:nth-child(3) { width: 22% !important; }
+  table.scen td:last-child { white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+  table.when td { width: 50%; }
+  .ph.ob .qrow2.one { justify-content: center; }
+  /* Final layout fixes. */
+  .win.short { aspect-ratio: 16 / 6.2; }
+  table.when td { width: 33.3% !important; }
+  table.counted td:nth-child(1) { width: 24% !important; } table.counted td:nth-child(2) { width: 46% !important; }
+  table.counted td:nth-child(3) { width: 16% !important; } table.counted td:nth-child(4) { width: 14% !important; }
+  table.more td:nth-child(1) { width: 28% !important; } table.more td:nth-child(2) { width: 72% !important; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="qr" viewBox="-2 -2 25 25"><rect x="-2" y="-2" width="25" height="25" fill="#fff"/><g fill="#111"><rect x="0" y="0" width="1" height="1"/><rect x="1" y="0" width="1" height="1"/><rect x="2" y="0" width="1" height="1"/><rect x="3" y="0" width="1" height="1"/><rect x="4" y="0" width="1" height="1"/><rect x="5" y="0" width="1" height="1"/><rect x="6" y="0" width="1" height="1"/><rect x="8" y="0" width="1" height="1"/><rect x="10" y="0" width="1" height="1"/><rect x="12" y="0" width="1" height="1"/><rect x="14" y="0" width="1" height="1"/><rect x="15" y="0" width="1" height="1"/><rect x="16" y="0" width="1" height="1"/><rect x="17" y="0" width="1" height="1"/><rect x="18" y="0" width="1" height="1"/><rect x="19" y="0" width="1" height="1"/><rect x="20" y="0" width="1" height="1"/><rect x="0" y="1" width="1" height="1"/><rect x="6" y="1" width="1" height="1"/><rect x="10" y="1" width="1" height="1"/><rect x="14" y="1" width="1" height="1"/><rect x="20" y="1" width="1" height="1"/><rect x="0" y="2" width="1" height="1"/><rect x="2" y="2" width="1" height="1"/><rect x="3" y="2" width="1" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="6" y="2" width="1" height="1"/><rect x="8" y="2" width="1" height="1"/><rect x="9" y="2" width="1" height="1"/><rect x="11" y="2" width="1" height="1"/><rect x="14" y="2" width="1" height="1"/><rect x="16" y="2" width="1" height="1"/><rect x="17" y="2" width="1" height="1"/><rect x="18" y="2" width="1" height="1"/><rect x="20" y="2" width="1" height="1"/><rect x="0" y="3" width="1" height="1"/><rect x="2" y="3" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="4" y="3" width="1" height="1"/><rect x="6" y="3" width="1" height="1"/><rect x="8" y="3" width="1" height="1"/><rect x="11" y="3" width="1" height="1"/><rect x="12" y="3" width="1" height="1"/><rect x="14" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="17" y="3" width="1" height="1"/><rect x="18" y="3" width="1" height="1"/><rect x="20" y="3" width="1" height="1"/><rect x="0" y="4" width="1" height="1"/><rect x="2" y="4" width="1" height="1"/><rect x="3" y="4" width="1" height="1"/><rect x="4" y="4" width="1" height="1"/><rect x="6" y="4" width="1" height="1"/><rect x="8" y="4" width="1" height="1"/><rect x="10" y="4" width="1" height="1"/><rect x="14" y="4" width="1" height="1"/><rect x="16" y="4" width="1" height="1"/><rect x="17" y="4" width="1" height="1"/><rect x="18" y="4" width="1" height="1"/><rect x="20" y="4" width="1" height="1"/><rect x="0" y="5" width="1" height="1"/><rect x="6" y="5" width="1" height="1"/><rect x="9" y="5" width="1" height="1"/><rect x="11" y="5" width="1" height="1"/><rect x="12" y="5" width="1" height="1"/><rect x="14" y="5" width="1" height="1"/><rect x="20" y="5" width="1" height="1"/><rect x="0" y="6" width="1" height="1"/><rect x="1" y="6" width="1" height="1"/><rect x="2" y="6" width="1" height="1"/><rect x="3" y="6" width="1" height="1"/><rect x="4" y="6" width="1" height="1"/><rect x="5" y="6" width="1" height="1"/><rect x="6" y="6" width="1" height="1"/><rect x="8" y="6" width="1" height="1"/><rect x="10" y="6" width="1" height="1"/><rect x="12" y="6" width="1" height="1"/><rect x="14" y="6" width="1" height="1"/><rect x="15" y="6" width="1" height="1"/><rect x="16" y="6" width="1" height="1"/><rect x="17" y="6" width="1" height="1"/><rect x="18" y="6" width="1" height="1"/><rect x="19" y="6" width="1" height="1"/><rect x="20" y="6" width="1" height="1"/><rect x="11" y="7" width="1" height="1"/><rect x="0" y="8" width="1" height="1"/><rect x="1" y="8" width="1" height="1"/><rect x="2" y="8" width="1" height="1"/><rect x="3" y="8" width="1" height="1"/><rect x="6" y="8" width="1" height="1"/><rect x="8" y="8" width="1" height="1"/><rect x="12" y="8" width="1" height="1"/><rect x="13" y="8" width="1" height="1"/><rect x="16" y="8" width="1" height="1"/><rect x="17" y="8" width="1" height="1"/><rect x="18" y="8" width="1" height="1"/><rect x="20" y="8" width="1" height="1"/><rect x="1" y="9" width="1" height="1"/><rect x="2" y="9" width="1" height="1"/><rect x="3" y="9" width="1" height="1"/><rect x="5" y="9" width="1" height="1"/><rect x="11" y="9" width="1" height="1"/><rect x="12" y="9" width="1" height="1"/><rect x="13" y="9" width="1" height="1"/><rect x="15" y="9" width="1" height="1"/><rect x="16" y="9" width="1" height="1"/><rect x="20" y="9" width="1" height="1"/><rect x="1" y="10" width="1" height="1"/><rect x="6" y="10" width="1" height="1"/><rect x="7" y="10" width="1" height="1"/><rect x="8" y="10" width="1" height="1"/><rect x="10" y="10" width="1" height="1"/><rect x="12" y="10" width="1" height="1"/><rect x="16" y="10" width="1" height="1"/><rect x="17" y="10" width="1" height="1"/><rect x="18" y="10" width="1" height="1"/><rect x="1" y="11" width="1" height="1"/><rect x="2" y="11" width="1" height="1"/><rect x="4" y="11" width="1" height="1"/><rect x="7" y="11" width="1" height="1"/><rect x="9" y="11" width="1" height="1"/><rect x="12" y="11" width="1" height="1"/><rect x="13" y="11" width="1" height="1"/><rect x="16" y="11" width="1" height="1"/><rect x="17" y="11" width="1" height="1"/><rect x="1" y="12" width="1" height="1"/><rect x="3" y="12" width="1" height="1"/><rect x="4" y="12" width="1" height="1"/><rect x="6" y="12" width="1" height="1"/><rect x="7" y="12" width="1" height="1"/><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/><rect x="13" y="12" width="1" height="1"/><rect x="14" y="12" width="1" height="1"/><rect x="15" y="12" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/><rect x="10" y="13" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/><rect x="12" y="13" width="1" height="1"/><rect x="14" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="19" y="13" width="1" height="1"/><rect x="0" y="14" width="1" height="1"/><rect x="1" y="14" width="1" height="1"/><rect x="2" y="14" width="1" height="1"/><rect x="3" y="14" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="5" y="14" width="1" height="1"/><rect x="6" y="14" width="1" height="1"/><rect x="10" y="14" width="1" height="1"/><rect x="13" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="17" y="14" width="1" height="1"/><rect x="19" y="14" width="1" height="1"/><rect x="20" y="14" width="1" height="1"/><rect x="0" y="15" width="1" height="1"/><rect x="6" y="15" width="1" height="1"/><rect x="9" y="15" width="1" height="1"/><rect x="14" y="15" width="1" height="1"/><rect x="17" y="15" width="1" height="1"/><rect x="18" y="15" width="1" height="1"/><rect x="0" y="16" width="1" height="1"/><rect x="2" y="16" width="1" height="1"/><rect x="3" y="16" width="1" height="1"/><rect x="4" y="16" width="1" height="1"/><rect x="6" y="16" width="1" height="1"/><rect x="9" y="16" width="1" height="1"/><rect x="14" y="16" width="1" height="1"/><rect x="17" y="16" width="1" height="1"/><rect x="19" y="16" width="1" height="1"/><rect x="0" y="17" width="1" height="1"/><rect x="2" y="17" width="1" height="1"/><rect x="3" y="17" width="1" height="1"/><rect x="4" y="17" width="1" height="1"/><rect x="6" y="17" width="1" height="1"/><rect x="8" y="17" width="1" height="1"/><rect x="9" y="17" width="1" height="1"/><rect x="11" y="17" width="1" height="1"/><rect x="14" y="17" width="1" height="1"/><rect x="15" y="17" width="1" height="1"/><rect x="16" y="17" width="1" height="1"/><rect x="17" y="17" width="1" height="1"/><rect x="19" y="17" width="1" height="1"/><rect x="0" y="18" width="1" height="1"/><rect x="2" y="18" width="1" height="1"/><rect x="3" y="18" width="1" height="1"/><rect x="4" y="18" width="1" height="1"/><rect x="6" y="18" width="1" height="1"/><rect x="8" y="18" width="1" height="1"/><rect x="11" y="18" width="1" height="1"/><rect x="12" y="18" width="1" height="1"/><rect x="13" y="18" width="1" height="1"/><rect x="16" y="18" width="1" height="1"/><rect x="0" y="19" width="1" height="1"/><rect x="6" y="19" width="1" height="1"/><rect x="8" y="19" width="1" height="1"/><rect x="9" y="19" width="1" height="1"/><rect x="10" y="19" width="1" height="1"/><rect x="12" y="19" width="1" height="1"/><rect x="13" y="19" width="1" height="1"/><rect x="15" y="19" width="1" height="1"/><rect x="17" y="19" width="1" height="1"/><rect x="0" y="20" width="1" height="1"/><rect x="1" y="20" width="1" height="1"/><rect x="2" y="20" width="1" height="1"/><rect x="3" y="20" width="1" height="1"/><rect x="4" y="20" width="1" height="1"/><rect x="5" y="20" width="1" height="1"/><rect x="6" y="20" width="1" height="1"/><rect x="8" y="20" width="1" height="1"/><rect x="12" y="20" width="1" height="1"/><rect x="14" y="20" width="1" height="1"/><rect x="15" y="20" width="1" height="1"/><rect x="17" y="20" width="1" height="1"/><rect x="18" y="20" width="1" height="1"/><rect x="19" y="20" width="1" height="1"/></g></symbol>
+  <symbol id="qrt" viewBox="-2 -2 25 25"><g fill="currentColor"><rect x="8" y="0" width="1" height="1" rx="0.2"/><rect x="10" y="0" width="1" height="1" rx="0.2"/><rect x="12" y="0" width="1" height="1" rx="0.2"/><rect x="10" y="1" width="1" height="1" rx="0.2"/><rect x="8" y="2" width="1" height="1" rx="0.2"/><rect x="9" y="2" width="1" height="1" rx="0.2"/><rect x="11" y="2" width="1" height="1" rx="0.2"/><rect x="8" y="3" width="1" height="1" rx="0.2"/><rect x="11" y="3" width="1" height="1" rx="0.2"/><rect x="12" y="3" width="1" height="1" rx="0.2"/><rect x="8" y="4" width="1" height="1" rx="0.2"/><rect x="10" y="4" width="1" height="1" rx="0.2"/><rect x="9" y="5" width="1" height="1" rx="0.2"/><rect x="11" y="5" width="1" height="1" rx="0.2"/><rect x="12" y="5" width="1" height="1" rx="0.2"/><rect x="8" y="6" width="1" height="1" rx="0.2"/><rect x="10" y="6" width="1" height="1" rx="0.2"/><rect x="12" y="6" width="1" height="1" rx="0.2"/><rect x="11" y="7" width="1" height="1" rx="0.2"/><rect x="0" y="8" width="1" height="1" rx="0.2"/><rect x="1" y="8" width="1" height="1" rx="0.2"/><rect x="2" y="8" width="1" height="1" rx="0.2"/><rect x="3" y="8" width="1" height="1" rx="0.2"/><rect x="6" y="8" width="1" height="1" rx="0.2"/><rect x="8" y="8" width="1" height="1" rx="0.2"/><rect x="12" y="8" width="1" height="1" rx="0.2"/><rect x="13" y="8" width="1" height="1" rx="0.2"/><rect x="16" y="8" width="1" height="1" rx="0.2"/><rect x="17" y="8" width="1" height="1" rx="0.2"/><rect x="18" y="8" width="1" height="1" rx="0.2"/><rect x="20" y="8" width="1" height="1" rx="0.2"/><rect x="1" y="9" width="1" height="1" rx="0.2"/><rect x="2" y="9" width="1" height="1" rx="0.2"/><rect x="3" y="9" width="1" height="1" rx="0.2"/><rect x="5" y="9" width="1" height="1" rx="0.2"/><rect x="11" y="9" width="1" height="1" rx="0.2"/><rect x="12" y="9" width="1" height="1" rx="0.2"/><rect x="13" y="9" width="1" height="1" rx="0.2"/><rect x="15" y="9" width="1" height="1" rx="0.2"/><rect x="16" y="9" width="1" height="1" rx="0.2"/><rect x="20" y="9" width="1" height="1" rx="0.2"/><rect x="1" y="10" width="1" height="1" rx="0.2"/><rect x="6" y="10" width="1" height="1" rx="0.2"/><rect x="7" y="10" width="1" height="1" rx="0.2"/><rect x="8" y="10" width="1" height="1" rx="0.2"/><rect x="10" y="10" width="1" height="1" rx="0.2"/><rect x="12" y="10" width="1" height="1" rx="0.2"/><rect x="16" y="10" width="1" height="1" rx="0.2"/><rect x="17" y="10" width="1" height="1" rx="0.2"/><rect x="18" y="10" width="1" height="1" rx="0.2"/><rect x="1" y="11" width="1" height="1" rx="0.2"/><rect x="2" y="11" width="1" height="1" rx="0.2"/><rect x="4" y="11" width="1" height="1" rx="0.2"/><rect x="7" y="11" width="1" height="1" rx="0.2"/><rect x="9" y="11" width="1" height="1" rx="0.2"/><rect x="12" y="11" width="1" height="1" rx="0.2"/><rect x="13" y="11" width="1" height="1" rx="0.2"/><rect x="16" y="11" width="1" height="1" rx="0.2"/><rect x="17" y="11" width="1" height="1" rx="0.2"/><rect x="1" y="12" width="1" height="1" rx="0.2"/><rect x="3" y="12" width="1" height="1" rx="0.2"/><rect x="4" y="12" width="1" height="1" rx="0.2"/><rect x="6" y="12" width="1" height="1" rx="0.2"/><rect x="7" y="12" width="1" height="1" rx="0.2"/><rect x="8" y="12" width="1" height="1" rx="0.2"/><rect x="11" y="12" width="1" height="1" rx="0.2"/><rect x="13" y="12" width="1" height="1" rx="0.2"/><rect x="14" y="12" width="1" height="1" rx="0.2"/><rect x="15" y="12" width="1" height="1" rx="0.2"/><rect x="8" y="13" width="1" height="1" rx="0.2"/><rect x="10" y="13" width="1" height="1" rx="0.2"/><rect x="11" y="13" width="1" height="1" rx="0.2"/><rect x="12" y="13" width="1" height="1" rx="0.2"/><rect x="14" y="13" width="1" height="1" rx="0.2"/><rect x="16" y="13" width="1" height="1" rx="0.2"/><rect x="19" y="13" width="1" height="1" rx="0.2"/><rect x="10" y="14" width="1" height="1" rx="0.2"/><rect x="13" y="14" width="1" height="1" rx="0.2"/><rect x="15" y="14" width="1" height="1" rx="0.2"/><rect x="17" y="14" width="1" height="1" rx="0.2"/><rect x="19" y="14" width="1" height="1" rx="0.2"/><rect x="20" y="14" width="1" height="1" rx="0.2"/><rect x="9" y="15" width="1" height="1" rx="0.2"/><rect x="14" y="15" width="1" height="1" rx="0.2"/><rect x="17" y="15" width="1" height="1" rx="0.2"/><rect x="18" y="15" width="1" height="1" rx="0.2"/><rect x="9" y="16" width="1" height="1" rx="0.2"/><rect x="14" y="16" width="1" height="1" rx="0.2"/><rect x="17" y="16" width="1" height="1" rx="0.2"/><rect x="19" y="16" width="1" height="1" rx="0.2"/><rect x="8" y="17" width="1" height="1" rx="0.2"/><rect x="9" y="17" width="1" height="1" rx="0.2"/><rect x="11" y="17" width="1" height="1" rx="0.2"/><rect x="14" y="17" width="1" height="1" rx="0.2"/><rect x="15" y="17" width="1" height="1" rx="0.2"/><rect x="16" y="17" width="1" height="1" rx="0.2"/><rect x="17" y="17" width="1" height="1" rx="0.2"/><rect x="19" y="17" width="1" height="1" rx="0.2"/><rect x="8" y="18" width="1" height="1" rx="0.2"/><rect x="11" y="18" width="1" height="1" rx="0.2"/><rect x="12" y="18" width="1" height="1" rx="0.2"/><rect x="13" y="18" width="1" height="1" rx="0.2"/><rect x="16" y="18" width="1" height="1" rx="0.2"/><rect x="8" y="19" width="1" height="1" rx="0.2"/><rect x="9" y="19" width="1" height="1" rx="0.2"/><rect x="10" y="19" width="1" height="1" rx="0.2"/><rect x="12" y="19" width="1" height="1" rx="0.2"/><rect x="13" y="19" width="1" height="1" rx="0.2"/><rect x="15" y="19" width="1" height="1" rx="0.2"/><rect x="17" y="19" width="1" height="1" rx="0.2"/><rect x="8" y="20" width="1" height="1" rx="0.2"/><rect x="12" y="20" width="1" height="1" rx="0.2"/><rect x="14" y="20" width="1" height="1" rx="0.2"/><rect x="15" y="20" width="1" height="1" rx="0.2"/><rect x="17" y="20" width="1" height="1" rx="0.2"/><rect x="18" y="20" width="1" height="1" rx="0.2"/><rect x="19" y="20" width="1" height="1" rx="0.2"/><path fill-rule="evenodd" d="M0.6 0h5.8a0.6 0.6 0 0 1 0.6 0.6v5.8a0.6 0.6 0 0 1 -0.6 0.6h-5.8a0.6 0.6 0 0 1 -0.6 -0.6v-5.8a0.6 0.6 0 0 1 0.6 -0.6z M1.3 1h4.4a0.3 0.3 0 0 1 0.3 0.3v4.4a0.3 0.3 0 0 1 -0.3 0.3h-4.4a0.3 0.3 0 0 1 -0.3 -0.3v-4.4a0.3 0.3 0 0 1 0.3 -0.3z"/><rect x="2" y="2" width="3" height="3" rx="0.3"/><path fill-rule="evenodd" d="M14.6 0h5.8a0.6 0.6 0 0 1 0.6 0.6v5.8a0.6 0.6 0 0 1 -0.6 0.6h-5.8a0.6 0.6 0 0 1 -0.6 -0.6v-5.8a0.6 0.6 0 0 1 0.6 -0.6z M15.3 1h4.4a0.3 0.3 0 0 1 0.3 0.3v4.4a0.3 0.3 0 0 1 -0.3 0.3h-4.4a0.3 0.3 0 0 1 -0.3 -0.3v-4.4a0.3 0.3 0 0 1 0.3 -0.3z"/><rect x="16" y="2" width="3" height="3" rx="0.3"/><path fill-rule="evenodd" d="M0.6 14h5.8a0.6 0.6 0 0 1 0.6 0.6v5.8a0.6 0.6 0 0 1 -0.6 0.6h-5.8a0.6 0.6 0 0 1 -0.6 -0.6v-5.8a0.6 0.6 0 0 1 0.6 -0.6z M1.3 15h4.4a0.3 0.3 0 0 1 0.3 0.3v4.4a0.3 0.3 0 0 1 -0.3 0.3h-4.4a0.3 0.3 0 0 1 -0.3 -0.3v-4.4a0.3 0.3 0 0 1 0.3 -0.3z"/><rect x="2" y="16" width="3" height="3" rx="0.3"/></g></symbol>
+  <symbol id="netart" viewBox="0 0 300 230">
+    <path d="M62 70 L238 70 M62 70 L150 205 M238 70 L150 205" fill="none" stroke="var(--mesh, rgba(255,255,255,.12))" stroke-width="1.4"/>
+    <path class="flow-l" d="M140 118 L74 90" fill="none" stroke="var(--flow, #0dbc79)" stroke-width="1.8" stroke-dasharray="3 6"/>
+    <path class="flow-l f2" d="M160 118 L226 88" fill="none" stroke="var(--flow, #0dbc79)" stroke-width="1.8" stroke-dasharray="3 6"/>
+    <path class="flow-l f3" d="M150 186 L150 196" fill="none" stroke="var(--flow, #0dbc79)" stroke-width="1.8" stroke-dasharray="3 6"/>
+    <rect x="28" y="36" width="70" height="46" rx="4" fill="var(--devfill, #1b1b1b)" stroke="var(--lap, currentColor)" stroke-width="1.6"/>
+    <path d="M18 88 h90 l-6 6 h-78 z" fill="var(--devfill, #1b1b1b)" stroke="var(--lap, currentColor)" stroke-width="1.6"/>
+    <rect x="204" y="34" width="68" height="46" rx="4" fill="var(--devfill, #1b1b1b)" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M238 80 v8 M226 90 h24" stroke="currentColor" stroke-width="1.6"/>
+    <rect x="118" y="196" width="64" height="26" rx="4" fill="var(--devfill, #1b1b1b)" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M128 205 h22 M128 212 h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <g font-family="ui-monospace, Menlo, monospace" font-size="11">
+      <text x="38" y="56" fill="#e8927c">✻</text><text x="52" y="56" fill="var(--label, #9a9a90)">claude</text>
+      <text x="38" y="72" fill="#5ac8fa">◎</text><text x="52" y="72" fill="var(--label, #9a9a90)">codex</text>
+      <text x="212" y="54" fill="#6d8cff">▣</text><text x="226" y="54" fill="var(--label, #9a9a90)">opencode</text>
+      <text x="212" y="70" fill="#e8927c">✻</text><text x="226" y="70" fill="var(--label, #9a9a90)">claude</text>
+      <text x="156" y="215" fill="var(--label, #9a9a90)" font-size="9">server</text>
+    </g>
+    <rect x="129" y="112" width="42" height="72" rx="7" fill="var(--phfill, #101010)" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M137 126 h22 M137 133 h16 M137 140 h24 M137 147 h12" stroke="#0dbc79" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="150" cy="169" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+  </symbol>
+  <symbol id="scanicon" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5V5.5A1.5 1.5 0 0 1 5.5 4h3M15.5 4h3A1.5 1.5 0 0 1 20 5.5v3M20 15.5v3a1.5 1.5 0 0 1-1.5 1.5h-3M8.5 20h-3A1.5 1.5 0 0 1 4 18.5v-3"/><rect x="8" y="8" width="3.2" height="3.2" rx=".6"/><rect x="12.8" y="8" width="3.2" height="3.2" rx=".6"/><rect x="8" y="12.8" width="3.2" height="3.2" rx=".6"/><path d="M13 13h3v3"/></g></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><g fill="none" stroke="#f2f2ee" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></g></symbol>
+  <symbol id="qricon" viewBox="0 0 24 24"><g fill="none" stroke="#061a11" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h7M17 17v4"/></g></symbol>
+  <symbol id="share" viewBox="0 0 20 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15V2M5.5 6.5 10 2l4.5 4.5"/><path d="M6 10H3v12h14V10h-3"/></g></symbol>
+</svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="bell" viewBox="0 0 24 24"><g fill="none" stroke="#f2f2ee" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></g></symbol>
+  <symbol id="phonei" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M11 18.5h2"/></g></symbol>
+</svg>
+<main>
+  <h1>Phone onboarding</h1>
+  <p class="lede">How people start with Harness on their phone. Agreed with the owner on 2026-10-12; nothing is built yet.
+    The screens are drawn, and the names, emails and sessions in them are examples. Today's app is in the <a href="#today">appendix</a>.</p>
+  <div class="update"><b>Two paths, one destination: a live session on the phone.</b><br>
+    <b>Harness already on the computer:</b> the focused pane's title shows one small, fixed code that gets the app. Install it, sign in with the same account, and the session in focus on the computer opens on the phone. The code goes away once a phone is linked.<br>
+    <b>New to Harness:</b> sign in on the phone's first screen, open autonomous.ai/go on the computer, and the phone adds the computer by itself. Two soft notes as it arrives, then its first session.</div>
+
+  <!-- ===================== 1. RESEARCH ===================== -->
+  <h2>1. How the best add a device</h2>
+  <p class="lede">Products whose whole job is linking a person's devices, and the one that does what Harness does.</p>
+  <table class="study">
+    <tr><th>Product</th><th>How a new device joins</th><th>What to take</th></tr>
+    <tr><td>Tailscale</td><td>Install on each device and sign in with the same account; every device then sees every other. A headless server runs <code>tailscale up --qr</code> and a trusted phone scans it to log the server in.
+      (<a href="https://tailscale.com/kb/1056/install-ios-quickstart">iOS</a>, <a href="https://tailscale.com/docs/features/access-control/device-management/how-to/set-up-qr-code">QR</a>)</td>
+      <td>The account <i>is</i> the network. A new device is added from a device you already trust.</td></tr>
+    <tr><td>Chrome Remote Desktop</td><td>Set up the computer once, then sign in on the phone with the same Google account; the computer is in the list. If it isn't there, it's almost always a different account.
+      (<a href="https://www.techadvisor.com/how-to/google-android/how-access-your-pc-from-android-3680542/">guide</a>)</td><td>Same account = connected. Say which account, because the mismatch is the failure.</td></tr>
+    <tr><td>Orca (the reference)</td><td>Desktop settings make a QR; the phone app scans it; same Wi-Fi, with a relay as a fallback. (<a href="https://github.com/stablyai/orca">GitHub</a>, <a href="https://apps.apple.com/us/app/orca-ide/id6766130217">App Store</a>)</td>
+      <td>Where Harness already is. A settings-page QR is the floor, not the bar.</td></tr>
+    <tr><td>Apple Handoff</td><td>Whatever you're doing on one device is offered on the other, nearby, same account: a small icon, one tap, and you carry on.
+      (<a href="https://support.apple.com/102426">Apple</a>)</td><td>Offer the phone <i>at the activity</i>, not in a menu: "carry on with this".</td></tr>
+    <tr><td>Google Home, Chromecast</td><td>The phone notices an unset-up device nearby and offers "Set up"; setup then shows each step completing.
+      (<a href="https://support.google.com/chromecast/answer/7073953">Chromecast</a>, <a href="https://support.google.com/nexus/answer/9043146">Android</a>)</td><td>The setup comes to you, and progress is shown, not described.</td></tr>
+    <tr><td>Sonos</td><td>The app finds the new speaker; you confirm by touching the phone to it or pressing its button, and a chime says it worked.
+      (<a href="https://support.eero.com/hc/en-us/articles/18393441260315-How-do-I-setup-my-Sonos-Speakers-on-my-eero-Network-Basic-Setup">guide</a>)</td><td>Ownership is a physical gesture, and success has a sound.</td></tr>
+    <tr><td>YouTube on a TV</td><td>The TV shows a code; you approve it on the phone you're already signed in on. (<a href="https://yt.be/help/NSf3">YouTube</a>)</td><td>The new screen shows a code; the device in your hand approves it.</td></tr>
+    <tr><td>Happy (Claude Code client)</td><td>Run <code>happy</code> in a terminal; it prints a QR; scan it in the app. (<a href="https://apps.apple.com/us/app/happy-claude-code-client/id6748571505">App Store</a>)</td><td>Fine for people who live in a terminal; nothing for anyone else.</td></tr>
+  </table>
+  <div class="lessons">
+    <div><b>1. The account is the network</b>Every device signed in to it sees every other. Harness has this already: the account's device key log.</div>
+    <div><b>2. The device in your hand lets the next one in</b>Nobody types a password on the new computer: the phone, already signed in, adds it.</div>
+    <div><b>3. Offer it where the work is</b>"Continue this on your phone", on the pane you're working in, like Handoff. Not in a settings dialog.</div>
+    <div><b>4. Show the setup happening</b>A picture that fills in, and a moment of success with a sound. Not a page of instructions.</div>
+  </div>
+  </div>
+  </div>
+  </div>
+  </div>
+  </div>
+
+  <!-- ===================== 2. DESKTOP USERS ===================== -->
+  <h2>2. Harness already on the computer: one code to get the app</h2>
+  <p class="lede">The focused pane's title shows one small, fixed code, just before the agent and model. It's the same code on every pane and every computer, and all it does is get the app. Once a phone is linked to the account, it's gone.</p>
+  <div class="win short">
+    <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="tab on">harness</span><span class="tab">docs</span><span class="sp"></span><span class="ava">A</span></div>
+    <div class="ws">
+      <div class="pn focus big" style="position:relative"><div class="h46">mobile onboarding <span class="act">⠼</span><span class="sp"></span><svg class="sq" viewBox="-2 -2 25 25" shape-rendering="geometricPrecision" style="color:#e4e4dd"><use href="#qrt"/></svg><span class="meta"><span>Claude Code</span><span>Opus</span><span>×</span></span></div>
+        <div class="body"><span class="ok">⏺</span> Update(docs/onboarding.html)<br>&nbsp;&nbsp;⎿ +41 −12<br><br>⏺ The page is ready for review. Push it?</div>
+        <div class="qtip" style="right:9.6cqw;top:4.2cqw">Continue mobile onboarding on your phone<span>Scan to get the app. Pick it up anywhere, by voice.</span></div></div>
+      <div class="pn big"><div class="h46">docs-rewrite<span class="sp"></span><span class="meta"><span>Codex</span><span>GPT-5</span><span>×</span></span></div><div class="body">• Rewriting the install guide…</div></div>
+    </div>
+  </div>
+  <div class="lightstrip"><span class="nm">mobile onboarding</span><span class="act">⠼</span><span class="sp"></span><svg class="sq" viewBox="-2 -2 25 25" shape-rendering="geometricPrecision"><use href="#qrt"/></svg><span class="meta">Claude Code</span><span class="meta">Opus</span><span class="meta">×</span></div>
+  <p class="cap" style="margin-top:4px"><b>Light mode:</b> the same code in the title's dark ink. No background in either mode.</p>
+  <table class="cmp when" style="margin-top:14px">
+    <tr><th>What it is</th><th>Shown</th><th>Gone</th></tr>
+    <tr><td>One fixed link, <code>autonomous.ai/app</code>: the App Store on an iPhone, Google Play on Android. Nothing secret in it.</td><td>On whichever pane is focused, while the account has no phone.</td><td>On every computer, once a phone is linked.</td></tr>
+  </table>
+  <p class="cap"><b>On hover:</b> "Continue <i>mobile onboarding</i> on your phone. Scan to get the app. Pick it up anywhere, by voice." It names the pane in focus, so it's about the work in front of you.
+    <b>Size:</b> 14.5 pt, the height of the text beside it, with rounded corners like the rest of the design system; the <a href="qr-size-test.html">test page</a> checks that an iPhone reads it in both modes.
+    It replaces the "Your agents in your pocket" card; a second phone is still added from Add Phone, under your initial.</p>
+
+  <div class="flow tight s2">
+    <div class="step">
+      <div class="ph cam"><div class="shot"></div><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div>
+        <div class="lap"><svg viewBox="-2 -2 25 25" shape-rendering="crispEdges"><use href="#qr"/></svg></div>
+        <div class="chip"><i></i>autonomous.ai</div>
+        <div class="mode">PHOTO</div><div class="shutter"></div><div class="home"></div></div>
+      <p class="cap"><b>① iPhone Camera.</b> Tap the link; the App Store opens on Harness.</p>
+    </div>
+    <div class="arrow"><i>→</i></div>
+    <div class="step">
+      <div class="ph appstore"><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div>
+        <div class="in" style="padding-top:6cqw">
+          <div class="asrow"><div class="asicon">harness<i></i></div><div><b>Harness: Like a Boss</b><span>Autonomous Inc.</span><div class="get">GET</div></div></div>
+          <div class="asshots"><span></span><span></span><span></span></div></div>
+        <div class="home"></div></div>
+      <p class="cap"><b>② App Store.</b> Get, then Open.</p>
+    </div>
+    <div class="arrow"><i>→</i>Continue with Google</div>
+    <div class="step">
+      <div class="ph term">
+        <div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div>
+        <div class="in">
+          <div class="hdr"><div class="t17 b">mobile onboarding</div><div class="t13 dim">MacBook Pro · harness · ⑂ main</div></div>
+          <div class="tl"><span class="ok">⏺</span> <span class="u">Update(docs/onboarding.html)</span>
+  <span class="dim">⎿  +41 −12</span>
+
+⏺ The page is ready for
+  review. Push it?</div>
+          <div class="prompt">&gt;</div>
+        </div>
+        <div class="bubble">Talk to it.</div>
+        <div class="mic"><svg><use href="#mic"/></svg></div>
+        <div class="home"></div>
+      </div>
+      <p class="cap"><b>③ The same session, live.</b> "Yes, push it."</p>
+    </div>
+  </div>
+  <p class="note">The app opens on its first screen (section 3), and the person signs in with the computer's account. That account already has the Mac, so after a brief "MacBook Pro is ready." the phone opens the session in focus there. There's no "go to your computer" step.</p>
+
+  <!-- ===================== 3. NEW TO HARNESS ===================== -->
+  <h2>3. New to Harness: set up your first computer</h2>
+  <p class="lede">One picture fills in as you go, in the same place on every screen: three computers around your phone. You sign in once, on the phone. The phone adds the computer, and two soft notes say it has arrived.</p>
+  <div class="flow ob4">
+    <div class="step"><div class="ph ob"><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-w" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-w" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M240 98 Q 204 116 184 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle r="2.6" fill="#8dffcf" filter="url(#glow-w)"><animateMotion path="M240 98 Q 204 116 184 140" dur="1.4s" begin="0.47s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;.5;1" calcMode="linear"/><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1.4s" begin="0.47s" repeatCount="indefinite"/></circle><path d="M160 232 L 160 206" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle r="2.6" fill="#8dffcf" filter="url(#glow-w)"><animateMotion path="M160 232 L 160 206" dur="1.4s" begin="0.93s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;.5;1" calcMode="linear"/><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1.4s" begin="0.93s" repeatCount="indefinite"/></circle><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle r="2.6" fill="#8dffcf" filter="url(#glow-w)"><animateMotion path="M96 98 Q 120 116 136 140" dur="1.4s" begin="0s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;.5;1" calcMode="linear"/><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1.4s" begin="0s" repeatCount="indefinite"/></circle><ellipse cx="257" cy="98" rx="48" ry="7" fill="#0dbc79" opacity=".18" filter="url(#blur-w)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="#0dbc79" fill-opacity=".10" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><text x="219" y="42" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">opencode</text><rect x="264.1" y="35" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><ellipse cx="160" cy="288" rx="56" ry="7" fill="#0dbc79" opacity=".18" filter="url(#blur-w)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><circle cx="200" cy="244" r="1.7" fill="#0dbc79"/><circle cx="200" cy="266" r="1.7" fill="#0dbc79"/><text x="122" y="247" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">codex</text><rect x="150.75" y="240" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><ellipse cx="62" cy="100" rx="54" ry="8" fill="#0dbc79" opacity=".22" filter="url(#blur-w)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="#0dbc79" fill-opacity=".10" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><text x="26" y="44" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">claude</text><rect x="60.2" y="37" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><text x="26" y="56" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">codex</text><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-w)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg><div class="words hero1"><h5>Manage all your agents on all your computers from your phone.</h5></div><div class="sib2 google"><img src="../../../desktop/assets/sign-in/google.svg" alt="">Continue with Google</div><div class="sib2 apple"><img src="../../../desktop/assets/sign-in/apple.svg" alt="">Continue with Apple</div><div class="qrow2 one"><span>Continue with email</span></div><div class="home"></div></div><p class="cap"><b>① Welcome.</b> Everything lit: the promise. Sign in right here, and it moves on by itself.</p></div>
+    <div class="step"><div class="ph ob"><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-l" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-l" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><circle cx="160" cy="157" r="8" fill="none" stroke="#0dbc79" stroke-width="1.2"><animate attributeName="r" values="8;120" dur="2.4s" begin="0.0s" repeatCount="indefinite"/><animate attributeName="opacity" values=".55;0" dur="2.4s" begin="0.0s" repeatCount="indefinite"/></circle><circle cx="160" cy="157" r="8" fill="none" stroke="#0dbc79" stroke-width="1.2"><animate attributeName="r" values="8;120" dur="2.4s" begin="0.8s" repeatCount="indefinite"/><animate attributeName="opacity" values=".55;0" dur="2.4s" begin="0.8s" repeatCount="indefinite"/></circle><circle cx="160" cy="157" r="8" fill="none" stroke="#0dbc79" stroke-width="1.2"><animate attributeName="r" values="8;120" dur="2.4s" begin="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values=".55;0" dur="2.4s" begin="1.6s" repeatCount="indefinite"/></circle><path d="M240 98 Q 204 116 184 140" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><path d="M160 232 L 160 206" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><g stroke="#EDEDED" opacity=".3" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".3" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><g stroke="#EDEDED" opacity=".3" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><animate attributeName="opacity" values=".25;.6;.25" dur="2.4s" repeatCount="indefinite"/><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-l)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg><div class="status">Looking for your computer<i></i></div><div class="words hero1"><h5>On your computer, go to</h5><div class="addr2">autonomous.ai/go<svg class="share"><use href="#share"/></svg></div></div><div class="home"></div></div><p class="cap"><b>② Your computer.</b> The laptop breathes while the phone looks for it. The address is the button: it sends the link (AirDrop first).</p></div>
+    <div class="step"><div class="ph ob"><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-f" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-f" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle r="2.6" fill="#8dffcf" filter="url(#glow-f)"><animateMotion path="M96 98 Q 120 116 136 140" dur="0.7s" begin="0s" repeatCount="indefinite"/></circle><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><ellipse cx="62" cy="100" rx="54" ry="8" fill="#0dbc79" opacity=".22" filter="url(#blur-f)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="#0dbc79" fill-opacity=".10" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><text x="26" y="44" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">opencode</text><rect x="71.1" y="37" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.28" filter="url(#blur-f)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.1"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/></svg><div class="words hero1"><h5>MacBook Pro is ready.</h5></div><div class="home"></div></div><p class="cap"><b>The Mac joins.</b> About two seconds: the laptop lights, two soft notes, and the headline says so. Then the session opens by itself; a tap goes sooner.</p></div>
+    <div class="step"><div class="ph term"><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><div class="in"><div class="hdr"><div class="t17 b">first-project</div><div class="t13 dim">MacBook Pro · opencode</div></div><div class="tl"><span class="dim">opencode · ready</span></div><div class="prompt typed">make a small web page that shows today&#39;s date<span class="caret"></span></div></div><div class="bubble">Send it, or say anything.</div><div class="mic"><svg><use href="#mic"/></svg></div><div class="home"></div></div><p class="cap"><b>③ The session.</b> The one in focus on the Mac. On a new Mac: OpenCode with a starter task typed in, not sent.</p></div>
+  </div>
+
+  <h3>Which session the phone opens: it follows the computer</h3>
+  <p class="note" style="margin-top:0">The desktop&#39;s own onboarding decides the first tab (desktop 1.2.60, #1075, #1077). The phone has no logic of its own: it opens the session in focus on that computer and says one line over the mic. Every other session is a swipe right.</p>
+  <div class="flow ob4">
+    <div class="step"><div class="ph term "><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><div class="in"><div class="hdr"><div class="t17 b">first-project</div><div class="t13 dim">MacBook Pro · opencode</div></div><div class="tl"><span class="dim">opencode · ready</span></div><div class="prompt typed">make a small web page that shows today&#39;s date<span class="caret"></span></div></div><div class="bubble">Send it, or say anything.</div><div class="mic"><svg><use href="#mic"/></svg></div><div class="home"></div></div><p class="cap"><b>New to coding agents.</b> OpenCode with the starter task typed, not sent.</p></div>
+    <div class="step"><div class="ph term "><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><div class="in"><div class="hdr"><div class="t17 b">api-server</div><div class="t13 dim">MacBook Pro · claude code · ⑂ rate-limits</div></div><div class="tl"><span class="dim">yesterday 18:02</span>
+<span class="u">&gt; add per-key rate limits</span>
+
+<span class="ok">⏺</span> <span class="u">Write(src/limits.ts)</span>
+  <span class="dim">⎿  +64 lines</span>
+
+⏺ All 214 tests pass. Want me
+  to write the migration?</div><div class="prompt">&gt;</div></div><div class="bubble">Pick up where you left off.</div><div class="mic"><svg><use href="#mic"/></svg></div><div class="home"></div></div><p class="cap"><b>Already uses Claude Code or Codex.</b> Their latest conversation, where they left it.</p></div>
+    <div class="step"><div class="ph term "><div class="sb"><span>9:41</span><span class="bat"></span></div><div class="island"></div><div class="in"><div class="hdr"><div class="t17 b">my-app</div><div class="t13 dim">MacBook Pro · claude code</div></div><div class="tl"><span class="dim">claude code · ready</span></div><div class="prompt">&gt;<span class="caret" style="display:inline-block;width:1.8cqw;height:3.6cqw;background:#f2f2ee;vertical-align:-.6cqw;margin-left:.6cqw"></span></div></div><div class="bubble">Say what to build.</div><div class="mic"><svg><use href="#mic"/></svg></div><div class="home"></div></div><p class="cap"><b>Agents, but no past sessions.</b> A fresh session, at an empty prompt.</p></div>
+  </div>
+  <table class="cmp scen"><tr><th>Who</th><th>The desktop&#39;s first tab</th><th>The phone opens</th><th>Over the mic</th></tr><tr><td>New to coding agents</td><td>Downloads OpenCode, Codex and Claude Code during its tour. Tab 1: OpenCode with a starter task typed, not sent; Codex and Claude Code beside it on their own sign-in screens.</td><td>OpenCode, the task waiting</td><td>Send it, or say anything.</td></tr><tr><td>Has Claude Code or Codex but isn&#39;t signed in to them</td><td>Same as above: OpenCode first, with the starter task (#1077).</td><td>OpenCode, the task waiting</td><td>Send it, or say anything.</td></tr><tr><td>Already uses Claude Code or Codex</td><td>Tab 1: their most recent Claude Code and Codex conversations, resumed; tab 2: the next three.</td><td>Their most recent conversation, history and all</td><td>Pick up where you left off.</td></tr><tr><td>Has agents but no past sessions</td><td>A fresh session for each agent they have.</td><td>That agent, at an empty prompt</td><td>Say what to build.</td></tr><tr><td>Harness already on the computer</td><td>Nothing changes; the pane&#39;s code got them the app.</td><td>The session in focus on their most recently used computer; every other is a swipe right</td><td>Talk to it.</td></tr></table>
+
+  <h3>The Mac joins, frame by frame (about two seconds; a tap skips it)</h3>
+  <div class="timeline"><div class="tf"><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-t0" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-t0" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6" stroke-dasharray="170 400"/><rect x="20" y="28" width="86" height="52" rx="3" fill="none" stroke-opacity=".5" stroke-dasharray="170 400"/><path d="M4 90 h118 l-8 7 h-102 z" stroke-dasharray="170 400"/></g><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-t0)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg><div class="tt"><b>0 ms</b>The laptop's outline draws itself solid, three quickening taps.</div></div><div class="tf"><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-t1" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-t1" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="40 200"/><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-t1)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg><div class="tt"><b>350 ms</b>The link draws from the laptop to the phone.</div></div><div class="tf"><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-t2" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-t2" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><ellipse cx="62" cy="100" rx="54" ry="8" fill="#0dbc79" opacity=".22" filter="url(#blur-t2)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="#0dbc79" fill-opacity=".10" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><text x="26" y="44" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9"></text><rect x="27.5" y="37" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-t2)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg><div class="tt"><b>600 ms</b>The screen lights, with a success buzz and the only sound in setup: two soft glass notes a fifth apart. The headline becomes "MacBook Pro is ready."</div></div><div class="tf"><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-t3" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-t3" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#0dbc79" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><ellipse cx="62" cy="100" rx="54" ry="8" fill="#0dbc79" opacity=".22" filter="url(#blur-t3)"/><g stroke="#EDEDED" opacity="1" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="#0dbc79" fill-opacity=".10" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><text x="26" y="44" fill="#0dbc79" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="9">opencode</text><rect x="71.1" y="37" width="4.6" height="8" fill="#0dbc79"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;.5;.5;1" dur="1s" repeatCount="indefinite"/></rect><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.28" filter="url(#blur-t3)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.1"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="1"/><circle cx="136" cy="140" r="2.8" fill="#8dffcf" filter="url(#glow-t3)"/></svg><div class="tt"><b>800 ms</b>The agent&#39;s name appears on the laptop; the first packet lands on the phone, which brightens.</div></div><div class="tf"><div class="growbox"><div class="growscreen"></div></div><div class="tt"><b>2.2 s</b>The laptop's glowing screen grows to fill the phone (a 420 ms spring) and becomes the session. A tap goes there sooner.</div></div></div>
+  <p class="note">Reduce Motion: no packets or rings, and every change is a 200 ms fade. Muted: no sound; the haptics stay. If the app is in the background when the Mac joins, it plays this the next time it&#39;s opened.</p>
+
+  <h3>On the computer</h3>
+  <div class="two">
+    <div><div class="webdark"><div class="wbar"><span class="dots"><i></i><i></i><i></i></span><span class="u">autonomous.ai/go</span></div><div class="wbody"><div><div class="wm3">harness<i></i></div><h4>Harness for Mac</h4><p>Your phone is waiting for this Mac.</p><span class="dl">Download for Mac</span></div><svg class="pic" viewBox="0 0 320 300" xmlns="http://www.w3.org/2000/svg"><defs><filter id="blur-web" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="6"/></filter><filter id="glow-web" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M112 50 L 208 48 M60 100 L 132 232 M260 98 L 188 232" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1.2" stroke-dasharray="2 5"/><path d="M240 98 Q 204 116 184 140" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><path d="M160 232 L 160 206" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><path d="M96 98 Q 120 116 136 140" fill="none" stroke="#5a5a58" stroke-width="1.4" stroke-dasharray="1.2 4" stroke-linecap="round"/><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="208" y="18" width="98" height="64" rx="6"/><rect x="214" y="24" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M257 82 v12 M240 96 h34"/></g><g stroke="#EDEDED" opacity=".2" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="108" y="232" width="104" height="23" rx="4"/><rect x="108" y="255" width="104" height="23" rx="4"/><path d="M118 285 h84"/></g><g stroke="#EDEDED" opacity=".3" stroke-dasharray="3 3" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"><animate attributeName="opacity" values=".25;.6;.25" dur="2.4s" repeatCount="indefinite"/><rect x="14" y="22" width="98" height="64" rx="6"/><rect x="20" y="28" width="86" height="52" rx="3" fill="none" stroke-opacity=".5"/><path d="M4 90 h118 l-8 7 h-102 z"/></g><ellipse cx="160" cy="206" rx="34" ry="6" fill="#0dbc79" opacity="0.14" filter="url(#blur-web)"/><rect x="136" y="110" width="48" height="94" rx="10" fill="#0c0c0c" stroke="#EDEDED" stroke-width="1.6"/><rect x="141" y="119" width="38" height="74" rx="5" fill="#0dbc79" fill-opacity="0.05"/><rect x="154" y="113.5" width="12" height="3" rx="1.5" fill="#EDEDED" opacity=".6"/><rect x="146" y="128" width="22" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="136" width="16" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="144" width="26" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="152" width="12" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/><rect x="146" y="160" width="20" height="2.4" rx="1.2" fill="#0dbc79" opacity="0.85"/></svg></div></div><p class="cap"><b>autonomous.ai/go</b> on the computer: the same drawing, with this Mac as the one waiting, and one button. The page picks the download for the computer&#39;s system (it does today, #1109).</p></div>
+    <div><div class="dock"><span class="di" style="background:linear-gradient(#5ac8fa,#0a84ff)"></span><span class="di" style="background:linear-gradient(#ffd60a,#ff9f0a)"></span><span class="di safari"><span class="hb"><svg viewBox="0 0 24 24"><use href="#phonei"/></svg></span></span><span class="di" style="background:linear-gradient(#32d74b,#0dbc79)"></span><span class="di" style="background:#3a3a36"></span></div><p class="cap"><b>Handoff:</b> while step ② is open, the page also appears in the Dock of a nearby Mac signed in to the same Apple account. One click, nothing typed.</p>
+      <div class="h46s"><span>Setting up Harness</span><span class="sp"></span><span class="lk">✓ Added by Ada's iPhone</span></div><p class="cap"><b>Nobody signs in on the Mac.</b> During its tour, the phone waiting at step ② finds it on the same Wi-Fi and adds it to the account. The tour ends on <span style="color:var(--green)">✓ Added by Ada&#39;s iPhone</span>, the sign-in page is skipped, and the first workspace opens. Someone who starts on the desktop still gets the sign-in page (decided 2026-10-11), and so does a Mac the phone can&#39;t see.</p></div>
+  </div>
+
+  <h3>Every word</h3>
+  <table class="copy"><tr><th>Screen</th><th>Headline</th><th>Body</th><th>Button</th><th>Quiet line</th></tr><tr><td>① Welcome</td><td>Manage all your agents on all your computers from your phone.</td><td>none</td><td>Continue with Google · Continue with Apple</td><td>Continue with email</td></tr><tr><td>② Your computer</td><td>On your computer, go to</td><td>none</td><td>autonomous.ai/go ⇪</td><td>none</td></tr><tr><td>Under the picture, ②</td><td>Looking for your computer▌</td><td></td><td></td><td></td></tr><tr><td>/go</td><td>Harness for Mac</td><td>Your phone is waiting for this Mac.</td><td>Download for Mac</td><td></td></tr><tr><td>The Mac joins</td><td>MacBook Pro is ready.</td><td>none</td><td>none</td><td>none (about two seconds; a tap skips it)</td></tr><tr><td>③ The session</td><td>Over the mic, once: Send it, or say anything. (The line depends on the session: see the table above.)</td><td></td><td></td><td></td></tr><tr><td>Desktop pane title, on hover</td><td>Continue mobile onboarding on your phone</td><td>Scan to get the app. Pick it up anywhere, by voice.</td><td></td><td></td></tr><tr><td>Mac, end of its tour</td><td>✓ Added by Ada's iPhone</td><td>then the first workspace; no sign-in page</td><td></td><td></td></tr></table>
+  <p class="note" style="line-height:1.7"><b>Type and space:</b> 35 pt side margins and one left edge on every screen. The headline is 22 pt mono semibold, up to three lines, at the same height on every screen. The picture sits in the middle and never moves. Buttons are 52 pt; the quiet line is 13 pt. Between screens only the words change, rising 8 pt in 250 ms; the picture only changes state.<br>
+    <b>Counts:</b> 1 tap on the phone (Continue with Google), 3 without Handoff (the address, then AirDrop). On the Mac: open the page, Download, install, open. No sign-in on the Mac, no account to match, no page dots, nothing to tap after step ②.<br>
+    <b>Nothing else on these screens.</b> No sample link, no Undo, no fallback line. A Mac the phone can't see (another network) shows its own sign-in page after its tour, and the phone finds it once it's signed in. A Mac added by mistake is removed from Computers.<br>
+    <b>Left out on purpose:</b> page dots; the word "network" in the app; any sound but the one; a "looking" with no way out; a button whose only job is to hand over the payoff; showing an Apple private-relay address; taking the sign-in page away from people who start on the desktop.</p>
+
+  <!-- ===================== 4. THE MESH ===================== -->
+  <h2>4. More computers, more phones</h2>
+  <table class="cmp more">
+    <tr><th>Adding</th><th>How</th></tr>
+    <tr><td>Another computer</td><td>On the phone, Computers ▸ Add computer is step ② again: open autonomous.ai/go on it, and the phone adds it.</td></tr>
+    <tr><td>A server with only the command line</td><td><code>harness login</code> shows a code; the phone approves it (Settings ▸ Sign in a computer, there today).</td></tr>
+    <tr><td>Another phone</td><td>Install and sign in with the same account. Add Phone, under your initial on the computer, shows a code that gets the app.</td></tr>
+  </table>
+  <p class="note">Signing in is what makes the account's devices trust each other (the device key log), so there's no pairing or password anywhere.</p>
+
+  <!-- ===================== STEPS ===================== -->
+  <h2>5. Every route, counted</h2>
+  <p class="lede">Taps and clicks from the moment someone decides to the session live on the phone. Waiting (downloads, the desktop's tour) isn't counted.</p>
+  <table class="cmp counted">
+    <tr><th>Who</th><th>Steps</th><th>Phone</th><th>Computer</th></tr>
+    <tr><td>Harness on the computer, no phone app</td><td>Camera at the pane's code · Get · Open · Continue with Google → the session</td><td class="num"><span class="good">4</span> (2 are Apple's)</td><td class="num">0</td></tr>
+    <tr><td>Harness on the computer, phone app installed</td><td>Open the app · Continue with Google → the session</td><td class="num"><span class="good">2</span></td><td class="num">0</td></tr>
+    <tr><td>New to Harness</td><td>Phone: Continue with Google. Computer: the page from the Dock (Handoff) · Download · install · open; the phone adds it during the tour → the session</td><td class="num"><span class="good">1</span> (3 without Handoff)</td><td class="num"><span class="good">4</span>, no sign-in</td></tr>
+  </table>
+
+  <!-- ===================== 5. AGAINST TODAY ===================== -->
+  <h2>6. Against today, and against Orca</h2>
+  <table class="cmp">
+    <tr><th></th><th>Today (1.0.3) / Orca</th><th>This plan</th></tr>
+    <tr><td>Where the phone is offered on the desktop</td><td>A dialog in a menu (Add Phone; Orca: settings)</td><td><span class="good">In the title of the pane you're in</span>, one small fixed code, until a phone is linked</td></tr>
+    <tr><td>What the code does</td><td>Signs in and pairs, then a list (Orca: pairs)</td><td>Gets the app; signing in with the same account does the rest</td></tr>
+    <tr><td>The iPhone Camera on the code</td><td><span class="bad">a dead-end web page</span></td><td>the App Store</td></tr>
+    <tr><td>Someone with nothing on a computer yet</td><td>"Go to your computer", then nothing</td><td><span class="good">A picture that fills in as you go</span>: one tap to sign in, the computer added by the phone, two notes when it arrives</td></tr>
+    <tr><td>Signing in on the new computer</td><td>Again, in a browser, hoping it's the same account</td><td><span class="good">None</span>: the waiting phone adds it</td></tr>
+    <tr><td>First screen after connecting</td><td>A list, four tips, then a notification prompt</td><td>The session in focus on the computer, and one line over the mic</td></tr>
+  </table>
+
+  <!-- ===================== 6. RISKS ===================== -->
+  <h2>7. What to watch</h2>
+  <p class="note" style="font-size:15px;line-height:1.7">
+    <b>The code's size and colour.</b> At the height of the text it's about 3 mm, so the phone has to come close; in dark mode it's inverted (light on dark), which the QR standard allows but not every scanner reads. A fixed link is short (21 squares a side), which helps. The <a href="qr-size-test.html">test page</a> settles both.<br>
+    <b>A new computer is added by being nearby.</b> The waiting phone adds a new Harness on the same network that nobody has signed in to. A stranger installing Harness on the same café Wi-Fi in those minutes could be added; the phone names the computer it added, and Computers removes it.<br>
+    <b>Which session is "in focus".</b> The desktop tells only its own computer which pane has focus. The phone already sorts sessions by when they were last used or opened, so the desktop marks a session as opened when its pane takes focus, and the phone opens the most recently used one. Nothing new goes over the relay.<br>
+    <b>No push yet.</b> The phone has no push notifications (no APNs or FCM, no background mode), so it notices the computer while the app is open, and catches up when it's opened again.<br>
+    <b>Handoff</b> needs the same Apple account on the phone and the Mac. Without it, the address is sent by AirDrop or typed.<br>
+    <b>The short addresses.</b> <code>autonomous.ai/go</code> and <code>autonomous.ai/app</code> fall through to the home page today (a 307 to www.autonomous.ai), so both are free: two redirects on the main site.</p>
+
+  <!-- ===================== 7. BUILD ===================== -->
+  <h2>8. What it takes</h2>
+  <table>
+    <tr><th>Where</th><th>Change</th><th>Size</th></tr>
+    <tr><td>Desktop</td><td>The fixed code on the focused pane's title, before the agent and model, with its hover line; hidden once the account has a phone (the desktop already reads the account's devices); the "Your agents in your pocket" card removed; a session marked as opened when its pane takes focus; on a new computer, announcing itself during the tour, and skipping the sign-in step when a phone adds it ("✓ Added by Ada's iPhone").</td><td>Medium</td></tr>
+    <tr><td>Backend</td><td>A new computer that nobody has signed in to announcing itself, and a waiting phone on the same network adding it to the account.</td><td>Medium</td></tr>
+    <tr><td>Phone</td><td>The welcome with sign-in; "On your computer, go to" with Handoff; the picture and its motion, the "ready" moment and its sound; Sign in with Apple in the app (and the backend accepting its token); adding a new computer found on the same network; opening the most recently used session; the line over the mic.</td><td>Days</td></tr>
+    <tr><td>Website</td><td><code>autonomous.ai/go</code> to the download for this computer (exists as <code>harness.autonomous.ai/desktop</code>); <code>autonomous.ai/app</code> to the App Store or Google Play, by device.</td><td>Small</td></tr>
+  </table>
+  <p class="note"><b>Where the phone code lives:</b> the store builds come from <code>feat/mobile-ios-android</code>, which is 131 commits ahead of main. It lands on main first, then this work goes in small PRs.<br>
+    <b>Later:</b> a personal download link and a "Downloading on your Mac" signal; emailing the link (the backend sends no email today); push notifications.<br>
+    <b>Tested by</b> the real thing, on a real iPhone and a fresh Mac (the VM rig), for each route in section 5, timed, with every hesitation noted.</p>
+
+  <!-- ===================== DECISIONS ===================== -->
+  <h2>Decided</h2>
+  <p class="note" style="font-size:15px;line-height:1.7">
+    <b>1.</b> Harness already on the computer: one fixed code on the focused pane's title gets the app, and it's gone once a phone is linked.<br>
+    <b>2.</b> New to Harness: three screens and a brief "ready" moment; sign-in on the first screen, Google first.<br>
+    <b>3.</b> Nobody signs in on a new computer: the waiting phone adds it.<br>
+    <b>4.</b> The phone opens the session in focus on the computer, and says one line over the mic.<br>
+    <b>5.</b> Nothing else on the setup screens: no sample link, no tips, no notification prompt, no fallback lines.</p>
+  <h2>Still open</h2>
+  <p class="note" style="font-size:15px;line-height:1.7">
+    <b>The code's size,</b> and whether an iPhone reads the inverted dark-mode code: the <a href="qr-size-test.html">test page</a>.<br>
+    <b>Landing <code>feat/mobile-ios-android</code> on main</b>, with the branch's owner.<br>
+    <b>The two redirects</b> on autonomous.ai, with whoever owns the main site.</p>
+
+  <!-- ===================== 1. TODAY ===================== -->
+  <h2 id="today">Appendix: today (1.0.3)</h2>
+  <p class="lede">Since 2026-10-07 the front door has been cut to one button; the owner's calls of 10-08 and 10-09 are recorded in <code>phone_welcome.dart</code>. The scan already signs in and connects in one go (#387).
+    What's rough is the homework on the first screen and everything after the scan.</p>
+  <div class="today">
+    <figure><div class="frame"><img src="img/today-1-welcome.png" alt="Your agents in your pocket. Connect computer, and three steps"></div>
+      <figcaption><b>1 · Welcome</b><span class="ok-mark">✓</span> One button. <span class="x">✗</span> Three steps of homework on the computer. Step 3 is a menu path and a Linux shortcut. Step 2 is usually done already:
+        desktop setup now ends with sign-in (#1188), and Add Phone signs in a computer that skipped it.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-2-scan.png" alt="Scan the code on your computer"></div>
+      <figcaption><b>2 · Scan</b><span class="ok-mark">✓</span> Clean. <span class="x">✗</span> The same code scanned with the iPhone Camera opens Safari, not the app.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-3-other-ways.png" alt="Sign in another way: Google, Apple, email"></div>
+      <figcaption><b>3 · Can't scan?</b><span class="ok-mark">✓</span> Google, Apple and email, out of the way until needed.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-4-get-it.png" alt="Get Harness on your computer: one address"></div>
+      <figcaption><b>4 · Get it</b><span class="ok-mark">✓</span> One address to type or send, and the sample while you wait.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-5-waiting.png" alt="Waiting for your computer"></div>
+      <figcaption><b>5 · Signed in, no computer</b> After <i>Can't scan?</i>: the welcome with "Waiting for your computer…". Fine.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-6-unlock.png" alt="Unlock studio: scan its code or enter its Harness phone password"></div>
+      <figcaption><b>6 · Unlock</b><span class="x">✗</span> "Phone password", <code>harness remote-password set</code>: jargon, and mostly unneeded now that signing in makes every machine trust the phone (device key log).</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-7-pick-up.png" alt="Pick up where you left off: a list of sessions"></div>
+      <figcaption><b>7 · Connected</b><span class="x">✗</span> A list to choose from, when the person was just looking at one session on the Mac.</figcaption></figure>
+    <figure><div class="frame"><img src="img/today-8-hints.png" alt="Four tips over the terminal"></div>
+      <figcaption><b>8 · First session</b><span class="x">✗</span> Four tips before the first look (title, swipe right, swipe left, mic), then the notification prompt straight after.</figcaption></figure>
+  </div>
+  <p class="note" style="line-height:1.7">
+    <b>The code isn't a way in from the Camera yet.</b> Pointed at the Mac's code, the iPhone Camera opens <code>harness.autonomous.ai/pair</code> in Safari. Neither main nor the release branch
+    has universal links (no associated domains in <code>mobile/ios</code>, no app link in the Android manifest), and that page says "Scan this from the Harness app" with no App Store link.<br>
+    <b>The two apps disagree on a word.</b> The Mac's Add Phone says "On your phone, open Harness and tap <i>Pair computer</i>"; the phone's button is <i>Connect computer</i>.<br>
+    <b>The desktop never shows the phone during setup.</b> The tour's phone slide is a picture with no code or link. Add Phone is in the Harness menu, the avatar menu (#1188) and the
+    "Your agents in your pocket" card, which shows after the first sign-in.</p>
+
+
+
+</main>
+</body>
+</html>
