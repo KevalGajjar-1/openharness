@@ -113,5 +113,7 @@ export const launch: EngineLaunch = {
     args: ['-c', 'developer_instructions={value}'],
   },
   // Beside the attribution's instruction, in the one `developer_instructions` value (facets/launch.ts).
-  harnessInstructions: { kind: 'attribution' },
+  // Its sandbox keeps a command from Harness's socket and port: told only that Harness was not running, an agent ran
+  // `harness start` and asked the person to let it start Harness (a fresh Mac, 2026-10-12; lib/unreachable.ts).
+  harnessInstructions: { kind: 'attribution', also: 'Codex\'s sandbox cannot reach Harness: run each harness command outside it, with escalated permissions.' },
 }
