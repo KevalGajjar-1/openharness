@@ -101,6 +101,8 @@ Agents — after "harness start", run the vendor CLI directly inside tmux. Harne
 top-level processes automatically; it does not launch them or change their permission flags:
 ${PROCESS_ENGINES.map((engine) => `  ${ENGINE_CLI_COMMANDS[engine]}`).join('\n')}
 A launcher that hands the pane to one of these works the same — "ori claude" is a Claude Code agent.
+An agent can start, wait for, read and close other agents here: harness new, wait, show and close below, or
+harness mcp. How: https://harness.autonomous.ai/agents
 
 Machine:
   harness login                sign in (asks: Google or Apple in your browser, or scan a QR with your phone)

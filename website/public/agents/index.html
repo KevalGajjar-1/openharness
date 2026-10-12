@@ -82,6 +82,8 @@ harness start</code></pre>
     harnesses on this computer; <code>harness login</code> signs in, which the person needs only for their other
     machines and the phone app. The agents you start must be installed and signed in to their own providers:
     <code>claude</code> for Claude Code, <code>codex</code> for Codex.</p>
+  <p>On Linux the installer installs tmux and curl with <code>apt-get</code>, which asks for the person's password.
+    Without one, ask the person to run <code>sudo apt-get install -y tmux curl</code> first.</p>
   <p>Ask the person before you install software on their computer. To check whether Harness is already there:
     <code>harness version</code>. The agent commands below are new: if <code>harness ps</code> is an unknown command,
     run <code>harness update</code>.</p>
@@ -95,7 +97,8 @@ claude plugin install harness@openharness</code></pre>
   <p>Inside a session, the same is <code>/plugin marketplace add autonomous-ai/openharness</code>, then
     <code>/plugin install harness@openharness</code>. Without <code>--sparse</code> the whole repository is cloned,
     several hundred megabytes, which takes a minute or more. Run <code>/reload-plugins</code> or start a new session
-    to load it.</p>
+    to load it. Adding a marketplace from GitHub needs git: on a Mac without Apple's developer tools, macOS first
+    offers to install them.</p>
   <h3>Codex</h3>
   <pre><code>codex plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin --sparse plugins
 codex plugin add harness@openharness</code></pre>

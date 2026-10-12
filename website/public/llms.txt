@@ -9,6 +9,8 @@ curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start
 ```
 
+On Linux the installer installs tmux and curl with apt-get, which asks for the person's password. Without one, ask the person to run `sudo apt-get install -y tmux curl` first.
+
 The commands an agent uses:
 
 ```

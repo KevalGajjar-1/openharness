@@ -22,7 +22,8 @@ harness start
 `harness start` starts Harness on this computer. Harnesses on this computer need no sign-in; `harness login` is
 only for the person's other machines and their phone. If `harness ps` is an unknown command, the CLI is older than
 these verbs: `harness update`. The agent you start must be installed as well (`claude` for Claude Code, `codex`
-for Codex) and signed in to its own provider.
+for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
+asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
 
 ## When to start a harness
 

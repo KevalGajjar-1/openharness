@@ -873,6 +873,9 @@ else
   echo "      harness machines               # this account's machines and their ids"
   echo "      harness status                 # is the daemon running, and which machine this is"
   echo "      harness --help                 # everything else"
+  echo ""
+  echo "  For agents (Claude Code, Codex): harness new, wait, show and close, or harness mcp."
+  echo "  How: https://harness.autonomous.ai/agents"
 fi
 
 # 6. Make `harness` usable by NAME. We already added ~/.local/bin to your rc for NEW terminals (step 4);
