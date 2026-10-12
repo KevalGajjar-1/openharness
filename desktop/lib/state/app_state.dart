@@ -1476,12 +1476,13 @@ class AppNotifier extends ChangeNotifier {
   Iterable<TerminalPane> get allPanes => swarms.expand((s) => s.panes).toSet();
   String get activeSwarmId => activeSwarm.id;
 
-  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): each tab's
-  /// flag, the traffic the daemons push as `messages_changed`, and the marks it
-  /// leaves on panes. Its own notifier, so traffic never rebuilds the workspace.
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): whether the
+  /// account has them, the traffic the daemons push as `messages_changed`, and
+  /// the marks it leaves on panes. Its own notifier, so traffic never rebuilds
+  /// the workspace. Whether agents may message is each computer's setting
+  /// (Settings ▸ Agents), not a tab's.
   late final agentMessages = AgentMessagesController(
     read: () => api.readAgentMessageTabs(),
-    write: (tabId, enabled) => api.setAgentMessages(tabId, enabled),
     request: (machineId, payload) => _conn(machineId).request(
       'agent_messages',
       payload: payload,
@@ -1494,11 +1495,11 @@ class AppNotifier extends ChangeNotifier {
             ?.displayName,
   );
 
-  /// Whether [tabId] has Agent Messages to offer: a tab the desk holds, since
-  /// the backend keeps the flag per desk tab, once the daemon and backend have
-  /// answered for it. The Store, Devices and Companions, an orchestrator or a
-  /// draft tab, a window before it joins the desk, and an older CLI or backend
-  /// get no 💬, menu row or command.
+  /// Whether [tabId] has an Agent Messages log to show: a tab the desk holds,
+  /// since the daemons know a tab by its desk id, once the daemon and backend
+  /// have answered for Agent Messages. The Store, Devices and Companions, an
+  /// orchestrator or a draft tab, a window before it joins the desk, and an
+  /// older CLI or backend get no Show Agent Messages row or command.
   bool agentMessagesOffered(String tabId) {
     final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
     return swarm != null &&
@@ -1541,15 +1542,18 @@ class AppNotifier extends ChangeNotifier {
         expected: _agentMessageMembers(tabId),
       );
 
-  /// The tabs with Agent Messages on, each with its connected machines other
+  /// The desk tabs with two or more of the owner's harnesses — the fewest
+  /// that can message each other — each with its connected machines other
   /// than this computer: their daemons' `messages_changed` reaches only their
   /// own computer's windows, so [agentMessagesRemote] asks them instead. In a
-  /// browser every machine is another computer.
+  /// browser every machine is another computer. No tab has a switch to wait
+  /// for: a computer whose Settings ▸ Agents turned messaging off just answers
+  /// with nothing new.
   List<AgentMessagesRemoteTab> agentMessagesRemoteTabs() {
     final local = localMachineState?.machine.machineId;
     return [
       for (final swarm in swarms)
-        if (agentMessagesOffered(swarm.id) && agentMessages.isOn(swarm.id))
+        if (agentMessagesOffered(swarm.id) && _messagingHarnesses(swarm) >= 2)
           if ([
                 for (final id in agentMessageMachines(swarm.id))
                   if (id != local) id,
@@ -1558,6 +1562,14 @@ class AppNotifier extends ChangeNotifier {
             (tabId: swarm.id, machineIds: remote),
     ];
   }
+
+  /// How many of the owner's harnesses [swarm] holds, each once.
+  int _messagingHarnesses(Swarm swarm) => {
+    for (final pane in swarm.panes)
+      if (pane.agentId case final agentId?
+          when machineStates[pane.machineId]?.machine.isShared != true)
+        agentMessageKey(pane.machineId, agentId),
+  }.length;
 
   /// Polls [agentMessagesRemoteTabs] while the window is in front; the
   /// workspace starts it.
@@ -7179,8 +7191,12 @@ class AppNotifier extends ChangeNotifier {
           _desk.pending.isEmpty) {
         unawaited(_deskFetch());
       }
-      // So are Agent Messages' flags (desk_changed); this catches a missed one.
-      if (!_disposed && status == AppStatus.authenticated && _desk.enabled) {
+      // Agent Messages' first answer, when the read beside the desk failed
+      // (a backend away at sign-in) and no backend-online flip followed.
+      if (!_disposed &&
+          status == AppStatus.authenticated &&
+          _desk.enabled &&
+          !agentMessages.loaded) {
         unawaited(agentMessages.refresh());
       }
       unawaited(_rereadMachinesInBackground(pushed: false));
@@ -15684,7 +15700,8 @@ class AppNotifier extends ChangeNotifier {
       return;
     }
     _desk.enabled = true;
-    // Each tab's Agent Messages flag lives beside the desk, read once it is.
+    // Whether the daemon and backend have Agent Messages, which Show Agent
+    // Messages waits for, is read once the desk is.
     unawaited(agentMessages.refresh());
     // Tabs from before the desk carry per-window ids (`swarm-N`) two computers
     // would both mint. Give them desk ids once; the layout store keys by the
@@ -17272,11 +17289,6 @@ class AppNotifier extends ChangeNotifier {
         break;
       case 'desk_changed':
         unawaited(experimentalFeatures.refresh());
-        // Turning Agent Messages on or off for a tab says `desk_changed` too,
-        // with the desk itself unchanged (backend routes/agentMessages.ts).
-        if (status == AppStatus.authenticated) {
-          unawaited(agentMessages.refresh());
-        }
         // Another window — on another computer, or this one — changed the
         // tabs. The payload is only the revision; the document is fetched.
         final deskRevision = payload['revision'];

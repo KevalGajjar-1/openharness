@@ -120,24 +120,22 @@ shared 10-point upper corners, 8-point outward lower shoulders and 6-point top
 inset. Keep space after `+` available for dragging the window. Scroll overflow
 and reveal the selected tab on keyboard navigation. Narrow viewports can show
 smaller tabs while preserving their controls.
-Hovering a tab reveals Agent Messages' 💬 and × at its right, 💬 just left of ×
-([Agent Messages](../../docs/design/2026-10-10-agent-messages.md)); its status
-stays. Tabs show no shortcut hint, and holding Command changes nothing on them.
-At rest a tab shows only its name and status; traffic between its agents shows
-nothing on it, since messages arrive when they arrive. The hover 💬 is grey while
-off and in Agent Messages' color (the accent blue, `AppPalette.accentOnSurface`)
-while on; its tooltip says what a click
-does ("Agent messages off · click to turn on", "Agent messages on · click to
-turn off"), and a click toggles that
-tab's flag at once, going back — with a notice — if the backend refuses. Only a
-tab the desk holds has a 💬 (not the Store, Devices, Companions, an orchestrator
-or a draft tab), and only once the daemon and backend have answered for Agent
-Messages; an older CLI or backend shows none. Hovering never changes the tab
-width. At rest the name and status have the whole tab, so a 128-point tab shows
-an ordinary name whole beside its status; hovered, a name that would run into 💬
-and × moves left only as far as they need, then gives up its tail. × and 💬 are
-16-point-wide, 32-point-tall targets with a 3-point dead gap between them. The tab's menu and File carry Agent Messages (a checkmark)
-and Show Agent Messages beside Rename Tab and Close Tab. Cmd-W, remapped
+Hovering a tab reveals × at its right; its status stays. Tabs show no shortcut
+hint, and holding Command changes nothing on them. A tab shows nothing of
+[Agent Messages](../../docs/design/2026-10-10-agent-messages.md), at rest or
+hovered: traffic between its agents shows nothing on it, since messages arrive
+when they arrive, and there is no on/off on the tab. Its 💬 beside × was easy to
+hit by mistake and turned the tab off, failing a message that was waiting
+(owner, 2026-10-12); whether agents in the same tab may message each other is
+now one switch per computer, Settings ▸ Agents, on by default. Hovering never
+changes the tab width. At rest the name and status have the whole tab, so a
+128-point tab shows an ordinary name whole beside its status; hovered, a name
+that would run into × moves left only as far as it needs, then gives up its
+tail. × is a 20-point-wide, 32-point-tall target. The tab's menu and File carry
+Show Agent Messages beside Rename Tab and Close Tab, only for a tab the desk
+holds (not the Store, Devices, Companions, an orchestrator or a draft tab) and
+only once the daemon and backend have answered for Agent Messages; an older CLI
+or backend shows none. Cmd-W, remapped
 shortcuts, native menu access, and middle-click closing remain available.
 Preserve reorder, rename, keyboard focus, and terminal sessions. Cmd-T opens a
 tab. Cmd-O opens the shared picker with `#` for projects; Cmd-P opens it directly

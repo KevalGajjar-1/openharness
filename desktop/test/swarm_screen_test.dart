@@ -109,8 +109,8 @@ void main() {
       await mouse.moveTo(tester.getCenter(label));
       await tester.pumpAndSettle();
       expect(close.hitTestable(), findsOneWidget);
-      // Hover reveals × (and 💬 where offered); tabs show no shortcut, and a
-      // name with room keeps its place.
+      // Hover reveals ×; tabs show no shortcut, and a name with room keeps
+      // its place.
       expect(find.text('⌘1'), findsNothing);
       expect(find.text('⌘2'), findsNothing);
       expect(tester.getRect(label), nameBounds);
