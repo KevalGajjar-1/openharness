@@ -286,6 +286,28 @@ describe('harness send', () => {
     expect((history.messages as Array<{ statuses: unknown[] }>)[0].statuses).toEqual([expect.objectContaining({ machineId: 'm2', agentId: 'phone', state: 'delivered', via: 'hook' })])
     t.service.stop()
   })
+
+  it('keeps how another machine\'s agent got a message, read with `harness send` too, and nothing else', async () => {
+    vi.useFakeTimers()
+    let via: unknown = 'read'
+    const t = setup({ rpc: async (target, payload) => {
+      if (payload.action === 'who') return { agents: [{ agentId: 'phone', name: 'phone', engine: 'claude' }] }
+      if (payload.action === 'deliver') return { statuses: [{ messageId: (payload.message as { id: string }).id, agentId: 'phone', state: 'queued' }] }
+      return { statuses: (payload.ids as string[]).map((messageId) => ({ messageId, agentId: 'phone', state: 'delivered', via })) }
+    } })
+    t.service.start()
+    await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'when you have a minute' })
+    t.tick(60_000)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    const statuses = async () => ((await t.ask({ action: 'history' })).messages as Array<{ statuses: unknown[] }>).at(-1)!.statuses
+    expect(await statuses()).toEqual([expect.objectContaining({ machineId: 'm2', agentId: 'phone', state: 'delivered', via: 'read' })])
+    via = 'typed'
+    await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'and another' })
+    t.tick(60_000)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(await statuses()).toEqual([expect.not.objectContaining({ via: expect.anything() })])
+    t.service.stop()
+  })
 })
 
 describe('a harness and the harnesses it started', () => {

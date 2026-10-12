@@ -423,12 +423,16 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (due.length) saveQuietly()
   }
 
-  /** What another machine said became of its agents' deliveries. */
+  /**
+   * What another machine said became of its agents' deliveries. Every way one arrives is kept: a message an agent
+   * read with `harness send` came back as a bare "delivered" to the machine that sent it, so its sender never saw
+   * that it was read (two machines, 2026-10-12).
+   */
   function applyRemote(machineId: string, statuses: unknown): void {
     for (const s of Array.isArray(statuses) ? statuses as Record<string, unknown>[] : []) {
       if (typeof s.messageId !== 'string' || typeof s.agentId !== 'string' || !['queued', 'delivered', 'failed'].includes(String(s.state))) continue
       const status: DeliveryStatus = { messageId: s.messageId, machineId, agentId: s.agentId, state: s.state as DeliveryStatus['state'],
-        ...(s.via === 'hook' || s.via === 'prompt' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
+        ...(s.via === 'hook' || s.via === 'prompt' || s.via === 'read' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
       if (store.status(status)) tellWindows(status.messageId)
     }
   }
