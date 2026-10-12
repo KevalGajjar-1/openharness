@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -520,6 +520,77 @@ describe('agent_create with a receipt', () => {
     await vi.waitFor(() => expect(replies).toStrictEqual([{ creationId: CREATION, state: 'failed', preparedFolder: '/projects/prepared', failure: { code: 'ENGINE_MISSING' } }]))
   })
 
+  it('waits for a new project\'s engine to be installed before making its folder, then launches in it', async () => {
+    // A fresh Ubuntu VM (2026-10-12): `harness new codex scratch1` was refused at once, its folder made, saying the
+    // launch would continue after the install; nothing did, and the folder then refused the same command.
+    const installing = { ok: false as const, error: 'NATIVE_LAUNCH_HELD' as const, unavailable: 'native' as const, installing: true as const,
+      detail: 'Installing Codex. The harness starts once it is installed.' }
+    const prepareEngine = vi.fn<NonNullable<LaunchRequestDeps['prepareEngine']>>().mockResolvedValueOnce(installing)
+      .mockResolvedValue({ ok: true, launch: {} as never })
+    const dispatch = vi.fn(async () => ({ ok: true as const, session: session('new-agent') }))
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>(async () => ({ ok: true, dispatch }))
+    const { ask, replies, create, deps } = setup({ prepareCreate, prepareEngine })
+    const payload = { engine: 'codex', projectSource: 'new', projectName: 'scratch1', creationId: CREATION, prompt: 'Reply with pong' }
+    await ask(payload)
+    await vi.waitFor(() => expect(replies[0]).toMatchObject({ state: 'pending', held: { service: 'install', detail: installing.detail } }))
+    expect(prepareProjectFolder).not.toHaveBeenCalled()
+    expect(deps.receipts.pendingIntent(CREATION)!.request).toMatchObject({ projectFolder: { source: 'new', name: 'scratch1' }, input: { cwd: '' } })
+    await ask(payload)
+    await vi.waitFor(() => expect(replies[1]).toMatchObject({ state: 'created', agent: { id: 'new-agent' } }))
+    expect(prepareEngine).toHaveBeenCalledWith('codex', expect.objectContaining({ prompt: 'Reply with pong' }), expect.objectContaining({ id: CREATION }))
+    expect(prepareProjectFolder).toHaveBeenCalledOnce()
+    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/projects/prepared', prompt: 'Reply with pong' }),
+      expect.objectContaining({ id: CREATION, label: expect.stringMatching(/^harness-codex-/) }), { local: true })
+    expect(dispatch).toHaveBeenCalledOnce()
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('makes no folder for a new project cancelled while its engine was being made ready', async () => {
+    let prepare!: Parameters<typeof pendingLaunches.createPendingLaunches>[0]['prepare']
+    const factory = pendingLaunches.createPendingLaunches
+    vi.spyOn(pendingLaunches, 'createPendingLaunches').mockImplementation(deps => { prepare = deps.prepare; return factory(deps) })
+    let current = true
+    const prepareEngine = vi.fn<NonNullable<LaunchRequestDeps['prepareEngine']>>(async () => { current = false; return { ok: true, launch: {} as never } })
+    setup({ prepareCreate: vi.fn(), prepareEngine })
+    expect(await prepare({ kind: 'native-create-v1', input: { engine: 'codex', cwd: '' }, projectFolder: { source: 'new', name: 'scratch1' },
+      label: 'harness-codex-fixture', local: true }, { id: CREATION, current: () => current, hold: vi.fn() })).toBeNull()
+    expect(prepareProjectFolder).not.toHaveBeenCalled()
+  })
+
+  it('refuses a new project whose engine could not be installed, before any folder exists', async () => {
+    const prepareEngine = vi.fn<NonNullable<LaunchRequestDeps['prepareEngine']>>(async () => ({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native',
+      refusal: 'ENGINE_INSTALL_FAILED', detail: 'Codex could not be installed: getaddrinfo ENOTFOUND registry.npmjs.org' }))
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>()
+    const { ask, replies } = setup({ prepareCreate, prepareEngine })
+    await ask({ engine: 'codex', projectSource: 'new', projectName: 'scratch1', creationId: CREATION })
+    await vi.waitFor(() => expect(replies).toStrictEqual([{ creationId: CREATION, state: 'failed',
+      failure: { code: 'ENGINE_INSTALL_FAILED', detail: 'Codex could not be installed: getaddrinfo ENOTFOUND registry.npmjs.org' } }]))
+    expect(prepareProjectFolder).not.toHaveBeenCalled()
+    expect(prepareCreate).not.toHaveBeenCalled()
+  })
+
+  it('removes the empty folder a new project made when nothing starts in it, and keeps one that has anything', async () => {
+    const made = join(root.projects, 'scratch1')
+    vi.mocked(prepareProjectFolder).mockImplementation(async () => { mkdirSync(made); return made })
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>(async () => ({ ok: false, error: 'CODEX_CLI_TOO_OLD', detail: 'Update codex.' }))
+    const { ask, replies } = setup({ prepareCreate })
+    await ask({ engine: 'codex', projectSource: 'new', projectName: 'scratch1', creationId: CREATION })
+    await vi.waitFor(() => expect(replies).toStrictEqual([{ creationId: CREATION, state: 'failed', failure: { code: 'CODEX_CLI_TOO_OLD', detail: 'Update codex.' } }]))
+    expect(existsSync(made)).toBe(false)
+    prepareCreate.mockImplementationOnce(async () => { writeFileSync(join(made, 'notes.md'), 'kept'); return { ok: false, error: 'CODEX_CLI_TOO_OLD' } })
+    await ask({ engine: 'codex', projectSource: 'new', projectName: 'scratch1', creationId: `${CREATION}-2` })
+    await vi.waitFor(() => expect(replies[1]).toStrictEqual({ creationId: `${CREATION}-2`, state: 'failed', preparedFolder: made, failure: { code: 'CODEX_CLI_TOO_OLD' } }))
+    expect(existsSync(join(made, 'notes.md'))).toBe(true)
+  })
+
+  it('holds a launch whose engine Harness is installing under install', async () => {
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>(async () => ({ ok: false, error: 'NATIVE_LAUNCH_HELD',
+      unavailable: 'native', installing: true, detail: 'Installing Codex. The harness starts once it is installed.' }))
+    const { ask, replies } = setup({ prepareCreate })
+    await ask({ engine: 'codex', cwd: '/fixture/work', creationId: CREATION })
+    await vi.waitFor(() => expect(replies[0]).toMatchObject({ state: 'pending', held: { service: 'install', detail: 'Installing Codex. The harness starts once it is installed.' } }))
+  })
+
   it('trusts only a folder it just made empty, or a worktree of a repository the engine already trusts', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { ask, replies } = setup()
@@ -647,7 +718,8 @@ describe('durable model request validation', () => {
     const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>()
     const { deps, requests, create } = setup({ prepareCreate })
     const records = [{ kind: 'future-kind' }, { kind: 'model-create-v1', local: true, input: {}, selection: {} },
-      { kind: 'native-create-v1' }, { kind: 'native-create-v1', local: true, input: {}, label: 'harness-claude-fixture' }]
+      { kind: 'native-create-v1' }, { kind: 'native-create-v1', local: true, input: {}, label: 'harness-claude-fixture' },
+      { kind: 'native-create-v1', local: true, input: { engine: 'claude', cwd: '' }, label: 'harness-claude-fixture', projectFolder: { source: 7 } }]
     const held = { service: 'models', detail: 'Waiting for the model.' }
     for (const [n, request] of records.entries()) {
       await deps.receipts.runIntent(`${CREATION}-${n}`, creationFingerprint(request), request, held, async () => null)

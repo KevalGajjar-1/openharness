@@ -465,8 +465,13 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it
       // (the review of #1180). What it waits for is said as it changes: the daemon's own words, which used to stay in
       // the daemon while this said only "could not confirm" (OpenCode and Codex held for good in clean VMs, 2026-10-11).
-      let said = ''
-      for (let i = 0; i < 30 && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+      // An engine Harness is installing for this launch (a hold under `install`) is waited for up to five minutes,
+      // and the launch then gets its minute: a minute in all ended a Codex install as it finished (a fresh Ubuntu VM,
+      // 2026-10-12, where it took about that).
+      const installing = (status: Record<string, unknown>) => (status.held as { service?: unknown } | undefined)?.service === 'install'
+      let said = '', polls = 30
+      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+        if (installing(result)) polls = Math.min(180, Math.max(polls, i + 30))
         const reason = holdReason(result)
         if (reason && reason !== said && !args.json) deps.error(reason)
         said = reason || said
@@ -478,15 +483,17 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // otherwise answers what became of it, which is then the answer here.
       if (result.state === 'pending') {
         const reason = holdReason(result) || said
+        const install = installing(result)
+        const why = install ? `Harness is still installing ${engineName(String(payload.engine))}.`
+          : `Harness did not start the harness ${polls > 30 ? 'in time' : 'within a minute'}${reason ? `: ${reason}` : '.'}`
         const cancelled = await session.request('agent_create_cancel', { creationId: payload.creationId }).catch(() => null)
         if (cancelled?.state === 'cancelled') {
-          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
-            + 'The request is cancelled, so it will not start later.')
+          throw new Error(`${why} ${install ? 'Run the same command again in a minute; this request is cancelled' : 'The request is cancelled'}, `
+            + 'so it will not start later.')
         }
         // No answer (a daemon that predates the cancel): the request is still saved, and may start later.
         if (typeof cancelled?.state !== 'string' || cancelled.state === 'pending') {
-          throw new Error(`Harness did not start the harness within a minute${reason ? `: ${reason}` : '.'} `
-            + 'It is still saved and may start later by itself: check with `harness ps` before starting another.')
+          throw new Error(`${why} It is still saved and may start later by itself: check with \`harness ps\` before starting another.`)
         }
         // Too late to cancel: what became of it (created, refused, or claimed and starting now) is the answer.
         result = cancelled

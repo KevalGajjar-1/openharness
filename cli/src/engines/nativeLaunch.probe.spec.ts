@@ -96,5 +96,5 @@ it('reads help an engine prints to standard error, as OpenCode 1.19.0 does', asy
 it('says in the engine\'s own words why an engine that ran and failed cannot run', async () => {
   fixture.help = 'broken'
   expect(await inspectNativeLaunch('codex', { permissionMode: 'auto' })).toEqual({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native',
-    detail: 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory', cannotRun: true })
+    detail: 'Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory', refusal: 'ENGINE_CANNOT_RUN' })
 }, 15_000)
