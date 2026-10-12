@@ -381,7 +381,6 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     }
   }
 
-  /** The last messages a harness sent or was sent, oldest first, as `harness send` lists them. */
   /**
    * What `harness send` alone gives an agent besides the roster: every message still waiting for it, which it has
    * now read, then its last few. An agent whose engine started before Agent Messages never runs the hook and, always
