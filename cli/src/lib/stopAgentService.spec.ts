@@ -81,7 +81,7 @@ it('cancels immediately, then joins the core pane commit before capturing the ru
   row.runtimes = [{ backend: 'tmux', paneId: '%90' }]
   committed()
   await stopping
-  expect(deps.tmuxBackend!.kill).toHaveBeenCalledWith({ backend: 'tmux', paneId: '%90' })
+  expect(deps.tmuxBackend!.kill).toHaveBeenCalledWith({ backend: 'tmux', paneId: '%90' }, expect.any(Function))
 })
 it('storage failure leaves the live process and registry untouched', async () => {
   vi.spyOn(stoppedAgents, 'save').mockImplementation(() => { throw new Error('disk full') })
@@ -248,7 +248,7 @@ it('only signals through the validated process deleter and does not erase a newe
   row.runtimes.push({ backend: 'unknown', endpointId: 'fixture', paneId: '2' } as any)
   await createStopAgentService(deps)(row.agentId)
   expect(signal).toHaveBeenCalledExactlyOnceWith(77, 'SIGTERM'); expect(deps.stopJobs.has(row.agentId)).toBe(true)
-  expect(deps.tmuxBackend!.kill).toHaveBeenCalledExactlyOnceWith({ backend: 'tmux', paneId: '%44' })
+  expect(deps.tmuxBackend!.kill).toHaveBeenCalledExactlyOnceWith({ backend: 'tmux', paneId: '%44' }, expect.any(Function))
 })
 
 it.each(['claude', 'codex'] as const)('captures an unbound %s conversation before deleting its process', async engine => {
