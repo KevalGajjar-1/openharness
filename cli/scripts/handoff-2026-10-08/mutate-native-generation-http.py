@@ -43,8 +43,8 @@ mutations = [
     ('claim loses the original generation record proof', server, [
         ('        verifyGeneration()', '')], http, 'both generation copies disappear after claim', [
         ('src/engines/kit/nativeHookJournal.ts', [
-            ('return () => { before.verifyRecords(); record.verify(); witness.verify() }',
-             'return () => { record.verify(); witness.verify() }')])]),
+            ('const verify = () => { before.verifyRecords(); verifyOutside(); verifyMirror(); record.verify(); witness.verify() }',
+             'const verify = () => { verifyOutside(); verifyMirror(); record.verify(); witness.verify() }')])]),
     ('kernel identity is not refreshed after confirmation', server, [
         ('if (handlers.readNativeHookOwner) verifyNativeOwner = (await handlers.readNativeHookOwner(row, context.owner)).verify', '')], http, 'reprobes native birth'),
     ('matching Stop depends on new normal intake', server, [
@@ -68,11 +68,11 @@ mutations = [
     ('fresh read replays the controller callback', server, [
         ('if (publish) handlers.onNativeGenerations!', 'handlers.onNativeGenerations!')], http, 'fresh native authority'),
     ('fresh read republishes admission and attach state', server, [
-        ('confirmedState(context, captured, false)', 'confirmedState(context, captured, true)')], http, 'fresh native authority'),
+        ('nativeGenerationState(input, false)', 'nativeGenerationState(input, true)')], http, 'fresh native authority'),
     ('fresh read lends authority during pending admission', server, [
         ("if (state.pending) throw new IdentityReadUnavailable('native generation admission is still pending')", '')], http, 'fresh generation authority while pending'),
     ('fresh read follows a mutable requested binding', server, [
-        ('const original = Object.freeze({ ...input })', 'const original = input')], http, 'fresh native authority'),
+        ('const original = Object.freeze({ ...input })\n    const row', 'const original = input\n    const row')], http, 'fresh native authority'),
 ]
 environment = {**os.environ, 'TZ': 'UTC', 'TMPDIR': '/tmp'}
 for key in list(environment):

@@ -68,7 +68,7 @@ it('atomically retains all original nonterminal targets and gives only the publi
   expect(result.dispatch(dispatch)).toBe('sent once')
   expect(() => result.dispatch(dispatch)).toThrow('already consumed')
   expect(dispatch).toHaveBeenCalledOnce()
-  expect(await journal().recordCancellation(input)).toEqual({ recorded: false })
+  expect(await journal().recordCancellation(input)).toMatchObject({ recorded: false })
   expect((await journal().snapshot()).length).toBe(recovered.length)
 })
 
@@ -85,7 +85,7 @@ it('retains an empty-target barrier and the immutable original request across re
   expect(recovered.generations.size).toBe(0)
   expect(recovered.cancellations.get(expected.requestId)).toEqual(expected)
   expect(recovered.controlReserved).toBe(false)
-  expect(await journal().recordCancellation(expected)).toEqual({ recorded: false })
+  expect(await journal().recordCancellation(expected)).toMatchObject({ recorded: false })
 })
 
 it('keeps an older prefix exact and never interrupts after newer observations', async () => {
@@ -137,7 +137,7 @@ it.each(['record', 'witness', 'predecessor'] as const)('retains original publica
   expect(replaced).toBe(true)
   expect(effect).not.toHaveBeenCalled()
   // Recovery can retain the logical barrier, but never reconstructs execution authority.
-  expect(await journal().recordCancellation(input)).toEqual({ recorded: false })
+  expect(await journal().recordCancellation(input)).toMatchObject({ recorded: false })
 })
 
 it.each(['outside', 'mirror'] as const)('retains the %s publication proof before append can read back equal replacement bytes', async changed => {
@@ -154,7 +154,7 @@ it.each(['outside', 'mirror'] as const)('retains the %s publication proof before
   await expect(owner.recordCancellation(input).then(result => { if (result.recorded) result.dispatch(effect) })).rejects.toThrow()
   expect(replaced).toBe(true)
   expect(effect).not.toHaveBeenCalled()
-  expect(await journal().recordCancellation(input)).toEqual({ recorded: false })
+  expect(await journal().recordCancellation(input)).toMatchObject({ recorded: false })
 })
 
 it.each(['owner', 'shutdown'] as const)('checks %s after the final disk read at both dispatch boundaries', async changed => {
@@ -202,7 +202,7 @@ it('does not give a retry dispatch permission after an uncertain visible publica
   expect((await journal().snapshot()).cancellations.get(input.requestId)).toEqual(input)
   await expect(journal().recordCancellation(input)).rejects.toThrow('disk unavailable')
   disk.fail = false
-  expect(await journal().recordCancellation(input)).toEqual({ recorded: false })
+  expect(await journal().recordCancellation(input)).toMatchObject({ recorded: false })
   expect((await journal().snapshot()).length).toBe(1)
 })
 

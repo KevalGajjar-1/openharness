@@ -642,7 +642,7 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         if (known) {
           if (JSON.stringify(known) !== JSON.stringify(request)) held('NATIVE_CANCELLATION_CONFLICT')
           await before.confirm(); before.verify()
-          return { recorded: false as const }
+          return { recorded: false as const, verify: () => { check(); before.verify(); checkOwner() } }
         }
         if ([...before.generations.values()].some(fact => fact.source.type === 'core' && fact.source.requestId === request.requestId)) {
           held('NATIVE_CANCELLATION_CONFLICT')
@@ -663,14 +663,14 @@ function createNativeHookLog({ directory, processKey, current = () => true,
         // prefix. Recovery never recreates it or retries an uncertain interrupt.
         const after = await snapshot(); await after.confirm(); after.verify(); verifyPublished(); checkOwner()
         if (JSON.stringify(after.cancellations.get(request.requestId)) !== JSON.stringify(request)) held('the retained cancellation changed')
+        const verify = () => { check(); verifyPublished(); after.verify(); checkOwner() }
         let used = false
-        return { recorded: true as const, targets,
+        return { recorded: true as const, targets, verify,
           dispatch: <T>(effect: (verify: () => void) => T): T => {
             if (used) held('the cancellation dispatch was already consumed')
             used = true
             if (before.frontier.index !== request.frontier.index || before.frontier.digest !== request.frontier.digest
               || after.length !== before.length + 1) held('the cancellation dispatch frontier changed')
-            const verify = () => { check(); verifyPublished(); after.verify(); checkOwner() }
             verify()
             return effect(verify)
           },

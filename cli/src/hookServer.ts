@@ -19,6 +19,7 @@ import { createNativeGenerationSource } from './core/turns/nativeGenerationSourc
 import type { NativeGenerationOwner, NativeGenerationSource } from './core/turns/nativeGenerations.js'
 import { nativeHookGeneration } from './engines/kit/nativeHookGeneration.js'
 import { nativeGenerationFactState, type NativeGenerationFactRecord } from './engines/kit/nativeGenerationFact.js'
+import { validNativeGenerationCancellation, type NativeGenerationCancellation } from './engines/kit/nativeGenerationCancellation.js'
 import { processIdentityKey } from './lib/terminalRuntime.js'
 import { isRecentlyDeleted } from './lib/deletedSessions.js'
 import { registry, type RegisterInput, type RegisteredSession } from './lib/registry.js'
@@ -348,13 +349,19 @@ export interface HookServerOptions {
   deferNativeRecovery?: boolean
 }
 
+export type NativeCancellationResult = { source: NativeGenerationSource } & (
+  | { recorded: false }
+  | { recorded: true; targets: readonly string[]; dispatch<T>(effect: (verify: () => void) => Promise<T>): Promise<T> }
+)
+
 export function startHookServer(
   port: number,
   handlers: HookServerHandlers,
   options: HookServerOptions = {},
 ): Promise<{ server: http.Server; port: number; localSocket: LocalSocketServer | null; startRecovery(): void;
   stopRecovery(): void; recoveryReady(row: RegisteredSession): boolean;
-  readNativeGenerations(owner: NativeGenerationOwner): Promise<NativeGenerationSource> }> {
+  readNativeGenerations(owner: NativeGenerationOwner): Promise<NativeGenerationSource>;
+  cancelNativeGenerations(owner: NativeGenerationOwner, request: NativeGenerationCancellation): Promise<NativeCancellationResult> }> {
   const hookCredential = loadOrCreateHookCredential(env.ADAPTER_DATA_DIR)
   const admissions = createPendingAdmissions({ isProcessCurrent: (key, scope) => admissionProcessScope(registry.byAgent(key)) === scope })
   let admissionArrival = 0
@@ -502,7 +509,8 @@ export function startHookServer(
       context.restored.add(id)
     }
   }
-  const confirmedState = async (context: DurableProcess, row: RegisteredSession, publish: boolean) => {
+  const confirmedState = async (context: DurableProcess, row: RegisteredSession, publish: boolean,
+    publicationGuard?: (source: NativeGenerationSource) => void) => {
     if (publish) ready(context, false)
     context.confirming++
     try {
@@ -548,7 +556,7 @@ export function startHookServer(
     }
     const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)
     let source: NativeGenerationSource | undefined
-    if (!publish || snapshot.cancellations.size || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
+    if (!publish || publicationGuard || snapshot.cancellations.size || [...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
       if (publish && !handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
       const original = { agentId: owner.agentId, sessionId: owner.sessionId, processKey: context.key }
       const retained = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()
@@ -563,9 +571,11 @@ export function startHookServer(
           throw new IdentityReadUnavailable('the native generation binding changed')
         }
       }
-      verify()
       source = Object.freeze({ ...retained, verify })
+      publicationGuard?.(source)
+      verify()
       if (publish) handlers.onNativeGenerations!(structuredClone(owner), source, pending)
+      publicationGuard?.(source)
       verify()
     }
     if (publish) {
@@ -577,10 +587,8 @@ export function startHookServer(
   }
   const confirmedSnapshot = async (context: DurableProcess, row: RegisteredSession) =>
     (await confirmedState(context, row, true)).snapshot
-  /** Async effects must obtain a fresh complete source. Reusing the notification
-   * proof after a drain can outlive its kernel budget; reading must not notify
-   * the controller recursively or release an attach/admission barrier. */
-  const readNativeGenerations = async (input: NativeGenerationOwner): Promise<NativeGenerationSource> => {
+  const nativeGenerationState = async (input: NativeGenerationOwner, publish: boolean,
+    retainedGuard?: (source: NativeGenerationSource) => void) => {
     const original = Object.freeze({ ...input })
     const row = registry.byAgent(original.agentId)
     if (closed || !row?.active || row.engine !== 'cursor' || row.sessionId !== original.sessionId) {
@@ -591,15 +599,59 @@ export function startHookServer(
     if (!context || durableKey(captured) !== original.processKey) {
       throw new IdentityReadUnavailable('the original native generation process is not recovered')
     }
-    const state = await confirmedState(context, captured, false)
-    if (state.pending) throw new IdentityReadUnavailable('native generation admission is still pending')
-    const source = state.source!
-    if (source.owner.agentId !== original.agentId || source.owner.sessionId !== original.sessionId
-      || source.owner.processKey !== original.processKey) {
-      throw new IdentityReadUnavailable('the original native generation binding changed during confirmation')
+    const verifyRequested = (source: NativeGenerationSource) => {
+      if (source.owner.agentId !== original.agentId || source.owner.sessionId !== original.sessionId
+        || source.owner.processKey !== original.processKey) {
+        throw new IdentityReadUnavailable('the original native generation binding changed during confirmation')
+      }
+      retainedGuard?.(source)
     }
+    // Confirm the frozen request before callbacks and admission restoration can
+    // observe a registry row that rebound during the preceding disk/native reads.
+    const state = await confirmedState(context, captured, publish, verifyRequested)
+    const source = state.source!
+    verifyRequested(source)
     source.verify()
-    return source
+    return { source, context, pending: state.pending }
+  }
+  /** Async effects must obtain a fresh complete source. Reusing the notification
+   * proof after a drain can outlive its kernel budget; reading must not notify
+   * the controller recursively or release an attach/admission barrier. */
+  const readNativeGenerations = async (input: NativeGenerationOwner): Promise<NativeGenerationSource> => {
+    const state = await nativeGenerationState(input, false)
+    if (state.pending) throw new IdentityReadUnavailable('native generation admission is still pending')
+    state.source.verify()
+    return state.source
+  }
+  const cancelNativeGenerations = async (input: NativeGenerationOwner, value: NativeGenerationCancellation): Promise<NativeCancellationResult> => {
+    const original = Object.freeze({ ...input }), request = structuredClone(value)
+    if (!validNativeGenerationCancellation(request) || request.agentId !== original.agentId || request.conversationId !== original.sessionId) {
+      throw new IdentityReadUnavailable('the original native cancellation owner is invalid')
+    }
+    // Pending admission cannot stop an explicit Cancel from retaining its hold.
+    // The physical interrupt still needs a settled, fresh native proof below.
+    const before = await nativeGenerationState(original, false)
+    const retained = await before.context.journal.recordCancellation(request)
+    const verifyRetained = (source: NativeGenerationSource) => {
+      retained.verify()
+      if (JSON.stringify(source.cancellations?.find(saved => saved.requestId === request.requestId)) !== JSON.stringify(request)) {
+        throw new IdentityReadUnavailable('the original native cancellation is missing from its confirmed source')
+      }
+    }
+    const after = await nativeGenerationState(original, true, verifyRetained)
+    verifyRetained(after.source)
+    after.source.verify()
+    if (!retained.recorded) return { recorded: false, source: after.source }
+    return { recorded: true, source: after.source, targets: retained.targets,
+      dispatch: async <T>(effect: (verify: () => void) => Promise<T>): Promise<T> => retained.dispatch(async verifyJournal => {
+        // Consume before the first await. Even if process evidence or the caller
+        // fails, retry/recovery cannot acquire a second interrupt capability.
+        const fresh = await readNativeGenerations(original)
+        const verify = () => { verifyJournal(); fresh.verify() }
+        verify()
+        return effect(verify)
+      }),
+    }
   }
   const verifiedMutation = async (body: BoundHookBody): Promise<RegisteredSession | null> => {
     if (closed) return null
@@ -1820,13 +1872,13 @@ export function startHookServer(
       console.log(`[hooks] listening on 127.0.0.1:${actual} (SessionStart/SessionEnd callbacks)`)
       if (!options.deferNativeRecovery) startRecovery()
       const socketPath = options.socketPath
-      if (!socketPath) { resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations }); return }
+      if (!socketPath) { resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations, cancelNativeGenerations }); return }
       // The private socket is mandatory when opting into multi-user startup. A duplicate daemon
       // must not survive on a random port while another one owns this user's socket.
       listenLocalSocket(handle, socketPath).then(
         (localSocket) => {
           console.log(`[hooks] listening on ${socketPath}`)
-          resolve({ server, port: actual, localSocket, startRecovery, stopRecovery, recoveryReady, readNativeGenerations })
+          resolve({ server, port: actual, localSocket, startRecovery, stopRecovery, recoveryReady, readNativeGenerations, cancelNativeGenerations })
         },
         (error: unknown) => {
           if (options.allowPortFallback) {
@@ -1836,7 +1888,7 @@ export function startHookServer(
             return
           }
           console.warn(`[hooks] local socket unavailable (${socketPath}): ${error instanceof Error ? error.message : error}`)
-          resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations })
+          resolve({ server, port: actual, localSocket: null, startRecovery, stopRecovery, recoveryReady, readNativeGenerations, cancelNativeGenerations })
         },
       )
     })

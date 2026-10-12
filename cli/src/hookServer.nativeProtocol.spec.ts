@@ -1,7 +1,7 @@
 /** Versioned ingress on private HTTP, Registry and catalog roots. Kernel identity
  * and fsync scheduling are injected; no daemon, real engine or tmux is contacted. */
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,10 +10,12 @@ import { nativeHookAcknowledgement } from './engines/kit/nativeHookClientProtoco
 import { nativeHookOutboxShard } from './engines/kit/nativeHookOutbox.js'
 import type { HookServerHandlers } from './hookServer.js'
 import type { NativeGenerationSource } from './core/turns/nativeGenerations.js'
+import { fixtureNativeGenerationFact } from './testing/nativeGenerationFactFixture.js'
 
 const fault = vi.hoisted(() => ({ unavailable: false, afterRetain: undefined as (() => void) | undefined,
   afterFinish: undefined as (() => void) | undefined, afterGeneration: undefined as (() => void) | undefined,
   afterClaim: undefined as (() => void) | undefined, afterSourceConfirmation: undefined as (() => void) | undefined,
+  afterCancellation: undefined as (() => void) | undefined, omitCancellationSource: false,
   limitedStages: false, journalBytes: undefined as number | undefined,
   journals: [] as Array<ReturnType<typeof import('./engines/kit/nativeHookJournal.js')['createNativeHookJournal']>>,
   pools: [] as Array<ReturnType<typeof import('./engines/kit/nativeHookStaging.js')['createNativeHookStagePool']>>,
@@ -29,7 +31,8 @@ vi.mock('./core/turns/nativeGenerationSource.js', async original => {
   const actual = await original<typeof import('./core/turns/nativeGenerationSource.js')>()
   return { ...actual, createNativeGenerationSource: (options: Parameters<typeof actual.createNativeGenerationSource>[0]) => {
     const source = actual.createNativeGenerationSource(options)
-    return { read: async () => { const result = await source.read(); fault.afterSourceConfirmation?.(); return result } }
+    return { read: async () => { const result = await source.read(); fault.afterSourceConfirmation?.();
+      return fault.omitCancellationSource ? Object.freeze({ ...result, cancellations: Object.freeze([]) }) : result } }
   } }
 })
 vi.mock('node:fs', async original => ({ ...await original<object>(),
@@ -48,6 +51,8 @@ vi.mock('./engines/kit/nativeHookJournal.js', async original => {
       const delivery = await journal.retain(...input); fault.afterRetain?.(); return delivery
     }, recordGeneration: async (...input: Parameters<typeof journal.recordGeneration>) => {
       await journal.recordGeneration(...input); fault.afterGeneration?.()
+    }, recordCancellation: async (...input: Parameters<typeof journal.recordCancellation>) => {
+      const retained = await journal.recordCancellation(...input); fault.afterCancellation?.(); return retained
     }, claim: async (...input: Parameters<typeof journal.claim>) => {
       const claim = await journal.claim(...input)
       fault.afterClaim?.()
@@ -85,6 +90,7 @@ async function close() {
 beforeEach(async () => {
   live = true; fault.unavailable = false; fault.afterRetain = undefined; fault.afterFinish = undefined; fault.afterGeneration = undefined
   fault.afterClaim = undefined; fault.afterSourceConfirmation = undefined; fault.limitedStages = false; fault.pools = []; fault.journalBytes = undefined; fault.journals = []
+  fault.afterCancellation = undefined; fault.omitCancellationSource = false
   key = `${boot}\u0000codex\u00005100\u000012345`
   root = realpathSync(mkdtempSync(join(tmpdir(), 'native-protocol-http-')))
   for (const [name, value] of Object.entries({ HOME: join(root, 'home'), ADAPTER_DATA_DIR: join(root, 'data'),
@@ -201,6 +207,180 @@ it('reads fresh native authority without replaying notifications or changing rea
   expect(reader).toHaveBeenCalledTimes(2)
   expect(observed).not.toHaveBeenCalled(); expect(recovered).not.toHaveBeenCalled()
   expect(f.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true)
+}, 20_000)
+
+async function cancelRequest(f: Awaited<ReturnType<typeof fixture>>) {
+  const owner = { agentId, sessionId, processKey: key }
+  const source = await f.started.readNativeGenerations(owner)
+  return { owner, request: { requestId: 'fixture-user-cancellation', nonce: 'fixture-cancellation-nonce', agentId,
+    conversationId: sessionId, frontier: source.frontier! } }
+}
+
+it('retains native Cancel before interrupting once with renewed process evidence', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), observed = vi.fn()
+  let revision = 1
+  const reader = vi.fn(async () => {
+    const captured = revision
+    return { key, evidence: nativeEvidence, verify() { if (captured !== revision) throw Error('fixture process proof expired') } }
+  })
+  const f = await fixture({ onNativeGenerations: observed, readNativeHookOwner: reader })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f), expected = structuredClone(request)
+  observed.mockClear()
+  const retaining = f.started.cancelNativeGenerations(owner, request)
+  owner.sessionId = 'caller changed its binding'; request.nonce = 'caller-changed-nonce'
+  await expect(retaining).resolves.toMatchObject({ recorded: true, targets: ['generation-one'] })
+  const retained = await retaining
+  if (!retained.recorded) throw Error('expected original publisher')
+  expect(retained.source.cancellations).toEqual([expected])
+  expect(retained.source.facts.some(fact => fact.kind === 'cancelled')).toBe(true)
+  expect(observed).toHaveBeenCalledOnce()
+  observed.mockClear(); reader.mockClear(); revision++
+  expect(() => retained.source.verify()).toThrow('proof expired')
+  const effect = vi.fn(async (verify: () => void) => { await Promise.resolve(); verify(); return 'private C-c witness' })
+  await expect(retained.dispatch(effect)).resolves.toBe('private C-c witness')
+  expect(reader).toHaveBeenCalledTimes(2)
+  expect(observed).not.toHaveBeenCalled()
+  await expect(retained.dispatch(effect)).rejects.toThrow('already consumed')
+  expect(effect).toHaveBeenCalledOnce()
+  expect(f.stopped).not.toHaveBeenCalled()
+  expect(await f.started.cancelNativeGenerations(retained.source.owner, expected)).toMatchObject({ recorded: false })
+  expect(records().filter(record => record.event.kind === 'cancellation')).toHaveLength(1)
+}, 25_000)
+
+it('retains native Cancel during pending admission while withholding its interrupt', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), observed = vi.fn()
+  registry.register({ engine: 'cursor', sessionId, tmuxPane: '%1', cwd: root })
+  const f = await fixture({ onNativeGenerations: observed, hookAdmissionBlocked: () => true })
+  expect(await f.post(raw)).toMatchObject({ status: 200, body: { outcome: 'owned' } })
+  const journal = fault.journals[0], owner = { agentId, sessionId, processKey: key }
+  const request = { requestId: 'fixture-pending-cancellation', nonce: 'fixture-cancellation-nonce', agentId,
+    conversationId: sessionId, frontier: (await journal.snapshot()).frontier }
+  const retained = await f.started.cancelNativeGenerations(owner, request)
+  expect(retained).toMatchObject({ recorded: true, source: { cancellations: [request] } })
+  if (!retained.recorded) throw Error('expected original publisher')
+  expect(observed.mock.calls.at(-1)![2]).toBe(true)
+  const effect = vi.fn()
+  await expect(retained.dispatch(effect)).rejects.toThrow('admission is still pending')
+  await expect(retained.dispatch(effect)).rejects.toThrow('already consumed')
+  expect(effect).not.toHaveBeenCalled()
+  expect(await f.started.cancelNativeGenerations(owner, request)).toMatchObject({ recorded: false })
+  expect(f.registered).not.toHaveBeenCalled()
+}, 20_000)
+
+it('restores native Cancel after restart without regaining an interrupt capability', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'sessionStart', generationId: undefined }))
+  const f = await fixture({ onNativeGenerations: vi.fn() })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f), retained = await f.started.cancelNativeGenerations(owner, request)
+  expect(retained).toMatchObject({ recorded: true, targets: [] })
+  await close()
+  const observed = vi.fn(), restarted = await fixture({ onNativeGenerations: observed })
+  restarted.started.startRecovery()
+  await vi.waitFor(() => expect(observed.mock.calls.at(-1)?.[1].cancellations).toEqual([request]), { timeout: 5000 })
+  const retry = await restarted.started.cancelNativeGenerations(owner, request)
+  expect(retry).toMatchObject({ recorded: false, source: { facts: [], cancellations: [request] } })
+  expect('dispatch' in retry).toBe(false)
+  expect(restarted.registered).not.toHaveBeenCalled(); expect(restarted.stopped).not.toHaveBeenCalled()
+}, 20_000)
+
+it.each(['lost', 'record replaced', 'witness replaced', 'source omitted'] as const)(
+  'holds native Cancel before notification when its retained barrier is %s', async changed => {
+    const raw = JSON.stringify(cursorBody({ hookEvent: 'sessionStart', generationId: undefined })), observed = vi.fn()
+    const f = await fixture({ onNativeGenerations: observed })
+    await f.settle(raw)
+    f.started.startRecovery()
+    await vi.waitFor(() => expect(f.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true))
+    const { owner, request } = await cancelRequest(f)
+    observed.mockClear()
+    fault.afterCancellation = () => {
+      fault.afterCancellation = undefined
+      if (changed === 'source omitted') { fault.omitCancellationSource = true; return }
+      const history = join(directory(), readdirSync(directory()).find(name => /^\.native-hook-effects-\d{3}\.history$/.test(name))!)
+      const name = readdirSync(history).sort().at(-1)!, record = join(history, name), witness = join(history + '.witnesses', name)
+      expect(JSON.parse(readFileSync(record, 'utf8')).event.kind).toBe('cancellation')
+      if (changed === 'lost') { unlinkSync(record); unlinkSync(witness); return }
+      const file = changed === 'record replaced' ? record : witness, replacement = join(root, 'replacement')
+      writeFileSync(replacement, readFileSync(file), { mode: 0o600 }); renameSync(replacement, file)
+    }
+    await expect(f.started.cancelNativeGenerations(owner, request)).rejects.toThrow()
+    expect(observed).not.toHaveBeenCalled()
+    expect(f.started.recoveryReady(registry.byAgent(agentId)!)).toBe(false)
+  }, 20_000,
+)
+
+it('retains native Cancel identity on an exact retry before republishing its barrier', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'sessionStart', generationId: undefined })), observed = vi.fn()
+  const f = await fixture({ onNativeGenerations: observed })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f)
+  await f.started.cancelNativeGenerations(owner, request)
+  observed.mockClear()
+  fault.afterCancellation = () => {
+    fault.afterCancellation = undefined
+    const history = join(directory(), readdirSync(directory()).find(name => /^\.native-hook-effects-\d{3}\.history$/.test(name))!)
+    const record = join(history, readdirSync(history).sort().at(-1)!), replacement = join(root, 'replacement')
+    writeFileSync(replacement, readFileSync(record), { mode: 0o600 }); renameSync(replacement, record)
+  }
+  await expect(f.started.cancelNativeGenerations(owner, request)).rejects.toThrow()
+  expect(observed).not.toHaveBeenCalled()
+}, 20_000)
+
+it('does not publish native Cancel to a conversation rebound during confirmation', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), observed = vi.fn()
+  let rebind = false
+  const f = await fixture({ onNativeGenerations: observed, readNativeHookOwner: async () => {
+    if (rebind) { registry.byAgent(agentId)!.sessionId = 'replacement-conversation'; rebind = false }
+    return { key, evidence: nativeEvidence, verify() {} }
+  } })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f)
+  observed.mockClear()
+  fault.afterCancellation = () => { rebind = true; fault.afterCancellation = undefined }
+  await expect(f.started.cancelNativeGenerations(owner, request)).rejects.toThrow('binding changed during confirmation')
+  expect(observed).not.toHaveBeenCalled()
+  expect((await fault.journals[0].snapshot()).cancellations.get(request.requestId)).toEqual(request)
+}, 20_000)
+
+it('holds native Cancel without a confirmed write or a current original binding', async () => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), f = await fixture({ onNativeGenerations: vi.fn() })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f), before = records().length
+  for (const revised of [{ ...owner, agentId: 'foreign-agent' }, { ...owner, sessionId: 'foreign-conversation' }, { ...owner, processKey: 'foreign-process' }]) {
+    await expect(f.started.cancelNativeGenerations(revised, request)).rejects.toThrow('native')
+  }
+  for (const revised of [{ ...request, agentId: 'foreign-agent' }, { ...request, conversationId: 'foreign-conversation' }]) {
+    await expect(f.started.cancelNativeGenerations(owner, revised)).rejects.toThrow('cancellation owner is invalid')
+  }
+  fault.unavailable = true
+  await expect(f.started.cancelNativeGenerations(owner, request)).rejects.toThrow('confirmation unavailable')
+  fault.unavailable = false
+  expect(records()).toHaveLength(before)
+  const retained = await f.started.cancelNativeGenerations(owner, request)
+  expect(retained.recorded).toBe(true)
+  if (!retained.recorded) throw Error('expected original publisher')
+  live = false
+  const effect = vi.fn()
+  await expect(retained.dispatch(effect)).rejects.toThrow('original engine unavailable')
+  expect(effect).not.toHaveBeenCalled()
+}, 20_000)
+
+it.each(['binding', 'shutdown', 'append', 'native proof'] as const)('revokes native Cancel at the delayed interrupt boundary after %s changes', async changed => {
+  const raw = JSON.stringify(cursorBody({ hookEvent: 'preToolUse' })), f = await fixture({ onNativeGenerations: vi.fn() })
+  await f.settle(raw)
+  const { owner, request } = await cancelRequest(f), retained = await f.started.cancelNativeGenerations(owner, request)
+  if (!retained.recorded) throw Error('expected original publisher')
+  const effect = vi.fn()
+  await expect(retained.dispatch(async verify => {
+    await Promise.resolve()
+    if (changed === 'binding') registry.byAgent(agentId)!.sessionId = 'replacement-conversation'
+    else if (changed === 'shutdown') await close()
+    else if (changed === 'native proof') live = false
+    else await fault.journals[0].recordGeneration({ ...fixtureNativeGenerationFact('activity', 'fixture-late-activity', 'another-generation'),
+      agentId, conversationId: sessionId })
+    verify(); effect()
+  })).rejects.toThrow()
+  expect(effect).not.toHaveBeenCalled()
 }, 20_000)
 
 it.each(['unconfirmed', 'pending', 'process changed', 'binding changed'] as const)(

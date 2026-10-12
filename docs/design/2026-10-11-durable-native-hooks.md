@@ -729,6 +729,41 @@ correlation. Automatic restore, arrival order, a new PID or an uncorrelated prom
 hook cannot clear the saved barrier. Until those paths and private acceptance are
 complete, this remains an unfinished integration.
 
+The October 12 Cancel-port checkpoint joins the journal barrier to the recovered
+HookServer owner. It freezes the requested owner and cancellation before yielding,
+allows pending admission to retain a cancellation, and confirms the original
+publication identity and exact barrier membership before notifying core or
+restoring readiness. Equal-byte replacement, loss of both copies, an omitted
+barrier or conversation rebinding cannot publish cancellation success. Exact
+retries retain their original record proof but never receive another interrupt.
+Only the first publisher can dispatch, after a fresh non-notifying source read;
+pending admission withholds that interrupt, and the supplied verifier rechecks
+the retained journal and renewed native authority at the final effect boundary.
+This is still a port: it does not yet send physical C-c or activate the controller.
+
+Receipt `20261012T060942.849676Z-99621` passes TypeScript and all 173 affected
+HTTP, cancellation, source, projection, unchanged golden and architecture cases
+(183.7 seconds). All 25 prior HTTP assertion mutants pass in
+`20261012T061651.074101Z-65248`; that aggregate failed because the new empty-barrier
+readiness test had never started recovery and therefore always read false. The
+fixture now proves readiness before the fault. Its full 14-case Cancel baseline
+and all eleven Cancel-port assertion mutants pass in
+`20261012T062314.323234Z-48630` (125.9 seconds). The earlier sandbox-denied private
+HTTP run is not passing evidence. Independent review approved the corrected
+production scope conditional on these checks; final integration review remains
+open. Corrections and validation ran approximately 06:04–06:26 UTC; no merge or
+publication occurred.
+
+The next activation must switch Cursor history ingestion, busy state, input,
+tasks and recaps together. Replaying JSONL with a replay flag still reaches live
+input and recap consumers today; it needs a separate history-only route from
+first attach. Native content must join each fact to its exact retained intake,
+with late responses updating only their generation and unordered responses never
+silently selecting the latest arrival. Physical Cancel also needs an interrupt
+lane: the existing device writer guard excludes device-held writes but does not
+serialize legacy writers against one another. It must wait for actual writes,
+pin original terminal ownership, and retain the one-use verifier through dispatch.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,
