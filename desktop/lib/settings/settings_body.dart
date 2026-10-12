@@ -47,7 +47,6 @@ class SettingsBody extends StatelessWidget {
       SettingsSection.notifications => const NotificationsSection(),
       SettingsSection.experimental => ExperimentalSection(
         store: experimentalFeatures ?? notifier.experimentalFeatures,
-        openCodingMemory: notifier.openCodingMemoryConnection,
       ),
       SettingsSection.shortcuts => const ShortcutsSection(),
       SettingsSection.debug => const DebugSection(),
