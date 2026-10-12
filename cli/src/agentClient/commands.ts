@@ -21,7 +21,7 @@ import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import type { NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
-import { Ledger, ledgerPath, type Started } from './ledger.js'
+import { Ledger, ledgerPath, type Pending, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
 import { callerOf, clip, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
 
@@ -91,8 +91,17 @@ export const AGENTS_START_AGENTS_OFF = 'The person has turned off agents startin
 
 const ORPHAN = 'This pane\'s harness is no longer running, so nothing here may close or start harnesses. Only the person can.'
 
+/**
+ * A harness the caller asked for that has not started, as its machine says now: still on its way (`installing` while
+ * Harness installs its engine), or never started (`failed`, with why). `harness new` answers before an install is done,
+ * so an agent follows such a harness by its name with `ps` and `wait` until it starts by itself.
+ */
+export interface Asked { row: Pending; state: 'installing' | 'starting' | 'failed'; detail: string }
+
 interface Opened {
   where: Where; daemon: Daemon; frames: Frame[]; caller: Caller | null; ledger: Ledger; machine: string
+  /** The caller's harnesses asked for and not started (`Asked`). */
+  asked: Asked[]
   /** Run from a pane Harness made whose harness it no longer knows (closed, forgotten): what is left of an agent,
    *  a background job it started, say. Never the person: it may look, not close or start. */
   orphan: boolean
@@ -148,8 +157,69 @@ async function opened(s: Setup, includeStopped = false): Promise<Opened> {
     const orphan = !!s.pane && !!where.harnessPane && !inPane && !terminal
     // Not a harness: an agent outside Harness when its shell says so, even in a terminal of Harness's own.
     const caller = inPane ?? (orphan ? null : outsideCaller(s.env, where.machineId))
-    return { where, daemon, frames, caller, orphan, stopped: includeStopped, ledger: s.ledger(where.dataDir), machine: machineNameOf(where.dataDir) }
+    const ledger = s.ledger(where.dataDir)
+    const asked = caller ? await askAfter(s, where, daemon, ledger, caller) : []
+    return { where, daemon, frames, caller, orphan, stopped: includeStopped, ledger, machine: machineNameOf(where.dataDir), asked }
   } catch (error) { daemon.close(); throw error }
+}
+
+/** What a held creation waits for, in the machine's words (`held.detail`). */
+const heldDetail = (status: Record<string, unknown>): string => {
+  const held = status.held as { detail?: unknown } | undefined
+  return typeof held?.detail === 'string' ? held.detail.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 500) : ''
+}
+
+/** How it stands, from a creation's status: null once there is nothing left to follow (made, cancelled, unknown). */
+export function askedOf(row: Pending, status: Record<string, unknown>): Asked | null {
+  if (status.state === 'pending') {
+    const install = (status.held as { service?: unknown } | undefined)?.service === 'install'
+    return { row, state: install ? 'installing' : 'starting', detail: heldDetail(status) }
+  }
+  if (status.state !== 'failed') return null
+  const failure = (status.failure ?? {}) as { code?: unknown; detail?: unknown }
+  const detail = typeof failure.detail === 'string' && failure.detail ? failure.detail : typeof failure.code === 'string' ? failure.code : ''
+  return { row, state: 'failed', detail: detail.slice(0, 500) }
+}
+
+/**
+ * The caller's pending lines (ledger.ts `Pending`), asked of their machines: one now made is recorded as started by the
+ * caller, as `harness new` would have had it not answered first; the rest are what the caller still follows. A machine
+ * that cannot be asked keeps its line as starting: a second harness by that name is the risk here, not a missing row.
+ */
+async function askAfter(s: Setup, where: Where, daemon: Daemon, ledger: Ledger, caller: Caller): Promise<Asked[]> {
+  const asked: Asked[] = []
+  for (const row of ledger.pendingOf(caller, s.now())) {
+    const here = row.creation.machineId === where.machineId
+    let line: Daemon | null = here ? daemon : null
+    try {
+      line ??= await s.open(where, row.creation.machineId)
+      const status = await line.request('agent_create_status', { creationId: row.creation.creationId }, 8_000)
+      const agent = (status.agent ?? {}) as Frame
+      if (status.state === 'created' && typeof agent.id === 'string' && agent.id) {
+        ledger.append({ at: row.at, by: row.by, depth: row.depth,
+          child: { machineId: row.creation.machineId, agentId: agent.id, name: agent.name || row.creation.name, creationId: row.creation.creationId } })
+        continue
+      }
+      const now = askedOf(row, status)
+      if (now) asked.push(now)
+    } catch { asked.push({ row, state: 'starting', detail: '' }) }
+    finally { if (!here) line?.close() }
+  }
+  return asked
+}
+
+/** What the caller asked for by [name] that has not started: the latest, by the name it was given. */
+const askedNamed = (o: Opened, name: string): Asked | undefined => {
+  const wanted = name.trim().toLowerCase()
+  return o.asked.filter((a) => a.row.creation.name.toLowerCase() === wanted).at(-1)
+}
+
+/** One line on a harness that has not started: what it waits for, or why it never will. */
+function askedLine(env: NodeJS.ProcessEnv, a: Asked): string {
+  const name = a.row.creation.name, engine = engineName(a.row.creation.engine)
+  if (a.state === 'failed') return `${name} never started: ${a.detail || 'its machine refused it'}.`
+  const why = a.state === 'installing' ? `Harness is installing ${engine}` : `it is starting${a.detail ? ` (${a.detail.replace(/\.$/, '')})` : ''}`
+  return `${name} has not started yet: ${why}. It starts by itself; wait for it with ${step(env, 'wait', name)}.`
 }
 
 interface Target { daemon: Daemon; frame: Frame; machineId: string; machine: string; yours: boolean; remote: boolean }
@@ -193,6 +263,8 @@ async function target(s: Setup, o: Opened, name: string): Promise<Target> {
     if (!frame) { daemon.close(); throw new AgentClientError('GONE', `${elsewhere[0].name} is no longer on its machine.`) }
     return { daemon, frame, machineId: row.child.machineId, machine: row.child.machineId.slice(0, 8), yours: true, remote: true }
   }
+  const asked = askedNamed(o, name)
+  if (asked) throw new AgentClientError(asked.state === 'failed' ? 'NEVER_STARTED' : 'NOT_STARTED', askedLine(s.env, asked))
   throw new AgentClientError('UNKNOWN_HARNESS', `No harness named "${name}" on this machine. \`${step(s.env, 'ps')}\` lists them.`)
 }
 
@@ -316,6 +388,12 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
         if (asks.length) row.asks = asks.map((a) => clip(a.replace(/\s+/g, ' ').trim(), 200))
         if (about.length) row.about = about.join(' / ')
       }))
+      // Asked for and not started yet: listed by the name it was given, and what it waits for.
+      rows.unshift(...o.asked.map((a): Row => ({
+        name: a.row.creation.name || a.row.creation.creationId.slice(0, 8), id: a.row.creation.creationId, agent: engineName(a.row.creation.engine),
+        machine: a.row.creation.machineId === o.where.machineId ? o.machine : a.row.creation.machineId.slice(0, 8), state: a.state,
+        folder: null, branch: null, startedBy: 'you', yours: true, self: false, lastActive: new Date(a.row.at).toISOString(), about: askedLine(s.env, a),
+      })))
       s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: o.machine, harnesses: rows }, null, 1) : formatRows(rows, o.caller, s.now()))
       return EXIT.ok
     } finally { o.daemon.close() }
@@ -366,7 +444,7 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
 
 // ── wait ───────────────────────────────────────────────────────────────────────────────────────────
 
-type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'timeout'
+type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'timeout' | 'failed'
 
 export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
   return run(WAIT_USAGE, deps, wantsJson, argv, async (s) => {
@@ -376,10 +454,43 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
     const timeoutMs = flags.has('--timeout') ? parseDuration(String(flags.get('--timeout'))) : DEFAULT_TIMEOUT_MS
     const o = await opened(s)
     const targets: Target[] = []
+    /** Harnesses asked for that have not started (`Asked`): followed by their creation until they start, then waited on
+     *  as any other. `harness new` answers an agent before an engine's install is done, and the harness starts by itself. */
+    const following: Asked[] = []
+    const gave = new Map<Asked, Settled>()
     try {
       for (const name of wanted) {
-        const t = await target(s, o, name)
+        let t: Target
+        try { t = await target(s, o, name) } catch (error) {
+          const asked = error instanceof AgentClientError && (error.code === 'NOT_STARTED' || error.code === 'NEVER_STARTED') ? askedNamed(o, name) : undefined
+          if (!asked) throw error
+          if (!following.includes(asked)) following.push(asked)
+          if (asked.state === 'failed') gave.set(asked, 'failed')
+          continue
+        }
         if (!targets.some((x) => x.machineId === t.machineId && x.frame.id === t.frame.id)) targets.push(t)
+      }
+      /** Asks a creation how it stands: made, it joins the harnesses waited on, recorded as the caller's. */
+      const follow = async (a: Asked): Promise<void> => {
+        const here = a.row.creation.machineId === o.where.machineId
+        const line = here ? o.daemon : await s.open(o.where, a.row.creation.machineId)
+        let kept = false
+        try {
+          const status = await line.request('agent_create_status', { creationId: a.row.creation.creationId }, 8_000)
+          const frame = (status.agent ?? {}) as Frame
+          if (status.state === 'created' && typeof frame.id === 'string' && frame.id) {
+            o.ledger.append({ at: a.row.at, by: a.row.by, depth: a.row.depth,
+              child: { machineId: a.row.creation.machineId, agentId: frame.id, name: frame.name || a.row.creation.name, creationId: a.row.creation.creationId } })
+            targets.push({ daemon: line, frame: { ...frame, name: frame.name || a.row.creation.name }, machineId: a.row.creation.machineId,
+              machine: here ? o.machine : a.row.creation.machineId.slice(0, 8), yours: true, remote: !here })
+            following.splice(following.indexOf(a), 1)
+            kept = true
+            return
+          }
+          const now = askedOf(a.row, status)
+          if (!now) gave.set(a, 'gone')
+          else { a.state = now.state; a.detail = now.detail; if (now.state === 'failed') gave.set(a, 'failed') }
+        } finally { if (!here && !kept) line.close() }
       }
       const deadline = timeoutMs > 0 ? s.now() + timeoutMs : Infinity
       const settled = new Map<Target, Settled>()
@@ -412,6 +523,13 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
         return age > STARTING_MS && looks >= QUIET_LOOKS ? 'idle' : null
       }
       for (;;) {
+        for (const a of [...following]) {
+          if (gave.has(a)) continue
+          await follow(a).catch((error) => {
+            if (error instanceof AgentClientError && error.code === 'TIMEOUT') return
+            throw error
+          })
+        }
         // One list per machine a round, however many harnesses are waited on there.
         const lists = new Map<Daemon, Promise<Frame[]>>()
         for (const t of targets) {
@@ -425,23 +543,38 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           })
           if (result) settled.set(t, result)
         }
-        const done = flags.has('--any') ? settled.size > 0 : settled.size === targets.length
+        const total = targets.length + following.length
+        const count = settled.size + gave.size
+        const done = flags.has('--any') ? count > 0 : count === total
         if (done) break
-        if (s.now() >= deadline) { for (const t of targets) if (!settled.has(t)) settled.set(t, 'timeout'); break }
+        if (s.now() >= deadline) {
+          for (const t of targets) if (!settled.has(t)) settled.set(t, 'timeout')
+          for (const a of following) if (!gave.has(a)) gave.set(a, 'timeout')
+          break
+        }
         await s.sleep(Math.min(s.intervalMs, Math.max(0, deadline - s.now())))
       }
-      const results = targets.filter((t) => settled.has(t)).map((t) => ({ name: t.frame.name ?? t.frame.id.slice(0, 8), id: t.frame.id, state: settled.get(t)! }))
+      const results: Array<{ name: string; id: string; state: Settled | 'installing' | 'starting'; detail?: string }> = [
+        ...targets.filter((t) => settled.has(t)).map((t) => ({ name: t.frame.name ?? t.frame.id.slice(0, 8), id: t.frame.id, state: settled.get(t)! })),
+        // Not started yet when the wait ended: said as what it waits for, which is what the agent waits on.
+        ...following.filter((a) => gave.has(a)).map((a) => {
+          const given = gave.get(a)!
+          return { name: a.row.creation.name, id: a.row.creation.creationId, state: given === 'timeout' && a.state !== 'failed' ? a.state : given, detail: a.detail }
+        }),
+      ]
       if (flags.has('--json')) s.out(JSON.stringify({ harnesses: results }, null, 1))
       else for (const r of results) {
         const next = r.state === 'idle' ? `read it: ${step(s.env, 'show', r.name)}`
           : r.state === 'needs-input' ? 'it waits for the person (a question or a permission); only the person answers it'
           : r.state === 'timeout' ? `still working; wait again or read it: ${step(s.env, 'show', r.name)}`
+          : r.state === 'installing' || r.state === 'starting' ? `${askedLine(s.env, following.find((a) => a.row.creation.creationId === r.id)!)}`
+          : r.state === 'failed' ? `it never started: ${r.detail || 'its machine refused it'}`
           : r.state === 'stopped' ? 'it was stopped' : 'it is gone'
         s.out(`${r.name}: ${r.state} · ${next}`)
       }
       const states = results.map((r) => r.state)
-      return states.includes('timeout') ? EXIT.timeout : states.includes('needs-input') ? EXIT.needsInput
-        : states.some((x) => x === 'stopped' || x === 'gone') ? EXIT.stopped : EXIT.ok
+      return states.some((x) => x === 'timeout' || x === 'installing' || x === 'starting') ? EXIT.timeout : states.includes('needs-input') ? EXIT.needsInput
+        : states.some((x) => x === 'stopped' || x === 'gone' || x === 'failed') ? EXIT.stopped : EXIT.ok
     } finally {
       for (const t of targets) if (t.remote) t.daemon.close()
       o.daemon.close()
@@ -458,7 +591,20 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
     const o = await opened(s)
     let t: Target | null = null
     try {
-      t = await target(s, o, names[0])
+      try { t = await target(s, o, names[0]) } catch (error) {
+        // Asked for and not started: closing it is not starting it. Cancelled by its creation, which its machine takes only
+        // before the launch is claimed (lib/agentCreationReceipt.ts `cancelIntent`).
+        const asked = error instanceof AgentClientError && error.code === 'NOT_STARTED' ? askedNamed(o, names[0]) : undefined
+        if (!asked) throw error
+        const name = asked.row.creation.name, here = asked.row.creation.machineId === o.where.machineId
+        const line = here ? o.daemon : await s.open(o.where, asked.row.creation.machineId)
+        try {
+          const reply = await line.request('agent_create_cancel', { creationId: asked.row.creation.creationId }, 20_000)
+          if (reply.state !== 'cancelled') throw new AgentClientError('STARTING', `${name} is starting now, so it was not cancelled. Close it once it has: ${step(s.env, 'close', name)}.`)
+        } finally { if (!here) line.close() }
+        s.out(flags.has('--json') ? JSON.stringify({ name, id: asked.row.creation.creationId, cancelled: true }) : `Cancelled ${name} before it started.`)
+        return EXIT.ok
+      }
       const name = t.frame.name ?? t.frame.id.slice(0, 8)
       if (o.orphan) throw new AgentClientError('NOT_YOURS', ORPHAN)
       if (o.caller && o.caller.agentId === t.frame.id && t.machineId === o.where.machineId) {
@@ -484,6 +630,9 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
 
 /** Limits on starting harnesses (the design's "Limits"): runaway spawning is the risk. */
 export const SPAWN_LIMITS = { livePerHarness: 8, livePerMachine: 40, depth: 2, perWindow: 20, windowMs: 10 * 60_000 } as const
+
+/** How long a harness the caller started by a name stops it starting another by that name: a retry, not new work. */
+export const DUPLICATE_WITHIN_MS = 10 * 60_000
 
 /** A harness by machine and id, as the limits count the live ones. */
 const memberKey = (machineId: string, agentId: string): string => `${machineId}/${agentId}`
@@ -582,6 +731,30 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now())
       if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)
     },
+    existing: async (name) => {
+      if (!name?.trim()) return null
+      const wanted = name.trim().toLowerCase()
+      // Still on its way: an agent whose call to `harness new` timed out (an MCP client's minute) and asked again got a
+      // second harness for the same work once both launches went ahead.
+      const asked = askedNamed(o, wanted)
+      if (asked && asked.state !== 'failed') {
+        return `"${asked.row.creation.name}" is already starting: ${asked.state === 'installing' ? `Harness is installing ${engineName(asked.row.creation.engine)}` : asked.detail.replace(/\.$/, '') || 'it has not started yet'}. `
+          + `It starts by itself; wait for it with ${step(s.env, 'wait', asked.row.creation.name)}. Do not start it again.`
+      }
+      // Started by the caller a few minutes ago and running: the same retry, a little later.
+      const recent = o.ledger.childrenOf(caller).filter((row) => s.now() - row.at < DUPLICATE_WITHIN_MS && row.child.name.toLowerCase() === wanted)
+      if (!recent.length) return null
+      const live = await liveFor(s, o, caller)
+      const running = recent.findLast((row) => live.has(memberKey(row.child.machineId, row.child.agentId)))
+      if (!running) return null
+      const minutes = Math.max(1, Math.round((s.now() - running.at) / 60_000))
+      return `"${running.child.name}" is already running: you started it ${minutes} min ago. Wait for it with ${step(s.env, 'wait', running.child.name)} `
+        + `or read it with ${step(s.env, 'show', running.child.name)}. Do not start it again.`
+    },
+    pending: (machineId, creation) => {
+      o.ledger.append({ at: s.now(), by: { machineId: caller.machineId, agentId: caller.agentId, name: caller.name, engine: caller.engine },
+        creation: { machineId, ...creation }, depth: o.ledger.depthOf(caller) + 1 })
+    },
     prompt: (text, machineId) => {
       // Said once, at the top: the task is from an agent, not the person (a teammate's tmux paste read as the
       // owner's). It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its
@@ -604,14 +777,14 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       const room = MAX_FIRST_PROMPT_CHARS - header.length - lead.length - 1
       return `${header}${lead}${clip(text, room)}`
     },
-    created: async (machineId, agent) => {
+    created: async (machineId, agent, creationId) => {
       const id = typeof agent.id === 'string' ? agent.id : ''
       if (!id) return null
       const name = typeof agent.name === 'string' ? agent.name : ''
       const row: Started = {
         at: s.now(),
         by: { machineId: caller.machineId, agentId: caller.agentId, name: caller.name, engine: caller.engine },
-        child: { machineId, agentId: id, name },
+        child: { machineId, agentId: id, name, ...(creationId ? { creationId } : {}) },
         depth: o.ledger.depthOf(caller) + 1,
       }
       o.ledger.append(row)

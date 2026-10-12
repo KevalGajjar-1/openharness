@@ -330,6 +330,70 @@ describe('harness new: the daemon', () => {
     expect(d.err).toEqual(['Codex is installed but cannot run: /usr/bin/env: ‘node’: No such file or directory'])
   })
 
+  it('answers an agent within 40 seconds, leaving a harness still installing to start by itself, recorded by its name', async () => {
+    // An MCP client ends a tool call at a minute (Codex's default tool_timeout_sec): a Codex install takes about that.
+    const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex. The harness starts once it is installed.' } }
+    const pending: Array<[string, Record<string, unknown>]> = []
+    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', existing: async () => null,
+      pending: (machineId: string, creation: Record<string, unknown>) => { pending.push([machineId, creation]) } }
+    const run = async (env: NodeJS.ProcessEnv, json = false) => {
+      let clock = 0
+      const socket = new FakeSocket((frame) => frame.type === 'agent_create' || frame.type === 'agent_create_status' ? installing : frame.type === 'agent_create_cancel' ? { state: 'cancelled' } : null)
+      const d = deps(['codex', '--name', 'cx', ...(json ? ['--json'] : []), '--', 'Reply with pong'], socket,
+        { origin: async () => origin, env, now: () => clock, sleep: async (ms) => { clock += ms } })
+      expect(await newCommand(d)).toBe(0)
+      expect(clock).toBe(40_000)
+      expect(socket.sent.some((f) => f.type === 'agent_create_cancel')).toBe(false)
+      return { d, socket }
+    }
+    const mcp = await run({ HARNESS_VIA_MCP: '1' })
+    expect(mcp.d.out).toEqual(['Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
+      + 'Check on it with harness_list or harness_wait (names: "cx"); do not start it again.'])
+    expect(mcp.d.err).toEqual([])
+    const creationId = mcp.socket.sent.find((f) => f.type === 'agent_create')!.payload.creationId
+    expect(pending).toEqual([['m2', { creationId, name: 'cx', engine: 'codex' }]])
+    const shell = await run({})
+    expect(shell.d.err).toEqual(['Installing Codex. The harness starts once it is installed.'])
+    expect(shell.d.out).toEqual(['Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
+      + 'Check on it with harness ps or harness wait cx; do not start it again.'])
+    const json = await run({ HARNESS_VIA_MCP: '1' }, true)
+    expect(JSON.parse(json.d.out[0]!)).toMatchObject({ ok: true, pending: true, machineId: 'm2', name: 'cx' })
+    expect(json.d.err).toEqual([])
+  })
+
+  it('still cancels an agent\'s launch held for anything but an install, at 40 seconds', async () => {
+    let clock = 0
+    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', pending: () => {} }
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? { state: 'cancelled' }
+      : frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending', held: { service: 'native', detail: 'Waiting.' } } : null)
+    const d = deps(['codex', '--name', 'cx'], socket, { origin: async () => origin, now: () => clock, sleep: async (ms) => { clock += ms } })
+    expect(await newCommand(d)).toBe(1)
+    expect(d.err.at(-1)).toBe('Harness did not start the harness in time: Waiting. The request is cancelled, so it will not start later.')
+  })
+
+  it('answers an agent asking again for a harness it already has with that one, and asks the machine nothing', async () => {
+    const socket = new FakeSocket(() => null)
+    const note = '"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness wait cx. Do not start it again.'
+    const origin = { check: async () => { throw new Error('not reached') }, prompt: (text: string) => text, created: async () => null, next: () => '',
+      existing: async (name: string | null) => name === 'cx' ? note : null }
+    const d = deps(['codex', '--name', 'cx', '--', 'again'], socket, { origin: async () => origin })
+    expect(await newCommand(d)).toBe(0)
+    expect(d.out).toEqual([note])
+    expect(socket.sent).toEqual([])
+    const json = deps(['codex', '--name', 'cx', '--json'], socket, { origin: async () => origin })
+    expect(await newCommand(json)).toBe(0)
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: true, existing: true, note })
+  })
+
+  it('records the creation a harness was asked by when the machine made it', async () => {
+    const created: unknown[][] = []
+    const origin = { check: async () => {}, prompt: (text: string) => text, next: () => '', pending: () => {},
+      created: async (...args: unknown[]) => { created.push(args); return null } }
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'k1', name: 'cx' } } : null)
+    expect(await newCommand(deps(['codex', '--name', 'cx'], socket, { origin: async () => origin }))).toBe(0)
+    expect(created).toEqual([['m2', { id: 'k1', name: 'cx' }, socket.sent.find((f) => f.type === 'agent_create')!.payload.creationId]])
+  })
+
   it('reads the folder off the harness the machine made', async () => {
     const socket = new FakeSocket((frame) => frame.type === 'agent_create'
       ? { state: 'created', agent: { id: 'a1', name: 'fixer', project: { cwd: '/work/repo/.worktrees/x' } } } : null)

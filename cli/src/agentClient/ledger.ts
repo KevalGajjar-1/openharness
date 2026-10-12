@@ -6,6 +6,10 @@
  * Read by `harness ps` (who started each), and by `new` and `close` (limits, depth, and which harnesses an agent
  * may close). It never lets two harnesses message each other: only a tab with Agent Messages on does (owner,
  * 2026-10-11). It is a collaboration scope, not a sandbox: any process of this user can write the file.
+ *
+ * A harness asked for and not started yet (its engine still installing) has a line of its own, `Pending`, with the
+ * machine's creation id: it starts by itself later, after `harness new` has answered, and is then recorded as started
+ * by whichever verb of the agent's first sees it made (agentClient/commands.ts `opened`). Older readers skip the line.
  */
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -15,11 +19,22 @@ export interface Started {
   at: number
   /** The harness that ran `harness new`. */
   by: LedgerMember & { name: string; engine: string }
-  /** The harness it started. */
-  child: LedgerMember & { name: string }
+  /** The harness it started, and the creation it was asked for by when that was saved first (`Pending`). */
+  child: LedgerMember & { name: string; creationId?: string }
   /** 1 for a harness a person's harness started, 2 for one that harness started. */
   depth: number
 }
+
+/** A harness asked for that has not started yet: its creation on [creation.machineId], and the name it was given. */
+export interface Pending {
+  at: number
+  by: LedgerMember & { name: string; engine: string }
+  creation: { machineId: string; creationId: string; name: string; engine: string }
+  depth: number
+}
+
+/** How long a pending line is asked after. An install ends within twenty minutes (engines/kit/nativeInstall.ts). */
+export const PENDING_WITHIN_MS = 30 * 60_000
 
 /** The file, in the daemon's data folder. */
 export const ledgerPath = (dataDir: string): string => join(dataDir, 'agent-client', 'started.jsonl')
@@ -41,7 +56,23 @@ export function parseStarted(line: string): Started | null {
   return {
     at: v.at,
     by: { machineId: by.machineId as string, agentId: by.agentId as string, name: String(by.name ?? ''), engine: String(by.engine ?? '') },
-    child: { machineId: child.machineId as string, agentId: child.agentId as string, name: String(child.name ?? '') },
+    child: { machineId: child.machineId as string, agentId: child.agentId as string, name: String(child.name ?? ''),
+      ...(typeof child.creationId === 'string' && child.creationId ? { creationId: child.creationId } : {}) },
+    depth: v.depth,
+  }
+}
+
+export function parsePending(line: string): Pending | null {
+  let v: Record<string, unknown>
+  try { v = JSON.parse(line) } catch { return null }
+  const creation = v?.creation as Record<string, unknown> | undefined
+  if (!v || typeof v !== 'object' || typeof v.at !== 'number' || !member(v.by) || typeof v.depth !== 'number' || v.depth < 1
+    || !creation || typeof creation.machineId !== 'string' || !creation.machineId || typeof creation.creationId !== 'string' || !creation.creationId) return null
+  const by = v.by as unknown as Record<string, unknown>
+  return {
+    at: v.at,
+    by: { machineId: by.machineId as string, agentId: by.agentId as string, name: String(by.name ?? ''), engine: String(by.engine ?? '') },
+    creation: { machineId: creation.machineId, creationId: creation.creationId, name: String(creation.name ?? ''), engine: String(creation.engine ?? '') },
     depth: v.depth,
   }
 }
@@ -49,7 +80,7 @@ export function parseStarted(line: string): Started | null {
 const same = (a: LedgerMember, b: LedgerMember): boolean => a.machineId === b.machineId && a.agentId === b.agentId
 
 export class Ledger {
-  private cache: { key: string; rows: Started[] } | null = null
+  private cache: { key: string; rows: Started[]; pending: Pending[] } | null = null
   constructor(readonly path: string) {}
 
   /** Where the older lines went when the file passed its size. */
@@ -57,22 +88,30 @@ export class Ledger {
 
   /** Every line, oldest first: the previous file's, then this one's. An unreadable file is an empty one. Read again
    *  only when either changed. */
-  all(): Started[] {
+  all(): Started[] { return this.read().rows }
+
+  private read(): { rows: Started[]; pending: Pending[] } {
     const files = [this.previous, this.path].map((path) => { try { const st = statSync(path); return { path, key: `${st.mtimeMs}:${st.size}` } } catch { return null } })
     const key = files.map((f) => f?.key ?? '-').join('|')
-    if (this.cache?.key === key) return this.cache.rows
-    const rows: Started[] = []
+    if (this.cache?.key === key) return this.cache
+    const rows: Started[] = [], pending: Pending[] = []
     for (const file of files) {
       if (!file) continue
       let text = ''
       try { text = readFileSync(file.path, 'utf8') } catch { continue }
-      for (const line of text.split('\n')) { const row = line ? parseStarted(line) : null; if (row) rows.push(row) }
+      for (const line of text.split('\n')) {
+        if (!line) continue
+        const row = parseStarted(line)
+        if (row) { rows.push(row); continue }
+        const asked = parsePending(line)
+        if (asked) pending.push(asked)
+      }
     }
-    this.cache = { key, rows }
-    return rows
+    this.cache = { key, rows, pending }
+    return this.cache
   }
 
-  append(row: Started): void {
+  append(row: Started | Pending): void {
     mkdirSync(dirname(this.path), { recursive: true })
     // One short line with O_APPEND: two agents starting harnesses at once never interleave.
     appendFileSync(this.path, `${JSON.stringify(row)}\n`, { mode: 0o600 })
@@ -94,5 +133,15 @@ export class Ledger {
   /** 0 for a harness the person started. */
   depthOf(m: LedgerMember): number {
     return this.parentOf(m)?.depth ?? 0
+  }
+
+  /** What [m] asked for in the last half hour that has no started line yet, newest last. */
+  pendingOf(m: LedgerMember, now: number): Pending[] {
+    const { rows, pending } = this.read()
+    const started = new Set(rows.map((row) => row.child.creationId).filter(Boolean))
+    // One per creation, its latest line: a line written twice is one harness asked for.
+    const asked = new Map(pending.filter((row) => same(row.by, m) && now - row.at < PENDING_WITHIN_MS && !started.has(row.creation.creationId))
+      .map((row) => [row.creation.creationId, row]))
+    return [...asked.values()]
   }
 }

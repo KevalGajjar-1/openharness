@@ -60,7 +60,7 @@ describe('harness mcp', () => {
       ['new', 'claude', '/work/here/app', '--name', 'reviewer', '--task', 'review it\nall of it'],
       ['new', 'codex', '@mini', '/abs', '--name', 'gpu', '--task', 'train'],
       ['new', 'claude', '~/p', '--name', 'n', '--task', 'x'],
-      ['wait', 'a,b', '--timeout', '120s'], ['wait', 'a', '--any', '--timeout', '600s'], ['wait', 'a', '--timeout', '2s'],
+      ['wait', 'a,b', '--timeout', '45s'], ['wait', 'a', '--any', '--timeout', '600s'], ['wait', 'a', '--timeout', '2s'],
       ['show', 'a'], ['show', 'a', '--chars', '99'],
       ['send', 'a', 'also the footer'],
       ['close', 'a'], ['close', 'a', '--now'],

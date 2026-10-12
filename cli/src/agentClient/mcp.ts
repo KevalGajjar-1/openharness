@@ -29,8 +29,10 @@ List first (harness_list). Put everything in the task: starting a harness does n
 
 Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it when you are done (harness_close). Never ask a harness to publish, deploy, delete or push.`
 
-/** How long `harness_wait` waits when not told: within what MCP clients allow a call. */
-const WAIT_DEFAULT_S = 120
+/** How long `harness_wait` waits when not told: within what MCP clients allow a call. Codex ends one at 60 s unless its
+ *  config says otherwise (`tool_timeout_sec`, developers.openai.com/codex/mcp), so 120 s ended every long wait as an
+ *  error there; the agent calls again for more. */
+const WAIT_DEFAULT_S = 45
 const WAIT_MAX_S = 600
 
 interface Tool {
@@ -55,7 +57,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_start',
-    description: 'Start a new harness: an agent in a session of its own, working on [task] in an existing [folder], or in a new [project] Harness makes for it. Returns at once; wait for it with harness_wait and read its answer with harness_read.',
+    description: 'Start a new harness: an agent in a session of its own, working on [task] in an existing [folder], or in a new [project] Harness makes for it. Returns within a minute; wait for it with harness_wait and read its answer with harness_read. If its agent is still being installed then, it starts by itself: follow it by its name, and never start it again.',
     inputSchema: schema({
       task: { type: 'string', description: 'The whole task, as you would write it to a colleague: what to do, where, and what to answer with.' },
       folder: { type: 'string', description: 'An existing folder to work in: an absolute path, or one relative to where this server runs. Claude Code and Codex ask the person to trust a folder Harness did not make, and wait until they answer.' },
