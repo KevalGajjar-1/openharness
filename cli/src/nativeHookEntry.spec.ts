@@ -9,6 +9,8 @@ import { join } from 'node:path'
 import { buildNativeHook } from '../scripts/lib/nativeHookBundle.mjs'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { nativeHookAcknowledgement } from './engines/kit/nativeHookClientProtocol.js'
+import { prepareNativeHookArtifact } from './engines/kit/nativeHookArtifact.js'
+import { pathToFileURL } from 'node:url'
 
 let root: string, artifact: string, inputs: string[]
 let server: ReturnType<typeof createServer> | undefined
@@ -79,6 +81,10 @@ it('emits only builtins and no daemon configuration or lazy session control', ()
   expect(inputs).not.toContain('src/lib/registry.ts')
   expect(inputs.every(path => !path.startsWith('node_modules/') && !path.startsWith('src/services/') && !path.startsWith('src/core/'))).toBe(true)
   expect(readFileSync(artifact, 'utf8')).not.toMatch(/\bimport\s*\(/)
+  const entry = pathToFileURL(join(root, 'package/cli.js')).href
+  expect(prepareNativeHookArtifact(entry, '', 'linux').path).toBe(artifact)
+  if (nativeArtifact) expect(prepareNativeHookArtifact(entry, '', 'darwin').path).toBe(artifact)
+  else expect(() => prepareNativeHookArtifact(entry, '', 'darwin')).toThrow(/pinned macOS process helper/)
 })
 
 it('holds an unsupported generation visibly and produces exactly one no-op response', async () => {

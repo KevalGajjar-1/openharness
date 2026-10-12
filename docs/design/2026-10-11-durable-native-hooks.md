@@ -648,6 +648,30 @@ task, response and recap effects remain outside this approval. The production
 client still needs the versioned protocol and the actual Cursor acceptance
 remains a landing blocker. No merge or release occurred at this checkpoint.
 
+The October 12, 02:32 UTC launch checkpoint selects the generated client only
+when Cursor hook preparation runs. A missing, old or changed artifact holds that
+launch without delaying readiness. The artifact's original path and file version
+remain in the settings proof and the serialized post-login guard. macOS requires
+the exact header declaration for its pinned process helper. Settings publication
+rechecks that dependency before its final owner/deadline fence; acknowledgement
+only composes already-checked proofs. The former five-event descriptor remains
+explicitly historical in its unchanged golden. Production installs the six-event
+generation protocol, including the native response event.
+
+Types and all 69 focused activation, artifact, producer/joiner and actual-client
+cases pass in `20261012T022446.736494Z-88074`; that aggregate failed its build-child
+cleanup check. Explicit esbuild shutdown requests and validator cleanup are now
+covered by `20261012T023153.974251Z-24318`: both build layouts, identical artifact
+bytes, real launch selection of each emitted artifact, baseline activation cases
+and all twelve assertion mutants pass. The preceding mutation run caught eleven
+faults; its command-path fixture selected the same path for the legacy and native
+clients. A private layout transition now proves that distinction and catches the
+twelfth fault. Earlier fixture failures remain failed receipts. Independent review
+approved the corrected activation scope over `19879f7cf`, including the final
+fixture and build-shutdown changes. This is not controller or final PR approval.
+Generation effects, durable Cancel integration and actual private completion
+acceptance remain open. No merge or release occurred.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,

@@ -64,5 +64,9 @@ try {
   console.log('✓ Build completed successfully')
 } catch (error) {
   console.error('✗ Build failed:', error)
-  process.exit(1)
+  process.exitCode = 1
+} finally {
+  // Explicitly request build-service shutdown; validation separately checks
+  // that no child remains after the build process exits.
+  await esbuild.stop()
 }

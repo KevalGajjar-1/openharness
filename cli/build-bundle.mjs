@@ -136,3 +136,4 @@ appendFileSync(`${outDir}/cli.js`, leanBlock(leanFiles))
 await buildNativeHook({ outDir, processImages, version })
 
 console.log(`✓ Bundled ${outDir}/cli.js (v${version}) + ${outDir}/notify.mjs`)
+await esbuild.stop()
