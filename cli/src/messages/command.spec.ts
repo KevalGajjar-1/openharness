@@ -17,6 +17,9 @@ describe('harness send arguments', () => {
     expect(parseSendArgs(['api', '--text-file', 'note.md', '--json'], () => 'from file')).toEqual({ names: ['api'], text: 'from file', json: true })
     // After the recipients, dashes are the message's own.
     expect(parseSendArgs(['api', '---', 'do', 'not', '--force', 'push'])).toEqual({ names: ['api'], text: '--- do not --force push', json: false })
+    // News no one must act on now: it starts no turn of theirs.
+    expect(parseSendArgs(['api', '--fyi', 'quiet', 'window', 'open'])).toEqual({ names: ['api'], text: 'quiet window open', json: false, fyi: true })
+    expect(() => parseSendArgs(['--fyi'])).toThrow(SEND_USAGE)
   })
 
   it('refuses what it cannot read, with the usage', () => {
@@ -64,6 +67,8 @@ describe('what harness send prints', () => {
       'm1234567 → phone: delivered (at its tool call)',
       'm1234567 → lead: delivered (it read it)',
     ].join('\n'))
+    expect(formatSent({ id: 'm7', recipients: [{ name: 'api', state: 'queued' }], advice: 'This message is 2000 characters…' }))
+      .toBe('m7 → api: queued\nThis message is 2000 characters…')
     expect(formatSent({})).toBe('')
   })
 

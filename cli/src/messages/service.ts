@@ -19,7 +19,7 @@ import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
 import { Mailbox, type MailboxAgent } from './mailbox.js'
-import { LIMITS, MessageError, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
+import { type DeliveryStatus, LIMITS, LONG_TEXT, longAdvice, type Message, MessageError, messageId, note, parseMessage, type Recipient, rendered, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
 import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
 import { MessageStore, type LocalDelivery } from './store.js'
@@ -358,7 +358,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     }
     sent.set(session.agentId, [...times, now()])
     const message: Message = {
-      id: messageId(), tabId: tab.id, to: recipients, text, at: now(),
+      id: messageId(), tabId: tab.id, to: recipients, text, at: now(), ...(payload.fyi === true ? { fyi: true as const } : {}),
       from: { ...me, name: ownName(me, peers), engine: session.engine, machine: machineName(self()) },
     }
     store.record(message)
@@ -377,10 +377,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         const status = entry.statuses.find((s) => s.machineId === r.machineId && s.agentId === r.agentId)
         return { name: r.name, state: status?.state ?? 'queued', ...(status?.via ? { via: status.via } : {}), ...(status?.reason ? { reason: status.reason } : {}) }
       }),
+      ...(text.length > LONG_TEXT ? { advice: longAdvice(text.length) } : {}),
     }
   }
 
-  /** The last messages a harness sent or was sent, oldest first, as `harness send` lists them. */
   /**
    * What `harness send` alone gives an agent besides the roster: every message still waiting for it, which it has
    * now read, then its last few. An agent whose engine started before Agent Messages never runs the hook and, always
