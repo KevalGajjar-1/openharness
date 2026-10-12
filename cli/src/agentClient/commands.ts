@@ -583,7 +583,7 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)
     },
     prompt: (text, machineId) => {
-      // Said once, at the top: the task is from an agent, not the person (the lamp team's tmux paste read as the
+      // Said once, at the top: the task is from an agent, not the person (a teammate's tmux paste read as the
       // owner's). It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its
       // whole report back as a message as well, which would land in the middle of the starter's own turn. Nor is the
       // new harness told to message it: being started by it gives no way to, only a tab with Agent Messages on does
