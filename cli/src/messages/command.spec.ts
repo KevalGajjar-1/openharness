@@ -17,6 +17,9 @@ describe('harness send arguments', () => {
     expect(parseSendArgs(['api', '--text-file', 'note.md', '--json'], () => 'from file')).toEqual({ names: ['api'], text: 'from file', json: true })
     // After the recipients, dashes are the message's own.
     expect(parseSendArgs(['api', '---', 'do', 'not', '--force', 'push'])).toEqual({ names: ['api'], text: '--- do not --force push', json: false })
+    // News no one must act on now: it starts no turn of theirs.
+    expect(parseSendArgs(['api', '--fyi', 'quiet', 'window', 'open'])).toEqual({ names: ['api'], text: 'quiet window open', json: false, fyi: true })
+    expect(() => parseSendArgs(['--fyi'])).toThrow(SEND_USAGE)
   })
 
   it('refuses what it cannot read, with the usage', () => {
@@ -47,15 +50,25 @@ describe('what harness send prints', () => {
       { id: 'm2', from: 'api', text: 'x'.repeat(200), state: 'queued' },
     ] })).toBe(`Teammates: api\n\nYour last messages:\n  [m1 to api, web] first line (delivered)\n  [m2 from api] ${'x'.repeat(157)}… (queued)`)
     expect(formatSent({ roster: 'Teammates: api', recent: [{ id: 'm3', from: 'api', state: 'failed' }] })).toBe('Teammates: api\n\nYour last messages:\n  [m3 from api]  (failed)')
+    // What was waiting for it, whole: an agent reading its messages this way saw only first lines (2026-10-12).
+    expect(formatSent({ roster: 'Teammates: api', recent: [
+      { id: 'm4', from: 'api', text: 'cause found\nbranch fix 3f2a9c1\ndetails in the README', state: 'delivered', unread: true },
+      { id: 'm5', to: ['api'], text: 'thanks', state: 'delivered' },
+    ] })).toBe('Teammates: api\n\nNew messages for you (now read):\n\n[m4 from api]\ncause found\nbranch fix 3f2a9c1\ndetails in the README'
+      + '\n\nYour last messages:\n  [m5 to api] thanks (delivered)')
     expect(formatSent({ id: 'm1234567', recipients: [
       { name: 'api', state: 'delivered', via: 'prompt' },
       { name: 'web', state: 'queued', reason: 'working: arrives at its next tool call' },
       { name: 'phone', state: 'delivered', via: 'hook' },
+      { name: 'lead', state: 'delivered', via: 'read' },
     ] })).toBe([
       'm1234567 → api: delivered (as a prompt)',
       'm1234567 → web: queued · working: arrives at its next tool call',
       'm1234567 → phone: delivered (at its tool call)',
+      'm1234567 → lead: delivered (it read it)',
     ].join('\n'))
+    expect(formatSent({ id: 'm7', recipients: [{ name: 'api', state: 'queued' }], advice: 'This message is 2000 characters…' }))
+      .toBe('m7 → api: queued\nThis message is 2000 characters…')
     expect(formatSent({})).toBe('')
   })
 

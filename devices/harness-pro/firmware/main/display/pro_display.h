@@ -1,8 +1,8 @@
 // The Pro's glass: a 720 x 720 RGB565 panel and its GT911 touch, upright to the caller.
 //
-// Build with -DPOD_PANEL_TURN=180 for a unit whose panel is mounted upside down. The picture is turned
-// where strips are written and the contact where it is read, so callers always see an upright
-// PRO_DISPLAY_PX x PRO_DISPLAY_PX glass.
+// A unit whose panel is mounted upside down runs with the runtime turn on (pro_turn.h: the app's setting, whose default
+// is -DPOD_PANEL_TURN=180). The picture is turned where strips are written and the contact where it is read, so callers
+// always see an upright PRO_DISPLAY_PX x PRO_DISPLAY_PX glass.
 #pragma once
 
 #include <stdbool.h>
@@ -23,7 +23,7 @@ bool pro_touch_read(int *x, int *y);
 // BAD: fingers the caller must not act on (more than one, or a point off the glass): cancel the contact and
 // ignore it until every finger is up. ERROR: the read itself failed (a stale or lost sample, not a lift).
 typedef enum { PRO_TOUCH_NONE, PRO_TOUCH_ONE, PRO_TOUCH_BAD, PRO_TOUCH_ERROR } pro_touch_sample_t;
-// Upright glass coordinates in *x, *y on ONE. This is where POD_PANEL_TURN=180 turns the contact (once).
+// Upright glass coordinates in *x, *y on ONE. This is where the screen turn is applied to the contact (once).
 pro_touch_sample_t pro_touch_poll(int *x, int *y);
 
 // Backlight level 0..255, floored at 20 so the glass never goes dark by a setting. Off keeps the picture and

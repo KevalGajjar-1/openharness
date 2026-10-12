@@ -19,7 +19,7 @@ import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
 import { Mailbox, type MailboxAgent } from './mailbox.js'
-import { LIMITS, MessageError, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
+import { type DeliveryStatus, LIMITS, LONG_TEXT, longAdvice, type Message, MessageError, messageId, note, parseMessage, type Recipient, rendered, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
 import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
 import { MessageStore, type LocalDelivery } from './store.js'
@@ -60,6 +60,8 @@ export const WHO_MS = 60_000
 export const SWEEP_AFTER_MS = 10 * 60_000
 
 const PANE = /^%\d{1,9}$/
+/** The most messages `harness send` alone gives an agent at once, unread ones first. */
+const UNREAD_MAX = 20
 /** Whether `wanted` is the whole of a name the engine cut short: Codex titles its terminal with the folder cut to fit
  *  ("claude-code-2026-10-1..."), and an agent that wrote the folder out in full was told no teammate had that name
  *  (a fresh Mac, 2026-10-12). Both arguments in lower case. */
@@ -356,7 +358,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     }
     sent.set(session.agentId, [...times, now()])
     const message: Message = {
-      id: messageId(), tabId: tab.id, to: recipients, text, at: now(),
+      id: messageId(), tabId: tab.id, to: recipients, text, at: now(), ...(payload.fyi === true ? { fyi: true as const } : {}),
       from: { ...me, name: ownName(me, peers), engine: session.engine, machine: machineName(self()) },
     }
     store.record(message)
@@ -375,17 +377,27 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         const status = entry.statuses.find((s) => s.machineId === r.machineId && s.agentId === r.agentId)
         return { name: r.name, state: status?.state ?? 'queued', ...(status?.via ? { via: status.via } : {}), ...(status?.reason ? { reason: status.reason } : {}) }
       }),
+      ...(text.length > LONG_TEXT ? { advice: longAdvice(text.length) } : {}),
     }
   }
 
-  /** The last messages a harness sent or was sent, oldest first, as `harness send` lists them. */
+  /**
+   * What `harness send` alone gives an agent besides the roster: every message still waiting for it, which it has
+   * now read, then its last few. An agent whose engine started before Agent Messages never runs the hook and, always
+   * working, is never typed to: it read its messages this way, but only the last five, each still "queued", and a
+   * restart would have given it all of them again (a Codex lead, 2026-10-12).
+   */
   function recentFor(me: Member, count = 5): Array<Record<string, unknown>> {
     const mine = (m: Member) => m.machineId === me.machineId && m.agentId === me.agentId
-    return store.state.history.filter((e) => mine(e.message.from) || e.message.to.some(mine)).slice(-count).map((e) => {
+    const involving = store.state.history.filter((e) => mine(e.message.from) || e.message.to.some(mine))
+    const waiting = involving.filter((e) => !mine(e.message.from) && e.statuses.find((s) => mine(s))?.state === 'queued').slice(-UNREAD_MAX)
+    const read = new Set(mailbox.read(me.agentId, waiting.map((e) => e.message.id)))
+    const shown = [...new Set([...waiting, ...involving.slice(-count)])].sort((a, b) => a.message.at - b.message.at)
+    return shown.map((e) => {
       const sent = mine(e.message.from)
       const status = sent ? e.statuses.find((s) => s.state !== 'delivered') ?? e.statuses[0] : e.statuses.find((s) => mine(s))
       return { id: e.message.id, at: e.message.at, ...(sent ? { to: e.message.to.map((r) => r.name) } : { from: e.message.from.name }),
-        text: e.message.text, state: status?.state ?? 'queued' }
+        text: e.message.text, state: read.has(e.message.id) ? 'delivered' : status?.state ?? 'queued', ...(read.has(e.message.id) ? { unread: true } : {}) }
     })
   }
 
@@ -411,12 +423,16 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (due.length) saveQuietly()
   }
 
-  /** What another machine said became of its agents' deliveries. */
+  /**
+   * What another machine said became of its agents' deliveries. Every way one arrives is kept: a message an agent
+   * read with `harness send` came back as a bare "delivered" to the machine that sent it, so its sender never saw
+   * that it was read (two machines, 2026-10-12).
+   */
   function applyRemote(machineId: string, statuses: unknown): void {
     for (const s of Array.isArray(statuses) ? statuses as Record<string, unknown>[] : []) {
       if (typeof s.messageId !== 'string' || typeof s.agentId !== 'string' || !['queued', 'delivered', 'failed'].includes(String(s.state))) continue
       const status: DeliveryStatus = { messageId: s.messageId, machineId, agentId: s.agentId, state: s.state as DeliveryStatus['state'],
-        ...(s.via === 'hook' || s.via === 'prompt' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
+        ...(s.via === 'hook' || s.via === 'prompt' || s.via === 'read' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
       if (store.status(status)) tellWindows(status.messageId)
     }
   }

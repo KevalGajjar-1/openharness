@@ -492,10 +492,15 @@ class ModelSearchCatalog extends ChangeNotifier {
     if (owners.length != 1) return ModelSearchSection.catalog.label;
     final owner = owners.single;
     final machine = owner.machine;
-    final memory = owner.memoryBytes;
+    // (An NVIDIA machine's models run in its card: its VRAM, not the machine's RAM.)
+    final memory = owner.headingMemory;
     return [
       'Get for ${machine == null || machine.isLocalMachine ? thisComputerName() : machine.machine.displayName}',
-      if (memory != null) gigabytesLabel(memory),
+      if (memory != null)
+        [
+          gigabytesLabel(memory.bytes),
+          if (memory.unit.isNotEmpty) memory.unit,
+        ].join(' '),
     ].join(' · ');
   }
 

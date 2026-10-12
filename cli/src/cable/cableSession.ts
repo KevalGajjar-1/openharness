@@ -433,6 +433,8 @@ export interface DeviceSettings {
   focusFace: boolean
   scrollReversed: boolean
   round: boolean
+  /** Harness Pro only: the screen is mounted the other way up. Absent from round dials and Pro 0.1.0. */
+  screenTurned?: boolean
   voiceLang: string
   /** Presence advertises companion.set support. Omitted by older firmware. */
   followCompanion?: boolean
@@ -524,6 +526,7 @@ function readSettings(value: unknown): DeviceSettings | undefined {
   if (typeof raw.character !== 'number' || !Number.isFinite(raw.character)) return undefined
   if (typeof raw.face !== 'number' || !Number.isFinite(raw.face)) return undefined
   if (typeof raw.voiceLang !== 'string') return undefined
+  if (raw.screenTurned !== undefined && typeof raw.screenTurned !== 'boolean') return undefined
   return {
     brightness: Math.max(0, Math.min(100, Math.round(raw.brightness))),
     character: Math.round(raw.character),
@@ -535,6 +538,7 @@ function readSettings(value: unknown): DeviceSettings | undefined {
     scrollReversed: raw.scrollReversed as boolean,
     round: raw.round as boolean,
     voiceLang: raw.voiceLang,
+    ...(raw.screenTurned !== undefined ? { screenTurned: raw.screenTurned as boolean } : {}),
     ...(raw.companionProtocol === 2 ? {companionProtocol:2, companionDetails:readCompanionIdentity(raw.companionDetails)} : {}),
     ...(typeof raw.followCompanion === 'boolean' &&
         (raw.companion === null || typeof raw.companion === 'string')

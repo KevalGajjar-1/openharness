@@ -65,20 +65,14 @@ void pro_display_init(void)
         s_touch_retry_at = esp_timer_get_time() + 5000000;
         ESP_LOGW(TAG, "touch not up; pro_touch_read() will retry");
     }
-    ESP_LOGI(TAG, "%dx%d glass up, turn=%d", PRO_DISPLAY_PX, PRO_DISPLAY_PX,
-#if defined(POD_PANEL_TURN)
-             POD_PANEL_TURN
-#else
-             0
-#endif
-    );
+    ESP_LOGI(TAG, "%dx%d glass up, turn=%d", PRO_DISPLAY_PX, PRO_DISPLAY_PX, pro_turn_get() ? 180 : 0);
 }
 
 uint16_t *pro_panel_strip(int which) { return s_strip[which & 1]; }
 
 void pro_panel_prepare(uint16_t *buf, int w, int h)
 {
-    pro_turn_pixels(buf, (size_t)w * (size_t)h);   /* the panel is mounted upside down: reverse the block (turn builds only) */
+    pro_turn_pixels(buf, (size_t)w * (size_t)h);   /* the panel is mounted upside down: reverse the block (only while the screen is turned) */
 }
 
 void pro_panel_submit(int x, int y, int w, int h, const uint16_t *buf)
@@ -140,8 +134,7 @@ pro_touch_sample_t pro_touch_poll(int *x, int *y)
     if (count != 1) return PRO_TOUCH_BAD;
     int tx = data[0].x, ty = data[0].y;
     if (tx < 0 || ty < 0 || tx >= PRO_DISPLAY_PX || ty >= PRO_DISPLAY_PX) return PRO_TOUCH_BAD;
-    tx = pro_turn_coord(tx);   /* the contact is turned here, once */
-    ty = pro_turn_coord(ty);
+    pro_turn_point(&tx, &ty);   /* the contact is turned here, once (one read of the flag for both axes) */
     if (x) *x = tx;
     if (y) *y = ty;
     return PRO_TOUCH_ONE;

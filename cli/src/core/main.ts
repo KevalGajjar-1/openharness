@@ -180,6 +180,7 @@ import { createTerminalWatch } from './terminalWatch.js'
 import { createSharingLink } from './sharingLink.js'
 import { createExperimentHooks, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
 import { answerExperimentQuery, createForExperiment } from './experimentQueries.js'
+import { answerConnectorsQuery } from './connectorsQueries.js'
 import { createOrchestratorLink } from './orchestratorLink.js'
 import { daemonCommand } from '../lib/daemonCommand.js'
 import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, servicesTheMasterRuns } from '../harnessd/services.js'
@@ -830,6 +831,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // Share: its observers' frames to the relay, and its welcomes signed by the gateway, which holds the identity.
     observer: (connId, type, payload) => backendRef?.sendObserver(connId, type, payload) ?? false,
     observerKey: { publicKey: () => gatewayOps.observerKey.publicKey(), signWelcome: (...args) => gatewayOps.observerKey.signWelcome(...args) },
+    // The account's connected services, sealed and opened by the gateway for the connectors service.
+    connectorVault: { seal: (plaintext) => gatewayOps.connectorVault.seal(plaintext), open: (envelope) => gatewayOps.connectorVault.open(envelope) },
     // The same path the window's `agent_fork` takes.
     fork: async (agentId) => {
       if (!backendRef?.onForkAgent) return { ok: false, error: 'UNSUPPORTED' }
@@ -1253,7 +1256,15 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // An experiment asked for, and the account's notices for those that hear them (core/experiments.ts).
   const experimentHooks = createExperimentHooks({ want: (service) => coreLink.want(service), notify: (service, frame) => serviceLinks.notify(service, frame),
     outOfProcess, experiments })
-  backend.onAccountNotice = (notice) => experimentHooks.notice(notice)
+  backend.onAccountNotice = (notice) => {
+    experimentHooks.notice(notice)
+    // The connectors service merges the account's sealed connections again (services/connectors.ts); in
+    // the core's process it hears this through `account.onNotice` like any listener.
+    // A device key added or confirmed (`device_keys_changed`) may be a machine to seal them for as well.
+    if ((notice.type === 'connectors_changed' || notice.type === 'device_keys_changed') && outOfProcess.has('connectors')) {
+      serviceLinks.notify('connectors', { type: 'service_event', payload: { kind: 'notice', notice } })
+    }
+  }
   // What the Store in its own process tells the core: an install's progress, and that what is installed changed (core/storeLink.ts).
   const storeLink = createStoreLink(coreApi, invalidateInstalledDsh, (type, payload) => serviceLinks.call('store', type, payload))
   storeLink.onReady(() => { void heldLaunches.restoreHeld('store') })
@@ -1293,6 +1304,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     want: (service) => experimentHooks.want(service),
     // The gateway's first: its `backend` reads (the device key log) were refused below as NOT_AN_EXPERIMENT.
     answer: async (service, query, payload, authority) => await questionControls.answer(service, query, payload) ?? await modelControls.answer(service, query, payload) ?? await nativeControls.answer(service, query, payload) ?? engineReaders.answer(service) ?? (service === 'gateway' && gatewayLink ? gatewayLink.answer(query, payload) : null) ?? deliveries.answer(service, query, payload)
+      ?? await answerConnectorsQuery(coreApi, service, query, payload)
       ?? await answerExperimentQuery(coreApi, experiments, service, query, payload)
       ?? await terminalWatch.answer(service, query, payload)
       ?? (service === 'orchestrator' ? orchestratorLink.answer(query, payload) : null)

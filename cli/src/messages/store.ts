@@ -21,7 +21,7 @@ export interface LocalDelivery {
   pane: string
   session?: string
   state: DeliveryState
-  via?: 'hook' | 'prompt'
+  via?: 'hook' | 'prompt' | 'read'
   reason?: string
   /**
    * A typed attempt the core was handed, under its own delivery id. `queuedAt`: when the core said it holds it;

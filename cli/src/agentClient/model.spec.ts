@@ -86,6 +86,16 @@ describe('a harness as the agent verbs show it', () => {
     expect(all.find((r) => r.name === 'kid')).toMatchObject({ startedBy: 'lead', yours: false })
   })
 
+  it('names every agent as the app does, never by its id', () => {
+    // `harness ps` listed a Kilo harness as "kilo": the table here knew six agents and passed the rest through.
+    const named = (engine: string) => rowsOf([frame('a', { engine })], { machineId: 'm', machine: 'mac', caller: null, ledger: ledger(), now: NOW, all: false })[0]!.agent
+    expect(['claude', 'codex', 'opencode', 'cursor', 'grok', 'pi'].map(named)).toEqual(['Claude Code', 'Codex', 'OpenCode', 'Cursor', 'Grok', 'pi'])
+    expect(['kilo', 'amp', 'copilot', 'devin', 'hermes', 'muse', 'commandcode', 'agy'].map(named))
+      .toEqual(['Kilo', 'Amp', 'Copilot', 'Devin', 'Hermes', 'Muse', 'Command Code', 'Antigravity'])
+    // One Harness does not know yet is still said, as it calls itself.
+    expect(named('newagent')).toBe('newagent')
+  })
+
   it('finds a harness by its whole name, a name\'s start, or an id\'s start', () => {
     const rows = [{ name: 'Reviewer', id: 'aaaaaaaa-1' }, { name: 'reviewer-2', id: 'bbbbbbbb-2' }, { name: 'fixer', id: 'cccccccc-3' }]
     expect(matching('reviewer', rows).map((r) => r.id)).toEqual(['aaaaaaaa-1'])

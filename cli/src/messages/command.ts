@@ -23,12 +23,14 @@ export const SEND_USAGE = `harness send — message your teammates in this tab
   harness send                          who is here, and how to work together
   harness send <name>[,<name>] "text"   message one or more teammates
   harness send <name> --text-file PATH  a longer message, from a file in the temporary folder (/tmp)
+  harness send <name> --fyi "text"      news no one must act on now: it arrives at their next tool call
+                                        and never starts a turn of theirs
 
 Run it in your own harness pane. Agent Messages must be on in the tab (the chat icon on the tab), even
 to message a harness you started.
 Use --json for structured output.`
 
-export interface SendArgs { names: string[]; text: string; json: boolean }
+export interface SendArgs { names: string[]; text: string; json: boolean; fyi?: boolean }
 
 /**
  * A message file, read only from the temporary folder. `harness send` runs without a permission question
@@ -49,11 +51,12 @@ export function readMessageFile(path: string, folders: readonly string[] = [tmpd
 }
 
 export function parseSendArgs(argv: readonly string[], read: (path: string) => string = (path) => readMessageFile(path)): SendArgs {
-  let json = false, file: string | null = null
+  let json = false, fyi = false, file: string | null = null
   const words: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const value = argv[i]
     if (value === '--json') json = true
+    else if (value === '--fyi') fyi = true
     else if (value === '--text-file') {
       if (argv[i + 1] === undefined) throw new MessageError('USAGE', SEND_USAGE)
       file = argv[++i]
@@ -65,8 +68,8 @@ export function parseSendArgs(argv: readonly string[], read: (path: string) => s
   const [to, ...rest] = words
   const names = to ? to.split(',').map((n) => n.trim()).filter(Boolean) : []
   const text = file !== null ? read(file) : rest.join(' ')
-  if (!names.length && (text || file !== null)) throw new MessageError('USAGE', SEND_USAGE)
-  return { names, text, json }
+  if (!names.length && (text || file !== null || fyi)) throw new MessageError('USAGE', SEND_USAGE)
+  return { names, text, json, ...(fyi ? { fyi } : {}) }
 }
 
 /** The daemon that made this pane: its port and data folder, from the pane's owner tag and the hook routes. */
@@ -84,19 +87,25 @@ export function paneOwner(pane: string, tmux: (args: string[]) => string = (args
 /** One recipient's line: what became of the message for them. */
 export function formatSent(reply: Record<string, unknown>): string {
   if (typeof reply.roster === 'string') {
-    const recent = (Array.isArray(reply.recent) ? reply.recent as Record<string, unknown>[] : []).map((m) => {
-      const who = Array.isArray(m.to) ? `to ${(m.to as unknown[]).join(', ')}` : `from ${String(m.from)}`
+    const all = Array.isArray(reply.recent) ? reply.recent as Record<string, unknown>[] : []
+    const who = (m: Record<string, unknown>) => Array.isArray(m.to) ? `to ${(m.to as unknown[]).join(', ')}` : `from ${String(m.from)}`
+    // A message read here is given whole: an agent that reads its messages this way, its hook never running, saw
+    // only each one's first line (2026-10-12).
+    const unread = all.filter((m) => m.unread === true).map((m) => `[${String(m.id)} ${who(m)}]\n${String(m.text ?? '')}`)
+    const recent = all.filter((m) => m.unread !== true).map((m) => {
       const first = String(m.text ?? '').split('\n')[0]
-      return `  [${String(m.id)} ${who}] ${first.length > 160 ? `${first.slice(0, 157)}…` : first} (${String(m.state)})`
+      return `  [${String(m.id)} ${who(m)}] ${first.length > 160 ? `${first.slice(0, 157)}…` : first} (${String(m.state)})`
     })
-    return recent.length ? `${reply.roster}\n\nYour last messages:\n${recent.join('\n')}` : reply.roster
+    return [String(reply.roster),
+      ...(unread.length ? [`New messages for you (now read):\n\n${unread.join('\n\n')}`] : []),
+      ...(recent.length ? [`Your last messages:\n${recent.join('\n')}`] : [])].join('\n\n')
   }
   const id = String(reply.id ?? '')
   const lines = (Array.isArray(reply.recipients) ? reply.recipients as Record<string, unknown>[] : []).map((r) => {
-    const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : ''
+    const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : r.via === 'read' ? ' (it read it)' : ''
     return `${id} → ${String(r.name)}: ${String(r.state)}${via}${r.reason ? ` · ${String(r.reason)}` : ''}`
   })
-  return lines.join('\n')
+  return [...lines, ...(typeof reply.advice === 'string' ? [reply.advice] : [])].join('\n')
 }
 
 export async function sendCommand(argv: readonly string[], deps: {
@@ -123,7 +132,7 @@ export async function sendCommand(argv: readonly string[], deps: {
   if (!machineId) try { machineId = readFileSync(env.ADAPTER_COMPUTER_ID_FILE, 'utf8').trim() } catch { /* asked below */ }
   try {
     const reply = await (deps.rpc ?? messagesRpc)({ port: owner?.port ?? env.PORT, dataDir: owner?.dataDir ?? env.ADAPTER_DATA_DIR, machineId },
-      { action: 'send', pane, ...(args.names.length ? { to: args.names } : {}), ...(args.text ? { text: args.text } : {}) }, 30_000)
+      { action: 'send', pane, ...(args.names.length ? { to: args.names } : {}), ...(args.text ? { text: args.text } : {}), ...(args.fyi ? { fyi: true } : {}) }, 30_000)
     out(args.json ? JSON.stringify(reply, null, 2) : formatSent(reply))
     return 0
   } catch (error) {

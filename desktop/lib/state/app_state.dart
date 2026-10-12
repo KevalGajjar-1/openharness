@@ -258,8 +258,16 @@ class _AgentChange {
 }
 
 class AgentCreationAttempt {
-  AgentCreationAttempt({this.background = false, String? creationId})
-    : _id = creationId ?? _newCreationId();
+  AgentCreationAttempt({
+    this.background = false,
+    String? creationId,
+    this.holdWait,
+  }) : _id = creationId ?? _newCreationId();
+
+  /// How long a request the machine holds is waited for before the create
+  /// answers ([AppNotifier._createFollowingHold]). Null answers at once with
+  /// what it waits for, as a form wants: the person reads it and may cancel.
+  final Duration? holdWait;
   String _id;
   String? _machineId, _targetId;
   Map<String, dynamic>? _choices;
@@ -11651,16 +11659,56 @@ class AppNotifier extends ChangeNotifier {
       // same refusal for an engine that has no such thing (`AGENT_UNSUPPORTED`).
       'agent': ?agent,
     };
-    return _create(
+    final creation = attempt ?? AgentCreationAttempt();
+    Future<String?> ask() => _create(
       machineId,
       choices,
       projectFolder: projectFolder,
       dsh: dsh,
       swarmId: swarmId,
       split: split,
-      attempt: attempt,
+      attempt: creation,
       placement: placement,
     );
+    final holdWait = creation.holdWait;
+    return holdWait == null
+        ? ask()
+        : _createFollowingHold(creation, holdWait, ask);
+  }
+
+  /// How often a harness the machine holds is asked after
+  /// ([_createFollowingHold], for an [AgentCreationAttempt.holdWait]): the
+  /// pace `harness new` asks at.
+  @visibleForTesting
+  Duration heldCreationInterval = const Duration(seconds: 2);
+
+  /// A create that waits out a hold. The machine starts a held harness by
+  /// itself (an engine it is installing, a model waking) and answers `pending`
+  /// meanwhile; [ask] again reads what became of that same request, never
+  /// starts a second. Asked every [heldCreationInterval] until the harness is
+  /// made, refused or cancelled, or [wait] has passed, when the hold's own
+  /// words are the answer as they are without this.
+  ///
+  /// For a caller nobody is watching. The first workspace on a new computer
+  /// asked once, while setup was still downloading the agents, was told
+  /// "Installing OpenCode. The harness starts once it is installed.", and
+  /// opened nothing: the three harnesses then started with no pane anywhere
+  /// (desktop 1.2.65 with CLI 0.3.77, a fresh Ubuntu VM, 2026-10-12).
+  Future<String?> _createFollowingHold(
+    AgentCreationAttempt creation,
+    Duration wait,
+    Future<String?> Function() ask,
+  ) async {
+    final deadline = DateTime.now().add(wait);
+    var answer = await ask();
+    while (creation.canCancelPending &&
+        !_disposed &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(heldCreationInterval);
+      if (_disposed || creation._finished) break;
+      answer = await ask();
+    }
+    return answer;
   }
 
   /// How long, from its start, a create waits for its agent's download beside setup

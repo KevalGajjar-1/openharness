@@ -52,11 +52,15 @@ harness close <name> [--now]                        # save its screen and stop i
 
 Text by default, for agents as much as people: they read it as well, and it is a third of JSON's size (`ps` on
 the owner's Mac, 21 harnesses: 5.8 KB of text, 16.2 KB of JSON). `--json` for programs. Every error says what to run next.
-`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out.
+`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out. A harness the caller closed itself is
+`closed (you closed it)` and exits 0 (`close` notes it in the ledger): a Codex lead that closed its harness and then
+waited on it, as it had queued, was told it had failed (October 12).
 
 **Close, not stop** (owner, October 11): `harness stop` stops the daemon, and an agent typing it with a name
 left empty would have stopped Harness. `close` is the app's close (`agent_close`): it saves the screen, stops the
-harness and keeps its conversation, and refuses while the harness is working unless `--now`.
+harness and keeps its conversation, and refuses while the harness is working unless `--now`. A harness still starting
+is closed once its first conversation binds; one that has bound none within eight seconds is closed without one, and
+says so (October 12: Codex 0.162.1 closed a second after its start was refused, its conversation not yet readable).
 
 The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):
 when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code
@@ -239,6 +243,51 @@ with a clear error; nothing is dropped silently.
 - The person can turn agents starting agents off on a computer (Settings ▸ Agents, `harness settings
   agents-start-agents off`; `<data>/agent-settings.json`): then every agent's `harness new` and `harness_start` is
   refused there, and reading, waiting and closing what it started still work. On by default.
+
+### No permission prompts (owner, October 12, 2026)
+
+"No asking. Just do. The best UX." Every verb needs the daemon, which Codex's sandbox cannot reach, so Codex asked
+the person before each one: about four questions for one hand-off (new, wait, show, close). In its auto mode it
+answered itself, but only after a failed try inside the sandbox. The safety is Harness's own, above: the switch for
+agents starting agents, the limits, closing only what you started, and Agent Messages per tab. So the engines run
+the verbs without asking.
+
+- **Codex, shell.** `<CODEX_HOME>/rules/harness.rules`, which Harness owns whole (written at every daemon start and
+  before a launch in another profile): `prefix_rule(pattern=["harness", ["ps", "show", "wait", "new", "close",
+  "send"]], decision="allow")`, the same for the managed Node with the CLI's bundle, and
+  `host_executable(name="harness", paths=["<launcher>"])`. An `allow` match runs the command outside the sandbox on
+  its first try when every command in the line matches one (codex-rs `exec_policy.rs`, `Skip { bypass_sandbox }`,
+  0.162.1). Codex reads an absolute path by its last part, so without `host_executable` a `harness` an agent wrote in
+  its own folder ran outside the sandbox by its full path (true of `send` before this change); with it, only the
+  launcher's path counts as `harness`, and a person's own rule for `harness <verb>` covers it too. Codex ranks
+  forbidden over prompt over allow, so the person's rule wins. `harness settings` is not in it and still asks.
+- **Codex, MCP.** `harness_start` and `harness_send` say they are neither destructive nor open-world, so Codex's
+  auto rule no longer asks, and `codex exec` no longer refuses them ("MCP tool call requires approval, but approval
+  policy is never"). The plugin's own Codex manifest, `.codex-plugin/plugin.json`, sets
+  `default_tools_approval_mode = "approve"` for its server, which covers `harness_close` too; a setting the person
+  makes in `config.toml` for that server wins.
+- **Claude Code.** `Bash(harness <verb>:*)` and `Bash(<launcher> <verb>:*)` for each verb, and its tool by name under
+  both server names (`mcp__harness__harness_start`, `mcp__plugin_harness_harness__harness_start`), added to
+  `permissions.allow` in `settings.json` beside the hooks. Not `mcp__harness__*`: another product's MCP server is
+  often added as `harness` too. A verb's commands (or its tool) get no allow in any spelling when the person's deny or
+  ask names it in any spelling, or something broader (`Bash(harness:*)`): Claude Code does not count the launcher's
+  path as `harness`. A rule the person deletes comes back at the next start; a deny or ask keeps it out. Claude Code
+  checks deny, then ask, then allow, and resolves a narrow allow before auto mode's classifier.
+- **Full mode stays the person's.** With nobody asked, `harness new --mode full` from an agent would start one with
+  its permission checks and sandbox off (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`)
+  from a sandboxed agent. An agent's `new` in full mode is refused; auto, the default, keeps each engine's own checks.
+- **Verified** with the real engines in a throwaway home against a local mock model (Codex 0.162.1, Claude Code
+  2.1.296): without the rules `harness ps` ran in Codex's sandbox and could not reach the stand-in daemon, and Claude
+  Code answered "This command requires approval"; with them both ran it at once, by name or the launcher's path, and
+  `harness new … && harness wait …` too. A `harness` written into the workspace and run by its full path stayed in
+  the sandbox (on `main` its `send` ran outside). `harness settings` stayed sandboxed; a person's deny and ask still
+  refused; a tool of another server named `harness` still asked; Codex's `harness_start` and `harness_close` ran
+  under `approval_policy = "never"`, and a person's `default_tools_approval_mode = "prompt"` refused close again.
+- **What still asks.** A `harness` command piped or joined with another one (`| head`, `; echo $?`, a variable set
+  in front): the rule matches commands, not lines. The CLI's sandbox error says to run it by itself.
+- **What it does not close.** A folder on Codex's PATH that its sandbox can write (a project's activated `.venv/bin`)
+  could hold a `harness` of the agent's own, which the bare name would then reach outside the sandbox: a rule names
+  a command, not a file.
 
 ## How it works
 

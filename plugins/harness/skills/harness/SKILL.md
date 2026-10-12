@@ -25,9 +25,14 @@ these verbs: `harness update`. The agent you start must be installed as well (`c
 for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
 asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
 
-In Codex, run `harness` commands outside your sandbox: they talk to Harness's local daemon, which the sandbox
-blocks, so ask for escalated permissions the first time. A sandbox in the way is not a stopped Harness: do not run
-`harness start` unless a command run outside the sandbox says Harness is not running.
+Once Harness runs on this computer, Claude Code and Codex run its commands (`ps`, `new`, `wait`, `show`, `send`,
+`close`) and its MCP tools without asking: Harness adds them to their permission rules, and Codex runs them outside
+its sandbox. What you may do with them is still Harness's to decide (below). Run each `harness` command by itself,
+or join `harness` commands with `&&`: piped into another command, after `;`, or with a variable set in front, the
+rule no longer matches, so it asks, and in Codex it runs in the sandbox, which cannot reach Harness's local daemon.
+Where Harness has not set your agent up, run `harness` outside your sandbox, asking for escalated permissions. A
+sandbox in the way is not a stopped Harness: do not run `harness start` unless a command run outside the sandbox says
+Harness is not running.
 
 ## When to start a harness
 
@@ -72,12 +77,13 @@ harness close <name> [--now]                        # when you are done with one
   rather than a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 - Put the whole task in `-- <task>`: what to do, where, what done looks like, and what to answer with. A task
   holds 2,000 characters; for a longer one, write it to a file and name the file in the task.
-- `wait` exits 0 when it is idle, 3 when it needs the person (a question or a permission: only the person
-  answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0` waits as long as
-  it takes.
+- `wait` exits 0 when it is idle (or you closed it), 3 when it needs the person (a question or a permission:
+  only the person answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0`
+  waits as long as it takes.
 - Read the result with `show` instead of asking for a summary.
 - `close` what you started once you have what you need. It keeps the conversation; the person can resume it.
-  It refuses while the harness is working, unless `--now`.
+  It refuses while the harness is working, unless `--now`. One closed while still starting may have no
+  conversation to keep yet, and `close` says so.
 - Add `--json` to any verb for JSON. Every error says what to run next.
 
 ## Inside a harness, or outside
@@ -115,5 +121,7 @@ If Harness's MCP server (`harness mcp`) is connected, its tools are the same ver
 
 - At most 8 live harnesses of yours, 20 starts in 10 minutes, and a harness you start may start others, but
   the ones it starts may not. Every limit refuses with a message; do not work around it.
+- A harness you start runs in its agent's auto mode, with the agent's own checks on. `--mode full` (checks and
+  sandbox off) is the person's to choose: from an agent it is refused.
 - Never answer a harness's question or permission prompt yourself, and never type into it some other way.
 - Never ask a harness to publish, deploy, delete or push: those are the person's to ask for.

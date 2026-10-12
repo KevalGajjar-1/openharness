@@ -12,6 +12,7 @@
  *    the install and then starts it, or says why it could not be installed, and leaves no folder behind either way.
  */
 import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -145,20 +146,23 @@ it('says what a launch still held after a minute waits for, and cancels it so it
   } finally { client.close() }
 }, 180_000)
 
-it('installs a missing Codex for a new project and starts it there, or says why it could not, leaving no folder', async (context) => {
-  // A computer with nothing: no codex, npm or node in the system folders the login shell's PATH names below.
-  const system = ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
-  if (system.some((dir) => ['codex', 'npm', 'node'].some((name) => existsSync(join(dir, name))))) context.skip()
-  let offline = ''
-  const d = await boot((d) => {
-    const bin = join(d.root, 'bin'), tools = join(d.root, 'tools'), installed = join(d.root, 'codex-package')
-    offline = join(d.root, 'npm-offline')
-    // What `npm install -g @openai/codex` puts in the prefix is the fake engine's own wrapper; until then, no codex
-    // anywhere, so the daemon installs it with the recipe it would use on a person's computer.
-    renameSync(join(bin, 'codex'), installed)
-    delete d.env.CODEX_PATH
-    symlinkSync(process.execPath, join(bin, 'node'))
-    writeFileSync(join(bin, 'npm'), `#!/bin/sh
+/** The system folders a login shell's PATH names on a computer with nothing installed. */
+const SYSTEM = ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
+/** A computer that has a codex, npm or node in its system folders is not one with nothing installed. */
+const notBare = (): boolean => SYSTEM.some((dir) => ['codex', 'npm', 'node'].some((name) => existsSync(join(dir, name))))
+
+/**
+ * No codex anywhere, so the daemon installs it with the recipe it would use on a person's computer, through an `npm`
+ * that puts the fake engine's own wrapper in the prefix: after the seconds in `npm-seconds` (3 by default), or failing
+ * as an offline npm does while `npm-offline` exists.
+ */
+function withoutCodex(d: IsolatedDaemon): void {
+  const bin = join(d.root, 'bin'), tools = join(d.root, 'tools'), installed = join(d.root, 'codex-package')
+  const offline = join(d.root, 'npm-offline'), seconds = join(d.root, 'npm-seconds')
+  renameSync(join(bin, 'codex'), installed)
+  delete d.env.CODEX_PATH
+  symlinkSync(process.execPath, join(bin, 'node'))
+  writeFileSync(join(bin, 'npm'), `#!/bin/sh
 case "$1" in
   prefix) printf '%s\\n' "\${npm_config_prefix:-$HOME/.local}"; exit 0 ;;
   install) ;;
@@ -169,17 +173,22 @@ if [ -f ${JSON.stringify(offline)} ]; then
   echo 'npm error network request to https://registry.npmjs.org/@openai%2fcodex failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org' >&2
   exit 1
 fi
-sleep 3
+sleep "$(cat ${JSON.stringify(seconds)} 2>/dev/null || echo 3)"
 mkdir -p "$npm_config_prefix/bin" && cp ${JSON.stringify(installed)} "$npm_config_prefix/bin/codex" && chmod 755 "$npm_config_prefix/bin/codex"
 `, { mode: 0o755 })
-    mkdirSync(tools)
-    symlinkSync(resolveBinaryOnPath('tmux')!, join(tools, 'tmux'))
-    // The daemon's own PATH too: no codex of the developer's may be found and run.
-    const path = [bin, tools, ...system].join(':')
-    d.env.PATH = path
-    writeFileSync(join(d.env.HOME!, '.zshrc'), `export PATH=${path}\n`)
-    writeFileSync(join(d.env.HOME!, '.bash_profile'), `export PATH=${path}\n`)
-  })
+  mkdirSync(tools)
+  symlinkSync(resolveBinaryOnPath('tmux')!, join(tools, 'tmux'))
+  // The daemon's own PATH too: no codex of the developer's may be found and run.
+  const path = [bin, tools, ...SYSTEM].join(':')
+  d.env.PATH = path
+  writeFileSync(join(d.env.HOME!, '.zshrc'), `export PATH=${path}\n`)
+  writeFileSync(join(d.env.HOME!, '.bash_profile'), `export PATH=${path}\n`)
+}
+
+it('installs a missing Codex for a new project and starts it there, or says why it could not, leaving no folder', async (context) => {
+  if (notBare()) context.skip()
+  const d = await boot(withoutCodex)
+  const offline = join(d.root, 'npm-offline')
   const home = d.env.HOME!, folder = join(home, 'harnesses', 'scratch1')
   const run = () => harness(d, ['new', 'codex', 'scratch1', '--name', 'cx', '--', 'Reply with pong'])
   // Offline: it says it is installing, then why Codex could not be installed, and no folder blocks the same command.
@@ -205,3 +214,58 @@ mkdir -p "$npm_config_prefix/bin" && cp ${JSON.stringify(installed)} "$npm_confi
     expect(agents[0]).toMatchObject({ name: 'cx' })
   } finally { client.close() }
 }, 180_000)
+
+/** `harness mcp` as Codex starts it: requests in on stdin, answers by id from stdout. */
+function mcp(d: IsolatedDaemon) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp'], { cwd: CLI_ROOT, env: { ...d.env, TMUX_PANE: '' }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const waiting = new Map<number, (reply: Record<string, any>) => void>()
+  createInterface({ input: child.stdout }).on('line', (line) => { const reply = JSON.parse(line); waiting.get(reply.id)?.(reply) })
+  let next = 1
+  const request = (method: string, params: Record<string, unknown> = {}): Promise<Record<string, any>> => {
+    const id = next++
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    return new Promise((done) => waiting.set(id, done))
+  }
+  return {
+    request,
+    async call(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean; ms: number }> {
+      const began = Date.now()
+      const reply = await request('tools/call', { name, arguments: args })
+      return { text: reply.result.content.map((c: { text: string }) => c.text).join('\n'), isError: reply.result.isError === true, ms: Date.now() - began }
+    },
+    close: () => child.stdin.end(),
+  }
+}
+
+it('answers an MCP agent within Codex\'s tool timeout while Codex installs, starts that harness by itself, and never a second', async (context) => {
+  if (notBare()) context.skip()
+  const d = await boot((d) => { withoutCodex(d); writeFileSync(join(d.root, 'npm-seconds'), '55') })
+  const server = mcp(d)
+  try {
+    await server.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'codex-mcp-client' }, capabilities: {} })
+    const task = { name: 'cx', agent: 'codex', project: 'scratch1', task: 'Reply with pong' }
+    // Codex ends a tool call at 60 s unless told otherwise; the install takes 55 s here, and the answer comes first.
+    const started = await server.call('harness_start', task)
+    expect(started.isError, started.text).toBe(false)
+    expect(started.ms).toBeLessThan(50_000)
+    expect(started.text).toBe('Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
+      + 'Check on it with harness_list or harness_wait (names: "cx"); do not start it again.')
+    // It follows it by name, and asking again is answered with it.
+    const listed = await server.call('harness_list', {})
+    expect(listed.text).toMatch(/\ncx +Codex +installing +you /)
+    const again = await server.call('harness_start', task)
+    expect(again.text).toBe('"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness_wait (names: "cx"). Do not start it again.')
+    // It starts by itself once installed, and is waited on to its answer.
+    let waited = await server.call('harness_wait', { names: ['cx'] })
+    for (let i = 0; i < 4 && !/^cx: idle/.test(waited.text); i++) waited = await server.call('harness_wait', { names: ['cx'] })
+    expect(waited.text).toBe('cx: idle · read it: harness_read (name: "cx")')
+  } finally { server.close() }
+  const client = await LocalClient.connect(d)
+  try {
+    const rows = (await client.request<{ agents: Array<Record<string, any>> }>('agents_list', { includeStopped: true }, 30_000)).agents
+    expect(rows.map((row) => row.name)).toEqual(['cx'])
+  } finally { client.close() }
+  // Recorded as the MCP agent's, by the creation it was asked by.
+  const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  expect(ledger.find((row) => row.child)).toMatchObject({ by: { agentId: expect.stringMatching(/^agent:codex/) }, child: { name: 'cx', creationId: expect.any(String) } })
+}, 240_000)

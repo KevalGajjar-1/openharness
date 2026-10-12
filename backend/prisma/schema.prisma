@@ -750,6 +750,19 @@ model Desk {
   @@map("desks")
 }
 
+/// The account's connected services (Linear, GitHub…), sealed by a daemon for every machine of the account
+/// (cli/src/lib/e2ee/connectorVault.ts): only those machines can open it. The backend keeps the latest
+/// envelope and a revision for compare-and-set, and tells every computer when it changed.
+model ConnectorVault {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @unique
+  revision  Int      @default(0)
+  envelope  Json
+  updatedAt DateTime @updatedAt
+
+  @@map("connector_vaults")
+}
+
 /// Agent Messages, per tab (docs/design/2026-10-10-agent-messages.md): whether the harnesses in one desk tab
 /// may message each other. Absence means off. Kept beside the desk, never in its tab JSON: a backend pod that
 /// has not upgraded drops a tab whose JSON it does not know (lib/desk.ts parseTabs). A deterministic _id makes

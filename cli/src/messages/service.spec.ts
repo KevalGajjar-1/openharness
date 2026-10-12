@@ -6,8 +6,8 @@ import type { BackendNotice, TurnDelivery } from '../core/api.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import { fakeCore } from '../testing/fakeCore.js'
 import { PaneInbox } from './inbox.js'
-import { deliveryKey } from './mailbox.js'
-import { LIMITS, MessageError } from './model.js'
+import { deliveryKey, FYI_REASON } from './mailbox.js'
+import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, type Message } from './model.js'
 import type { Rpc } from './rpc.js'
 import { REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
 import { MessageStore } from './store.js'
@@ -141,6 +141,56 @@ describe('harness send', () => {
     expect((api.recent as Array<Record<string, unknown>>).at(-1)).toMatchObject({ id: twice.id, from: 'lead', state: 'queued' })
   })
 
+  it('gives an agent that reads its messages itself every one still waiting, whole and once, then its last few', async () => {
+    // A Codex lead running since before Agent Messages never ran the hook and, always working, was never typed to: it
+    // read `harness send` alone, which gave only its last five, each still "queued" (2026-10-12).
+    const t = setup()
+    const ids: string[] = []
+    for (let i = 1; i <= 7; i++) {
+      const sent = await t.ask({ action: 'send', pane: '%1', to: 'api', text: `finding ${i}\nwith its details` })
+      ids.push(String(sent.id))
+      // api is working: each typed attempt goes back to the hook, which never runs.
+      t.deliveryEvent({ deliveryId: t.delivered.at(-1)![2], sessionId: 'api', state: 'rejected', reason: 'team_waiting_idle' })
+    }
+    const first = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    const unread = first.filter((m) => m.unread === true)
+    expect(unread.map((m) => m.id)).toEqual(ids)
+    expect(unread.every((m) => m.state === 'delivered' && m.text === `finding ${ids.indexOf(String(m.id)) + 1}\nwith its details`)).toBe(true)
+    const history = await t.ask({ action: 'history', tabId: 'app' }) as { messages: Array<{ statuses: Array<Record<string, unknown>> }> }
+    expect(history.messages.flatMap((m) => m.statuses).filter((s) => s.agentId === 'api').every((s) => s.state === 'delivered' && s.via === 'read')).toBe(true)
+    // Read once: the next look gives nothing new, and its last five as before.
+    const again = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    expect(again.filter((m) => m.unread)).toEqual([])
+    expect(again.map((m) => m.id)).toEqual(ids.slice(-5))
+    // The sender sees them delivered.
+    const lead = (await t.ask({ action: 'send', pane: '%1' })).recent as Array<Record<string, unknown>>
+    expect(lead.every((m) => m.state === 'delivered')).toBe(true)
+  })
+
+  it('sends news that never starts a turn of an idle teammate, marked as news where it is read', async () => {
+    const t = setup()
+    const sent = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'quiet window 04:19–04:22Z', fyi: true })
+    expect(sent.recipients).toEqual([{ name: 'api', state: 'queued', reason: FYI_REASON }])
+    expect(t.delivered).toEqual([])
+    const read = (await t.ask({ action: 'send', pane: '%2' })).recent as Array<Record<string, unknown>>
+    expect(read.find((m) => m.id === sent.id)).toMatchObject({ unread: true, state: 'delivered', text: 'quiet window 04:19–04:22Z' })
+    const history = await t.ask({ action: 'history', tabId: 'app' }) as { messages: Array<Record<string, unknown>> }
+    expect(history.messages.find((m) => m.id === sent.id)).toMatchObject({ fyi: true })
+    expect(header({ ...(history.messages[0] as unknown as Message), fyi: true })).toMatch(/ · FYI\]$/)
+    expect(header({ ...(history.messages[0] as unknown as Message), fyi: undefined })).not.toMatch(/FYI/)
+    // Only `true` is news on the wire.
+    expect(parseMessage({ ...history.messages[0], fyi: 'yes' })).not.toHaveProperty('fyi')
+  })
+
+  it('sends a long message, and tells its sender what it costs the teammates who read it', async () => {
+    const t = setup()
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x'.repeat(LONG_TEXT) })).not.toHaveProperty('advice')
+    const long = await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x'.repeat(LONG_TEXT + 1) })
+    expect(long.recipients).toHaveLength(1)
+    expect(long.advice).toBe(longAdvice(LONG_TEXT + 1))
+    expect(long.advice).toMatch(/leave the rest in the repo/)
+  })
+
   it('tells two teammates with the same start apart only by more of the name', async () => {
     const t = setup({
       agents: [session('lead', '%1'), session('api-a', '%2'), session('api-b', '%3')],
@@ -258,6 +308,28 @@ describe('harness send', () => {
     await vi.advanceTimersByTimeAsync(TICK_MS)
     const history = await t.ask({ action: 'history' })
     expect((history.messages as Array<{ statuses: unknown[] }>)[0].statuses).toEqual([expect.objectContaining({ machineId: 'm2', agentId: 'phone', state: 'delivered', via: 'hook' })])
+    t.service.stop()
+  })
+
+  it('keeps how another machine\'s agent got a message, read with `harness send` too, and nothing else', async () => {
+    vi.useFakeTimers()
+    let via: unknown = 'read'
+    const t = setup({ rpc: async (target, payload) => {
+      if (payload.action === 'who') return { agents: [{ agentId: 'phone', name: 'phone', engine: 'claude' }] }
+      if (payload.action === 'deliver') return { statuses: [{ messageId: (payload.message as { id: string }).id, agentId: 'phone', state: 'queued' }] }
+      return { statuses: (payload.ids as string[]).map((messageId) => ({ messageId, agentId: 'phone', state: 'delivered', via })) }
+    } })
+    t.service.start()
+    await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'when you have a minute' })
+    t.tick(60_000)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    const statuses = async () => ((await t.ask({ action: 'history' })).messages as Array<{ statuses: unknown[] }>).at(-1)!.statuses
+    expect(await statuses()).toEqual([expect.objectContaining({ machineId: 'm2', agentId: 'phone', state: 'delivered', via: 'read' })])
+    via = 'typed'
+    await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'and another' })
+    t.tick(60_000)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(await statuses()).toEqual([expect.not.objectContaining({ via: expect.anything() })])
     t.service.stop()
   })
 })

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { VIA_MCP_ENV } from '../agentClient/commands.js'
+import { step, VIA_MCP_ENV } from '../agentClient/commands.js'
 import { folderTrust } from '../engines/launchPrep.js'
 import { ENGINES, type AgentEngine } from '../engines/types.js'
 import { engineName } from '../messages/model.js'
@@ -132,6 +132,12 @@ export function parseNewArgs(argv: string[], env: { cwd: string; home: string })
   if (projectName !== null && projectName !== '' && projectFolderSlug(projectName) === null) {
     throw new NewUsageError(`“${projectName}” leaves no usable folder name.`)
   }
+  // A terminal opens in a folder and never makes one (the machine's INVALID_PROJECT_SOURCE), so the project was left
+  // out of what is sent: `harness new terminal my-game` opened a terminal in the home folder, with no ~/harnesses/my-game
+  // and no word about it (CLI 0.3.76, 2026-10-12).
+  if (words[0] === 'terminal' && projectName !== null) {
+    throw new NewUsageError('A terminal opens in a folder; it does not make a project. Name a folder (harness new terminal ~/code/x), or none to open it here.')
+  }
   let cwd: string | null = null
   if (folder !== null) {
     // `~` is this machine's home only when this machine is the target; for another machine it is
@@ -239,10 +245,14 @@ export interface NewCommandDeps {
   /** Who is starting it, when an agent runs this from its pane (agentClient/commands.ts `agentOrigin`). */
   origin?: () => Promise<NewOrigin | null>
   sleep?: (ms: number) => Promise<void>
+  now?: () => number
   /** The caller's environment: whether `harness mcp` runs this, and where its engines keep their folder trust.
    *  This process's when left out. */
   env?: NodeJS.ProcessEnv
 }
+
+/** A harness the caller already has by the name it asks for again (`NewOrigin.existing`). */
+export interface ExistingHarness { name: string; machineId: string; state: 'starting' | 'running'; agentId?: string; note: string }
 
 /** An agent starting a harness (docs/design/2026-10-11-agent-client.md): its limits, the header its task carries,
  *  and the record of who started what. */
@@ -252,13 +262,21 @@ export interface NewOrigin {
   /** The first message as the new harness reads it. */
   prompt(text: string, machineId: string): string
   /** Records it; a warning to print when the record could not be kept everywhere. */
-  created(machineId: string, agent: Record<string, unknown>): Promise<string | null>
+  created(machineId: string, agent: Record<string, unknown>, creationId?: string): Promise<string | null>
+  /** The caller's harness by [name] for the same agent on the same machine, already running or still on its way, said
+   *  instead of starting a second; else null. */
+  existing?(name: string | null, asking: { machineId: string; engine: string }): Promise<ExistingHarness | null>
+  /** Records a harness asked for that has not started yet, so the caller follows it by name once this has answered. */
+  pending?(machineId: string, creation: { creationId: string; name: string; engine: string }): void
   /** How to read, wait for and message what was started. */
   next(agent: Record<string, unknown>): string
   /** The caller's own harness, by agent id, when it is one on this computer: a harness started here records it, and the
    *  windows open it beside the caller's pane. Absent for an agent outside Harness. */
   parentAgentId?: string
 }
+
+/** How long `harness new` takes at most to answer an agent: within Codex's one-minute MCP tool timeout, with room. */
+export const AGENT_ANSWER_MS = 40_000
 
 const ERRORS: Record<string, string> = {
   INVALID_CWD: 'That folder does not exist on the machine.',
@@ -400,9 +418,27 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
     return 1
   }
   const env = deps.env ?? process.env
+  const clock = deps.now ?? Date.now
+  const began = clock()
   try {
     const origin = (await deps.origin?.()) ?? null
-    await origin?.check()
+    // A terminal is the person's: `ps`, `show`, `wait` and `close` never list one (agentClient/model.ts `isAgent`). An
+    // agent that started one was told "Read it: harness show vt1", then "No harness named vt1", could not close it, and
+    // had it count toward its eight for as long as it stayed open; its task would be typed into a shell, header and all
+    // (the released CLI 0.3.76 on a Mac, 2026-10-12).
+    if (origin && args.agent === 'terminal') {
+      throw new Error('An agent cannot start a terminal: it could not read it, wait for it or close it afterwards. '
+        + 'Run the command in your own shell, or start an agent for the work (harness new codex <project> -- <task>). Nothing was started.')
+    }
+    // Full mode turns off the new agent's own permission checks and sandbox (`--dangerously-skip-permissions`,
+    // `--dangerously-bypass-approvals-and-sandbox`). Harness's agent commands run without the person being asked
+    // (engines/facets/hooks.ts HarnessAllowance), so a sandboxed agent could have started one with any task and no one
+    // asked: the review of #1232. Auto, the default, keeps each engine's own checks. The person still chooses full.
+    if (origin && args.mode === 'full') {
+      throw new Error('An agent cannot start a harness in full mode: it would run with its permission checks and sandbox off, '
+        + 'and no one was asked. Start it without --mode (auto, where its own checks run), or ask the person to start it in full mode. '
+        + 'Nothing was started.')
+    }
     let machineId = deps.localMachineId
     let machineLabel = 'this computer'
     let local = true
@@ -416,6 +452,15 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       deps.error('This computer is not signed in to Harness. Run `harness login`.')
       return 1
     }
+    // An agent asking again for a harness it already has, by its name, for the same agent on the same machine: answered
+    // with that one, never a second. The person at a terminal has no origin and is never stopped here.
+    const already = await origin?.existing?.(args.name, { machineId, engine: args.agent })
+    if (already) {
+      const { note, ...harness } = already
+      deps.output(args.json ? JSON.stringify({ ok: true, existing: true, ...harness, note }) : note)
+      return 0
+    }
+    await origin?.check()
     const session = await daemonSession(deps, machineId)
     try {
       let cwd = args.cwd
@@ -468,6 +513,12 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
         ...newAgentPayload(asked, cwd, baseEngine), ...(origin ? { startedBy: 'agent' } : {}), ...(parent ? { parentAgentId: parent } : {}),
       }
       let result = await session.request('agent_create', payload)
+      const creationId = String(payload.creationId)
+      // Recorded before any waiting: an agent's call that is cut off (a tool's timeout) leaves a harness that may still
+      // start, and it is then the agent's, by name, for `ps`, `wait` and the check above.
+      if (origin && (result.state === 'pending' || result.state === 'unconfirmed')) {
+        origin.pending?.(machineId, { creationId, name: args.name ?? '', engine: String(payload.engine) })
+      }
       // A launch the daemon holds (a native launch waiting its turn) is still on its way: asked after until it is not,
       // for a minute. Given up on at once, it could start later with an agent's task and no record of who started it
       // (the review of #1180). What it waits for is said as it changes: the daemon's own words, which used to stay in
@@ -476,11 +527,17 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // and the launch then gets its minute: a minute in all ended a Codex install as it finished (a fresh Ubuntu VM,
       // 2026-10-12, where it took about that).
       const installing = (status: Record<string, unknown>) => (status.held as { service?: unknown } | undefined)?.service === 'install'
+      // An agent is answered within AGENT_ANSWER_MS, install or not: MCP clients end a tool call at a minute (Codex's
+      // default `tool_timeout_sec`), and shell tools have limits of their own. A call cut off left the agent with nothing,
+      // and one that asked again got a second harness.
+      // At least ten seconds of asking, however long the setup took: a slow line to another machine left none.
+      const answerBy = Math.max(began + AGENT_ANSWER_MS, clock() + 10_000)
       let said = '', polls = 30
-      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed'); i++) {
+      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed') && (!origin || clock() < answerBy); i++) {
         if (installing(result)) polls = Math.min(180, Math.max(polls, i + 30))
         const reason = holdReason(result)
-        if (reason && reason !== said && !args.json) deps.error(reason)
+        // Not under `harness mcp`: an MCP client sees only the whole answer, which says it, after the result.
+        if (reason && reason !== said && !args.json && env[VIA_MCP_ENV] !== '1') deps.error(reason)
         said = reason || said
         await (deps.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))))(2_000)
         result = await session.request('agent_create_status', { creationId: payload.creationId })
@@ -488,11 +545,20 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // Still held after a minute: cancelled, so it never starts later, task and all, with nobody waiting for it.
       // The daemon takes a cancel only before the launch is claimed (lib/agentCreationReceipt.ts `cancelIntent`) and
       // otherwise answers what became of it, which is then the answer here.
+      // An agent's harness still installing its engine is left to start by itself, and the agent told how to follow it:
+      // cancelled, the install would be wasted and the agent would only ask again.
+      if (origin && result.state === 'pending' && installing(result)) {
+        const name = args.name?.trim() ?? ''
+        const note = `Harness is installing ${engineName(String(payload.engine))}; the harness ${name ? `"${name}" ` : ''}starts by itself once it is installed. `
+          + `Check on it with ${name ? `${step(env, 'ps')} or ${step(env, 'wait', name)}` : step(env, 'ps')}; do not start it again.`
+        deps.output(args.json ? JSON.stringify({ ok: true, pending: true, machineId, creationId, name, note }) : note)
+        return 0
+      }
       if (result.state === 'pending') {
         const reason = holdReason(result) || said
         const install = installing(result)
         const why = install ? `Harness is still installing ${engineName(String(payload.engine))}.`
-          : `Harness did not start the harness ${polls > 30 ? 'in time' : 'within a minute'}${reason ? `: ${reason}` : '.'}`
+          : `Harness did not start the harness ${polls > 30 || origin ? 'in time' : 'within a minute'}${reason ? `: ${reason}` : '.'}`
         const cancelled = await session.request('agent_create_cancel', { creationId: payload.creationId }).catch(() => null)
         if (cancelled?.state === 'cancelled') {
           throw new Error(`${why} ${install ? 'Run the same command again in a minute; this request is cancelled' : 'The request is cancelled'}, `
@@ -517,7 +583,7 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
           : `Harness could not confirm the harness started (${String(result.state)}). Check with \`harness ps\` before starting another.`)
       }
       const agent = (result.agent ?? {}) as Record<string, unknown>
-      const warning = await origin?.created(machineId, agent)
+      const warning = await origin?.created(machineId, agent, creationId)
       if (warning) deps.error(warning)
       if (args.json) deps.output(JSON.stringify({ ok: true, machineId, agent, ...(trustNote ? { note: trustNote } : {}) }))
       else {

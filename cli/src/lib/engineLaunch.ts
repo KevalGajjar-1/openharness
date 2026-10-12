@@ -5,7 +5,7 @@ import { nativePaneHold, NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { isAbsolute, basename, dirname, join } from 'node:path'
 import { baseNode } from '../harnessd/baseNode.js'
 import { env } from '../config/env.js'
@@ -23,6 +23,7 @@ import { managedNodePath } from './nodeRuntime.js'
 import { RAISE_OPEN_FILES_SH } from './openFiles.js'
 import { ENGINE_EXIT_PANE_OPTION } from './engineExitOption.js'
 import { shellSingleQuote } from './shellQuote.js'
+import { currentUserShell } from './userShell.js'
 import { harnessPaneOwner } from './harnessSessionLabel.js'
 
 export { shellSingleQuote }
@@ -386,16 +387,6 @@ export interface InteractiveEngineShell {
  * nvm/asdf and vendor PATH edits in .bashrc, so it must be interactive but not
  * login.  Other POSIX-like shells get the portable interactive form.
  */
-function currentUserShell(): string | undefined {
-  if (process.env.SHELL && isAbsolute(process.env.SHELL)) return process.env.SHELL
-  try {
-    const shell = userInfo().shell
-    return shell && isAbsolute(shell) ? shell : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * The shells that speak the POSIX shell language every launch script here is written in. Any other
  * login shell (fish, tcsh, csh, nushell, xonsh) cannot run one: handed the script with `-c`, it fails

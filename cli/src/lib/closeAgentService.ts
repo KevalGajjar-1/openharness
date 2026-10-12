@@ -5,6 +5,7 @@ import type { RegisteredSession, registry as liveRegistry } from './registry.js'
 import { terminalRouteKey } from './terminalRuntime.js'
 import type { StopAgentOptions } from './stopAgentService.js'
 import { resumeMode } from './resumeCapability.js'
+import { sid } from './log.js'
 
 export type CloseActivity = 'idle' | 'working' | 'needs_input' | 'draft' | 'unknown'
 export type CloseMode = 'inspect' | 'idle' | 'now' | 'after_task' | 'cancel'
@@ -16,7 +17,23 @@ export type AgentClosePlan = {
   detail?: string
 }
 export type AgentCloseRequest = { agentId: string; sessionId: string; createdAt: string; mode: CloseMode; onlyIfHidden?: boolean }
-export type AgentCloseResult = { closed?: true; deferred?: true; cancelled?: true; error?: string; detail?: string; activity?: CloseActivity }
+/** `withoutConversation`: closed while still starting, before Harness could read its conversation, so none is kept. */
+export type AgentCloseResult = { closed?: true; withoutConversation?: true; deferred?: true; cancelled?: true; error?: string; detail?: string; activity?: CloseActivity }
+
+/**
+ * How long a close waits for a harness still starting to bind its first conversation, trying again meanwhile.
+ * Codex 0.162.1 in a clean macOS VM (2026-10-12): for its first seconds every read of its process was refused ("the
+ * native control descriptor type is unavailable"), so `harness close --now` a second after `harness new` was refused
+ * with that phrase and the harness kept working; four seconds in, the same close worked.
+ */
+export const CLOSE_BIND_WAIT_MS = 8_000
+const CLOSE_BIND_RETRY_MS = 1_000
+/**
+ * A harness Harness launched less than this long ago, with no conversation bound yet, is still starting: one that never
+ * binds within the wait is stopped without a conversation. Past it, a close whose conversation cannot be read is refused
+ * as before: a harness that has run longer may have work that only its conversation holds.
+ */
+export const CLOSE_STARTING_MS = 60_000
 
 type CloseSession = Pick<RegisteredSession, 'engine' | 'sessionId' | 'transcriptPath' | 'boundAt' | 'launch' | 'resumeOnly'>
 
@@ -46,13 +63,41 @@ function identity(s: RegisteredSession): string {
   return JSON.stringify([s.agentId, s.sessionId, s.engine, s.registeredAt, s.processIdentity?.pid,
     s.processIdentity?.startMarker, s.processIdentity?.executable, s.runtimes.map(terminalRouteKey).sort()])
 }
+/** The harness, whichever conversation it has bound: its process and panes. */
+function harnessIdentity(s: RegisteredSession): string {
+  return JSON.stringify([s.agentId, s.engine, s.registeredAt, s.processIdentity?.pid,
+    s.processIdentity?.startMarker, s.processIdentity?.executable, s.runtimes.map(terminalRouteKey).sort()])
+}
+/** How long before [at] the harness started: its engine's own start when that is later than the row's (an engine
+ *  installed in its pane first starts minutes after the pane opened), its row's otherwise. A clock that went back
+ *  says nothing: never young. */
+function age(s: RegisteredSession, at: number): number {
+  const born = Date.parse(s.processIdentity?.startMarker ?? '')
+  const since = Number.isFinite(born) && born > s.registeredAt ? Math.min(born, at) : s.registeredAt
+  return at - s.registeredAt < 0 ? -1 : at - since
+}
+/** Started less than CLOSE_STARTING_MS before [at], and not a terminal an engine was typed into, a resume or an adoption. */
+function young(s: RegisteredSession, at: number): boolean {
+  const old = age(s, at)
+  return !s.terminalHost && !s.resumeOnly && !s.externalResume && old >= 0 && old < CLOSE_STARTING_MS
+}
+/** Launched by Harness, young, and with no conversation bound yet. A fork is not: it starts on a copy of another's
+ *  conversation. Nor is a row a hook has bound, which loses its `launch` then (registry.register): once bound, never
+ *  starting again. */
+function stillStarting(s: RegisteredSession, at: number): boolean {
+  return !!s.launch && !s.forkedFrom && young(s, at) && !s.sessionId && !s.transcriptPath && s.boundAt == null
+}
 /** What makes two requests the same one: the agent, the mode, and whether it holds only while no tab
  *  shows the agent. A cleanup that finds the agent on screen again must not answer the person's own close. */
 function jobKey(request: AgentCloseRequest): string {
   return JSON.stringify([request.agentId, request.mode, request.onlyIfHidden === true])
 }
-function matches(s: RegisteredSession | undefined, request: AgentCloseRequest): s is RegisteredSession {
-  return !!s && s.sessionId === request.sessionId && new Date(s.registeredAt).toISOString() === request.createdAt
+function matches(s: RegisteredSession | undefined, request: AgentCloseRequest, at: number): s is RegisteredSession {
+  if (!s || new Date(s.registeredAt).toISOString() !== request.createdAt) return false
+  // Asked of a harness still starting, which has bound its first conversation since the list the request was made
+  // from: the same harness, and the close keeps that conversation. Refused as changed, a close sent in the seconds a
+  // Codex binds was answered "changed while closing".
+  return s.sessionId === request.sessionId || (request.sessionId === '' && young(s, at))
 }
 
 export interface CloseAgentServiceDeps {
@@ -63,6 +108,7 @@ export interface CloseAgentServiceDeps {
   changed(s: RegisteredSession): void
   openTabs?: { assertHidden(s: RegisteredSession): Promise<void>; isHidden(s: RegisteredSession): boolean }
   now?: () => number
+  sleep?: (ms: number) => Promise<void>
 }
 
 class CloseRefused extends Error {
@@ -83,7 +129,11 @@ export class CloseAgentService {
   private timer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
   private readonly now: () => number
-  constructor(private readonly deps: CloseAgentServiceDeps) { this.now = deps.now ?? Date.now }
+  private readonly sleep: (ms: number) => Promise<void>
+  constructor(private readonly deps: CloseAgentServiceDeps) {
+    this.now = deps.now ?? Date.now
+    this.sleep = deps.sleep ?? (ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref?.() }))
+  }
 
   start(): void { this.schedule() }
   dispose(): void { this.disposed = true; if (this.timer) clearTimeout(this.timer); this.timer = null }
@@ -100,7 +150,7 @@ export class CloseAgentService {
 
   request(request: AgentCloseRequest): Promise<AgentCloseResult> {
     const current = this.deps.registry.byAgent(request.agentId)
-    if (!matches(current, request)) return Promise.resolve({ error: 'AGENT_CHANGED' })
+    if (!matches(current, request, this.now())) return Promise.resolve({ error: 'AGENT_CHANGED' })
     if (request.mode === 'cancel') { this.cancel(request.agentId); return Promise.resolve({ cancelled: true }) }
     // A job answers only a request of its own kind. When any job running for the agent answered every
     // request, a close asked for while another window (or the cleanup preview) was inspecting the agent
@@ -125,6 +175,54 @@ export class CloseAgentService {
   }
 
   private async execute(request: AgentCloseRequest, target: string, revision: number): Promise<AgentCloseResult> {
+    const askedAt = this.now()
+    // Read before the try: a row can be changed in place while it runs.
+    const asked = this.deps.registry.byAgent(request.agentId)
+    const starting = !!asked && identity(asked) === target && stillStarting(asked, askedAt) ? harnessIdentity(asked) : null
+    const result = await this.attempt(request, target, revision)
+    if (result.closed || (request.mode !== 'now' && request.mode !== 'idle') || !starting) return result
+    return this.whileStarting(request, starting, target, revision, askedAt + CLOSE_BIND_WAIT_MS, result)
+  }
+
+  /**
+   * A harness still starting whose close did not go through: tried again while its conversation cannot be read yet, and
+   * at once when it bound its first conversation while a try ran (which a try reads as the harness having changed).
+   * Bound, it is closed with that conversation. One that has not bound by [deadline] is stopped without one, as asked:
+   * Harness has no conversation of it to keep. Every caller gets this: the CLI and MCP, the windows, closes of many.
+   */
+  private async whileStarting(request: AgentCloseRequest, harness: string, target: string, revision: number, deadline: number,
+    first: AgentCloseResult): Promise<AgentCloseResult> {
+    const same = () => {
+      const s = this.deps.registry.byAgent(request.agentId)
+      return !this.disposed && (this.revisions.get(request.agentId) ?? 0) === revision && s && harnessIdentity(s) === harness ? s : undefined
+    }
+    let tried = target, result = first, waiting = false
+    for (;;) {
+      const s = same()
+      if (!s) return { error: 'AGENT_CHANGED' }
+      const bound = identity(s) !== tried
+      // Neither unreadable nor newly bound: a refusal of its own (working, a failed save), answered as it is.
+      if (!bound && result.error !== 'IDENTITY_UNAVAILABLE') return result
+      if (this.now() >= deadline) {
+        if (bound) return this.attempt(request, identity(s), revision)
+        // Bound, and still unreadable: a conversation is never let go this way.
+        if (s.sessionId || s.transcriptPath || s.boundAt != null) return result
+        console.log(`[close] ${sid(request.agentId)} bound no conversation within ${CLOSE_BIND_WAIT_MS / 1000}s; closing it without one`)
+        return this.attempt(request, identity(s), revision, true)
+      }
+      if (!waiting) console.log(`[close] ${sid(request.agentId)} is still starting (${result.detail ?? result.error}); waiting for its conversation`)
+      waiting = true
+      if (!bound) await this.sleep(Math.min(CLOSE_BIND_RETRY_MS, deadline - this.now()))
+      const latest = same()
+      if (!latest) return { error: 'AGENT_CHANGED' }
+      tried = identity(latest)
+      result = await this.attempt(request, tried, revision)
+      if (result.closed) return result
+    }
+  }
+
+  private async attempt(request: AgentCloseRequest, target: string, revision: number, withoutConversation = false): Promise<AgentCloseResult> {
+    let unkept = false
     const current = () => {
       const s = this.deps.registry.byAgent(request.agentId)
       return !this.disposed && (this.revisions.get(request.agentId) ?? 0) === revision
@@ -156,6 +254,7 @@ export class CloseAgentService {
       }
       if (request.mode === 'idle' && activity !== 'idle') return { error: 'SESSION_NOT_IDLE', activity }
       await this.deps.stop(s.agentId, {
+        ...(withoutConversation ? { withoutConversation: () => { unkept = true } } : {}),
         current: () => !!current(),
         checkpoint: (s, phase) => this.deps.checkpoint(s, phase),
         confirmUnusedConversation: async captured => {
@@ -180,7 +279,7 @@ export class CloseAgentService {
         },
       })
       this.idleSince.delete(s.agentId)
-      return { closed: true }
+      return unkept ? { closed: true, withoutConversation: true } : { closed: true }
     } catch (error) {
       if (error instanceof CloseRefused) return { error: 'SESSION_NOT_IDLE', activity: error.activity }
       const code = (error as { code?: unknown })?.code

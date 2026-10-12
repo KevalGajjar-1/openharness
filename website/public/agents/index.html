@@ -141,6 +141,12 @@ curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plug
   <p>Name every harness you start with <code>--name</code>: an unnamed one takes its session's title, which changes.
     Every command also takes the start of a harness's id, takes <code>--json</code> for JSON, and prints its usage
     with <code>--help</code>. Every error says what to run next.</p>
+  <p id="no-prompts">Once Harness runs on a computer, Claude Code and Codex there run these commands and Harness's MCP
+    tools without asking: Harness adds them to their permission rules (Claude Code's <code>settings.json</code>,
+    Codex's <code>rules/harness.rules</code>), and Codex runs them outside its sandbox. What an agent may do with them
+    is still Harness's to decide: the person's switch for agents starting agents, the limits below, and closing only
+    what it started. Run each command by itself, or join them with <code>&amp;&amp;</code>; piped into another command,
+    after <code>;</code>, or with a variable set in front, the rule no longer matches.</p>
 
   <h3 id="exit-codes">Exit codes</h3>
   <div class="table">
@@ -173,9 +179,8 @@ harness close ui-tests</code></pre>
     editing the same file overwrite each other's work.</p>
 
   <h2 id="wait">Wait for a background agent to finish</h2>
-  <pre><code>harness wait reviewer --timeout 30m
-echo $?</code></pre>
-  <p><code>0</code>: it is idle, read it with <code>harness show reviewer</code>. <code>3</code>: it is waiting for the
+  <pre><code>harness wait reviewer --timeout 30m</code></pre>
+  <p>Its exit code says how it ended. <code>0</code>: it is idle, read it with <code>harness show reviewer</code>. <code>3</code>: it is waiting for the
     person; tell them, and do not answer it yourself. <code>4</code>: it stopped. <code>124</code>: it is still
     working; wait again. With several names, <code>--any</code> returns as soon as one finishes. A harness counts as
     finished when it has stopped working on two looks in a row, three seconds apart, so a short pause between tool
@@ -269,6 +274,8 @@ claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
     <li>An agent may have at most 8 live harnesses it started, and start 20 in 10 minutes; one it started may start
       more, but those may not. Each machine allows 40 live harnesses started by agents. Every limit refuses with a
       message; do not work around it.</li>
+    <li>A harness you start runs in its agent's auto mode, with the agent's own checks on. <code>--mode full</code>
+      (checks and sandbox off) is the person's to choose: from an agent it is refused.</li>
   </ul>
 
   <h2 id="errors">When something fails</h2>
@@ -276,8 +283,9 @@ claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
     <li><code>harness: command not found</code>: Harness is not installed; see <a href="#install">Install</a>.</li>
     <li><code>Harness is not running here. Start it with `harness start`.</code></li>
     <li><code>Harness is running, but a sandbox keeps this shell from reaching it.</code> Codex runs commands in a
-      sandbox, and <code>harness</code> talks to Harness's local daemon, which the sandbox blocks: run
-      <code>harness</code> commands outside it, asking for escalated permissions the first time. Do not run
+      sandbox, and <code>harness</code> talks to Harness's local daemon, which the sandbox blocks. Where Harness set
+      Codex up, run the command by itself (see <a href="#no-prompts">above</a>) and it runs outside the sandbox without
+      asking; elsewhere, run it outside the sandbox, asking for escalated permissions. Do not run
       <code>harness start</code> for it.</li>
     <li><code>That machine is not reachable now. `harness machines` lists which are online.</code></li>
   </ul>

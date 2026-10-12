@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { baseModel, compatibleModels, contextLadder, LocalModels, modelBudget, modelFamily, rankForCoding, readRunRecords, type GridInventory } from './localModels.js'
+import { baseModel, compatibleModels, contextLadder, fitOf, LocalModels, modelBudget, modelFamily, rankForCoding, readRunRecords, type GridInventory } from './localModels.js'
 import { GridFleetRpc, type GridFleetResult } from './gridFleetRpc.js'
 import { AppStartError, type AppEngineOps, type AppEngineRecord, type AppModel } from './appModels.js'
 import { encryptDownFrame, encryptRpcResult } from './e2ee/applicationFrames.js'
@@ -129,6 +129,7 @@ describe('local model discovery and lifecycle', () => {
     const snapshot = await service.list('home')
     expect(snapshot.models).toMatchObject([{ name: 'Small', state: 'available', sizeBytes: 64, canStart: true, canStop: false }])
     expect(snapshot.memoryBytes).toBe(64 * 1024 ** 3)
+    expect(snapshot).toMatchObject({ fitBytes: 32 * 1024 ** 3, fitMemory: 'unified' })
     expect(calls.some(args => ['pull', 'join', 'leave', 'install'].some(a => args.includes(a)))).toBe(false)
     expect(JSON.stringify(snapshot)).not.toContain('test-only-token')
   })
@@ -593,6 +594,13 @@ describe('local model discovery and lifecycle', () => {
   it("gives the catalog all of an NVIDIA card's free VRAM, whatever the system RAM", () => {
     // A 24 GB card in a 32 GB PC: VRAM is not system RAM, and nothing else is waiting for it.
     expect(modelBudget({ backend: 'cuda', usable_bytes: 23 * 1024 ** 3, memory: { total_gb: 32 } })).toBe(23 * 1024 ** 3)
+    // What the apps are told with it: an NVIDIA card's free VRAM and all its VRAM, not the PC's RAM.
+    expect(fitOf({ backend: 'cuda', usable_bytes: 22 * 1024 ** 3, memory: { total_gb: 64 }, gpus: [{ backend: 'cuda', memory_total_mb: 24576 }] }))
+      .toEqual({ fitBytes: 22 * 1024 ** 3, fitMemory: 'vram', gpuMemoryBytes: 24 * 1024 ** 3 })
+    expect(fitOf({ backend: 'metal', usable_bytes: 54 * 1024 ** 3, memory: { total_gb: 64 }, gpus: [{ backend: 'metal', memory_total_mb: 65536 }] }))
+      .toEqual({ fitBytes: 32 * 1024 ** 3, fitMemory: 'unified' })
+    expect(fitOf({ backend: 'cpu', usable_bytes: 20 * 1024 ** 3, memory: { total_gb: 32 } })).toEqual({ fitBytes: 16 * 1024 ** 3, fitMemory: 'ram' })
+    expect(fitOf({})).toEqual({})
     // Two 24 GB cards in a 64 GB PC.
     expect(modelBudget({ backend: 'cuda', usable_bytes: 46 * 1024 ** 3, memory: { total_gb: 64 } })).toBe(46 * 1024 ** 3)
   })

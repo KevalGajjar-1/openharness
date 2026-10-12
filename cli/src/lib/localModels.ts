@@ -89,7 +89,14 @@ export interface ModelOperation {
   progress?: number; error?: string; updatedAt: string
 }
 export interface LocalModelsSnapshot {
+  /** [memoryBytes]: the machine's RAM — on an NVIDIA machine not what a model runs in. */
   models: LocalModel[]; memoryBytes?: number; hardware?: string
+  /** What the catalog fits models to ([modelBudget]) and what memory that is: an NVIDIA card's free
+   *  VRAM (`vram`), an Apple Silicon Mac's unified memory, or system RAM where there is no usable
+   *  GPU. The apps say VRAM, and judge "fits" against it, where a model runs on the card. */
+  fitBytes?: number; fitMemory?: 'vram' | 'unified' | 'ram'
+  /** An NVIDIA machine's cards' VRAM, all of it (grid's `gpus[].memory_total_mb`). */
+  gpuMemoryBytes?: number
   /** A sentence to show BESIDE the list — never `error`. On this protocol an `error` field fails
    * the whole request: the app's RPC layer drops the reply and keeps nothing of it, so a list sent
    * with a warning in `error` arrived as no list at all and the Local tab read 0. */
@@ -211,6 +218,16 @@ export function modelBudget(device: Record<string, any>): number | undefined {
   if (usable === undefined) return undefined
   if (device.backend === 'cuda' || total === undefined) return usable
   return Math.min(usable, Math.floor(total * GiB * MODEL_MEMORY_SHARE))
+}
+
+/** What the catalog fits to on [device] and what memory that is ([LocalModelsSnapshot.fitBytes]). */
+export function fitOf(device: Record<string, any>): Pick<LocalModelsSnapshot, 'fitBytes' | 'fitMemory' | 'gpuMemoryBytes'> {
+  const fit = modelBudget(device)
+  const backend = str(device.backend)
+  const fitMemory = backend === 'cuda' ? 'vram' as const : backend === 'metal' ? 'unified' as const : backend ? 'ram' as const : undefined
+  const cards = backend === 'cuda' && Array.isArray(device.gpus) ? device.gpus : []
+  const gpuMemoryBytes = cards.reduce((sum: number, gpu: unknown) => sum + (num(obj(gpu).memory_total_mb) ?? 0), 0) * 1024 ** 2
+  return { ...(fit === undefined ? {} : { fitBytes: fit }), ...(fitMemory ? { fitMemory } : {}), ...(gpuMemoryBytes > 0 ? { gpuMemoryBytes } : {}) }
 }
 
 /** Catalog models that are not for running an agent on: safety classifiers such as gpt-oss-safeguard
@@ -735,6 +752,7 @@ export class LocalModels {
     const freeDiskBytes = await statfs(join(this.home, 'models')).catch(() => statfs(this.home))
       .then(disk => disk.bavail * disk.bsize, () => undefined)
     const value: LocalModelsSnapshot = { models: withoutCopiesOfOwned(models), memoryBytes: num(obj(this.device.memory).total_gb) === undefined ? undefined : this.device.memory.total_gb * GiB,
+      ...fitOf(this.device),
       hardware: str(obj(this.device.machine).model || obj(this.device.cpu).brand), notice: inventoryError || this.catalogError,
       observedAt: new Date().toISOString(), busy: !!this.active, supportsDownload: true,
       ...(freeDiskBytes === undefined ? {} : { freeDiskBytes }) }
