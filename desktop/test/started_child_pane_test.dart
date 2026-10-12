@@ -4,6 +4,7 @@
 // person sees it"). Only one first seen live: never on a restore, never again
 // after the person closed it, never a stopped one.
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/core/models.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
@@ -123,56 +124,62 @@ void main() {
     expect(app.activeSwarm, same(second));
   });
 
-  test('a list read after pushes filled it still counts as the window\'s first', () async {
-    final machine = _Machine();
-    final app = createApp(connectionForTest: (_) => machine, connected: true);
-    addTearDown(app.dispose);
-    await app.addAgentToSwarm('m', 'a0');
-    // The first load failed; pushes alone made the list, and the safety-net
-    // read finds nothing to change.
-    final lead = _agent('a0', name: 'lead', createdAt: DateTime.now());
-    machine.listed = [lead];
-    app.stateOf('m')!.agents = [];
-    await _push(app, lead);
-    await app.syncAgentsIfChangedForTest('m');
-    expect(app.stateOf('m')!.agents, hasLength(1));
-    await _push(app, _agent('kid', parent: 'a0'));
-    expect(_agents(app.activeSwarm), ['a0', 'kid']);
-  });
+  test(
+    'a list read after pushes filled it still counts as the window\'s first',
+    () async {
+      final machine = _Machine();
+      final app = createApp(connectionForTest: (_) => machine, connected: true);
+      addTearDown(app.dispose);
+      await app.addAgentToSwarm('m', 'a0');
+      // The first load failed; pushes alone made the list, and the safety-net
+      // read finds nothing to change.
+      final lead = _agent('a0', name: 'lead', createdAt: DateTime.now());
+      machine.listed = [lead];
+      app.stateOf('m')!.agents = [];
+      await _push(app, lead);
+      await app.syncAgentsIfChangedForTest('m');
+      expect(app.stateOf('m')!.agents, hasLength(1));
+      await _push(app, _agent('kid', parent: 'a0'));
+      expect(_agents(app.activeSwarm), ['a0', 'kid']);
+    },
+  );
 
-  test('a list that brings it first places it too, once the window has read one', () async {
-    final machine = _Machine();
-    final app = createApp(connectionForTest: (_) => machine, connected: true);
-    addTearDown(app.dispose);
-    await app.reloadMachineData('m');
-    await app.addAgentToSwarm('m', 'a0');
-    machine.listed = [...machine.listed, _agent('kid', parent: 'a0')];
-    await app.reloadMachineData('m');
-    expect(_agents(app.activeSwarm), ['a0', 'kid']);
-  });
+  test(
+    'a list that brings it first places it too, once the window has read one',
+    () async {
+      final machine = _Machine();
+      final app = createApp(connectionForTest: (_) => machine, connected: true);
+      addTearDown(app.dispose);
+      await app.reloadMachineData('m');
+      await app.addAgentToSwarm('m', 'a0');
+      machine.listed = [...machine.listed, _agent('kid', parent: 'a0')];
+      await app.reloadMachineData('m');
+      expect(_agents(app.activeSwarm), ['a0', 'kid']);
+    },
+  );
 
-  test('not on restore: what the first list brings stays where it was', () async {
-    final storage = MemoryStore();
-    await PaneLayoutStore(storage: storage).saveSwarms([
-      Swarm(id: 'work', name: 'Work')
-        ..panes.add(TerminalPane(id: 1, machineId: 'm', agentId: 'a0')),
-    ], 'work');
-    final machine = _Machine()
-      ..listed = [_agent('a0', name: 'lead'), _agent('kid', parent: 'a0')];
-    final app = createApp(
-      store: storage,
-      connectionForTest: (_) => machine,
-    );
-    addTearDown(app.dispose);
-    await app.restorePaneLayoutForTest();
-    // A push before the window has read the list is the restore too.
-    await _push(app, _agent('early', parent: 'a0'));
-    await app.reloadMachineData('m');
-    await _push(app, _agent('kid', parent: 'a0'));
-    await _push(app, _agent('early', parent: 'a0'));
-    expect(_agents(app.activeSwarm), ['a0']);
-    expect(app.stateOf('m')!.agents.map((a) => a.id), contains('kid'));
-  });
+  test(
+    'not on restore: what the first list brings stays where it was',
+    () async {
+      final storage = MemoryStore();
+      await PaneLayoutStore(storage: storage).saveSwarms([
+        Swarm(id: 'work', name: 'Work')
+          ..panes.add(TerminalPane(id: 1, machineId: 'm', agentId: 'a0')),
+      ], 'work');
+      final machine = _Machine()
+        ..listed = [_agent('a0', name: 'lead'), _agent('kid', parent: 'a0')];
+      final app = createApp(store: storage, connectionForTest: (_) => machine);
+      addTearDown(app.dispose);
+      await app.restorePaneLayoutForTest();
+      // A push before the window has read the list is the restore too.
+      await _push(app, _agent('early', parent: 'a0'));
+      await app.reloadMachineData('m');
+      await _push(app, _agent('kid', parent: 'a0'));
+      await _push(app, _agent('early', parent: 'a0'));
+      expect(_agents(app.activeSwarm), ['a0']);
+      expect(app.stateOf('m')!.agents.map((a) => a.id), contains('kid'));
+    },
+  );
 
   test('not again after the person closes it', () async {
     final machine = _Machine();
@@ -345,4 +352,117 @@ void main() {
       session.dispose();
     });
   }
+
+  // A pane in a tab draws the compact header (`pane_grid.dart`), which has no
+  // details row: there "started by" was only in the name's tooltip (a clean
+  // VM, #1217), where the owner's mockup has it in the pane.
+  Future<AppNotifier> compactPane(
+    WidgetTester tester, {
+    required double width,
+    String parent = 'lead',
+    Brightness brightness = Brightness.dark,
+  }) async {
+    tester.view.physicalSize = const Size(1400, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final app = createApp(connected: true);
+    addTearDown(app.dispose);
+    app.stateOf('m')!.agents = [
+      Agent(id: 'a0', name: parent, engine: 'codex', terminalAvailable: true),
+      const Agent(
+        id: 'kid',
+        name: 'helper',
+        engine: 'claude',
+        terminalAvailable: true,
+        parentAgentId: 'a0',
+      ),
+    ];
+    final session = TerminalSession(
+      machineId: 'm',
+      agentId: 'kid',
+      agentName: 'helper',
+      engineId: 'claude',
+      send: (_, _) async => true,
+      sendBinary: (_) async => true,
+    )..status = TerminalSessionStatus.controlling;
+    addTearDown(session.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: grid.buildAppTheme(brightness: brightness),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              height: 400,
+              child: TerminalPanel(
+                notifier: app,
+                session: session,
+                focused: false,
+                compactHeader: true,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    return app;
+  }
+
+  final startedBy = find.byKey(const ValueKey('pane-started-by'));
+  final title = find.byKey(const ValueKey('terminal-pane-title'));
+
+  for (final brightness in Brightness.values) {
+    testWidgets('a pane in a tab says who started it after its name, muted '
+        '(${brightness.name})', (tester) async {
+      await compactPane(tester, width: 700, brightness: brightness);
+      expect(find.text('started by lead'), findsOneWidget);
+      expect(startedBy, findsOneWidget);
+      expect(
+        tester.getRect(startedBy).left,
+        greaterThan(tester.getRect(title).right),
+      );
+      // The name is whole beside it.
+      final name = tester.renderObject<RenderParagraph>(title);
+      expect(name.didExceedMaxLines, isFalse);
+      final words = tester.widget<Text>(startedBy);
+      final ink = tester.widget<Text>(title).style!.color!;
+      expect(words.style!.color!.a, lessThan(ink.a));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('a long starter name is shortened, the pane name is not', (
+    tester,
+  ) async {
+    await compactPane(
+      tester,
+      width: 520,
+      parent: 'get a second opinion from claude code on the indentation',
+    );
+    expect(startedBy, findsOneWidget);
+    expect(
+      tester.renderObject<RenderParagraph>(startedBy).didExceedMaxLines,
+      isTrue,
+    );
+    expect(
+      tester.renderObject<RenderParagraph>(title).didExceedMaxLines,
+      isFalse,
+    );
+    expect(tester.getRect(startedBy).width, lessThanOrEqualTo(520 * .45));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a pane too narrow for it keeps it in the name\'s tooltip only', (
+    tester,
+  ) async {
+    await compactPane(tester, width: 260);
+    expect(startedBy, findsNothing);
+    final tip = tester.widget<Tooltip>(
+      find.ancestor(of: title, matching: find.byType(Tooltip)).first,
+    );
+    expect(tip.message, contains('Started by lead'));
+    expect(tester.takeException(), isNull);
+  });
 }
