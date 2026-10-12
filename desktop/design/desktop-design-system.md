@@ -334,10 +334,12 @@ the status bar and terminal font. Center the name and its adjacent
 status as one compact group, without permanent number prefixes. Navigation ink
 follows the tab-bar surface, including beside light app content. The default label
 is New Tab. A small right-hand close icon appears on hover, with its 32-point
-target inset 8 points from the outer tab bounds, and Agent Messages' 💬 just left
-of it. This puts the cross's center 16 points inside the curved body edge. At
-rest the name and status have the whole tab; on hover a name that would run into
-💬 and × moves left only as far as they need, then truncates, so hover never
+target inset 8 points from the outer tab bounds. This puts the cross's center
+16 points inside the curved body edge. × is the tab's only control: Agent
+Messages' 💬 that sat left of it was removed, since it was easy to hit by mistake
+and turned the tab off (owner, 2026-10-12); Settings ▸ Agents holds that switch
+now. At rest the name and status have the whole tab; on hover a name that would run
+into × moves left only as far as it needs, then truncates, so hover never
 crowds the name or status. Tabs show no shortcut hint, and holding Command
 changes nothing on them. An idle tab has no empty status slot; its name centers
 on its own. Hover never changes tab width. Long names truncate and retain a

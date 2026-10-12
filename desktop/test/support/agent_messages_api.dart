@@ -5,13 +5,13 @@ import 'package:harness/state/app_state.dart';
 import 'package:harness/state/desk_sync.dart';
 
 /// The daemon's desk and Agent Messages proxies, scripted: a window's tabs
-/// live on a desk, and each desk tab has an Agent Messages flag beside it
-/// (backend routes/agentMessages.ts).
+/// live on a desk, and the Agent Messages read answers for its tabs (backend
+/// routes/agentMessages.ts). The backend still says each tab's old flag, off
+/// unless someone turned it on; the app no longer reads it.
 class AgentMessagesApi extends ApiClient {
   AgentMessagesApi() : super(config: AppConfig.dev, session: AuthSession());
 
   DeskDoc doc = const DeskDoc(revision: 0, tabs: []);
-  final flags = <String, bool>{};
   int reads = 0;
 
   /// A daemon or backend that predates Agent Messages (404).
@@ -19,8 +19,6 @@ class AgentMessagesApi extends ApiClient {
 
   /// A daemon whose backend is away: the read throws.
   Object? readError;
-  Object? writeError;
-  final writes = <(String, bool)>[];
 
   Map<String, dynamic> _json(DeskDoc d) => {
     'revision': d.revision,
@@ -49,29 +47,13 @@ class AgentMessagesApi extends ApiClient {
       'machines': const [],
       'tabs': [
         for (final tab in doc.tabs)
-          {
-            'id': tab.id,
-            'name': tab.name,
-            'enabled': flags[tab.id] ?? false,
-            'panes': const [],
-          },
+          {'id': tab.id, 'name': tab.name, 'enabled': false, 'panes': const []},
       ],
     };
   }
-
-  @override
-  Future<Map<String, dynamic>> setAgentMessages(
-    String tabId,
-    bool enabled,
-  ) async {
-    writes.add((tabId, enabled));
-    if (writeError case final error?) throw error;
-    flags[tabId] = enabled;
-    return {'tabId': tabId, 'enabled': enabled, 'revision': writes.length};
-  }
 }
 
-/// Signs [app] in on [api] and joins its desk, so its tabs can have Agent
+/// Signs [app] in on [api] and joins its desk, so its tabs can show Agent
 /// Messages; [AppNotifier.agentMessagesOffered] holds for its desk tabs after.
 Future<AgentMessagesApi> joinAgentMessagesDesk(
   AppNotifier app, [
@@ -82,8 +64,9 @@ Future<AgentMessagesApi> joinAgentMessagesDesk(
     ..api = fake
     ..status = AppStatus.authenticated;
   await app.deskStartForTest();
-  // The flags are read beside the desk, after it is joined: let that read
-  // land without a timer, so widget and plain tests alike can call this.
+  // Agent Messages is asked about beside the desk, after it is joined: let
+  // that read land without a timer, so widget and plain tests alike can call
+  // this.
   for (var i = 0; i < 10 && !app.agentMessages.loaded; i++) {
     await Future<void>.value();
   }

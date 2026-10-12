@@ -2043,20 +2043,15 @@ class _SwarmScreenState extends State<SwarmScreen> {
                 activity,
                 color: activityInk(activity),
               ),
-            // Agent Messages' 💬; absent where a tab has none
-            // (AppNotifier.agentMessagesOffered). The flag only: a tab
-            // never shows traffic.
+            // The tab menu's Show Agent Messages; absent where a tab has no
+            // log (AppNotifier.agentMessagesOffered). Nothing of Agent
+            // Messages shows on the tab itself.
             if (app.agentMessagesOffered(swarm.id))
-              'agentMessages': app.agentMessages.isOn(swarm.id),
+              'canShowAgentMessages': true,
           },
       ],
-      // Agent Messages' color: the 💬 while on. The design system's one
-      // accent, blue, as a mark.
-      'agentMessagesInk': grid.AppPalette.accentOnSurface.toARGB32(),
-      // The File menu's Agent Messages checkmark, for the active tab.
-      'activeAgentMessages': app.agentMessagesOffered(app.activeSwarmId)
-          ? app.agentMessages.isOn(app.activeSwarmId)
-          : null,
+      // File's Show Agent Messages, for the active tab.
+      'canShowAgentMessages': app.agentMessagesOffered(app.activeSwarmId),
     };
     final encoded = jsonEncode(payload);
     if (encoded == _nativeState) return;
@@ -2381,15 +2376,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
         if (args['id'] is String) unawaited(_rename(args['id']));
       case 'renameActive':
         unawaited(_rename(app.activeSwarmId));
-      case 'toggleAgentMessages':
-        // From a tab's 💬 or its menu (with its id), or the File menu (the
-        // active tab).
-        unawaited(
-          _toggleAgentMessages(
-            args['id'] is String ? args['id'] as String : app.activeSwarmId,
-          ),
-        );
       case 'showAgentMessages':
+        // From a tab's menu (with its id), or the File menu (the active tab).
         unawaited(
           _showAgentMessages(
             args['id'] is String ? args['id'] as String : app.activeSwarmId,
@@ -2543,7 +2531,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
           'new',
           'rename',
           'renameActive',
-          'toggleAgentMessages',
           'showAgentMessages',
           'commands',
           'notifications',
@@ -2740,19 +2727,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
     );
     if (name != null) app.renameSwarm(id, name);
   });
-
-  /// Turn Agent Messages on or off for [id]. The 💬 follows at once and goes
-  /// back if the backend does not take it — and then says so where the click
-  /// was, since a 💬 that quietly flips back reads as a click that missed.
-  Future<void> _toggleAgentMessages(String id) async {
-    if (!app.agentMessagesOffered(id)) return;
-    if (await app.agentMessages.toggle(id) || !mounted) return;
-    final failure = app.agentMessages.failureFor(id);
-    if (failure == null) return;
-    ScaffoldMessenger.maybeOf(context)
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(failure)));
-  }
 
   /// [id]'s Agent Messages log.
   Future<void> _showAgentMessages(String id) => _dialog(() async {
@@ -6808,8 +6782,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'pane.focus_$i': () => app.focusPaneByIndex(i - 1),
     'navigation.commands': _showSearchCommands,
     'agent_messages.show': () => _showAgentMessages(app.activeSwarmId),
-    'agent_messages.toggle': () =>
-        unawaited(_toggleAgentMessages(app.activeSwarmId)),
     'app.customize': () => unawaited(_customize()),
     'pane.toggle_shading': () => unawaited(
       appearancePrefsStore.setShadeInactivePanes(
@@ -7072,10 +7044,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
               : command.id == 'agent.restart' &&
                     isTerminalEngine(_focusedAgent?.engine)
               ? 'Restart Terminal'
-              : command.id == 'agent_messages.toggle'
-              ? app.agentMessages.isOn(app.activeSwarmId)
-                    ? 'Agent Messages: turn off for this tab'
-                    : 'Agent Messages: turn on for this tab'
               : command.label,
           detail: command.group.label,
           swarmId: null,
@@ -7954,8 +7922,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ];
       final toolHeight = workspaceBarControlHeight(context);
       final prefs = appearancePrefsStore.value.prompt;
-      // Agent Messages' color: the design system's accent blue, as a mark.
-      final messagesColor = grid.AppPalette.accentOnSurface;
       final storeWidth = math.min(
         WorkspaceStoreButton.widthOf(context),
         math.max(0.0, constraints.maxWidth - cell.width * 22),
@@ -8075,11 +8041,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
                               unawaited(app.requestCloseSwarm(swarm.id));
                             }
                           },
-                          // Only the tab listens to Agent Messages: its traffic
-                          // must not rebuild the workspace.
-                          child: ListenableBuilder(
-                            listenable: app.agentMessages,
-                            builder: (context, _) {
+                          child: Builder(
+                            builder: (context) {
                               final nameHint = workspaceTabTooltip(
                                 labels[index],
                                 swarm.name,
@@ -8110,16 +8073,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                         app.requestCloseSwarm(swarm.id),
                                       )
                                     : null,
-                                agentMessages:
-                                    app.agentMessagesOffered(swarm.id)
-                                    ? app.agentMessages.stateOf(swarm.id)
-                                    : null,
-                                onToggleAgentMessages: _shortcutsEnabled
-                                    ? () => unawaited(
-                                        _toggleAgentMessages(swarm.id),
-                                      )
-                                    : null,
-                                messagesColor: messagesColor,
                                 activity:
                                     activity == null || activity.mark.isEmpty
                                     ? null

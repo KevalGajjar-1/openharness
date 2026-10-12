@@ -170,6 +170,64 @@ void main() {
     },
   );
 
+  // Agent Messages left the tab for this row: the tab's 💬 was easy to hit by
+  // mistake and turned the tab off, failing a waiting message (owner,
+  // 2026-10-12).
+  testWidgets('Agent Messages is one row, on by default, and a toggle writes '
+      'agentMessages', (tester) async {
+    final daemon = _Daemon({
+      'agentsStartAgents': true,
+      'pullRequestLine': true,
+      'agentMessages': true,
+    });
+    await open(tester, daemon.store());
+    expect(
+      find.text('Agents in the same tab can message each other'),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'Claude Code and Codex in one tab can send each other messages with '
+        'harness send. Turn off to keep them from messaging.',
+      ),
+      findsOneWidget,
+    );
+    expect(switchFor(tester, AgentSetting.agentMessages).value, isTrue);
+    await tester.tap(
+      find.byKey(const ValueKey('agent-setting-switch-agentMessages')),
+    );
+    await tester.pumpAndSettle();
+    expect(daemon.writes, [('agentMessages', false)]);
+    expect(switchFor(tester, AgentSetting.agentMessages).value, isFalse);
+    // Turned back on, as `harness settings agent-messages on` would.
+    await tester.tap(
+      find.byKey(const ValueKey('agent-setting-switch-agentMessages')),
+    );
+    await tester.pumpAndSettle();
+    expect(daemon.writes.last, ('agentMessages', true));
+    expect(switchFor(tester, AgentSetting.agentMessages).value, isTrue);
+  });
+
+  testWidgets(
+    'a daemon that does not name agentMessages does not get its row',
+    (tester) async {
+      // A daemon from before the setting: it read each tab's own switch.
+      await open(tester, _Daemon().store());
+      expect(
+        find.text('Mark pull requests from agent-started harnesses'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Agents in the same tab can message each other'),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('agent-setting-agentMessages')),
+        findsNothing,
+      );
+    },
+  );
+
   testWidgets('a daemon that predates the settings is told to update', (
     tester,
   ) async {

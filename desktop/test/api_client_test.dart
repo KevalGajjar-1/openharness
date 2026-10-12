@@ -128,9 +128,7 @@ void main() {
               status == 200
                   ? {
                       'success': true,
-                      'data': request.method == 'GET'
-                          ? {'revision': 1, 'machines': [], 'tabs': []}
-                          : {'tabId': 'tab-1', 'enabled': true, 'revision': 2},
+                      'data': {'revision': 1, 'machines': [], 'tabs': []},
                     }
                   : {
                       'success': false,
@@ -153,17 +151,8 @@ void main() {
           'machines': [],
           'tabs': [],
         });
-        expect(await api.setAgentMessages('tab-1', true), {
-          'tabId': 'tab-1',
-          'enabled': true,
-          'revision': 2,
-        });
-        expect(seen.last, (
-          'PATCH',
-          '/api/agent-messages/tabs/tab-1',
-          '1',
-          jsonEncode({'enabled': true}),
-        ));
+        expect(seen.last.$1, 'GET');
+        expect(seen.last.$2, '/api/agent-messages');
         status = 404;
         expect(await api.readAgentMessageTabs(), isNull);
         for (final transient in [401, 503]) {
@@ -175,10 +164,6 @@ void main() {
             ),
           );
         }
-        await expectLater(
-          api.setAgentMessages('tab-1', false),
-          throwsA(isA<ApiException>()),
-        );
       } finally {
         await subscription.cancel();
         await server.close(force: true);

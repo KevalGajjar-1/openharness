@@ -19,6 +19,16 @@ enum AgentSetting {
     'Mark pull requests from agent-started harnesses',
     'A harness another agent started adds one line to the pull requests it opens: '
         '🤝 Started by another agent in Harness.',
+  ),
+
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md). It replaced each tab's own switch, a
+  /// 💬 beside its × that was easy to hit by mistake and turned the tab off, failing a message that
+  /// was waiting (owner, 2026-10-12): one setting for the computer, on by default.
+  agentMessages(
+    'agentMessages',
+    'Agents in the same tab can message each other',
+    'Claude Code and Codex in one tab can send each other messages with harness send. Turn off '
+        'to keep them from messaging.',
   );
 
   const AgentSetting(this.key, this.label, this.description);

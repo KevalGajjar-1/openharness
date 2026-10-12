@@ -221,8 +221,8 @@ void main() {
         await tester.pumpAndSettle();
         expect(_close('Desktop').hitTestable(), findsOneWidget);
         expect(mark, findsOneWidget, reason: 'hover keeps the status');
-        // Eight tabs are narrow: the name moves left only as far as 💬 and ×
-        // need, never right.
+        // Eight tabs are narrow: the name moves left only as far as × needs,
+        // never right.
         expect(
           tester.getRect(_label('Desktop')).left,
           lessThanOrEqualTo(title.left),
@@ -304,8 +304,8 @@ void main() {
     final status = tester.getRect(find.byKey(const ValueKey('status:website')));
     expect(
       status.right,
-      lessThanOrEqualTo(close.left - DesktopWorkspaceTab.messagesWidth),
-      reason: 'revealed, the name and status clear 💬 and ×',
+      lessThanOrEqualTo(close.left),
+      reason: 'revealed, the name and status clear ×',
     );
     expect(
       tester.getRect(_label('website')).left,

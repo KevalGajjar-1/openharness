@@ -1,6 +1,10 @@
-// Agent Messages' tab states, drawn by the actual AppKit title bar and menus
-// with synthetic tabs (docs/design/2026-10-10-agent-messages.md). The window is
-// never shown; no Flutter, daemon, account or saved app data is involved.
+// Tabs and menus as Agent Messages leaves them, drawn by the actual AppKit title
+// bar and menus with synthetic tabs (docs/design/2026-10-10-agent-messages.md):
+// a tab shows only its name, status and ×, and its menu and File offer Show
+// Agent Messages, with no on/off row. The 💬 beside × went because it was easy
+// to hit by mistake and turned a tab off, failing a waiting message (owner,
+// 2026-10-12). The window is never shown; no Flutter, daemon, account or saved
+// app data is involved.
 // HARNESS_AGENT_MESSAGES_PREVIEW_DIR=<dir> bash tool/check_swarm_titlebar.sh <flutter> --agent-messages-preview
 private final class PreviewMessenger: NSObject, FlutterBinaryMessenger {
   private var handlers: [String: FlutterBinaryMessageHandler] = [:]
@@ -30,7 +34,6 @@ private extension SwarmTabStrip {
 
 private extension SwarmTabButton {
   var previewMenu: NSMenu? { menu }
-  func previewPointOnMessages() { messagesButton.mouseEntered(with: previewHover) }
 }
 
 private let previewHover = NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [],
@@ -38,7 +41,8 @@ private let previewHover = NSEvent.mouseEvent(with: .mouseMoved, location: .zero
 
 private struct PreviewTab {
   let id: String
-  var messages: Bool?
+  /// Whether the tab has an Agent Messages log to show (not the Store).
+  var log = true
   var activity: ((Bool) -> [String: Any])? = nil
 }
 
@@ -73,11 +77,9 @@ private func mark(_ glyph: String, _ label: String, dark: Int64, light: Int64) -
 private let working = mark("⠋", "Working", dark: 0xff11a8cd, light: 0xff1b7c83)
 private let needsInput = mark("?", "Needs your input", dark: 0xffe5e510, light: 0xff4d2d00)
 private let ready = mark("✓", "Finished · unread", dark: 0xff0dbc79, light: 0xff116329)
-// AppPalette.accentOnSurface: AppDesktop.focusDark, and the accent in light.
-private func messagesInk(_ dark: Bool) -> Int64 { dark ? 0xff8ba9ff : 0xff2f5bea }
 
-private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [PreviewTab], active: String,
-                           activeMessages: Bool?) -> (NSWindow, SwarmTitlebar) {
+private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [PreviewTab],
+                           active: String) -> (NSWindow, SwarmTitlebar) {
   let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
     styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
   window.isReleasedWhenClosed = false
@@ -87,13 +89,12 @@ private func previewWindow(width: CGFloat, palette: [String: Any], tabs: [Previe
   messenger.receive("configure", ["palette": palette])
   let rows: [[String: Any]] = tabs.map { tab in
     var row: [String: Any] = ["id": tab.id, "name": tab.id, "label": tab.id]
-    if let messages = tab.messages { row["agentMessages"] = messages }
+    if tab.log { row["canShowAgentMessages"] = true }
     if let activity = tab.activity { row["activity"] = activity(palette["dark"] as? Int64 == 1) }
     return row
   }
-  var state: [String: Any] = ["enabled": true, "activeId": active, "tabs": rows, "palette": palette,
-    "footerCovered": true, "agentMessagesInk": messagesInk(palette["dark"] as? Int64 == 1)]
-  if let activeMessages { state["activeAgentMessages"] = activeMessages }
+  let state: [String: Any] = ["enabled": true, "activeId": active, "tabs": rows, "palette": palette,
+    "footerCovered": true, "canShowAgentMessages": tabs.first(where: { $0.id == active })?.log == true]
   messenger.receive("update", state)
   window.layoutIfNeeded()
   return (window, titlebar)
@@ -150,18 +151,18 @@ private func captureMenu(_ menu: NSMenu, _ name: String, dark: Bool) {
 }
 
 private let sceneTabs: [PreviewTab] = [
-  PreviewTab(id: "app", messages: true, activity: working),
-  PreviewTab(id: "desktop", messages: true, activity: ready),
-  PreviewTab(id: "website", messages: false, activity: needsInput),
-  PreviewTab(id: "notes", messages: false),
+  PreviewTab(id: "app", activity: working),
+  PreviewTab(id: "desktop", activity: ready),
+  PreviewTab(id: "website", activity: needsInput),
+  PreviewTab(id: "notes"),
+  PreviewTab(id: "store", log: false),
 ]
 
 for (theme, palette) in previewPalettes {
   let dark = theme == "dark"
   func scene(_ name: String, tabs: [PreviewTab] = sceneTabs, width: CGFloat = 1280, crop: CGFloat? = nil,
              after: (SwarmTabStrip) -> Void = { _ in }, _ act: (SwarmTabStrip) -> Void = { _ in }) {
-    let (window, titlebar) = previewWindow(width: width, palette: palette, tabs: tabs, active: "app",
-      activeMessages: tabs.first?.messages)
+    let (window, titlebar) = previewWindow(width: width, palette: palette, tabs: tabs, active: "app")
     act(titlebar.previewStrip)
     titlebar.previewStrip.layoutSubtreeIfNeeded()
     window.contentView!.superview!.layoutSubtreeIfNeeded()
@@ -170,30 +171,26 @@ for (theme, palette) in previewPalettes {
     capture(window, "\(name)-\(theme)", width: crop)
     window.close()
   }
-  // A tab shows no traffic between its agents, so at rest there is one scene.
-  scene("01-rest-quiet")
+  // A tab shows nothing of Agent Messages, so at rest there is one scene.
+  scene("01-rest")
   // The working spinner, frame by frame, for the review page to play.
   for frame in 0..<10 {
     scene("anim-working-\(frame)", crop: 600, after: { $0.previewTabs[0].activityFrame = frame })
   }
-  scene("03-hover-off") { $0.previewTabs[2].mouseEntered(with: previewHover) }
-  scene("04-hover-on-quiet") { $0.previewTabs[1].mouseEntered(with: previewHover) }
-  scene("06-pointer-on-arrows-off") {
-    $0.previewTabs[2].mouseEntered(with: previewHover)
-    $0.previewTabs[2].previewPointOnMessages()
-  }
+  // Hovered: the name, its status and ×, and nothing else.
+  scene("03-hover") { $0.previewTabs[2].mouseEntered(with: previewHover) }
   let crowded = (1...9).map { index in
     PreviewTab(id: ["app", "desktop", "website", "notes", "cli", "backend", "phone", "docs", "infra"][index - 1],
-      messages: index % 3 != 0, activity: index % 2 == 0 ? working : nil)
+      activity: index % 2 == 0 ? working : nil)
   }
   scene("08-crowded-rest", tabs: crowded, width: 1280)
   scene("09-crowded-hover", tabs: crowded, width: 1280) { $0.previewTabs[1].mouseEntered(with: previewHover) }
 
-  let (window, titlebar) = previewWindow(width: 1280, palette: palette, tabs: sceneTabs, active: "app",
-    activeMessages: true)
+  let (window, titlebar) = previewWindow(width: 1280, palette: palette, tabs: sceneTabs, active: "app")
   let tabs = titlebar.previewStrip.previewTabs
-  captureMenu(tabs[0].previewMenu!, "10-tab-menu-on-\(theme)", dark: dark)
-  captureMenu(tabs[2].previewMenu!, "11-tab-menu-off-\(theme)", dark: dark)
+  captureMenu(tabs[0].previewMenu!, "10-tab-menu-\(theme)", dark: dark)
+  // The Store has no log: Rename Tab… and Close Tab only.
+  captureMenu(tabs[4].previewMenu!, "11-tab-menu-store-\(theme)", dark: dark)
   if let file = previewApp.mainMenu?.item(withTitle: "File")?.submenu {
     captureMenu(file, "12-file-menu-\(theme)", dark: dark)
   }

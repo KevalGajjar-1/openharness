@@ -10,7 +10,9 @@ import '../widgets/terminal_prompt.dart';
 import 'agent_messages.dart';
 
 /// Show Agent Messages: [tabId]'s log, newest last. The person reads it here
-/// and types into panes as always; there is nothing to compose.
+/// and types into panes as always; there is nothing to compose, and nothing to
+/// turn on: whether agents may message is Settings ▸ Agents' (owner,
+/// 2026-10-12).
 Future<void> showAgentMessages(
   BuildContext context,
   AppNotifier app, {
@@ -129,8 +131,6 @@ class _AgentMessagesViewState extends State<AgentMessagesView> {
   Widget build(BuildContext context) {
     grid.AppTheme.watch(context);
     final controller = widget.controller;
-    final on = controller.isOn(widget.tabId);
-    final failure = controller.failureFor(widget.tabId);
     final log = _log;
     final messages = log?.messages ?? const <AgentMessage>[];
     final hint =
@@ -145,7 +145,7 @@ class _AgentMessagesViewState extends State<AgentMessagesView> {
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Text(
           log.reached
-              ? 'No messages yet. Turn on Agent Messages, then agents use '
+              ? 'No messages yet. Agents in this tab send them with '
                     '`harness send`.'
               : 'Could not read this tab’s messages. Check that Harness is '
                     'running on this computer, then try again.',
@@ -193,47 +193,6 @@ class _AgentMessagesViewState extends State<AgentMessagesView> {
                       title: '${widget.tabName} · Agent Messages',
                       onClose: widget.onClose,
                     ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Agent Messages',
-                              style: DesktopChrome.control(medium: true),
-                            ),
-                          ),
-                          Semantics(
-                            label: 'Agent Messages',
-                            child: Switch(
-                              key: const ValueKey('agent-messages-switch'),
-                              value: on,
-                              onChanged: controller.isPending(widget.tabId)
-                                  ? null
-                                  : (value) => unawaited(
-                                      controller.setEnabled(
-                                        widget.tabId,
-                                        value,
-                                      ),
-                                    ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (failure != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
-                        child: Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            failure,
-                            style: DesktopChrome.metadata(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                          ),
-                        ),
-                      ),
                     // A machine with a harness here that did not answer
                     // (offline, or gone from the tab) holds its own part of
                     // the log.
