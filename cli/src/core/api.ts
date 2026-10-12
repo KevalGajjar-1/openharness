@@ -32,6 +32,7 @@ import type { NewAgentModel } from '../lib/newAgentModel.js'
 import type { LastTurnText, LiveEvent } from '../engines/kit/events.js'
 import type { SessionRecaps } from '../lib/recapReads.js'
 import type { SessionInputDelivery } from '../lib/sessionInput.js'
+import type { AgentCloseRequest, AgentCloseResult } from '../lib/closeAgentService.js'
 import { projectDisplayName, type registry, type RegisteredSession } from '../lib/registry.js'
 import type { RuntimeModelOption } from '../lib/runtimeProfile.js'
 import { externalUnavailable, type ExternalSessionAnswer, type ExternalSessionRequest } from '../lib/externalSessionWire.js'
@@ -169,6 +170,14 @@ export interface CoreApi {
     /** `activityText` with the footer's timer, for a Harness Pro. Absent in a
      *  core that cannot read them; the dial then gets the footer alone. */
     activitySnapshot?(agentId: string): Promise<{ text: string; elapsedSeconds?: number } | null>
+    /** Close a harness another agent started (`startedBy: agent`) as `agent_close` closes one: its screen saved, its
+     *  process stopped, its conversation kept. `idle` refuses one that works, waits for the person or holds a draft
+     *  (`SESSION_NOT_IDLE`); `now` does not. Any other harness is refused (`NOT_AGENT_STARTED`): the agent cleanup
+     *  (services/agentCleanup.ts) closes those, and nothing else. Absent where the core does not let a service close. */
+    closeStarted?(agentId: string, mode: 'idle' | 'now'): Promise<AgentCloseResult>
+    /** When a live agent's conversation last moved, epoch ms, as the apps' `updatedAt` says it (lib/agentFrame.ts
+     *  `lastActivityAt`); null for none live. Absent where the core is not asked it. */
+    lastActivity?(agentId: string): Promise<number | null>
   }
   /** A device's or another machine's turns for an agent on this one: the doors the web and the hooks use. */
   turns: {
@@ -690,6 +699,21 @@ export interface RecapsPort {
 
 /** What the core gets when the recaps fail: nothing told, no recap, and no live card. */
 export const RECAPS_FALLBACKS: PortFallbacks<RecapsPort> = { lifecycle: undefined, recaps: null, liveCards: later([]) }
+
+/**
+ * The core's calls into the agent cleanup (services/agentCleanup.ts): what happens to the harnesses agents start.
+ * Notices: the core never waits for them, and one the cleanup misses leaves a harness open, as before it.
+ */
+export interface AgentCleanupPort {
+  /** A harness was closed or stopped (`agent_close`, Stop Harness, a purge): the harnesses it started close too. */
+  closed(agentId: string): void
+  /** The person typed or pasted into a harness, from a window or the phone (an agent id or a session id): one another
+   *  agent started is the person's from then on. */
+  typed(id: string): void
+  stop(): void
+}
+/** What the core gets when the cleanup fails: nothing told, and every harness left open, as before it. */
+export const AGENT_CLEANUP_FALLBACKS: PortFallbacks<AgentCleanupPort> = { closed: undefined, typed: undefined, stop: undefined }
 
 /** The core's calls into the DSH viewers: each harness agent's viewer server and verdict watch. */
 export interface ViewersPort {
@@ -1335,10 +1359,11 @@ export interface CorePorts {
   orchestrator: OrchestratorPort | null
   sharing: SharingPort | null
   recaps: RecapsPort | null
+  agentCleanup: AgentCleanupPort | null
 }
 
 export function emptyPorts(): CorePorts {
-  return { usage: null, store: null, search: null, viewers: null, models: null, workspaces: null, messages: null, devices: null, wifi: null, monitor: null, orchestrator: null, sharing: null, recaps: null }
+  return { usage: null, store: null, search: null, viewers: null, models: null, workspaces: null, messages: null, devices: null, wifi: null, monitor: null, orchestrator: null, sharing: null, recaps: null, agentCleanup: null }
 }
 
 export interface CoreApiDeps {
@@ -1377,6 +1402,10 @@ export interface CoreApiDeps {
   machine: CoreApi['machine']
   activityText: CoreApi['agents']['activityText']
   activitySnapshot?: CoreApi['agents']['activitySnapshot']
+  /** One `agent_close` (core/agents/close.ts), for `closeStarted`; absent, a service closes nothing. */
+  closeAgent?: (request: AgentCloseRequest) => Promise<AgentCloseResult>
+  /** When an agent's conversation last moved (lib/agentFrame.ts `lastActivityAt`), for `lastActivity`. */
+  activityAt?: (session: RegisteredSession) => Promise<number>
   signedIn: CoreApi['account']['signedIn']
   environment: CoreApi['account']['environment']
   machines: CoreApi['account']['machines']
@@ -1400,6 +1429,7 @@ export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
   gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, connectorVault, observer, privateGridName, machineName, backend, onNotice,
   runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
+  closeAgent, activityAt,
   signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
 }: CoreApiDeps): CoreApi {
@@ -1432,6 +1462,19 @@ export function createCoreApi({
       dsh,
       activityText,
       activitySnapshot,
+      // Decided here, not in the service: whatever the cleanup asks, from its process or this one, the core closes only
+      // a harness another agent started, the conversation it reviewed (`agent_close`'s identity), and keeps it.
+      closeStarted: async (agentId, mode) => {
+        const session = registry.byAgent(agentId)
+        if (!session) return { error: 'AGENT_CHANGED' }
+        if (session.startedBy !== 'agent') return { error: 'NOT_AGENT_STARTED' }
+        if (!closeAgent) return { error: 'UNSUPPORTED' }
+        return closeAgent({ agentId, sessionId: session.sessionId, createdAt: new Date(session.registeredAt).toISOString(), mode })
+      },
+      lastActivity: async (agentId) => {
+        const session = registry.byAgent(agentId)
+        return session && activityAt ? activityAt(session) : null
+      },
     },
     turns,
     questions,
