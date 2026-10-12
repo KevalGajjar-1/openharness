@@ -72,7 +72,9 @@ def main():
         vm.wait(r'root@[^\r\n]*[#] ', timeout=180)
         vm.shell_ready = True
         vm.command('stty -echo')
-        shown('01-usb-installer', 'Install Harness')
+        # The selected Install button is reverse video; whole-screen inverted
+        # OCR misses its text. The ordinary password label identifies the form.
+        shown('01-usb-installer', 'Repeat password')
         put(vm, '/tmp/sign-in-install.json', json.dumps(config))
         vm.command('nmcli networking off')
         output, _ = vm.command('harness install --config /tmp/sign-in-install.json --yes-erase-disk', timeout=360)
