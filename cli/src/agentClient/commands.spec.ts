@@ -688,6 +688,29 @@ describe('harness new, run by an agent', () => {
     expect(spawnRefusal(lead, new Set(), quick, 'm', NOW)).toBe('You started 20 harnesses in 10 minutes. Wait, or work with the ones you have.')
   })
 
+  it('counts harnesses asked for and still installing as running, toward every limit', () => {
+    // Each starts by itself once its engine is installed: asked for meanwhile, they passed every limit and started at once.
+    const lead = { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }
+    const waiting = (n: number, machineId = 'm', at = NOW) => Array.from({ length: n }, (_, i) => ({ at, depth: 1, by: lead,
+      creation: { machineId, creationId: `w${i}`, name: `w${i}`, engine: 'codex' } }))
+    const empty = new Ledger(ledgerPath(mkdtempSync(join(dir, 'waiting-'))))
+    expect(spawnRefusal(lead, new Set(), empty, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness - 1))).toBeNull()
+    expect(spawnRefusal(lead, new Set(), empty, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness)))
+      .toBe('You have 8 harnesses running or starting. Close one you are done with first (harness close <name>).')
+    const crowd = new Ledger(ledgerPath(mkdtempSync(join(dir, 'crowd-waiting-'))))
+    const busy = new Set<string>()
+    for (let i = 0; i < SPAWN_LIMITS.livePerMachine - 1; i++) {
+      crowd.append({ at: 0, depth: 1, by: { ...lead, agentId: `p${i}` }, child: { machineId: 'm', agentId: `c${i}`, name: `c${i}` } })
+      busy.add(`m/c${i}`)
+    }
+    expect(spawnRefusal(lead, busy, crowd, 'm', NOW, waiting(1, 'mini'))).toBeNull()
+    expect(spawnRefusal(lead, busy, crowd, 'm', NOW, waiting(1))).toMatch(/^Agents have 39 harnesses running on this machine/)
+    const quick = new Ledger(ledgerPath(mkdtempSync(join(dir, 'quick-waiting-'))))
+    for (let i = 0; i < SPAWN_LIMITS.perWindow - SPAWN_LIMITS.livePerHarness + 1; i++) started(quick, 'lead', `q${i}`, 'm', NOW - 60_000)
+    expect(spawnRefusal(lead, new Set(), quick, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness - 1))).toBe('You started 20 harnesses in 10 minutes. Wait, or work with the ones you have.')
+    expect(spawnRefusal(lead, new Set(), quick, 'm', NOW, waiting(SPAWN_LIMITS.livePerHarness - 1, 'm', NOW - 11 * 60_000))).toBeNull()
+  })
+
   it('counts what it started on other machines as those machines say, and a day of them when one cannot be asked', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead')]
@@ -809,6 +832,91 @@ describe('a harness asked for that has not started (its engine still installing)
   })
 })
 
+describe('a harness that started by itself, recorded and followed', () => {
+  const install = { state: 'pending', held: { service: 'install', detail: 'Installing Codex.' } }
+  const asking = (ledger: Ledger, by: string, name: string, creationId: string, machineId = 'm') => ledger.append({
+    at: NOW, depth: 1, by: { machineId: 'm', agentId: by, name: by, engine: 'claude' }, creation: { machineId, creationId, name, engine: 'codex' },
+  })
+
+  it('is recorded as started by who asked by any verb on its machine, there and on its own machine', async () => {
+    const d = new FakeDaemon(), mini = new FakeDaemon('mini')
+    d.frames = [frame('lead', { engine: 'claude' }), frame('kid', { name: 'kid' })]
+    d.extra.agent_create_status = () => ({ state: 'created', agent: frame('kid') })
+    mini.extra.agent_create_status = () => ({ state: 'created', agent: frame('far1', { name: 'far' }) })
+    const sent: unknown[] = []
+    // The person runs ps: the harness another agent asked for here is that agent's, and so is its depth.
+    const h = harness(d, { pane: undefined, others: { mini }, record: async (to, body) => { sent.push([to, body]); return {} } })
+    asking(h.ledger, 'other', 'kid', 'c1')
+    asking(h.ledger, 'other', 'far', 'c2', 'mini')
+    expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.ledger.parentOf({ machineId: 'm', agentId: 'kid' })).toMatchObject({ by: { agentId: 'other' }, child: { creationId: 'c1' } })
+    expect(h.ledger.depthOf({ machineId: 'm', agentId: 'kid' })).toBe(1)
+    // Another's on another machine is theirs to ask.
+    expect(mini.requests).toEqual([])
+    const mine = harness(d, { others: { mini }, record: async (to, body) => { sent.push([to, body]); return {} } })
+    asking(mine.ledger, 'lead', 'far', 'c3', 'mini')
+    expect(await psCommand([], mine.deps)).toBe(EXIT.ok)
+    expect(mine.ledger.parentOf({ machineId: 'mini', agentId: 'far1' })?.child.creationId).toBe('c3')
+    expect(sent).toEqual([[{ port: 1, dataDir: dir, machineId: 'mini' }, { action: 'started', row: expect.objectContaining({ child: expect.objectContaining({ agentId: 'far1', creationId: 'c3' }) }) }]])
+    // Recorded once: asked again, nothing more is written or sent.
+    expect(await psCommand([], mine.deps)).toBe(EXIT.ok)
+    expect(mine.ledger.all().filter((row) => row.child.agentId === 'far1')).toHaveLength(1)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('is found by exactly its name before a running harness whose name only starts so, and by its creation when unnamed', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('reviewer-old', { name: 'reviewer-old' })]
+    d.extra.agent_create_status = () => install
+    const h = harness(d)
+    started(h.ledger, 'lead', 'reviewer-old')
+    asking(h.ledger, 'lead', 'reviewer', 'c1')
+    asking(h.ledger, 'lead', '', 'abcdef123456')
+    expect(await showCommand(['reviewer'], h.deps)).toBe(EXIT.failed)
+    expect(h.err.at(-1)).toBe('reviewer has not started yet: Harness is installing Codex. It starts by itself; wait for it with harness wait reviewer.')
+    expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n')).toMatch(/\nabcdef12 +Codex +installing +you /)
+    expect(await showCommand(['abcdef12'], h.deps)).toBe(EXIT.failed)
+    expect(h.err.at(-1)).toBe('abcdef12 has not started yet: Harness is installing Codex. It starts by itself; wait for it with harness wait abcdef12.')
+  })
+
+  it('says how close went when the harness started meanwhile, never did, or could not be cancelled', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    let cancel: Record<string, unknown> = { state: 'created', agent: frame('k1') }
+    d.extra.agent_create_status = () => install
+    d.extra.agent_create_cancel = () => cancel
+    const h = harness(d)
+    asking(h.ledger, 'lead', 'cx', 'c1')
+    expect(await closeCommand(['cx'], h.deps)).toBe(EXIT.failed)
+    expect(h.err.at(-1)).toBe('cx is starting now, so it was not cancelled. Close it once it has: harness close cx.')
+    cancel = { state: 'failed', failure: { code: 'ENGINE_INSTALL_FAILED', detail: 'Codex could not be installed: offline' } }
+    expect(await closeCommand(['cx'], h.deps)).toBe(EXIT.failed)
+    expect(h.err.at(-1)).toBe('cx never started: Codex could not be installed: offline. Nothing to close.')
+    cancel = { error: 'UNSUPPORTED' }
+    expect(await closeCommand(['cx', '--json'], h.deps)).toBe(EXIT.failed)
+    expect(JSON.parse(h.out.at(-1)!)).toEqual({ error: 'UNSUPPORTED', detail: 'cx could not be cancelled (UNSUPPORTED). Check it with harness ps.' })
+    cancel = {}
+    expect(await closeCommand(['cx'], h.deps)).toBe(EXIT.failed)
+    expect(h.err.at(-1)).toBe('cx could not be cancelled. Check it with harness ps.')
+  })
+
+  it('keeps waiting on one whose machine is out of reach for a moment', async () => {
+    const d = new FakeDaemon(), mini = new FakeDaemon('mini')
+    d.frames = [frame('lead', { engine: 'claude' })]
+    let reachable = false
+    mini.extra.agent_create_status = () => { if (!reachable) throw new AgentClientError('DISCONNECTED', 'gone'); return install }
+    const h = harness(d, { others: { mini } })
+    asking(h.ledger, 'lead', 'far', 'c9', 'mini')
+    const waited = waitCommand(['far', '--timeout', '6s'], h.deps)
+    expect(await waited).toBe(EXIT.timeout)
+    expect(h.out).toEqual(['far: starting · far has not started yet: it is starting. It starts by itself; wait for it with harness wait far.'])
+    reachable = true
+    expect(await waitCommand(['far', '--timeout', '2s'], h.deps)).toBe(EXIT.timeout)
+    expect(h.out.at(-1)).toBe('far: installing · far has not started yet: Harness is installing Codex. It starts by itself; wait for it with harness wait far.')
+  })
+})
+
 describe('an agent asking again for a harness it already has', () => {
   it('is answered with the one still installing or running by that name, and starts a new one otherwise', async () => {
     const d = new FakeDaemon()
@@ -822,13 +930,22 @@ describe('an agent asking again for a harness it already has', () => {
     h.ledger.append({ at: NOW - 2 * 60_000, depth: 1, by: { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }, child: { machineId: 'm', agentId: 'k1', name: 'reviewer' } })
     started(h.ledger, 'lead', 'k2', 'm', NOW - 60_000)
     const origin = (await agentOrigin(h.deps))!
-    expect(await origin.existing!('CX')).toBe('"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness_wait (names: "cx"). Do not start it again.')
-    expect(await origin.existing!('reviewer')).toBe('"reviewer" is already running: you started it 2 min ago. Wait for it with harness_wait (names: "reviewer") or read it with harness_read (name: "reviewer"). Do not start it again.')
-    // One that never started, one stopped, one by another name, and none at all: started anew.
-    for (const name of ['broke', 'k2', 'other', null, ' ']) expect(await origin.existing!(name)).toBeNull()
+    const codexHere = { machineId: 'm', engine: 'codex' }
+    expect(await origin.existing!('CX', codexHere)).toEqual({ name: 'cx', machineId: 'm', state: 'starting',
+      note: '"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness_wait (names: "cx"). Do not start it again.' })
+    expect(await origin.existing!('reviewer', codexHere)).toEqual({ name: 'reviewer', machineId: 'm', agentId: 'k1', state: 'running',
+      note: '"reviewer" is already running: you started it 2 min ago. Wait for it with harness_wait (names: "reviewer") or read it with harness_read (name: "reviewer"). '
+        + 'Do not start it again; to start a new one by that name, close it first (harness_close (name: "reviewer")).' })
+    // A store harness is judged by the machine alone: it is recorded by the engine it runs on.
+    expect(await origin.existing!('cx', { machineId: 'm', engine: 'acme/notes' })).toMatchObject({ name: 'cx' })
+    // One that never started, one stopped, one by another name, none at all, another agent or machine: started anew.
+    for (const name of ['broke', 'k2', 'other', null, ' ']) expect(await origin.existing!(name, codexHere)).toBeNull()
+    expect(await origin.existing!('cx', { machineId: 'm', engine: 'claude' })).toBeNull()
+    expect(await origin.existing!('reviewer', { machineId: 'm', engine: 'claude' })).toBeNull()
+    expect(await origin.existing!('cx', { machineId: 'mini', engine: 'codex' })).toBeNull()
     // Started more than ten minutes ago: new work by an old name, not a retry.
     const later = harness(d, { env: {}, now: () => NOW + 11 * 60_000 })
-    expect(await (await agentOrigin(later.deps))!.existing!('reviewer')).toBeNull()
+    expect(await (await agentOrigin(later.deps))!.existing!('reviewer', codexHere)).toBeNull()
   })
 
   it('records a harness asked for before it starts, and its creation once it has', async () => {

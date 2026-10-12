@@ -38,6 +38,8 @@ export interface ClientDeps {
   sleep?: (ms: number) => Promise<void>
   /** How often `wait` looks. */
   intervalMs?: number
+  /** How a start is recorded on another machine (the messages service's `started`). */
+  record?: Rpc
 }
 
 export const PS_USAGE = `Usage: harness ps [--all] [--json]
@@ -121,6 +123,7 @@ function setup(deps: ClientDeps) {
     now: deps.now ?? Date.now,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms))),
     intervalMs: deps.intervalMs ?? DEFAULT_INTERVAL_MS,
+    record: deps.record ?? messagesRpc,
   }
 }
 type Setup = ReturnType<typeof setup>
@@ -158,7 +161,7 @@ async function opened(s: Setup, includeStopped = false): Promise<Opened> {
     // Not a harness: an agent outside Harness when its shell says so, even in a terminal of Harness's own.
     const caller = inPane ?? (orphan ? null : outsideCaller(s.env, where.machineId))
     const ledger = s.ledger(where.dataDir)
-    const asked = caller ? await askAfter(s, where, daemon, ledger, caller) : []
+    const asked = await askAfter(s, where, daemon, ledger, caller)
     return { where, daemon, frames, caller, orphan, stopped: includeStopped, ledger, machine: machineNameOf(where.dataDir), asked }
   } catch (error) { daemon.close(); throw error }
 }
@@ -182,41 +185,57 @@ export function askedOf(row: Pending, status: Record<string, unknown>): Asked | 
 }
 
 /**
- * The caller's pending lines (ledger.ts `Pending`), asked of their machines: one now made is recorded as started by the
- * caller, as `harness new` would have had it not answered first; the rest are what the caller still follows. A machine
- * that cannot be asked keeps its line as starting: a second harness by that name is the risk here, not a missing row.
+ * Records a harness asked for and made since as started by who asked (`Started`, with its creation), here and, for one
+ * on another machine, there too, as `harness new` does (`created`): there its limits and depth start from it.
  */
-async function askAfter(s: Setup, where: Where, daemon: Daemon, ledger: Ledger, caller: Caller): Promise<Asked[]> {
+async function recordMade(s: Setup, where: Where, ledger: Ledger, row: Pending, agent: Frame): Promise<void> {
+  const started: Started = { at: row.at, by: row.by, depth: row.depth,
+    child: { machineId: row.creation.machineId, agentId: agent.id, name: agent.name || row.creation.name, creationId: row.creation.creationId } }
+  if (ledger.parentOf(started.child)) return
+  ledger.record(started)
+  if (row.creation.machineId !== where.machineId) {
+    await s.record({ port: where.port, dataDir: where.dataDir, machineId: row.creation.machineId }, { action: 'started', row: started }, 10_000).catch(() => {})
+  }
+}
+
+/**
+ * The pending lines (ledger.ts `Pending`) asked of their machines. One now made is recorded as started by who asked, as
+ * `harness new` would have had it not answered first: anyone's on this machine, so a harness that started by itself
+ * has its depth before it runs a verb of its own, and the caller's anywhere. The rest of the caller's are what it still
+ * follows. A machine that cannot be asked keeps its line as starting: a second harness by that name is the risk here.
+ */
+async function askAfter(s: Setup, where: Where, daemon: Daemon, ledger: Ledger, caller: Caller | null): Promise<Asked[]> {
   const asked: Asked[] = []
-  for (const row of ledger.pendingOf(caller, s.now())) {
+  const mine = (row: Pending) => !!caller && row.by.machineId === caller.machineId && row.by.agentId === caller.agentId
+  for (const row of ledger.pendingOf(null, s.now())) {
     const here = row.creation.machineId === where.machineId
+    if (!here && !mine(row)) continue
     let line: Daemon | null = here ? daemon : null
     try {
       line ??= await s.open(where, row.creation.machineId)
       const status = await line.request('agent_create_status', { creationId: row.creation.creationId }, 8_000)
       const agent = (status.agent ?? {}) as Frame
-      if (status.state === 'created' && typeof agent.id === 'string' && agent.id) {
-        ledger.append({ at: row.at, by: row.by, depth: row.depth,
-          child: { machineId: row.creation.machineId, agentId: agent.id, name: agent.name || row.creation.name, creationId: row.creation.creationId } })
-        continue
-      }
-      const now = askedOf(row, status)
+      if (status.state === 'created' && typeof agent.id === 'string' && agent.id) { await recordMade(s, where, ledger, row, agent); continue }
+      const now = mine(row) ? askedOf(row, status) : null
       if (now) asked.push(now)
-    } catch { asked.push({ row, state: 'starting', detail: '' }) }
+    } catch { if (mine(row)) asked.push({ row, state: 'starting', detail: '' }) }
     finally { if (!here) line?.close() }
   }
   return asked
 }
 
-/** What the caller asked for by [name] that has not started: the latest, by the name it was given. */
+/** How a harness asked for is called: its name, else its creation's start. */
+const askedName = (a: Asked): string => a.row.creation.name || a.row.creation.creationId.slice(0, 8)
+
+/** What the caller asked for by [name] that has not started: the latest, by the name it was given or its creation's start. */
 const askedNamed = (o: Opened, name: string): Asked | undefined => {
   const wanted = name.trim().toLowerCase()
-  return o.asked.filter((a) => a.row.creation.name.toLowerCase() === wanted).at(-1)
+  return o.asked.filter((a) => askedName(a).toLowerCase() === wanted || (wanted.length >= 6 && a.row.creation.creationId.toLowerCase().startsWith(wanted))).at(-1)
 }
 
 /** One line on a harness that has not started: what it waits for, or why it never will. */
 function askedLine(env: NodeJS.ProcessEnv, a: Asked): string {
-  const name = a.row.creation.name, engine = engineName(a.row.creation.engine)
+  const name = askedName(a), engine = engineName(a.row.creation.engine)
   if (a.state === 'failed') return `${name} never started: ${a.detail || 'its machine refused it'}.`
   const why = a.state === 'installing' ? `Harness is installing ${engine}` : `it is starting${a.detail ? ` (${a.detail.replace(/\.$/, '')})` : ''}`
   return `${name} has not started yet: ${why}. It starts by itself; wait for it with ${step(env, 'wait', name)}.`
@@ -234,6 +253,10 @@ async function target(s: Setup, o: Opened, name: string): Promise<Target> {
     const parent = o.ledger.parentOf({ machineId, agentId })
     return !!o.caller && !!parent && parent.by.agentId === o.caller.agentId && parent.by.machineId === o.caller.machineId
   }
+  // Asked for by exactly this name and not started: it, before a harness whose name merely starts so.
+  const pending = askedNamed(o, name)
+  const exactly = (f: Frame) => f.name?.toLowerCase() === name.trim().toLowerCase() || f.id.toLowerCase() === name.trim().toLowerCase()
+  if (pending && !named(o.frames).some(exactly)) throw new AgentClientError(pending.state === 'failed' ? 'NEVER_STARTED' : 'NOT_STARTED', askedLine(s.env, pending))
   let found = matching(name, named(o.frames))
   // No live one by that name: the stopped ones too, read once.
   if (!found.length && !o.stopped) {
@@ -390,7 +413,7 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
       }))
       // Asked for and not started yet: listed by the name it was given, and what it waits for.
       rows.unshift(...o.asked.map((a): Row => ({
-        name: a.row.creation.name || a.row.creation.creationId.slice(0, 8), id: a.row.creation.creationId, agent: engineName(a.row.creation.engine),
+        name: askedName(a), id: a.row.creation.creationId, agent: engineName(a.row.creation.engine),
         machine: a.row.creation.machineId === o.where.machineId ? o.machine : a.row.creation.machineId.slice(0, 8), state: a.state,
         folder: null, branch: null, startedBy: 'you', yours: true, self: false, lastActive: new Date(a.row.at).toISOString(), about: askedLine(s.env, a),
       })))
@@ -479,8 +502,7 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           const status = await line.request('agent_create_status', { creationId: a.row.creation.creationId }, 8_000)
           const frame = (status.agent ?? {}) as Frame
           if (status.state === 'created' && typeof frame.id === 'string' && frame.id) {
-            o.ledger.append({ at: a.row.at, by: a.row.by, depth: a.row.depth,
-              child: { machineId: a.row.creation.machineId, agentId: frame.id, name: frame.name || a.row.creation.name, creationId: a.row.creation.creationId } })
+            await recordMade(s, o.where, o.ledger, a.row, frame)
             targets.push({ daemon: line, frame: { ...frame, name: frame.name || a.row.creation.name }, machineId: a.row.creation.machineId,
               machine: here ? o.machine : a.row.creation.machineId.slice(0, 8), yours: true, remote: !here })
             following.splice(following.indexOf(a), 1)
@@ -525,8 +547,9 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       for (;;) {
         for (const a of [...following]) {
           if (gave.has(a)) continue
+          // Its machine out of reach for a moment (a timeout, a relay): asked again next round, as `ps` keeps it starting.
           await follow(a).catch((error) => {
-            if (error instanceof AgentClientError && error.code === 'TIMEOUT') return
+            if (error instanceof AgentClientError) return
             throw error
           })
         }
@@ -559,7 +582,7 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
         // Not started yet when the wait ended: said as what it waits for, which is what the agent waits on.
         ...following.filter((a) => gave.has(a)).map((a) => {
           const given = gave.get(a)!
-          return { name: a.row.creation.name, id: a.row.creation.creationId, state: given === 'timeout' && a.state !== 'failed' ? a.state : given, detail: a.detail }
+          return { name: askedName(a), id: a.row.creation.creationId, state: given === 'timeout' && a.state !== 'failed' ? a.state : given, detail: a.detail }
         }),
       ]
       if (flags.has('--json')) s.out(JSON.stringify({ harnesses: results }, null, 1))
@@ -596,11 +619,18 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
         // before the launch is claimed (lib/agentCreationReceipt.ts `cancelIntent`).
         const asked = error instanceof AgentClientError && error.code === 'NOT_STARTED' ? askedNamed(o, names[0]) : undefined
         if (!asked) throw error
-        const name = asked.row.creation.name, here = asked.row.creation.machineId === o.where.machineId
+        const name = askedName(asked), here = asked.row.creation.machineId === o.where.machineId
         const line = here ? o.daemon : await s.open(o.where, asked.row.creation.machineId)
         try {
           const reply = await line.request('agent_create_cancel', { creationId: asked.row.creation.creationId }, 20_000)
-          if (reply.state !== 'cancelled') throw new AgentClientError('STARTING', `${name} is starting now, so it was not cancelled. Close it once it has: ${step(s.env, 'close', name)}.`)
+          const refused = askedOf(asked.row, reply)
+          if (reply.state === 'created' || reply.state === 'unconfirmed') {
+            throw new AgentClientError('STARTING', `${name} is starting now, so it was not cancelled. Close it once it has: ${step(s.env, 'close', name)}.`)
+          }
+          if (refused?.state === 'failed') throw new AgentClientError('NEVER_STARTED', `${name} never started: ${refused.detail || 'its machine refused it'}. Nothing to close.`)
+          if (reply.state !== 'cancelled') {
+            throw new AgentClientError(typeof reply.error === 'string' ? reply.error : 'NOT_CANCELLED', `${name} could not be cancelled${typeof reply.error === 'string' ? ` (${reply.error})` : ''}. Check it with ${step(s.env, 'ps')}.`)
+          }
         } finally { if (!here) line.close() }
         s.out(flags.has('--json') ? JSON.stringify({ name, id: asked.row.creation.creationId, cancelled: true }) : `Cancelled ${name} before it started.`)
         return EXIT.ok
@@ -641,20 +671,23 @@ const memberKey = (machineId: string, agentId: string): string => `${machineId}/
  * Why [caller] may not start another harness now, or null. [live] holds the live harnesses the limits count: this
  * machine's, and the caller's on the other machines it reached.
  */
-export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number): string | null {
+export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
   if (ledger.depthOf(caller) >= SPAWN_LIMITS.depth) {
     return 'A harness started this far down may not start more. Do the work yourself, or say so in your answer.'
   }
+  // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
+  // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
   const mine = ledger.childrenOf(caller)
   const liveMine = new Set(mine.filter((row) => live.has(memberKey(row.child.machineId, row.child.agentId))).map((row) => memberKey(row.child.machineId, row.child.agentId)))
-  if (liveMine.size >= SPAWN_LIMITS.livePerHarness) {
-    return `You have ${liveMine.size} harnesses running. Close one you are done with first (harness close <name>).`
+  const running = liveMine.size + waiting.length
+  if (running >= SPAWN_LIMITS.livePerHarness) {
+    return `You have ${running} harnesses running${waiting.length ? ' or starting' : ''}. Close one you are done with first (harness close <name>).`
   }
   const machineWide = new Set(ledger.all().filter((row) => row.child.machineId === localMachineId && live.has(memberKey(localMachineId, row.child.agentId))).map((row) => row.child.agentId))
-  if (machineWide.size >= SPAWN_LIMITS.livePerMachine) {
+  if (machineWide.size + waiting.filter((row) => row.creation.machineId === localMachineId).length >= SPAWN_LIMITS.livePerMachine) {
     return `Agents have ${machineWide.size} harnesses running on this machine, the most allowed. Close some first.`
   }
-  if (mine.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length >= SPAWN_LIMITS.perWindow) {
+  if (mine.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length + waiting.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length >= SPAWN_LIMITS.perWindow) {
     return `You started ${SPAWN_LIMITS.perWindow} harnesses in 10 minutes. Wait, or work with the ones you have.`
   }
   return null
@@ -728,28 +761,38 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     // A harness in a pane here: the new one is opened beside it in the windows. An agent outside Harness has no pane.
     ...(caller.outside ? {} : { parentAgentId: caller.agentId }),
     check: async () => {
-      const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now())
+      const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now(),
+        o.asked.filter((a) => a.state !== 'failed').map((a) => a.row))
       if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)
     },
-    existing: async (name) => {
+    existing: async (name, asking) => {
       if (!name?.trim()) return null
       const wanted = name.trim().toLowerCase()
+      // The same name for the same agent on the same machine: a retry. Another machine or agent is other work.
+      // A store harness (owner/name) is asked for by its id and recorded by the engine it runs on: the machine decides.
+      const same = (machineId: string, engine?: string) => machineId === asking.machineId && (!engine || asking.engine.includes('/') || engine === asking.engine)
       // Still on its way: an agent whose call to `harness new` timed out (an MCP client's minute) and asked again got a
       // second harness for the same work once both launches went ahead.
-      const asked = askedNamed(o, wanted)
-      if (asked && asked.state !== 'failed') {
-        return `"${asked.row.creation.name}" is already starting: ${asked.state === 'installing' ? `Harness is installing ${engineName(asked.row.creation.engine)}` : asked.detail.replace(/\.$/, '') || 'it has not started yet'}. `
-          + `It starts by itself; wait for it with ${step(s.env, 'wait', asked.row.creation.name)}. Do not start it again.`
+      const asked = o.asked.filter((a) => a.state !== 'failed' && a.row.creation.name.toLowerCase() === wanted
+        && same(a.row.creation.machineId, a.row.creation.engine)).at(-1)
+      if (asked) {
+        const called = asked.row.creation.name
+        return { name: called, machineId: asked.row.creation.machineId, state: 'starting',
+          note: `"${called}" is already starting: ${asked.state === 'installing' ? `Harness is installing ${engineName(asked.row.creation.engine)}` : asked.detail.replace(/\.$/, '') || 'it has not started yet'}. `
+            + `It starts by itself; wait for it with ${step(s.env, 'wait', called)}. Do not start it again.` }
       }
       // Started by the caller a few minutes ago and running: the same retry, a little later.
-      const recent = o.ledger.childrenOf(caller).filter((row) => s.now() - row.at < DUPLICATE_WITHIN_MS && row.child.name.toLowerCase() === wanted)
+      const engineOf = (row: Started) => row.child.machineId === o.where.machineId ? o.frames.find((f) => f.id === row.child.agentId)?.engine : undefined
+      const recent = o.ledger.childrenOf(caller).filter((row) => s.now() - row.at < DUPLICATE_WITHIN_MS && row.child.name.toLowerCase() === wanted
+        && same(row.child.machineId, engineOf(row)))
       if (!recent.length) return null
       const live = await liveFor(s, o, caller)
       const running = recent.findLast((row) => live.has(memberKey(row.child.machineId, row.child.agentId)))
       if (!running) return null
-      const minutes = Math.max(1, Math.round((s.now() - running.at) / 60_000))
-      return `"${running.child.name}" is already running: you started it ${minutes} min ago. Wait for it with ${step(s.env, 'wait', running.child.name)} `
-        + `or read it with ${step(s.env, 'show', running.child.name)}. Do not start it again.`
+      const called = running.child.name, minutes = Math.max(1, Math.round((s.now() - running.at) / 60_000))
+      return { name: called, machineId: running.child.machineId, agentId: running.child.agentId, state: 'running',
+        note: `"${called}" is already running: you started it ${minutes} min ago. Wait for it with ${step(s.env, 'wait', called)} `
+          + `or read it with ${step(s.env, 'show', called)}. Do not start it again; to start a new one by that name, close it first (${step(s.env, 'close', called)}).` }
     },
     pending: (machineId, creation) => {
       o.ledger.append({ at: s.now(), by: { machineId: caller.machineId, agentId: caller.agentId, name: caller.name, engine: caller.engine },
@@ -787,7 +830,7 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
         child: { machineId, agentId: id, name, ...(creationId ? { creationId } : {}) },
         depth: o.ledger.depthOf(caller) + 1,
       }
-      o.ledger.append(row)
+      o.ledger.record(row)
       if (machineId === o.where.machineId) return null
       // The other machine keeps the line too: there the new harness's limits and depth start from it. Without it a
       // harness started on another machine was one the person started there, and a chain hopping between machines had

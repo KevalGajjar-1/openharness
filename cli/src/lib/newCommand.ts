@@ -245,6 +245,9 @@ export interface NewCommandDeps {
   env?: NodeJS.ProcessEnv
 }
 
+/** A harness the caller already has by the name it asks for again (`NewOrigin.existing`). */
+export interface ExistingHarness { name: string; machineId: string; state: 'starting' | 'running'; agentId?: string; note: string }
+
 /** An agent starting a harness (docs/design/2026-10-11-agent-client.md): its limits, the header its task carries,
  *  and the record of who started what. */
 export interface NewOrigin {
@@ -254,8 +257,9 @@ export interface NewOrigin {
   prompt(text: string, machineId: string): string
   /** Records it; a warning to print when the record could not be kept everywhere. */
   created(machineId: string, agent: Record<string, unknown>, creationId?: string): Promise<string | null>
-  /** The caller's harness by [name] already running or still on its way, said instead of starting a second; else null. */
-  existing?(name: string | null): Promise<string | null>
+  /** The caller's harness by [name] for the same agent on the same machine, already running or still on its way, said
+   *  instead of starting a second; else null. */
+  existing?(name: string | null, asking: { machineId: string; engine: string }): Promise<ExistingHarness | null>
   /** Records a harness asked for that has not started yet, so the caller follows it by name once this has answered. */
   pending?(machineId: string, creation: { creationId: string; name: string; engine: string }): void
   /** How to read, wait for and message what was started. */
@@ -412,14 +416,6 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
   const began = clock()
   try {
     const origin = (await deps.origin?.()) ?? null
-    // An agent asking again for a harness it already has, by its name: answered with that one, never a second. The
-    // person at a terminal has no origin and is never stopped here.
-    const already = await origin?.existing?.(args.name)
-    if (already) {
-      deps.output(args.json ? JSON.stringify({ ok: true, existing: true, note: already }) : already)
-      return 0
-    }
-    await origin?.check()
     let machineId = deps.localMachineId
     let machineLabel = 'this computer'
     let local = true
@@ -433,6 +429,15 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       deps.error('This computer is not signed in to Harness. Run `harness login`.')
       return 1
     }
+    // An agent asking again for a harness it already has, by its name, for the same agent on the same machine: answered
+    // with that one, never a second. The person at a terminal has no origin and is never stopped here.
+    const already = await origin?.existing?.(args.name, { machineId, engine: args.agent })
+    if (already) {
+      const { note, ...harness } = already
+      deps.output(args.json ? JSON.stringify({ ok: true, existing: true, ...harness, note }) : note)
+      return 0
+    }
+    await origin?.check()
     const session = await daemonSession(deps, machineId)
     try {
       let cwd = args.cwd
@@ -502,8 +507,10 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // An agent is answered within AGENT_ANSWER_MS, install or not: MCP clients end a tool call at a minute (Codex's
       // default `tool_timeout_sec`), and shell tools have limits of their own. A call cut off left the agent with nothing,
       // and one that asked again got a second harness.
+      // At least ten seconds of asking, however long the setup took: a slow line to another machine left none.
+      const answerBy = Math.max(began + AGENT_ANSWER_MS, clock() + 10_000)
       let said = '', polls = 30
-      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed') && (!origin || clock() - began < AGENT_ANSWER_MS); i++) {
+      for (let i = 0; i < polls && (result.state === 'pending' || result.state === 'unconfirmed') && (!origin || clock() < answerBy); i++) {
         if (installing(result)) polls = Math.min(180, Math.max(polls, i + 30))
         const reason = holdReason(result)
         // Not under `harness mcp`: an MCP client sees only the whole answer, which says it, after the result.
@@ -520,7 +527,7 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       if (origin && result.state === 'pending' && installing(result)) {
         const name = args.name?.trim() ?? ''
         const note = `Harness is installing ${engineName(String(payload.engine))}; the harness ${name ? `"${name}" ` : ''}starts by itself once it is installed. `
-          + `Check on it with ${step(env, 'ps')} or ${name ? step(env, 'wait', name) : step(env, 'ps')}; do not start it again.`
+          + `Check on it with ${name ? `${step(env, 'ps')} or ${step(env, 'wait', name)}` : step(env, 'ps')}; do not start it again.`
         deps.output(args.json ? JSON.stringify({ ok: true, pending: true, machineId, creationId, name, note }) : note)
         return 0
       }

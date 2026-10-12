@@ -84,6 +84,10 @@ describe('the ledger of who started which harness', () => {
     expect(ledger.pendingOf(lead, 10).map((p) => p.creation.creationId)).toEqual(['c2'])
     expect(ledger.all().map((r) => r.child.agentId)).toEqual(['x', 'k1'])
     expect(ledger.parentOf({ machineId: 'm', agentId: 'k1' })?.child.creationId).toBe('c1')
+    // Recorded once, whichever verb sees it made first.
+    ledger.record({ ...row('lead', 'k1'), child: { machineId: 'm', agentId: 'k1', name: 'cx', creationId: 'c1' } })
+    ledger.record(row('lead', 'k2'))
+    expect(ledger.all().map((r) => r.child.agentId)).toEqual(['x', 'k1', 'k2'])
   })
 
   it('checks every pending line it reads', () => {

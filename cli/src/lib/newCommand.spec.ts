@@ -361,6 +361,19 @@ describe('harness new: the daemon', () => {
     expect(json.d.err).toEqual([])
   })
 
+  it('names no harness it was given no name for, and asks for at least ten seconds however long the setup took', async () => {
+    let clock = 0
+    const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex.' } }
+    // Forty seconds gone before the machine answered: a slow line to another machine.
+    const origin = { check: async () => { clock += 45_000 }, prompt: (text: string) => text, created: async () => null, next: () => '', pending: () => {} }
+    let asks = 0
+    const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? installing : frame.type === 'agent_create_status' ? (asks++, installing) : null)
+    const d = deps(['codex'], socket, { origin: async () => origin, now: () => clock, sleep: async (ms) => { clock += ms } })
+    expect(await newCommand(d)).toBe(0)
+    expect(asks).toBe(5)
+    expect(d.out).toEqual(['Harness is installing Codex; the harness starts by itself once it is installed. Check on it with harness ps; do not start it again.'])
+  })
+
   it('still cancels an agent\'s launch held for anything but an install, at 40 seconds', async () => {
     let clock = 0
     const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', pending: () => {} }
@@ -374,15 +387,20 @@ describe('harness new: the daemon', () => {
   it('answers an agent asking again for a harness it already has with that one, and asks the machine nothing', async () => {
     const socket = new FakeSocket(() => null)
     const note = '"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness wait cx. Do not start it again.'
+    const asked: unknown[] = []
     const origin = { check: async () => { throw new Error('not reached') }, prompt: (text: string) => text, created: async () => null, next: () => '',
-      existing: async (name: string | null) => name === 'cx' ? note : null }
+      existing: async (name: string | null, asking: { machineId: string; engine: string }) => {
+        asked.push(asking)
+        return name === 'cx' ? { name: 'cx', machineId: 'm2', state: 'starting' as const, note } : null
+      } }
     const d = deps(['codex', '--name', 'cx', '--', 'again'], socket, { origin: async () => origin })
     expect(await newCommand(d)).toBe(0)
     expect(d.out).toEqual([note])
     expect(socket.sent).toEqual([])
     const json = deps(['codex', '--name', 'cx', '--json'], socket, { origin: async () => origin })
     expect(await newCommand(json)).toBe(0)
-    expect(JSON.parse(json.out[0]!)).toEqual({ ok: true, existing: true, note })
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: true, existing: true, name: 'cx', machineId: 'm2', state: 'starting', note })
+    expect(asked).toEqual([{ machineId: 'm2', engine: 'codex' }, { machineId: 'm2', engine: 'codex' }])
   })
 
   it('records the creation a harness was asked by when the machine made it', async () => {

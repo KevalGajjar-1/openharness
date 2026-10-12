@@ -120,6 +120,12 @@ export class Ledger {
     try { if (statSync(this.path).size > ROTATE_BYTES) renameSync(this.path, this.previous) } catch { /* rotated by another */ }
   }
 
+  /** Appends [row] unless [row.child] already has its line: a harness asked for and started later is recorded by
+   *  whichever of the agent's verbs sees it made first, and two at once would each count it toward the limits. */
+  record(row: Started): void {
+    if (!this.parentOf(row.child)) this.append(row)
+  }
+
   /** The line that says who started [m], or null when the person did. */
   parentOf(m: LedgerMember): Started | null {
     return this.all().findLast((row) => same(row.child, m)) ?? null
@@ -127,7 +133,10 @@ export class Ledger {
 
   /** The harnesses [m] started, newest last. */
   childrenOf(m: LedgerMember): Started[] {
-    return this.all().filter((row) => same(row.by, m))
+    // One a harness, its latest line: two verbs recording the same start at once (`record`) both write it, and a child
+    // counted twice met the limits early and matched no name (two rows for one).
+    const children = new Map(this.all().filter((row) => same(row.by, m)).map((row) => [`${row.child.machineId}/${row.child.agentId}`, row]))
+    return [...children.values()].sort((a, b) => a.at - b.at)
   }
 
   /** 0 for a harness the person started. */
@@ -135,12 +144,12 @@ export class Ledger {
     return this.parentOf(m)?.depth ?? 0
   }
 
-  /** What [m] asked for in the last half hour that has no started line yet, newest last. */
-  pendingOf(m: LedgerMember, now: number): Pending[] {
+  /** What [m] asked for in the last half hour that has no started line yet, newest last; anyone's when [m] is null. */
+  pendingOf(m: LedgerMember | null, now: number): Pending[] {
     const { rows, pending } = this.read()
     const started = new Set(rows.map((row) => row.child.creationId).filter(Boolean))
     // One per creation, its latest line: a line written twice is one harness asked for.
-    const asked = new Map(pending.filter((row) => same(row.by, m) && now - row.at < PENDING_WITHIN_MS && !started.has(row.creation.creationId))
+    const asked = new Map(pending.filter((row) => (!m || same(row.by, m)) && now - row.at < PENDING_WITHIN_MS && !started.has(row.creation.creationId))
       .map((row) => [row.creation.creationId, row]))
     return [...asked.values()]
   }

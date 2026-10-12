@@ -109,7 +109,8 @@ describe('Harness for agents, end to end', () => {
     expect(started.out).toContain(`Created kid on this computer in ${join(d.env.HOME!, 'harnesses', 'kid')}.`)
     expect(started.out).toContain('Read it: harness show kid · wait for it: harness wait kid')
     expect(started.out).not.toContain('harness send')
-    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    // Started lines: a create the machine answers pending first also writes a pending one (agentClient/ledger.ts).
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.child)
     expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: lead.id, name: 'lead' }), child: expect.objectContaining({ name: 'kid' }) })])
 
     // It waits for it, then reads its answer.
@@ -215,7 +216,8 @@ describe('Harness for agents, end to end', () => {
     // Nothing can message an agent with no pane: no `send` in what to do next.
     expect(started.out).toContain('Read it: harness show helper · wait for it: harness wait helper')
     expect(started.out).not.toContain('harness send')
-    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    // Started lines: a create the machine answers pending first also writes a pending one (agentClient/ledger.ts).
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.child)
     expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: 'claude-code:outside-session', name: 'Claude Code' }), child: expect.objectContaining({ name: 'helper' }) })])
     // No harness started it, so no window has one to open it beside.
     const helper = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'helper')
@@ -270,7 +272,8 @@ describe('Harness for agents, end to end', () => {
     expect(started.text).toContain(`Created mcpkid on this computer in ${join(d.env.HOME!, 'harnesses', 'mcp-kid')}.`)
     // Its next steps are named as the tools: an MCP client may have no shell to run `harness show` in.
     expect(started.text).toContain('Read it: harness_read (name: "mcpkid") · wait for it: harness_wait (names: "mcpkid")')
-    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    // Started lines: a create the machine answers pending first also writes a pending one (agentClient/ledger.ts).
+    const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.child)
     expect(ledger).toEqual([expect.objectContaining({ by: expect.objectContaining({ agentId: expect.stringMatching(/^agent:cursor:mcp-\d+$/), name: 'Cursor' }) })])
     const waited = await server.call('harness_wait', { names: ['mcpkid'], timeout_seconds: 120 })
     expect(waited).toEqual({ text: 'mcpkid: idle · read it: harness_read (name: "mcpkid")', isError: false })
