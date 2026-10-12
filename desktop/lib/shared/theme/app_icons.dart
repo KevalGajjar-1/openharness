@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Icons;
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// One outline family for app actions, navigation, and status.
@@ -115,6 +116,11 @@ abstract final class AppIcons {
   static const messageCircleQuestionMark =
       LucideIcons.messageCircleQuestionMark400;
   static const messagesSquare = LucideIcons.messagesSquare400;
+
+  /// A tab's Agent Messages on and off: Lucide has no filled chat, and one outline in two tints read alike (owner,
+  /// 2026-10-12). Material's pair is filled and outlined in one drawing, as AppKit's `bubble.left.and.bubble.right`.
+  static const agentMessagesOn = Icons.forum;
+  static const agentMessagesOff = Icons.forum_outlined;
   static const messageSquareText = LucideIcons.messageSquareText400;
   static const minimize = LucideIcons.minimize400;
   static const minus = LucideIcons.minus400;

@@ -2720,12 +2720,14 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
   // Mirror AppDesktop.tabCloseInset and DesktopWorkspaceTab: × and, left of
   // it, Agent Messages' 💬, as 32pt-tall targets inside the curved tab body,
   // with a dead gap between them so a click just off × never toggles 💬. They
-  // show only on hover; at rest the name and status have the whole tab.
+  // show only on hover; at rest the name and status have the whole tab. 20pt
+  // targets 8pt apart: 16pt ones 3pt apart were "really easy to click by
+  // mistake" (owner, 2026-10-12).
   private static let trailingInset: CGFloat = 8
   private static let accessoryHeight: CGFloat = 32
-  private static let closeWidth: CGFloat = 16
-  private static let accessoryGap: CGFloat = 3
-  private static let messagesWidth: CGFloat = 16
+  private static let closeWidth: CGFloat = 20
+  private static let accessoryGap: CGFloat = 8
+  private static let messagesWidth: CGFloat = 20
   private static let restingInset: CGFloat = shoulder + 6
   private static let revealedInset: CGFloat = trailingInset + closeWidth + accessoryGap + messagesWidth
   private static let gap: CGFloat = 6
@@ -2862,8 +2864,9 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     closeButton.title = ""
     closeButton.isBordered = false
     closeButton.image = HarnessControlSymbols.image("xmark")
-    // Match the small visible cross of the pane's 12pt Lucide close mark.
-    closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .regular)
+    // The pane's close mark, 12pt Lucide x: 7pt across with a 1.07pt stroke. 9pt semibold xmark draws 7.2pt
+    // with 1.04pt (measured); 8pt regular drew 6.2pt with half the stroke, "too small" beside it (owner, 2026-10-12).
+    closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
     closeButton.restingOpacity = 0.45
     closeButton.highContrastRestingOpacity = 0.7
     closeButton.imagePosition = .imageOnly
@@ -2945,12 +2948,15 @@ private final class SwarmTabButton: NSView, NSDraggingSource, NSMenuItemValidati
     messagesButton.isHidden = agentMessages == nil || !isRevealed
   }
   /// The 💬's look, tooltip and accessibility, and the menu rows, for its state:
-  /// grey while off, Agent Messages' color while on.
+  /// filled in Agent Messages' color while on, a quiet outline while off. One
+  /// outline in two tints read alike: "really hard to see on/off states"
+  /// (owner, 2026-10-12), who chose filled over a blue pill and a slash.
   private func updateMessagesControls() {
     for item in messagesItems { item.isHidden = agentMessages == nil }
     if let state = agentMessages {
+      messagesButton.image = HarnessControlSymbols.image(state.on ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
       messagesButton.foreground = state.on ? messagesColor : foreground
-      messagesButton.restingOpacity = state.on ? 0.85 : 0.45
+      messagesButton.restingOpacity = state.on ? 1 : 0.35
       messagesButton.highContrastRestingOpacity = state.on ? 1 : 0.7
       messagesButton.toolTip = state.tooltip
       messagesButton.setAccessibilityLabel("Agent Messages")
@@ -3143,7 +3149,8 @@ struct SwarmTabMessages: Equatable {
   /// half second on the activity clock so the speakers trade sides; still at
   /// frame 0 (Reduce Motion).
   static func drawMessaging(in rect: NSRect, frame: Int, color: NSColor) {
-    guard let symbol = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: nil)?
+    // Filled, as the tab's 💬 is while Agent Messages is on, which it is whenever agents message.
+    guard let symbol = NSImage(systemSymbolName: "bubble.left.and.bubble.right.fill", accessibilityDescription: nil)?
       .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)) else { return }
     let glyph = NSRect(x: rect.midX - symbol.size.width / 2, y: rect.midY - symbol.size.height / 2,
       width: symbol.size.width, height: symbol.size.height)
