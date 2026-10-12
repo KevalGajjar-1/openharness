@@ -300,32 +300,45 @@ describe('a harness and the harnesses it started', () => {
     expect(t.delivered.map(([agentId]) => agentId)).toEqual(['api'])
   })
 
-  it('a message an older version queued between them under no tab is refused, not delivered', async () => {
+  it('a message an older version queued between them under no tab is never delivered, read directory or not', async () => {
     vi.useFakeTimers()
-    // Queued by 0.3.75 under its `started` log, waiting in web's inbox for its hook.
+    // Queued by 0.3.75 under its `started` log: one waiting in web's inbox for its hook, and one to api, which shares
+    // a tab with Agent Messages on with lead now.
     const store = new MessageStore(join(root, 'state'))
-    const message = { id: 'm0000old', tabId: 'started', at: 1, text: 'Also check the footer.',
-      from: { machineId: 'm1', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' }, to: [{ machineId: 'm1', agentId: 'web', name: 'web' }] }
-    store.record(message)
-    store.status({ messageId: message.id, machineId: 'm1', agentId: 'web', state: 'queued', at: 1 })
-    const key = deliveryKey(message.id, 'web')
-    store.state.local.push({ key, messageId: message.id, agentId: 'web', pane: '%3', session: 's-web', state: 'queued', tries: 0, nextTryAt: 0, at: 1 })
+    const old = (id: string, to: string) => ({ id, tabId: 'started', at: 1, text: 'Also check the footer.',
+      from: { machineId: 'm1', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' }, to: [{ machineId: 'm1', agentId: to, name: to }] })
+    const queue = (id: string, to: string, pane: string) => {
+      store.record(old(id, to))
+      store.status({ messageId: id, machineId: 'm1', agentId: to, state: 'queued', at: 1 })
+      store.state.local.push({ key: deliveryKey(id, to), messageId: id, agentId: to, pane, session: `s-${to}`, state: 'queued', tries: 0, nextTryAt: 0, at: 1 })
+      new PaneInbox(join(root, 'inbox-root')).put(pane, deliveryKey(id, to), { session: `s-${to}`, text: 'Also check the footer.' })
+    }
+    queue('m0000old', 'web', '%3')
+    queue('m0000ol2', 'api', '%2')
     store.save()
-    new PaneInbox(join(root, 'inbox-root')).put('%3', key, { session: 's-web', text: 'Also check the footer.' })
     start('lead', 'web')
-    const t = setup()
-    expect(t.inbox.waiting('%3', key)).toBe(true)
+    // The directory cannot be read: they are failed all the same, before a hook can take them.
+    const t = setup({ backendStatus: 500 })
+    expect(t.inbox.waiting('%3', deliveryKey('m0000old', 'web'))).toBe(true)
     t.service.start()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(t.inbox.waiting('%3', key)).toBe(false)
-    expect(t.delivered).toEqual([])
-    const history = await t.ask({ action: 'history', tabId: 'started' })
-    expect((history.messages as Array<{ statuses: unknown[] }>)[0].statuses).toEqual([
-      expect.objectContaining({ machineId: 'm1', agentId: 'web', state: 'failed', reason: 'it is no longer in a tab with the sender' }),
-    ])
+    expect(t.inbox.waiting('%3', deliveryKey('m0000old', 'web'))).toBe(false)
+    expect(t.inbox.waiting('%2', deliveryKey('m0000ol2', 'api'))).toBe(false)
     await vi.advanceTimersByTimeAsync(TICK_MS * 2)
     expect(t.delivered).toEqual([])
+    const history = await t.ask({ action: 'history', tabId: 'started' })
+    expect((history.messages as Array<{ statuses: unknown[] }>).map((m) => m.statuses)).toEqual([
+      [expect.objectContaining({ machineId: 'm1', agentId: 'web', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })],
+      [expect.objectContaining({ machineId: 'm1', agentId: 'api', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })],
+    ])
     t.service.stop()
+  })
+
+  it('a hand-over an older machine logged under `started` is failed even between two in a tab with Agent Messages on', async () => {
+    const t = setup()
+    const answer = await t.ask({ action: 'deliver', message: { id: 'm00000cc', tabId: 'started', text: 'hi', at: 5,
+      from: { machineId: 'm2', agentId: 'phone', name: 'phone', engine: 'claude', machine: 'laptop' }, to: [{ machineId: 'm1', agentId: 'api', name: 'api' }] } }, OWNER_REMOTE)
+    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'api', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })])
+    expect(t.delivered).toEqual([])
   })
 
   it('reach a tab teammate by the start of its id, for a harness whose name is a sentence', async () => {

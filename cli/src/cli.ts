@@ -29,7 +29,8 @@ import { VERSION } from './version.js'
 import { runCoreInForeground } from './core/main.js'
 import { startCoreProcess } from './coreProcess.js'
 import { GRID_MINT_TIMEOUT_MS, backendHttpBase, requestJson, postJson, controlPlaneAuth } from './lib/controlPlane.js'
-import { LEGACY_LOG_FILE, MACHINE_NAME_FILE, tildify, computerId, thisDeviceLabel, DAEMON_LOG_FILE, HARNESSD_STATUS_FILE, daemonPort, isAlive, isDaemonRunning, readPid } from './lib/daemonState.js'
+import { LEGACY_LOG_FILE, MACHINE_NAME_FILE, tildify, computerId, thisDeviceLabel, DAEMON_LOG_FILE, HARNESSD_STATUS_FILE, daemonPort, isAlive, isDaemonRunning, readPid, daemonUnreachableText } from './lib/daemonState.js'
+import { SANDBOXED, sandboxed } from './lib/unreachable.js'
 import { onError, BIND_WAIT_MS, connectFailure, defaultLaunchDeps, waitForBind } from './lib/daemonLaunch.js'
 import { ensureUtf8Locale } from './lib/childLocale.js'
 import { buildLogBundle, bundleFileName, redactSecretsInText } from './lib/logBundle.js'
@@ -1032,6 +1033,9 @@ async function startCommand(foreground: boolean, repair: boolean = false): Promi
     }, {
       onWaiting: (owner) => console.log(`  the daemon is ${describeSpawnLockOwner(owner)} — waiting for it to finish…`),
     }).catch((error: unknown) => {
+      // A sandbox refuses the spawn lock (EPERM): Harness may well be running, out of this shell's reach, and an
+      // agent that read a stack trace here asked the person to let it start Harness (lib/unreachable.ts).
+      if (sandboxed({ error })) { console.error(`\n✗ ${SANDBOXED}\n`); process.exit(1) }
       if (!(error instanceof SpawnLockBusyError)) throw error
       console.error(`\n✗ Could not start: the daemon spawn lock is ${describeSpawnLockFailure(error)}.`)
       console.error('  check   harness status   ·   stop it   harness stop')
@@ -1582,9 +1586,8 @@ async function daemonCall(method: 'GET' | 'POST', path: string, body?: unknown):
     const headers: Record<string, string> = { 'x-adapter-local': '1' } // passes the local API's CSRF gate
     if (body) headers['content-type'] = 'application/json'
     res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
-  } catch {
-    console.error('\n  ✗ The adapter is not running on this computer.')
-    console.error('    Start it first:  harness start\n')
+  } catch (error) {
+    console.error(`\n  ✗ ${daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
     process.exit(1)
   }
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
@@ -2052,8 +2055,8 @@ async function groupCommand(sub: string | undefined, arg: string | undefined, js
     try {
       const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/group/sync`, { method: 'POST', headers: { 'x-adapter-local': '1' } })
       if (!res.ok) throw new Error(String(res.status))
-    } catch {
-      console.error('\n  ✗ Harness is not running here. Run: harness start\n')
+    } catch (error) {
+      console.error(`\n  ✗ ${daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
       process.exit(1)
     }
     console.log('\n  ✓ Comparing with every reachable member now.\n')
@@ -2079,8 +2082,8 @@ async function devicesCommand(sub: string | undefined, arg: string | undefined, 
     try {
       const { res, json: out } = await daemonCall(method, path, body)
       return { status: res.status, json: out }
-    } catch {
-      console.error('\n  ✗ Harness is not running here. Run: harness start\n')
+    } catch (error) {
+      console.error(`\n  ✗ ${daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
       process.exit(1)
     }
   }
@@ -2374,8 +2377,9 @@ async function status(): Promise<void> {
     // longer waits to see it, and a daemon with no backend is still serving every local agent.
     // Signed out is a WAY OF RUNNING, not a reason to say nothing: the daemon serves this computer,
     // and `machine: not signed in` in place of the whole block hid a running daemon and its agents.
+    // In a sandbox (an agent's, in Codex) the liveness check itself is refused: say what is known.
     status: !alive
-      ? '○ stopped'
+      ? (sandboxed({ pid }) ? '◌ out of reach · a sandbox keeps this shell from Harness; run harness status outside it' : '○ stopped')
       : master
         ? master
       : safeMode
@@ -2585,7 +2589,7 @@ switch (cmd) {
       gridSetupCommand({
         port: daemonPort(),
         localMachineId: wantedDaemonIdentity(),
-        daemonRunning: isDaemonRunning,
+        daemonRunning: isDaemonRunning, unreachable: () => daemonUnreachableText(),
         connect: (url) => new NewCommandSocket(url),
         output: (line) => console.log(line),
         error: (line) => console.error(line),
@@ -2619,7 +2623,7 @@ switch (cmd) {
       home: homedir(),
       port: daemonPort(),
       localMachineId: wantedDaemonIdentity(),
-      daemonRunning: isDaemonRunning,
+      daemonRunning: isDaemonRunning, unreachable: () => daemonUnreachableText(),
       listMachines: async () => {
         const { session, headers } = await controlPlaneAuth()
         return (await fetchMachines(headers)).map((machine) => ({
@@ -2646,7 +2650,7 @@ switch (cmd) {
       tmuxPane: process.env.TMUX_PANE,
       localMachineId: wantedDaemonIdentity(),
       port: daemonPort(),
-      daemonRunning: isDaemonRunning,
+      daemonRunning: isDaemonRunning, unreachable: () => daemonUnreachableText(),
       listMachines: async () => {
         const { session, headers } = await controlPlaneAuth()
         return (await fetchMachines(headers)).map((machine) => ({

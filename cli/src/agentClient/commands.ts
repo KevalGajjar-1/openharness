@@ -494,7 +494,7 @@ const memberKey = (machineId: string, agentId: string): string => `${machineId}/
  */
 export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number): string | null {
   if (ledger.depthOf(caller) >= SPAWN_LIMITS.depth) {
-    return 'A harness started this far down may not start more. Do the work yourself, or tell the harness that started you.'
+    return 'A harness started this far down may not start more. Do the work yourself, or say so in your answer.'
   }
   const mine = ledger.childrenOf(caller)
   const liveMine = new Set(mine.filter((row) => live.has(memberKey(row.child.machineId, row.child.agentId))).map((row) => memberKey(row.child.machineId, row.child.agentId)))

@@ -114,6 +114,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     },
     deliver: (agentId, text, deliveryId) => { core.turns.deliver(agentId, text, deliveryId); options.changed?.() },
     refused: (delivery) => refusal(delivery),
+    forbidden: (delivery) => forbidden(delivery),
     ready: () => directory.current() !== null,
     text: (delivery, message) => {
       const roster = rosterOf(delivery.agentId)
@@ -123,14 +124,27 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     writable: () => options.changed?.(),
   })
 
-  /** Why a local delivery can no longer be made, or null. Nothing is refused before the directory is read. */
+  /**
+   * Why a local delivery may never be made, whatever the tabs say, or null. Before 2026-10-11 a harness and one it
+   * started messaged each other with no tab on, logged under `started`; Agent Messages off means off, so what an
+   * older version left waiting there is never delivered, even to two that share a tab with it on now. Asked before
+   * the directory is read too: the hook takes what waits in a pane's inbox without asking, and a directory that
+   * cannot be read (signed out, the backend down) would otherwise leave it there to be taken.
+   */
+  function forbidden(delivery: LocalDelivery): string | null {
+    return store.entry(delivery.messageId)?.message.tabId === 'started' ? 'it was sent outside any tab with Agent Messages on' : null
+  }
+
+  /** Why a local delivery can no longer be made, or null. Only what may never be made is refused before the
+   *  directory is read. */
   function refusal(delivery: LocalDelivery): string | null {
     const entry = store.entry(delivery.messageId)
     if (!entry) return 'the message is no longer kept'
+    const never = forbidden(delivery)
+    if (never) return never
     if (!directory.current()) return null
     const recipient = { machineId: self(), agentId: delivery.agentId }
-    // Only a tab with Agent Messages on carries a message: one an older version queued between a harness and one
-    // it started, under no tab (`started`), is refused here like any other.
+    // Only a tab with Agent Messages on carries a message.
     if (directory.shared(entry.message.from, recipient)) return null
     const tab = directory.current()!.tabs.find((t) => t.id === entry.message.tabId)
     return tab && !tab.enabled ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender'

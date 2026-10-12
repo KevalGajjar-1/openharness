@@ -8,6 +8,7 @@ import { engineName } from '../messages/model.js'
 import { projectFolderSlug } from './agentNames.js'
 import { permissionModeFlags } from './engineLaunch.js'
 import { projectsRoot } from './projectFolder.js'
+import { NOT_RUNNING } from './unreachable.js'
 
 /** Engine names, so an unknown word is judged rather than cast (the shape `registry.ts` uses). */
 const ENGINE_NAMES: ReadonlySet<string> = new Set(ENGINES)
@@ -228,6 +229,8 @@ export interface NewCommandDeps {
   port: number
   localMachineId: string | null
   daemonRunning: () => boolean | Promise<boolean>
+  /** What to say when the daemon cannot be reached: stopped, or kept out by a sandbox (lib/unreachable.ts). */
+  unreachable?: () => string
   listMachines: () => Promise<NewMachine[]>
   connect: (url: string) => NewSocket
   output: (line: string) => void
@@ -388,7 +391,7 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
     return 2
   }
   if (!(await deps.daemonRunning())) {
-    deps.error('Harness is not running on this computer. Start it with `harness start`.')
+    deps.error(deps.unreachable?.() ?? NOT_RUNNING)
     return 1
   }
   const env = deps.env ?? process.env

@@ -330,6 +330,10 @@ describe('harness new: the daemon', () => {
     const stopped = deps(['codex'], socket, { daemonRunning: () => false })
     expect(await newCommand(stopped)).toBe(1)
     expect(stopped.err[0]).toMatch(/harness start/)
+    // Out of a sandbox's reach, what the CLI says instead: never to start a Harness that is running.
+    const kept = deps(['codex'], socket, { daemonRunning: () => false, unreachable: () => 'kept out by a sandbox' })
+    expect(await newCommand(kept)).toBe(1)
+    expect(kept.err).toEqual(['kept out by a sandbox'])
   })
 })
 
