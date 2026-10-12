@@ -1,5 +1,28 @@
 # Durable native hook delivery
 
+October 12 pause checkpoint: the owner requested the finished idle Close/Stop
+safety correction be landed as [#1251](https://github.com/autonomous-ai/openharness/pull/1251),
+then further daemon work paused. This draft (#1172) remains unfinished and must
+stay draft. The focused correction does not activate this native-turn integration.
+
+The shared pane-writer checkpoint `afa181901` was independently reviewed. Its
+integration with main, `c9a6ef858`, passed typecheck, full core/services and
+harnessd per-file coverage, and the selected input, hook, terminal and unchanged
+golden checks in receipt `20261012T080128.104292Z-15248`. This is scoped evidence,
+not final native-client acceptance or whole-PR approval.
+
+Native generation activation in the composition root, generation-specific turn
+effects, durable Cancel/rearm and the private healthy/running/paused completion
+acceptance remain unfinished. The earlier failing acceptance below remains a
+landing blocker; storage and writer reviews do not supersede it. Preserve the
+existing journal/outbox and golden evidence when resuming. No release is authorized.
+
+This checkpoint keeps the previously validated draft source. Before activating
+it, integrate #1251 from main and pass the draft's synchronous
+`nativeRecoveryReady` authority into `createAgentClosing`; that composition-root
+connection is not active in this checkpoint. The completed Close correction is
+preserved in its own PR rather than duplicated as unfinished draft edits.
+
 Status: implementation design, not a completed boundary. The former HTTP behavior
 is recorded in golden-only commit `cb60ad66b`. Three private HTTP/registry regressions
 in `d771b8836` fail on the former implementation: an owned pending delivery is lost
