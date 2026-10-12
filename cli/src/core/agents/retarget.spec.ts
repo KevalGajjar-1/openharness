@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { applyOpencodeSessionModel, parseOpencodeModelId, opencodeMajorVersion } from '../../engines/launchControl.js'
+import { applyOpencodeSessionModel, parseOpencodeModelId, opencodeMajorVersion, opencodeV2TurnOpen } from '../../engines/launchControl.js'
 import { isOpencodeV2 } from '../../engines/launchControl.js'
 import { binaryOnPath } from '../../lib/binaryOnPath.js'
 import { validateLaunchOverrides } from '../../lib/launchOverrides.js'
@@ -7,7 +7,6 @@ import type { RegisteredSession } from '../../lib/registry.js'
 import { AgentRestartCoordinator, bypassPermissionFor, restartAgent } from '../../lib/restartAgent.js'
 import { probeGatewayRuntime } from '../../lib/gatewayRuntime.js'
 import { parseRuntimeProfile } from '../../lib/runtimeProfileWire.js'
-import { inspectRuntimePane } from '../../lib/runtimeProfileController.js'
 import { clearPaneRemainOnExit } from '../../lib/tmux.js'
 import { workspaceMissing } from '../../lib/workspaceCheck.js'
 import { TerminalAgentReconciler } from '../../lib/terminalAgentReconciler.js'
@@ -19,6 +18,7 @@ vi.mock('../../engines/launchControl.js', async (real) => ({
   ...await real<object>(),
   isOpencodeV2: vi.fn(() => false), opencodeMajorVersion: vi.fn(() => 1),
   applyOpencodeSessionModel: vi.fn(async () => ({ ok: true })),
+  opencodeV2TurnOpen: vi.fn(async () => false),
   parseOpencodeModelId: vi.fn((id: string) => ({ providerID: id.split('/')[0], modelID: id.split('/')[1] })),
 }))
 // Optional readers cannot gate a native launch decision.
@@ -36,7 +36,6 @@ vi.mock('../../lib/restartAgent.js', async (real) => ({
   restartAgent: vi.fn(async () => ({ ok: true, resumed: true, processIdentity: { pid: 2, startMarker: 'new', executable: '/bin/claude' } })),
 }))
 vi.mock('../../lib/runtimeProfileWire.js', async (real) => ({ ...await real<object>(), parseRuntimeProfile: vi.fn(() => ({ engine: 'claude', model: 'opus' })) }))
-vi.mock('../../lib/runtimeProfileController.js', async (real) => ({ ...await real<object>(), inspectRuntimePane: vi.fn(() => ({ idle: true })) }))
 vi.mock('../../lib/tmux.js', async (real) => ({
   ...await real<object>(), clearPaneRemainOnExit: vi.fn(async () => {}),
   processArgs: vi.fn(async () => 'codex -c model_providers.grid.base_url=http://grid.local/v1'),
@@ -52,7 +51,7 @@ const agent = (over: Partial<RegisteredSession> = {}): RegisteredSession => ({
 function setup(row: RegisteredSession | null = agent(), over: Partial<RetargetDeps> = {}) {
   const release = vi.fn(), releaseRoute = vi.fn()
   const deps: RetargetDeps = {
-    readScreen: async (session, capture) => ({ pane: inspectRuntimePane(session.engine, capture ?? ''), question: null, messageHold: null, teamHold: null, activity: null, busy: false, stoppedGoal: false }),
+    sessionTurnOpen: vi.fn(() => false),
     purgeBusy: vi.fn(() => false),
     tmuxBackend: { clearEnv: vi.fn(async () => ({ state: 'succeeded' })) } as unknown as RetargetDeps['tmuxBackend'],
     registry: {
@@ -65,7 +64,6 @@ function setup(row: RegisteredSession | null = agent(), over: Partial<RetargetDe
     } as unknown as RetargetDeps['registry'],
     runtimeProfiles: { selectedModel: vi.fn(() => 'runtime-v1:claude:opus') } as never,
     launchOverridesDeps: {} as never,
-    captureTerminal: vi.fn(async () => 'idle pane'),
     acquireTerminalControl: vi.fn(() => release),
     relaunchOverrides: vi.fn(async () => ({ ok: true, overrides: { gridLaunchRecord: { override: grid, webSearch: 'off' } } })) as never,
     downgradedPermission: vi.fn(async (_s, bypass: boolean) => ({ bypassPermission: bypass, permissionMode: null })) as never,
@@ -92,7 +90,7 @@ describe('retargeting an agent', () => {
     const held = { ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail: 'Waiting for native evidence.' } as const
     const run = setup(agent(), { launchOverridesDeps: { native: async () => held } as never })
     expect(await run.retarget({ agentId: 'a1', grid })).toEqual(held)
-    expect(run.deps.captureTerminal).not.toHaveBeenCalled()
+    expect(run.deps.sessionTurnOpen).not.toHaveBeenCalled()
     expect(restartAgent).not.toHaveBeenCalled()
   })
 
@@ -171,39 +169,22 @@ describe('retargeting an agent', () => {
   })
 
   describe('refusals before anything is touched', () => {
-    it('keeps the admitted conversation in an asynchronous reader while a mutable row changes', async () => {
+    it('cannot follow a mutable row to a replacement conversation while validation waits', async () => {
       const row = agent()
-      let release!: () => void, entered = false, observed: string | undefined
-      const ready = new Promise<void>(done => { release = done })
-      const run = setup(row, { readScreen: async snapshot => {
-        entered = true
-        await ready
-        observed = snapshot.sessionId
-        return { pane: { idle: true } } as never
-      } })
-      const pending = run.retarget({ agentId: 'a1', grid })
-      await vi.waitFor(() => expect(entered).toBe(true))
-      row.sessionId = 'replacement'
-      release()
-      expect(await pending).toMatchObject({ ok: false, error: 'AGENT_CHANGED' })
-      expect(observed).toBe('s1')
-      expect(restartAgent).not.toHaveBeenCalled()
-    })
-
-    it('cannot follow a mutable row to a replacement conversation while capture waits', async () => {
-      const row = agent()
-      let finish!: (value: string) => void
-      const run = setup(row, { captureTerminal: () => new Promise(done => { finish = done }) })
+      let finish!: () => void
+      vi.mocked(validateLaunchOverrides).mockImplementationOnce(() => new Promise(done => { finish = () => done({ ok: true } as never) }))
+      const run = setup(row)
       const pending = run.retarget({ agentId: 'a1', grid })
       await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
       row.sessionId = 'replacement'
       row.processIdentity = { pid: 77, startMarker: 'replacement', executable: 'claude' }
-      finish('idle pane')
+      finish()
       expect(await pending).toMatchObject({ ok: false, error: 'AGENT_CHANGED' })
+      expect(run.deps.sessionTurnOpen).not.toHaveBeenCalled()
       expect(run.deps.relaunchOverrides).not.toHaveBeenCalled()
       expect(restartAgent).not.toHaveBeenCalled()
     })
-    it.each(['validation', 'version', 'screen', 'preparation', 'native-write', 'environment', 'bypass', 'permission', 'replacement', 'gateway', 'pane-option'] as const)(
+    it.each(['validation', 'version', 'preparation', 'native-write', 'environment', 'bypass', 'permission', 'replacement', 'gateway', 'pane-option'] as const)(
       'cannot publish or continue a retarget whose owner changes during %s', async phase => {
         const row = agent({ engine: 'opencode', subscriptionModel: 'fixture/model' })
         const run = setup(row, { relaunchOverrides: vi.fn(async () => ({ ok: true as const,
@@ -212,7 +193,6 @@ describe('retargeting an agent', () => {
         switch (phase) {
           case 'validation': vi.mocked(validateLaunchOverrides).mockImplementationOnce(async () => { replace(); return { ok: true } }); break
           case 'version': vi.mocked(opencodeMajorVersion).mockImplementationOnce(async () => { replace(); return 2 }); break
-          case 'screen': run.deps.readScreen = vi.fn(async () => { replace(); return { pane: { idle: true } } as never }); break
           case 'preparation': vi.mocked(run.deps.relaunchOverrides).mockImplementationOnce(async () => { replace(); return { ok: true, overrides: { env: {}, extraArgs: [], clearEnv: [] } } }); break
           case 'native-write': vi.mocked(applyOpencodeSessionModel).mockImplementationOnce(async () => { replace(); return { ok: true } }); break
           case 'environment': vi.mocked(run.deps.tmuxBackend!.clearEnv).mockImplementationOnce(async () => { replace(); return { state: 'succeeded', dispatch: 'executed' } }); break
@@ -254,7 +234,7 @@ describe('retargeting an agent', () => {
       expect(vi.mocked(deps.restartJobs.cancel).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(deps.relaunchOverrides).mock.invocationCallOrder[0])
       expect(release).toHaveBeenCalledOnce()
     })
-    it('rechecks a pane operation that began while the screen was being read', async () => {
+    it('rechecks a pane operation that began while the move was being checked', async () => {
       const purgeBusy = vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
       const { retarget, deps } = setup(agent(), { purgeBusy })
       expect(await retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY' })
@@ -278,10 +258,57 @@ describe('retargeting an agent', () => {
       expect(await setup().retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'CWD_NOT_FOUND', detail: 'gone' })
     })
 
-    it('for a pane it cannot read, a turn in progress, a swap already running, or control it cannot take', async () => {
-      expect(await setup(agent(), { captureTerminal: vi.fn(async () => null) }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'TMUX_FAILED' })
-      vi.mocked(inspectRuntimePane).mockReturnValueOnce({ idle: false } as never)
-      expect(await setup().retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY' })
+    it('for a turn in progress, said so, without reading the screen', async () => {
+      const turn = setup(agent(), { sessionTurnOpen: vi.fn(() => true) })
+      expect(await turn.retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY',
+        detail: 'This harness is in a turn. Stop it, then switch the model.' })
+      expect(turn.deps.sessionTurnOpen).toHaveBeenCalledWith('s1')
+      expect(turn.deps.acquireTerminalControl).not.toHaveBeenCalled()
+      expect(restartAgent).not.toHaveBeenCalled()
+    })
+
+    it('for an OpenCode 2 turn, read from its own store since the turn state does not see it', async () => {
+      const oc2 = agent({ engine: 'opencode' } as Partial<RegisteredSession>)
+      vi.mocked(isOpencodeV2).mockReturnValue(true)
+      try {
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(true)
+        const busy = setup(oc2)
+        expect(await busy.retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY',
+          detail: 'This harness is in a turn. Stop it, then switch the model.' })
+        expect(opencodeV2TurnOpen).toHaveBeenCalledWith('/db/opencode.db', 's1')
+        expect(busy.deps.acquireTerminalControl).not.toHaveBeenCalled()
+        // A native OpenCode's store is the one its own HOME holds.
+        const launch = { current: () => true, executable: '/fixture/native/opencode', environment: { HOME: '/fixture/home' }, opencodeMajor: 2 } as unknown as NativeLaunch
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(true)
+        expect(await setup(oc2, { launchOverridesDeps: { native: async () => ({ ok: true, launch }) } as never }).retarget({ agentId: 'a1', grid }))
+          .toMatchObject({ ok: false, error: 'AGENT_BUSY' })
+        expect(opencodeV2TurnOpen).toHaveBeenLastCalledWith('/fixture/home/.local/share/opencode/opencode.db', 's1')
+        // Between turns, or a store it cannot read: no turn known, so it moves.
+        vi.mocked(opencodeV2TurnOpen).mockResolvedValueOnce(false).mockResolvedValueOnce(null)
+        expect(await setup(oc2).retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+        expect(await setup(oc2).retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+        // A harness replaced while the store is read is not moved.
+        const row = agent({ engine: 'opencode' } as Partial<RegisteredSession>)
+        vi.mocked(opencodeV2TurnOpen).mockImplementationOnce(async () => { row.sessionId = 'replacement'; return false })
+        expect(await setup(row).retarget({ agentId: 'a1', grid })).toMatchObject({ ok: false, error: 'AGENT_CHANGED' })
+      } finally { vi.mocked(isOpencodeV2).mockReturnValue(false) }
+      // OpenCode 1 is read by the turn state itself.
+      vi.mocked(opencodeV2TurnOpen).mockClear()
+      await setup(oc2).retarget({ agentId: 'a1', grid })
+      expect(opencodeV2TurnOpen).not.toHaveBeenCalled()
+    })
+
+    it('moves an agent between turns whatever its prompt shows, and one with no conversation to ask about', async () => {
+      // OpenCode 2's placeholder once read as a draft and refused every switch until the first chat.
+      const idle = setup(agent({ engine: 'opencode' } as Partial<RegisteredSession>))
+      expect(await idle.retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+      expect(idle.deps.sessionTurnOpen).toHaveBeenCalledWith('s1')
+      const fresh = setup(agent({ sessionId: undefined } as Partial<RegisteredSession>), { sessionTurnOpen: vi.fn(() => true) })
+      expect(await fresh.retarget({ agentId: 'a1', grid })).toEqual({ ok: true })
+      expect(fresh.deps.sessionTurnOpen).not.toHaveBeenCalled()
+    })
+
+    it('for a swap already running, or control it cannot take', async () => {
       expect(await setup(agent(), { restartJobs: { busy: () => true, revision: () => 0 } as never }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY' })
       expect(await setup(agent(), { acquireTerminalControl: () => null }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_BUSY' })
     })
