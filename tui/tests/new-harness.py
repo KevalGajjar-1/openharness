@@ -94,6 +94,8 @@ def wait(fn, label, seconds=8):
         time.sleep(.05)
     raise AssertionError(label + '\n' + screen())
 def shows(text): wait(lambda: text in screen(), text)
+# The folder browser's first row names the folder: "Use ~/projects", not "Use this folder".
+def shows_use(): wait(lambda: re.search(r'\bUse [~/]', screen()), 'Use <folder>')
 # The machine is its own row, by name, and the project its own: never "project @ machine".
 def project_at(project, machine):
     shows(f'Machine     {machine}'); shows(f'Project     {project}')
@@ -264,8 +266,8 @@ try:
     assert len(state('reconnect')['inputs']) == input_before, 'form input must never reach a working pane'
     print('PASS New Harness: desktop fields, keyboard, search, paste, retry and no duplicate/input leak', flush=True)
 
-    new_form(); field('Project'); type_text('open folder'); keys('Enter'); shows('Use this folder')
-    type_text('projects'); keys('Enter'); shows('Use this folder'); keys('Enter'); project_at('projects', 'M2')
+    new_form(); field('Project'); type_text('open folder'); keys('Enter'); shows_use()
+    type_text('projects'); keys('Enter'); shows_use(); keys('Enter'); project_at('projects', 'M2')
     shows('[x]'); choose_field('Branch', 'feature')
     submit(before + 3)
     request = state()['created'][-1]
@@ -329,9 +331,9 @@ try:
 
     # A review capture with the requested project label, through the real folder chooser.
     choose_field('Approvals', 'auto-approve')
-    field('Project'); type_text('open folder'); keys('Enter'); shows('Use this folder')
+    field('Project'); type_text('open folder'); keys('Enter'); shows_use()
     keys('C-l', 'C-a', 'C-k'); type_text('/home/dev/autonomous-harness'); keys('Enter')
-    shows('Use this folder'); keys('Enter')
+    shows_use(); keys('Enter')
     project_at('autonomous-harness', 'M2'); shows('[x]')
     tmux('resize-window', '-t', 'test', '-x', '150', '-y', '42'); settle_ui()
     snapshot('new-harness-flat')

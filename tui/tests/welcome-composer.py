@@ -57,6 +57,8 @@ def wait(fn, label, seconds=12):
         time.sleep(.07)
     raise AssertionError(label+'\n'+re.sub(r'https://\S+', '[sign-in link]', screen()))
 def shows(text): wait(lambda:text in screen(),text)
+# The folder browser's first row names the folder: "Use ~/projects", not "Use this folder".
+def shows_use(): wait(lambda:re.search(r'\bUse [~/]',screen()),'Use <folder>')
 def keys(*args):
     for key in args: tm('send-keys','-t','test',key); time.sleep(.10)
 def type_text(text): tm('send-keys','-l','-t','test',text)
@@ -115,7 +117,7 @@ try:
     type_text('ml-lab'); keys('Enter'); shows('[ ml-lab ▾ ]'); shows(task)
     choose_machine('studio'); assert header()==initial_header,(header(),initial_header)
     choose_machine('gpu-box'); shows('[ ml-lab ▾ ]'); shows(task)
-    click('ml-lab'); shows('Search projects'); click('Open Folder'); shows('Use this folder')
+    click('ml-lab'); shows('Search projects'); click('Open Folder'); shows_use()
     assert 'Choose a machine' not in screen(), 'Open Folder must use the header destination directly'
     keys('Escape','Escape'); shows(task)
     assert not created()
@@ -145,8 +147,8 @@ try:
     snapshot('welcome-final-dark')
     tm('send-keys','-l','-t','test','\x1b]10;rgb:2020/2020/2020\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\')
     snapshot('welcome-light')
-    click('ml-lab'); shows('Search projects'); click('Open Folder'); shows('Use this folder')
-    keys('C-l','C-a','C-k'); type_text('/home/demo/plain'); keys('Enter'); shows('Use this folder'); keys('Enter')
+    click('ml-lab'); shows('Search projects'); click('Open Folder'); shows_use()
+    keys('C-l','C-a','C-k'); type_text('/home/demo/plain'); keys('Enter'); shows_use(); keys('Enter')
     wait(lambda:'Worktree' not in screen(),'non-Git folder hides Git controls')
     assert 'Not a Git repository' not in screen()
     shows('Default account'); shows(task)

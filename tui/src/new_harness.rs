@@ -125,6 +125,8 @@ pub struct Form {
     child_area: Rect,
     /// The dialog's `[ Cancel ]` button, where it was last drawn: a click on it closes the form.
     cancel_area: Rect,
+    /// On the button row, Cancel is the one chosen (← from Start), not Start.
+    cancel_chosen: bool,
     task_area: Rect,
     task_editor: task::Editor,
     hits: Vec<(Rect, Field)>,
@@ -190,6 +192,8 @@ impl Form {
         let fields = self.fields();
         let at = fields.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
         self.focus = fields[(at + delta).rem_euclid(fields.len() as isize) as usize];
+        // Coming back to the buttons, Start is the one chosen again.
+        self.cancel_chosen = false;
     }
     fn worktree(&self) -> bool {
         self.draft.what.engine != "terminal"
@@ -555,6 +559,7 @@ fn make_form(app: &mut App, machine: Option<String>, cwd: Option<String>, surfac
         area: Rect::default(),
         child_area: Rect::default(),
         cancel_area: Rect::default(),
+        cancel_chosen: false,
         task_area: Rect::default(),
         task_editor: task::Editor::default(),
         hits: vec![],
@@ -1078,7 +1083,8 @@ fn load_folder(app: &mut App, form: &mut Form, path: String) {
                         c.kind = Choice::Folder(path.clone());
                         c.picker.placeholder =
                             format!("{} · Ctrl-L path", short_path(&path, &form.home));
-                        let mut rows = vec![Row::new("use", "Use this folder")];
+                        // "Use ~/work/app", the folder it means, not "Use this folder".
+                        let mut rows = vec![Row::new("use", format!("Use {}", short_path(&path, &form.home)))];
                         if path != "/" {
                             rows.push(Row::new("up", ".. /"));
                         }
@@ -1598,6 +1604,16 @@ pub fn key(app: &mut App, mut form: Box<Form>, key: KeyEvent) {
             KeyCode::Tab | KeyCode::BackTab => {
                 form.move_by(if key.code == KeyCode::BackTab { -1 } else { 1 });
                 reveal(app, &mut form);
+            }
+            // The dialog's button row: ← → choose between Cancel and Start, as every dialog's
+            // buttons do; Enter on Cancel closes the form, as Esc does.
+            KeyCode::Left | KeyCode::Right if form.focus == Field::Create && !matches!(form.surface, Surface::Window(_)) => {
+                form.cancel_chosen = key.code == KeyCode::Left;
+            }
+            KeyCode::Enter | KeyCode::Char(' ') if form.focus == Field::Create && form.cancel_chosen => {
+                form.cancel_chosen = false;
+                dismiss(app, form);
+                return;
             }
             KeyCode::Enter | KeyCode::Char(' ') => launch = activate(app, &mut form),
             KeyCode::Right if form.focus != Field::Create => {
@@ -2352,6 +2368,25 @@ mod tests {
         let at = form.cancel_area;
         mouse(&mut app, MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: at.x + 2, row: at.y, modifiers: KeyModifiers::NONE });
         assert!(!matches!(app.modal, Some(Modal::NewHarness(_))), "Cancel closes the form");
+
+        // And from the keyboard: on the buttons, ← chooses Cancel, → Start again, Enter presses it.
+        open(&mut app, None, None);
+        let Some(Modal::NewHarness(mut form)) = app.modal.take() else { panic!() };
+        form.focus = Field::Create;
+        app.modal = Some(Modal::NewHarness(form));
+        press(&mut app, KeyCode::Left);
+        assert!(form_of(&app).cancel_chosen, "← chooses Cancel");
+        press(&mut app, KeyCode::Right);
+        assert!(!form_of(&app).cancel_chosen, "→ chooses Start");
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert!(!form_of(&app).cancel_chosen, "coming back to the buttons, Start is chosen");
+        press(&mut app, KeyCode::Left);
+        let created = app.models_view.sent.len();
+        press(&mut app, KeyCode::Enter);
+        assert!(!matches!(app.modal, Some(Modal::NewHarness(_))), "Enter on Cancel closes the form");
+        assert_eq!(app.models_view.sent.len(), created, "and starts nothing");
     }
 
     /// A machine whose agents ran in scratch folders (a test matrix in /tmp) offered only those, and

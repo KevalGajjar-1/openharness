@@ -90,15 +90,21 @@ pub fn draw(buf: &mut Buffer, body: Rect, form: &mut Form) -> Option<Position> {
     let dropped = form.child.is_some() && form.child_active;
     let message = if form.error.is_empty() || dropped { live_error.as_deref().unwrap_or("") } else { &form.error };
     let errors = error_lines(message, form_w.saturating_sub(4) as usize);
-    let footer_h = if message.is_empty() { 2 } else { errors.len().max(2) as u16 }
-        .min(r.bottom().saturating_sub(fields_y + 1 + u16::from(spacious)).max(1));
-    let footer_y = r.bottom().saturating_sub(footer_h + u16::from(spacious));
+    // The dialog's Start is a button, as every dialog ends with one, on its last line: one blank
+    // row under it, as there is one over the title, its hint or error just above it. (Under two
+    // footer rows and a pad it hung in the middle, three blank rows below it.) The page keeps its
+    // Start row and its footer.
+    let start_y = r.bottom().saturating_sub(1 + u16::from(spacious));
+    let start_button = !page && start_y > fields_y + 2;
+    let footer_h = if start_button {
+        if message.is_empty() { 1 } else { errors.len().max(1) as u16 }.min(start_y.saturating_sub(fields_y + 1).max(1))
+    } else {
+        if message.is_empty() { 2 } else { errors.len().max(2) as u16 }
+            .min(r.bottom().saturating_sub(fields_y + 1 + u16::from(spacious)).max(1))
+    };
+    let footer_y = if start_button { start_y.saturating_sub(footer_h) } else { r.bottom().saturating_sub(footer_h + u16::from(spacious)) };
     form.area = r;
-    // The dialog's Start is a button, as every dialog ends with one, on its own line above the
-    // footer: always in view, however many settings the agent has. (The page keeps its Start row.)
-    let start_button = !page && footer_y > fields_y + 1;
-    let start_y = footer_y.saturating_sub(1);
-    let capacity = if start_button { start_y } else { footer_y }.saturating_sub(fields_y);
+    let capacity = footer_y.saturating_sub(fields_y);
     let mut row: u16 = 0;
     let mut recent_header = None;
     let rows: Vec<_> = form.fields().into_iter().filter(|field| !(start_button && *field == Field::Create)).map(|field| {
@@ -205,7 +211,7 @@ pub fn draw(buf: &mut Buffer, body: Rect, form: &mut Form) -> Option<Position> {
             let (label, _) = form.describe(Field::Create);
             let row = crate::buttons::Row {
                 buttons: vec![crate::buttons::Button { label: "Cancel".into(), key: None }, crate::buttons::Button { label, key: None }],
-                chosen: 1, hint: String::new(),
+                chosen: if form.cancel_chosen { 0 } else { 1 }, hint: String::new(),
             };
             let mut chrome = crate::settings::chrome();
             if form.focus != Field::Create { chrome.selected = base.add_modifier(Modifier::BOLD); }
