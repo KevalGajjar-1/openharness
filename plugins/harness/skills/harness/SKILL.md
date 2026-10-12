@@ -121,5 +121,7 @@ If Harness's MCP server (`harness mcp`) is connected, its tools are the same ver
 
 - At most 8 live harnesses of yours, 20 starts in 10 minutes, and a harness you start may start others, but
   the ones it starts may not. Every limit refuses with a message; do not work around it.
+- A harness you start runs in its agent's auto mode, with the agent's own checks on. `--mode full` (checks and
+  sandbox off) is the person's to choose: from an agent it is refused.
 - Never answer a harness's question or permission prompt yourself, and never type into it some other way.
 - Never ask a harness to publish, deploy, delete or push: those are the person's to ask for.

@@ -430,6 +430,15 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       throw new Error('An agent cannot start a terminal: it could not read it, wait for it or close it afterwards. '
         + 'Run the command in your own shell, or start an agent for the work (harness new codex <project> -- <task>). Nothing was started.')
     }
+    // Full mode turns off the new agent's own permission checks and sandbox (`--dangerously-skip-permissions`,
+    // `--dangerously-bypass-approvals-and-sandbox`). Harness's agent commands run without the person being asked
+    // (engines/facets/hooks.ts HarnessAllowance), so a sandboxed agent could have started one with any task and no one
+    // asked: the review of #1232. Auto, the default, keeps each engine's own checks. The person still chooses full.
+    if (origin && args.mode === 'full') {
+      throw new Error('An agent cannot start a harness in full mode: it would run with its permission checks and sandbox off, '
+        + 'and no one was asked. Start it without --mode (auto, where its own checks run), or ask the person to start it in full mode. '
+        + 'Nothing was started.')
+    }
     let machineId = deps.localMachineId
     let machineLabel = 'this computer'
     let local = true

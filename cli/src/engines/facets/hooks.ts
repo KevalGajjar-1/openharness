@@ -83,12 +83,16 @@ export interface HookSettings {
 }
 
 /**
- * The commands an agent runs to hand work to other agents and read it back (agentClient/commands.ts). Each needs
- * Harness's daemon, so in Codex each one asked to leave the sandbox: four questions for one hand-off (new, wait,
- * show, close), or, in auto mode, a failed sandboxed try first. `harness settings` is not one of them: it changes
- * what agents may do, so it still asks.
+ * The commands an agent runs to hand work to other agents and read it back (agentClient/commands.ts), each with the
+ * MCP tool `harness mcp` runs it as (agentClient/mcp.ts TOOLS). Each needs Harness's daemon, so in Codex each one
+ * asked to leave the sandbox: four questions for one hand-off (new, wait, show, close), or, in auto mode, a failed
+ * sandboxed try first. `harness settings` is not one of them: it changes what agents may do, so it still asks.
  */
-export const HARNESS_AGENT_VERBS = ['ps', 'show', 'wait', 'new', 'close', 'send'] as const
+export const HARNESS_AGENT_TOOLS = {
+  ps: 'harness_list', show: 'harness_read', wait: 'harness_wait', new: 'harness_start', close: 'harness_close', send: 'harness_send',
+} as const
+export type HarnessAgentVerb = keyof typeof HARNESS_AGENT_TOOLS
+export const HARNESS_AGENT_VERBS = Object.keys(HARNESS_AGENT_TOOLS) as HarnessAgentVerb[]
 
 /**
  * Harness's agent commands (HARNESS_AGENT_VERBS) and its MCP tools allowed in the engine's own permission rules, so
@@ -99,14 +103,18 @@ export const HARNESS_AGENT_VERBS = ['ps', 'show', 'wait', 'new', 'close', 'send'
  * two machines, 2026-10-11, one's replies to the lead sat in a local file for hours because Claude Code's permission
  * check refused the command that would have carried them.
  *
- * Either rules added to a list in the settings file (`list`, the person's other rules kept; none is added that the
- * person's own lists named in `unless` hold, which the engine would rank above it anyway), or a rules file of the
- * engine's that Harness owns whole (`file`, in the settings' home).
+ * Either rules added to a list in the settings file (`list`, the person's other rules kept), or a rules file of the
+ * engine's that Harness owns whole (`file`, in the settings' home). In a list, a verb's rules of one kind (`Bash`, `mcp`)
+ * are added together or not at all: not where the person's own lists named in `unless` (deny, ask) hold a rule for the
+ * same command in any spelling, or a broader one (`Bash(harness:*)`). A deny for `harness close` was otherwise met by
+ * an allow for `~/.local/bin/harness close`, which the engine does not count as the same (the review of #1232). A
+ * rule the person deletes from the list comes back at the next start; a deny or ask rule keeps it out.
  *
  * A rule may name `{launcher}` (the `harness` in `~/.local/bin`), `{node}` and `{cli}` (the managed Node and the CLI's
  * bundle), filled in with this computer's paths as it is installed: an agent runs `harness` by its full path too,
  * where a rule for the bare name does not apply. A Codex lead sent that way, so each send asked to leave the sandbox
- * (2026-10-12). `{verb}` makes one rule for each agent verb; `{verbs}` names them all as one list.
+ * (2026-10-12). `{verb}` and `{tool}` make the rule once for each agent verb, naming it or its MCP tool; `{verbs}`
+ * names every verb as one list.
  */
 export type HarnessAllowance =
   | { list: readonly [string, string]; unless?: readonly string[]; rules: readonly string[] }

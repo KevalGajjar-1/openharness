@@ -463,6 +463,20 @@ describe('harness new: the daemon', () => {
     const far = deps(['codex', '--', 'go'], new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'f1', name: 'far' } } : null), { origin: async () => origin })
     expect(await newCommand(far)).toBe(0)
     expect(far.err).toEqual(['its limits start from zero'])
+    // Full mode: refused before anything is asked of the machine. Its commands run unasked, so full mode would turn
+    // the new agent's checks and sandbox off with no one asked; auto, the default, and the other modes are its to ask for.
+    const unasked = new FakeSocket(() => null)
+    const full = deps(['codex', '--mode', 'full', '--json', '--', 'go'], unasked, { origin: async () => origin })
+    expect(await newCommand(full)).toBe(1)
+    expect(JSON.parse(full.out[0]!)).toMatchObject({ ok: false, error: expect.stringMatching(/^An agent cannot start a harness in full mode.*Nothing was started\.$/) })
+    expect(unasked.sent).toEqual([])
+    const planned = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'p1', name: 'planner' } } : null)
+    expect(await newCommand(deps(['codex', '--plan', '--', 'go'], planned, { origin: async () => origin }))).toBe(0)
+    expect(planned.sent[1]!.payload).toMatchObject({ permissionMode: 'plan' })
+    // The person chooses full mode as before.
+    const theirs = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'x1', name: 'x' } } : null)
+    expect(await newCommand(deps(['codex', '--mode', 'full', '--', 'go'], theirs, { origin: async () => null }))).toBe(0)
+    expect(theirs.sent[1]!.payload).toMatchObject({ permissionMode: 'full', bypassPermission: true })
     // A terminal: refused before anything is asked of the machine. No verb of the agent's lists one, so it could
     // never read or close what it started.
     const none = new FakeSocket(() => null)

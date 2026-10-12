@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { env } from '../../config/env.js'
-import { HARNESS_AGENT_VERBS, type HookSettings } from '../facets/hooks.js'
+import { HARNESS_AGENT_TOOLS, HARNESS_AGENT_VERBS, type HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
 import { isMessagesBlock, messagesCommand, writeMessagesHook } from './messagesHook.js'
@@ -69,7 +69,7 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
       throw new HookPreparationHeld('the hook settings do not have the declared object shape')
     }
     let allowed = false
-    if (allow && 'list' in allow) for (const rule of harnessRules(allow.rules)) allowed = withRule(current, allow.list, rule, allow.unless) || allowed
+    if (allow && 'list' in allow) for (const group of harnessRules(allow.rules)) allowed = withRules(current, allow.list, group, allow.unless) || allowed
     if (inbox) {
       const blocks = current.hooks[inbox.event] ?? []
       const ours = blocks.filter(isMessagesBlock)
@@ -98,7 +98,7 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
   }
   if (allow && 'file' in allow) {
     // Each path written as a Starlark string's contents: the file's rules are `prefix_rule(pattern=["…"])`.
-    try { writeRulesFile(join(home, allow.file), harnessRules(allow.rules, (path) => JSON.stringify(path).slice(1, -1)).join('\n')) } catch (err) {
+    try { writeRulesFile(join(home, allow.file), harnessRules(allow.rules, (path) => JSON.stringify(path).slice(1, -1)).flat().join('\n')) } catch (err) {
       console.warn(`[hooks] could not allow Harness's agent commands in ${join(home, allow.file)} (the engine asks before each one):`, err instanceof Error ? err.message : err)
     }
   }
@@ -106,33 +106,54 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
 
 /**
  * The declared rules as this computer has them (facets/hooks.ts HarnessAllowance): its paths in place of
- * `{launcher}`, `{node}` and `{cli}`, one rule for each agent verb in place of `{verb}`, and every verb as one
- * Starlark list in place of `{verbs}`.
+ * `{launcher}`, `{node}` and `{cli}`, every verb as one Starlark list in place of `{verbs}`, and a rule that names
+ * `{verb}` or `{tool}` once for each agent verb. In groups that are added together or not at all: the rules naming no
+ * verb, then each verb's rules of one kind (`Bash(…)`, `mcp__…`), its spellings of the same command.
  */
-function harnessRules(rules: readonly string[], quote: (path: string) => string = (path) => path): string[] {
+function harnessRules(rules: readonly string[], quote: (path: string) => string = (path) => path): string[][] {
   const paths: Record<string, string> = {
     launcher: join(env.HARNESS_BIN_DIR, 'harness'), node: managedNodePath(), cli: join(env.ADAPTER_CLI_DIR, 'cli.js'),
   }
   const verbs = `[${HARNESS_AGENT_VERBS.map((verb) => JSON.stringify(verb)).join(', ')}]`
-  return rules.flatMap((rule) => rule.includes('{verb}') ? HARNESS_AGENT_VERBS.map((verb) => rule.split('{verb}').join(verb)) : [rule])
-    .map((rule) => rule.replace(/\{(launcher|node|cli|verbs)\}/g, (_, name: string) => name === 'verbs' ? verbs : quote(paths[name])))
+  const fill = (rule: string, verb?: keyof typeof HARNESS_AGENT_TOOLS): string => rule.replace(/\{(launcher|node|cli|verbs|verb|tool)\}/g,
+    (_, name: string) => name === 'verbs' ? verbs : name === 'verb' ? verb! : name === 'tool' ? HARNESS_AGENT_TOOLS[verb!] : quote(paths[name]))
+  const perVerb = (rule: string) => /\{(verb|tool)\}/.test(rule)
+  const kind = (rule: string) => /^[A-Za-z]*/.exec(rule)![0]
+  const whole = rules.filter((rule) => !perVerb(rule)).map((rule) => fill(rule))
+  const kinds = [...new Set(rules.filter(perVerb).map(kind))]
+  return [...(whole.length ? [whole] : []),
+    ...HARNESS_AGENT_VERBS.flatMap((verb) => kinds.map((k) => rules.filter((rule) => perVerb(rule) && kind(rule) === k).map((rule) => fill(rule, verb))))]
 }
 
 /**
- * Add `rule` to the list at `[table, list]` (`permissions.allow`), creating what is missing and keeping every
- * other rule. A shape Harness does not know is left as it is: the person's rules are never rewritten to fit.
- * Not where the person put the same rule in one of the `unless` lists (`deny`, `ask`): the engine ranks theirs
- * first anyway, and an allow beside it would only read as Harness overruling them.
+ * Add a group of `rules` to the list at `[table, list]` (`permissions.allow`), creating what is missing and keeping
+ * every other rule. A shape Harness does not know is left as it is: the person's rules are never rewritten to fit.
+ * None of the group is added where one of the person's `unless` lists (`deny`, `ask`) touches any of it.
  */
-function withRule(settings: Settings, [table, list]: readonly [string, string], rule: string, unless: readonly string[] = []): boolean {
+function withRules(settings: Settings, [table, list]: readonly [string, string], rules: readonly string[], unless: readonly string[] = []): boolean {
   const at = settings[table] ?? {}
   if (!at || typeof at !== 'object' || Array.isArray(at)) return false
   const lists = at as Record<string, unknown>
-  const rules = lists[list] ?? []
-  if (!Array.isArray(rules) || rules.includes(rule)) return false
-  if (unless.some((name) => Array.isArray(lists[name]) && (lists[name] as unknown[]).includes(rule))) return false
-  settings[table] = { ...at, [list]: [...rules, rule] }
+  const current = lists[list] ?? []
+  if (!Array.isArray(current)) return false
+  const theirs = unless.flatMap((name) => Array.isArray(lists[name]) ? (lists[name] as unknown[]).filter((rule): rule is string => typeof rule === 'string') : [])
+  if (rules.some((rule) => theirs.some((other) => touches(other, rule)))) return false
+  const missing = rules.filter((rule) => !current.includes(rule))
+  if (!missing.length) return false
+  settings[table] = { ...at, [list]: [...current, ...missing] }
   return true
+}
+
+/**
+ * Whether the person's rule names the same command as ours, a broader one or a narrower one: with the closing
+ * parenthesis and a trailing wildcard left off, one starts with the other. `Bash(harness:*)`, `Bash(harness close
+ * --now)`, `Bash` and `mcp__harness` all touch `Bash(harness close:*)` or `mcp__harness__harness_close`; an unrelated
+ * prefix such as `Bash(har*)` does too, which only leaves an allow out.
+ */
+function touches(theirs: string, ours: string): boolean {
+  const stem = (rule: string) => rule.replace(/\)$/, '').replace(/(:\*|\s*\*)$/, '').trimEnd()
+  const a = stem(theirs), b = stem(ours)
+  return a.length > 0 && (b.startsWith(a) || a.startsWith(b))
 }
 
 /** The head of Harness's rules file: what it is for, and that Harness keeps it. */

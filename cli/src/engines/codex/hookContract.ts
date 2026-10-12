@@ -21,11 +21,15 @@ export const hooks: HookContract = {
     // command in it matches one (codex-rs core/src/exec_policy.rs, `Skip { bypass_sandbox }`, 0.162.1). Codex reads
     // every `.rules` file in its `rules` folder and ranks forbidden over prompt over allow, so the person's own rules
     // still win. A list in a pattern is a choice of words: one rule a spelling covers every verb.
+    // Codex also matches an absolute program path by its last part, so `/any/folder/harness ps` met the `harness`
+    // rule: a script an agent wrote in its own folder ran outside the sandbox (the review of #1232, codex-rs
+    // execpolicy/src/policy.rs `match_host_executable_rules`). `host_executable` keeps that to the launcher, whose path
+    // then meets the `harness` rule and the person's own rules for `harness` alike (codex-cli 0.107 and later).
     allow: {
       file: 'rules/harness.rules',
       rules: [
+        'host_executable(name="harness", paths=["{launcher}"])',
         'prefix_rule(pattern=["harness", {verbs}], decision="allow")',
-        'prefix_rule(pattern=["{launcher}", {verbs}], decision="allow")',
         'prefix_rule(pattern=["{node}", "{cli}", {verbs}], decision="allow")',
       ],
     },

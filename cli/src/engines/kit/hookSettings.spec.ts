@@ -12,7 +12,7 @@ import { messagesCommand } from './messagesHook.js'
 import { managedNodePath } from '../../lib/nodeRuntime.js'
 import * as preparations from './nativeHookFiles.js'
 import { reviewHash, reviewRecords } from './hookReview.js'
-import { HARNESS_AGENT_VERBS } from '../facets/hooks.js'
+import { HARNESS_AGENT_TOOLS, HARNESS_AGENT_VERBS } from '../facets/hooks.js'
 
 // What every case writes and logs is engines/hookInstallers.golden.spec.ts; these are the kit's own edges.
 let root = ''
@@ -152,12 +152,11 @@ it('reports a held malformed file even when an engine declares no malformed-file
   expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{not-json')
 })
 
-/** Every rule Harness adds to Claude Code's allow list on this computer, in order. */
-const claudeRules = (): string[] => [
-  ...HARNESS_AGENT_VERBS.map((verb) => `Bash(harness ${verb}:*)`),
-  ...HARNESS_AGENT_VERBS.map((verb) => `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} ${verb}:*)`),
-  'mcp__harness__*', 'mcp__plugin_harness_harness__*',
-]
+/** Every rule Harness adds to Claude Code's allow list on this computer, in order: each verb's commands, then its tool. */
+const claudeRules = (skip: { bash?: string[]; mcp?: string[] } = {}): string[] => HARNESS_AGENT_VERBS.flatMap((verb) => [
+  ...(skip.bash?.includes(verb) ? [] : [`Bash(harness ${verb}:*)`, `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} ${verb}:*)`]),
+  ...(skip.mcp?.includes(verb) ? [] : [`mcp__harness__${HARNESS_AGENT_TOOLS[verb]}`, `mcp__plugin_harness_harness__${HARNESS_AGENT_TOOLS[verb]}`]),
+])
 
 it('allows Harness\'s agent commands and MCP tools in Claude Code beside the person\'s own rules, once', async () => {
   const home = join(root, 'claude'); mkdirSync(home)
@@ -185,29 +184,34 @@ it('adds the rules an earlier release did not have to a Claude Code list that ha
   expect(allow).toHaveLength(claudeRules().length)
 })
 
-it('never allows what the person denied or asked for in Claude Code, and keeps their rules as they are', async () => {
+it('never allows what the person denied or asked for in Claude Code, in any spelling, and keeps their rules as they are', async () => {
   const home = join(root, 'claude'); mkdirSync(home)
   const file = join(home, claude.settings.file)
-  const permissions = { deny: ['Bash(harness close:*)', 'mcp__harness__*'], ask: ['Bash(harness new:*)'] }
+  // A deny for `harness close` keeps out the launcher's `close` as well, which Claude Code does not count as the same;
+  // an ask for one MCP tool keeps out that tool under both server names; a broader ask keeps out a whole verb.
+  const permissions = { deny: ['Bash(harness close:*)', 'mcp__harness__harness_start'], ask: [`Bash(${join(env.HARNESS_BIN_DIR, 'harness')} new --mode:*)`, 'Bash(harness wai*)'] }
   writeFileSync(file, JSON.stringify({ permissions }))
   expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
   const written = JSON.parse(readFileSync(file, 'utf8')).permissions
   expect(written.deny).toEqual(permissions.deny)
   expect(written.ask).toEqual(permissions.ask)
-  expect(written.allow).toEqual(claudeRules().filter((rule) => !['Bash(harness close:*)', 'mcp__harness__*', 'Bash(harness new:*)'].includes(rule)))
-  expect(written.allow).toContain(`Bash(${join(env.HARNESS_BIN_DIR, 'harness')} close:*)`)
+  expect(written.allow).toEqual(claudeRules({ bash: ['close', 'new', 'wait'], mcp: ['new'] }))
+  expect(written.allow).not.toContain(`Bash(${join(env.HARNESS_BIN_DIR, 'harness')} close:*)`)
+  expect(written.allow).toContain('mcp__harness__harness_close')
+  // Every command of Harness's in one rule, or every tool of a server named harness: nothing of that kind is added.
+  writeFileSync(file, JSON.stringify({ permissions: { ask: ['Bash(harness:*)', 'mcp__harness'] } }))
+  expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+  expect(JSON.parse(readFileSync(file, 'utf8')).permissions).toEqual({ ask: ['Bash(harness:*)', 'mcp__harness'] })
 })
 
-it.each([['permissions as text', 'ask'], ['permissions as a list', ['Bash(ls)']], ['allow as an object', { allow: { Bash: true } }]])(
-  'leaves Claude Code permissions in a shape it does not know as they are: %s', async (_, permissions) => {
-    const home = join(root, 'claude'); mkdirSync(home)
-    const file = join(home, claude.settings.file)
-    writeFileSync(file, JSON.stringify({ permissions }))
-    expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
-    const settings = JSON.parse(readFileSync(file, 'utf8'))
-    expect(settings.permissions).toEqual(permissions)
-    expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(messagesCommand(env.HARNESS_AGENT_MESSAGES_DIR))
-  })
+it('allows only Harness\'s own MCP tools, not every tool of a server that is also called harness', async () => {
+  const home = join(root, 'claude')
+  expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
+  const allow: string[] = JSON.parse(readFileSync(join(home, claude.settings.file), 'utf8')).permissions.allow
+  expect(allow.filter((rule) => rule.startsWith('mcp__'))).toEqual(HARNESS_AGENT_VERBS.flatMap((verb) =>
+    [`mcp__harness__${HARNESS_AGENT_TOOLS[verb]}`, `mcp__plugin_harness_harness__${HARNESS_AGENT_TOOLS[verb]}`]))
+  expect(allow.some((rule) => rule.includes('*') && rule.startsWith('mcp__'))).toBe(false)
+})
 
 /** Harness's Codex rules file on this computer, byte for byte. */
 const codexRulesFile = (): string => {
@@ -215,8 +219,9 @@ const codexRulesFile = (): string => {
   return "# Written by Harness, which rewrites it: do not edit. Its agent commands (harness ps, show, wait, new, close, send)\n"
     + "# need Harness's daemon, which Codex's sandbox cannot reach, so they run outside it without asking. What each\n"
     + '# may do is for Harness to decide: Settings > Agents, and an agent gives work to and closes only what it started.\n'
+    // Only the launcher's path counts as `harness` by its last part: not a `harness` an agent wrote elsewhere.
+    + `host_executable(name="harness", paths=[${JSON.stringify(join(env.HARNESS_BIN_DIR, 'harness'))}])\n`
     + `prefix_rule(pattern=["harness", ${verbs}], decision="allow")\n`
-    + `prefix_rule(pattern=[${JSON.stringify(join(env.HARNESS_BIN_DIR, 'harness'))}, ${verbs}], decision="allow")\n`
     + `prefix_rule(pattern=[${JSON.stringify(managedNodePath())}, ${JSON.stringify(join(env.ADAPTER_CLI_DIR, 'cli.js'))}, ${verbs}], decision="allow")\n`
 }
 

@@ -3,7 +3,7 @@ import { parseNewArgs } from '../lib/newCommand.js'
 import { step } from './commands.js'
 import { describe, expect, it } from 'vitest'
 import { agentOfClient, answer, callerEnv, INSTRUCTIONS, mcpCommand, PROTOCOL_VERSIONS, result, TOOLS, type McpDeps, type Ran } from './mcp.js'
-import { HARNESS_AGENT_VERBS } from '../engines/facets/hooks.js'
+import { HARNESS_AGENT_TOOLS } from '../engines/facets/hooks.js'
 
 /** A runner that records what it was asked and answers [ran]. */
 function runner(ran: Partial<Ran> = {}) {
@@ -51,10 +51,10 @@ describe('harness mcp', () => {
     })
   })
 
-  it('runs only the verbs Harness allows agents to run without asking', () => {
-    // The engines' permission rules (facets/hooks.ts HARNESS_AGENT_VERBS) cover the shell's spelling of every tool.
-    const verbs = TOOLS.map((tool) => tool.argv({ name: 'x', names: ['x'], task: 't', to: 'x', text: 't' }, '/work')[0])
-    expect([...verbs].sort()).toEqual([...HARNESS_AGENT_VERBS].sort())
+  it('runs only the verbs Harness allows agents to run without asking, each as the tool the rules name', () => {
+    // The engines' permission rules (facets/hooks.ts HARNESS_AGENT_TOOLS) allow each verb, and its tool by name.
+    const runs = Object.fromEntries(TOOLS.map((tool) => [tool.argv({ name: 'x', names: ['x'], task: 't', to: 'x', text: 't' }, '/work')[0], tool.name]))
+    expect(runs).toEqual(HARNESS_AGENT_TOOLS)
   })
 
   it('runs each tool as its verb', async () => {

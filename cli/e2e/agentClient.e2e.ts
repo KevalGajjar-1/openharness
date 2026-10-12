@@ -350,20 +350,25 @@ describe('Harness for agents, end to end', () => {
     writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'], deny: ['Bash(harness close:*)'] } }))
     await d.start()
     await until('Harness to allow its commands in Claude Code and Codex', () => existsSync(rules)
-      && readFileSync(settings, 'utf8').includes('mcp__plugin_harness_harness__*'), 30_000)
-    const verbs = ['ps', 'show', 'wait', 'new', 'close', 'send'], launcher = join(d.env.HOME!, '.local', 'bin', 'harness')
-    // The person's deny of `harness close` is theirs: no allow is written beside it, and Claude Code ranks deny first.
+      && readFileSync(settings, 'utf8').includes('mcp__plugin_harness_harness__harness_send'), 30_000)
+    const tools = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait', new: 'harness_start', close: 'harness_close', send: 'harness_send' }
+    const verbs = Object.keys(tools) as Array<keyof typeof tools>, launcher = join(d.env.HOME!, '.local', 'bin', 'harness')
+    // The person's deny of `harness close` is theirs: no allow for it in either spelling (Claude Code does not count the
+    // launcher's path as the same command). Its MCP tool is another tool, and is allowed by name.
     expect(JSON.parse(readFileSync(settings, 'utf8')).permissions).toEqual({
-      allow: ['Bash(npm test:*)', ...verbs.filter((verb) => verb !== 'close').map((verb) => `Bash(harness ${verb}:*)`),
-        ...verbs.map((verb) => `Bash(${launcher} ${verb}:*)`), 'mcp__harness__*', 'mcp__plugin_harness_harness__*'],
+      allow: ['Bash(npm test:*)', ...verbs.flatMap((verb) => [
+        ...(verb === 'close' ? [] : [`Bash(harness ${verb}:*)`, `Bash(${launcher} ${verb}:*)`]),
+        `mcp__harness__${tools[verb]}`, `mcp__plugin_harness_harness__${tools[verb]}`,
+      ])],
       deny: ['Bash(harness close:*)'],
     })
-    // Codex: one allow rule a spelling, so each verb runs outside the sandbox on its first try; a file Harness owns.
+    // Codex: each verb runs outside the sandbox on its first try, by name or by the launcher's path (which Codex reads
+    // as `harness` only for that path); a file Harness owns.
     const list = JSON.stringify(verbs).replace(/,/g, ', ')
-    const written = readFileSync(rules, 'utf8').split('\n').filter((line) => line.startsWith('prefix_rule('))
+    const written = readFileSync(rules, 'utf8').split('\n').filter((line) => line && !line.startsWith('#'))
     expect(written).toHaveLength(3)
-    expect(written[0]).toBe(`prefix_rule(pattern=["harness", ${list}], decision="allow")`)
-    expect(written[1]).toBe(`prefix_rule(pattern=[${JSON.stringify(launcher)}, ${list}], decision="allow")`)
+    expect(written[0]).toBe(`host_executable(name="harness", paths=[${JSON.stringify(launcher)}])`)
+    expect(written[1]).toBe(`prefix_rule(pattern=["harness", ${list}], decision="allow")`)
     expect(written[2]).toMatch(new RegExp(`^prefix_rule\\(pattern=\\["[^"]+", "[^"]+/cli\\.js", ${list.replace(/[[\]]/g, '\\$&')}\\], decision="allow"\\)$`))
     expect(statSync(rules).mode & 0o777).toBe(0o600)
   })

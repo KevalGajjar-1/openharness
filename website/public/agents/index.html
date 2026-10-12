@@ -274,6 +274,8 @@ claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
     <li>An agent may have at most 8 live harnesses it started, and start 20 in 10 minutes; one it started may start
       more, but those may not. Each machine allows 40 live harnesses started by agents. Every limit refuses with a
       message; do not work around it.</li>
+    <li>A harness you start runs in its agent's auto mode, with the agent's own checks on. <code>--mode full</code>
+      (checks and sandbox off) is the person's to choose: from an agent it is refused.</li>
   </ul>
 
   <h2 id="errors">When something fails</h2>
