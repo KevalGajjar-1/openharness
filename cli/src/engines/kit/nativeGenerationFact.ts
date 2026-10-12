@@ -18,6 +18,9 @@ export interface NativeGenerationFactOrigin {
   deliveryId: string
   firedAt: number
   wire: NativeHookWireIdentity
+  /** A matching Stop can consume its existing terminal reservation without a
+   * new registration intake. Retain the original process image proof with it. */
+  identityV1?: string
 }
 export const MAX_NATIVE_GENERATION_FACT_BYTES = 4096
 export const MAX_NATIVE_GENERATIONS = 512
@@ -48,7 +51,9 @@ export function validNativeGenerationFact(value: unknown): value is NativeGenera
   } else {
     if (value.kind !== 'submitted' && value.kind !== 'activity' && value.kind !== 'stopped') return false
     if (value.kind === 'stopped' && !['completed', 'aborted', 'error'].includes(value.status as string)) return false
-    if (source.type !== 'native' || !keys(source, 'deliveryId,firedAt,type,wire') || !deliveryId(source.deliveryId)
+    if (source.type !== 'native' || !keys(source, source.identityV1 === undefined ? 'deliveryId,firedAt,type,wire' : 'deliveryId,firedAt,identityV1,type,wire')
+      || source.identityV1 !== undefined && (value.kind !== 'stopped' || typeof source.identityV1 !== 'string' || !/^[a-f0-9]{64}$/.test(source.identityV1))
+      || !deliveryId(source.deliveryId)
       || !Number.isSafeInteger(source.firedAt) || Number(source.firedAt) <= 0 || !validNativeHookWireIdentity(source.wire)) return false
   }
   return value.id === nativeGenerationFactId(value as unknown as NativeGenerationFactRecord)

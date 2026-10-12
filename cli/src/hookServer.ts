@@ -15,6 +15,10 @@ import { isInteractiveSource } from './engines/kit/storeSource.js'
 import { IdentityReadUnavailable } from './engines/kit/identityScan.js'
 import { createPendingAdmissions, type AdmissionDecision } from './core/engines/pendingAdmission.js'
 import { paneReadIdentity } from './core/transcripts/readIdentity.js'
+import { createNativeGenerationSource } from './core/turns/nativeGenerationSource.js'
+import type { NativeGenerationSource } from './core/turns/nativeGenerations.js'
+import { nativeHookGeneration } from './engines/kit/nativeHookGeneration.js'
+import { nativeGenerationFactState, type NativeGenerationFactRecord } from './engines/kit/nativeGenerationFact.js'
 import { processIdentityKey } from './lib/terminalRuntime.js'
 import { isRecentlyDeleted } from './lib/deletedSessions.js'
 import { registry, type RegisterInput, type RegisteredSession } from './lib/registry.js'
@@ -34,7 +38,7 @@ import { openNativeHookStorage, type NativeHookStorage } from './engines/kit/nat
 import { createNativeHookReplay } from './engines/kit/nativeHookReplay.js'
 import { sendNativeHookRequest } from './engines/kit/nativeHookTransport.js'
 import { bundledProcessImageHelper, invalidateProcessImageHelper } from './lib/nativeProcessImages.js'
-import { inspectNativeHookOrigin, nativeHookOriginCaller } from './engines/kit/nativeHookOrigin.js'
+import { inspectNativeHookOrigin, nativeHookOriginCaller, nativeHookIdentityV1 } from './engines/kit/nativeHookOrigin.js'
 import { nativeHookAcknowledgement, nativeHookWireIdentity, type NativeHookAcknowledgement,
   type NativeHookWireIdentity } from './engines/kit/nativeHookClientProtocol.js'
 import type { NativeHookCaller, NativeHookCallerReader, NativeHookOwner, NativeHookOwnerProof, NativeHookOwnerReader } from './engines/kit/nativeHookOwner.js'
@@ -104,6 +108,9 @@ export interface HookServerHandlers {
   onAdmissionHeld?: (agentId: string, reason: string | undefined) => void
   /** The process's confirmed hook frontier is restored; a held attach can resume. */
   onNativeRecoveryReady?: (entry: RegisteredSession) => void | Promise<void>
+  /** Install generation control before attach can interpret an unlabelled
+   * transcript. Pending admission supplies a barrier, never effect authority. */
+  onNativeGenerations?: (entry: RegisteredSession, source: NativeGenerationSource, pending: boolean) => void
   /** Production supplies precise kernel evidence; fixture-only servers inject their own process resolver. */
   readNativeHookOwner?: NativeHookOwnerReader
   captureNativeHookCaller?: NativeHookCallerReader
@@ -206,7 +213,7 @@ const MAX_HOOK_BODY_BYTES = 256 * 1024
 const HOOK_BODY_FIELDS = new Set([
   'engine', 'launcherId', 'sessionId', 'transcriptPath', 'cwd', 'source', 'tmuxPane', 'title', 'model',
   'cliVersion', 'runtimeHints', 'callerPid', 'hookEvent', 'pluginVersion', 'reason', 'status', 'toolUseId',
-  'toolName', 'input', 'prompt', 'nativeOrigin',
+  'toolName', 'input', 'prompt', 'nativeOrigin', 'generationId',
 ])
 
 function optionalBoundedString(value: unknown, max: number): boolean {
@@ -230,15 +237,17 @@ export function hookFiredAt(req: Pick<http.IncomingMessage, 'headers'>): number 
   return Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
-function validHookBody(value: unknown): value is BoundHookBody {
+function validHookBody(value: unknown, native = false): value is BoundHookBody {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const body = value as Record<string, unknown>
+  if (body.generationId !== undefined && !native) return false
   if (body.prompt !== undefined && (typeof body.prompt !== 'string' || Buffer.byteLength(body.prompt) > 128 * 1024)) return false
   if (!optionalBoundedJson(body.nativeOrigin, 8_192)) return false
   if (Object.keys(body).some((field) => !HOOK_BODY_FIELDS.has(field))) return false
   if (body.engine !== undefined && (typeof body.engine !== 'string' || !ENGINES.includes(body.engine as AgentEngine))) return false
   if (!optionalBoundedString(body.launcherId, 200)
     || !optionalBoundedString(body.sessionId, 200)
+    || !optionalBoundedString(body.generationId, 200)
     || !optionalBoundedString(body.transcriptPath, 4_096)
     || !optionalBoundedString(body.cwd, 4_096)
     || !optionalBoundedString(body.source, 1_000)
@@ -314,6 +323,7 @@ function normalizedRuntimeHints(body: RegisterInput): HookTerminalHint[] {
 
 type BoundHookBody = RegisterInput & {
   nativeOrigin?: unknown
+  generationId?: string
   prompt?: string
   sessionId?: string
   reason?: string
@@ -561,6 +571,7 @@ export function startHookServer(
     // Visible bytes can be the last write of a crashed publisher. Restore
     // control facts only after both copies and the namespace are durable.
     await snapshot.confirm()
+    let verifyNativeOwner = () => {}
     if (handlers.readNativeHookOwner) {
       if (!context.owner) throw new IdentityReadUnavailable('the original native process evidence is unavailable')
       for (const delivery of snapshot.deliveries.values()) {
@@ -570,14 +581,54 @@ export function startHookServer(
       }
       const native = await handlers.readNativeHookOwner(row, context.owner)
       native.verify()
+      verifyNativeOwner = native.verify
     }
     snapshot.verify()
     const owner = registry.byAgent(row.agentId)
     if (closed || !owner?.active || durableKey(owner) !== context.key) {
       throw new IdentityReadUnavailable('the native hook recovery owner changed')
     }
+    for (const fact of snapshot.generations.values()) {
+      if (fact.source.type !== 'native') continue
+      if (fact.source.identityV1 !== undefined) {
+        if (!context.owner || fact.source.identityV1 !== nativeHookIdentityV1(context.owner.evidence)) {
+          throw new IdentityReadUnavailable('the retained generation process image changed')
+        }
+        continue
+      }
+      const intake = snapshot.deliveries.get(fact.source.deliveryId)?.intake
+      if (!intake || JSON.stringify(nativeHookGeneration(intake)) !== JSON.stringify(fact)) {
+        throw new IdentityReadUnavailable('the native generation lost its original registration evidence')
+      }
+    }
+    for (const delivery of snapshot.deliveries.values()) {
+      const fact = nativeHookGeneration(delivery.intake)
+      if (fact && delivery.result && !snapshot.generations.has(fact.id)) {
+        throw new IdentityReadUnavailable('the completed native registration lost its generation fact')
+      }
+    }
+    const pending = !!snapshot.active || [...snapshot.deliveries.values()].some(delivery => !delivery.result)
+    if ([...snapshot.generations.values()].some(fact => fact.agentId === owner.agentId && fact.conversationId === owner.sessionId)) {
+      if (!handlers.onNativeGenerations) throw new IdentityReadUnavailable('native generation control is unavailable')
+      const original = { agentId: owner.agentId, sessionId: owner.sessionId, processKey: context.key }
+      const source = await createNativeGenerationSource({ owner: original, read: async () => snapshot }).read()
+      // Confirmation can outlive a kernel incarnation even while Registry is
+      // unchanged. verify() checks the budget; this final read re-probes it.
+      if (handlers.readNativeHookOwner) verifyNativeOwner = (await handlers.readNativeHookOwner(row, context.owner)).verify
+      const verify = () => {
+        source.verify()
+        verifyNativeOwner()
+        const latest = registry.byAgent(original.agentId)
+        if (closed || !latest?.active || latest.sessionId !== original.sessionId || durableKey(latest) !== original.processKey) {
+          throw new IdentityReadUnavailable('the native generation binding changed')
+        }
+      }
+      verify()
+      handlers.onNativeGenerations(structuredClone(owner), Object.freeze({ ...source, verify }), pending)
+      verify()
+    }
     restoreDeliveryOrder(context, row, snapshot.deliveries)
-    ready(context, !snapshot.active && [...snapshot.deliveries.values()].every(delivery => delivery.result))
+    ready(context, !pending)
     return snapshot
     } finally { context.confirming-- }
   }
@@ -635,6 +686,7 @@ export function startHookServer(
     try {
       const snapshots: Array<Awaited<ReturnType<Journal['snapshot']>>> = []
       const matches: Array<{ key: string; delivery: NativeHookDelivery }> = []
+      const generationMatches: Array<{ key: string; fact: NativeGenerationFactRecord }> = []
       for (const [key, journal] of journals) {
         check()
         const snapshot = await journal.snapshot()
@@ -642,8 +694,30 @@ export function startHookServer(
         snapshots.push(snapshot)
         const delivery = snapshot.deliveries.get(id)
         if (delivery) matches.push({ key, delivery })
+        for (const fact of snapshot.generations.values()) {
+          if (fact.source.type === 'native' && fact.source.deliveryId === id && fact.source.wire.path === wire.path) {
+            generationMatches.push({ key, fact })
+          }
+        }
       }
-      if (!matches.length) return false
+      if (new Set([...matches.map(match => match.key), ...generationMatches.map(match => match.key)]).size > 1) {
+        throw new IdentityReadUnavailable('native receipt has ambiguous original namespaces')
+      }
+      if (!matches.length) {
+        if (!generationMatches.length) return false
+        if (generationMatches.length !== 1) throw new IdentityReadUnavailable('native generation receipt has ambiguous namespaces')
+        const { key, fact } = generationMatches[0]!
+        if (fact.kind !== 'stopped' || !fact.source.identityV1) throw new IdentityReadUnavailable('native generation receipt lacks original process evidence')
+        const process = [...origin.ancestry, ...(origin.runtime ? [origin.runtime.process] : [])]
+          .find(row => `${origin.boot}\u0000${engine}\u0000${row.pid}\u0000${row.birth}` === key)
+        if (!process || process.identityV1 !== fact.source.identityV1) throw new IdentityReadUnavailable('native generation receipt has another original process')
+        const expected = nativeHookGeneration({ id, firedAt, wire, agentId: fact.agentId,
+          conversationId: body.sessionId ?? '', payload: { ...body } }, fact.source.identityV1)
+        snapshots.forEach(snapshot => snapshot.verify()); check()
+        if (JSON.stringify(expected) !== JSON.stringify(fact)) answer(409, { pending: false, error: 'HOOK_DELIVERY_CONFLICT' })
+        else answer(200, { ...receipt, outcome: 'owned' })
+        return true
+      }
       if (matches.length !== 1) throw new IdentityReadUnavailable('native receipt has ambiguous original namespaces')
       const { key, delivery } = matches[0]!, intake = delivery.intake
       const fingerprint = createHash('sha256').update(JSON.stringify([body, firedAt, wire])).digest('hex')
@@ -663,6 +737,43 @@ export function startHookServer(
       answer(200, receipt)
       return true
     } finally { for (const journal of journals.values()) journal.close() }
+  }
+  /** An already-running generation reserved terminal space before execution.
+   * Its matching Stop must not depend on a fresh normal registration slot. */
+  const retainBoundGenerationStop = async (body: BoundHookBody, id: string, firedAt: number, wire: NativeHookWireIdentity,
+    answer: (status: number, reply: unknown) => void, receipt: NativeHookAcknowledgement,
+  ): Promise<boolean> => {
+    if (body.engine !== 'cursor' || body.hookEvent !== 'stop' || body.generationId === undefined) return false
+    let row: RegisteredSession | null = null
+    try {
+      const caller = await captureCaller(body)
+      row = await verifiedBoundMutation(body, handlers, caller)
+      if (!row) return false
+      const native = await handlers.readNativeHookOwner?.(row, caller?.owner(row))
+      if (!native) throw new IdentityReadUnavailable('the original generation process evidence is unavailable')
+      const context = await durableProcess(row, native), snapshot = await confirmedSnapshot(context, row)
+      // A retry must complete its original intake representation. A later activity
+      // fact cannot turn that same delivery into a different direct receipt.
+      if (snapshot.deliveries.has(id)) return false
+      const state = nativeGenerationFactState(snapshot.generations.values()).get(JSON.stringify([row.agentId, row.sessionId, body.generationId]))
+      if (state !== 'running') return false
+      const fact = nativeHookGeneration({ id, firedAt, wire, agentId: row.agentId,
+        conversationId: row.sessionId, payload: { ...body } }, nativeHookIdentityV1(native.evidence))!
+      const fresh = await handlers.readNativeHookOwner!(row, native)
+      fresh.verify(); snapshot.verify()
+      await context.journal.recordGeneration(fact)
+      const confirmed = await confirmedSnapshot(context, row)
+      if (JSON.stringify(confirmed.generations.get(fact.id)) !== JSON.stringify(fact)) {
+        throw new IdentityReadUnavailable('the matching native Stop receipt disappeared')
+      }
+      confirmed.verify()
+      answer(200, { ...receipt, outcome: 'owned' })
+      return true
+    } catch (error) {
+      const detail = `Waiting for matching native Stop ownership: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024)
+      if (row) recoveryHeld(row.agentId, detail)
+      answer(202, { pending: false, retry: true, detail }); return true
+    }
   }
   const admitStart = async (body: BoundHookBody, native: { firedAt?: number; deliveryId?: string | string[];
     recovery?: { agentId: string; key: string; owner?: NativeHookOwner }; wire?: NativeHookWireIdentity },
@@ -715,7 +826,8 @@ export function startHookServer(
     const deliveryHeader = native.deliveryId
     const nativeDeliveryId = typeof deliveryHeader === 'string' && /^[a-zA-Z0-9_-]{16,96}$/.test(deliveryHeader) ? deliveryHeader : undefined
     const deliveryId = nativeDeliveryId ?? randomUUID()
-    const carriesStop = !!nativeDeliveryId && (engine === 'cursor' && body.hookEvent === 'stop'
+    const carriesGeneration = native.wire !== undefined && body.generationId !== undefined
+    const carriesStop = !carriesGeneration && !!nativeDeliveryId && (engine === 'cursor' && body.hookEvent === 'stop'
       || engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure'))
     const stopProvenance = (value: BoundHookBody, firedAt: number | undefined) => JSON.stringify([
       value.engine, value.sessionId, value.callerPid, normalizedRuntimeHints(value), firedAt, value.status, value.nativeOrigin,
@@ -834,6 +946,10 @@ export function startHookServer(
         ...(context.owner ? { owner: context.owner } : {}),
         ...(native.wire ? { wire: native.wire } : {}),
         payload: { ...originalBody } })
+      // Retain the native observation before any binding effect or attach. A
+      // crash between these writes leaves an ordinary pending intake to recover.
+      const generation = nativeHookGeneration(durable.intake)
+      if (generation) await context.journal.recordGeneration(generation)
       ownership = 'owned'
       verifyOwnership = () => { snapshot.verifyAuthority(); durable.verify() }
     } catch (error) {
@@ -860,12 +976,31 @@ export function startHookServer(
       else answer(409, { pending: false, error: 'HOOK_DELIVERY_CONFLICT' })
       return
     }
+    try {
+      const frontier = await context.journal.snapshot()
+      await frontier.confirm(); frontier.verify()
+      for (const [id, delivery] of frontier.deliveries) {
+        if (id === deliveryId) break
+        if (delivery.result || delivery.intake.conversationId !== (body.sessionId ?? '') || history.records.has(id)) continue
+        // A crash can leave an older intake without its in-memory queue job.
+        // Queueing its successor first would deadlock equal-time retries: the
+        // queue waits on the journal predecessor that sits behind it. Recovery
+        // must enqueue that original predecessor before this owned successor.
+        recovered.delete(context.key)
+        recoveryHeld(processAgent.agentId, 'Waiting for the earlier retained native hook to enter admission.')
+        answer(200, { pending: true }); return
+      }
+    } catch (error) {
+      recovered.delete(context.key)
+      recoveryHeld(processAgent.agentId, `Waiting for retained native hook order: ${error instanceof Error ? error.message : 'journal unavailable'}`.slice(0, 1024))
+      answer(200, { pending: true }); return
+    }
     let inspectionIdentity: string | undefined
     let prepared: RegisterInput = body
     let preparedRegistration: ReturnType<typeof registry.prepareRegistration> = null
     let committed: ReturnType<typeof registry.register> = null
     let claim: NativeHookClaim | undefined, notified = false
-    let verifyNativeOwner = () => {}
+    let verifyNativeOwner = () => {}, verifyGeneration = () => {}
     let settled = false, stopRetained = false, stopUnmatched = false, stopInvocationClaimed = false
     const stopCurrent = processAgent.sessionId === body.sessionId && stopScope === scope ? stopWitness : undefined
     let followupFingerprint: string | undefined, committedIdentity: string | undefined
@@ -957,6 +1092,7 @@ export function startHookServer(
           throw new IdentityReadUnavailable('the native hook owner changed before binding')
         }
         claim!.verify()
+        verifyGeneration()
         verifyNativeOwner()
       })
       if (stopCurrent && !stopCurrent()) stopInvocationClaimed = true
@@ -1007,6 +1143,15 @@ export function startHookServer(
           if (changed()) return refresh
           const snapshot = await confirmedSnapshot(context, processAgent)
           if (changed()) return refresh
+          const generation = nativeHookGeneration(durable.intake)
+          if (generation) {
+            if (JSON.stringify(snapshot.generations.get(generation.id)) !== JSON.stringify(generation)) {
+              return { kind: 'hold', reason: 'Waiting for the original native generation fact before binding.' }
+            }
+            // Our own claim appends to the frontier. Keep the original record
+            // proofs as well as the exclusive claim through the actual bind.
+            verifyGeneration = snapshot.verifyRecords.bind(snapshot)
+          }
           if (claim && decision.kind === 'reject') {
             return { kind: 'hold', reason: 'Waiting for the original native hook effect to be reconciled before its intent can change.' }
           }
@@ -1109,7 +1254,7 @@ export function startHookServer(
       const pending = [...snapshot.deliveries.values()].find(delivery => !delivery.result
         && !admissionReceipts.get(delivery.intake.agentId)?.records.has(delivery.intake.id))
       if (!pending) { recovered.add(context.key); return }
-      if (!validHookBody(pending.intake.payload)) throw new IdentityReadUnavailable('the retained native hook body is invalid')
+      if (!validHookBody(pending.intake.payload, !!pending.intake.wire)) throw new IdentityReadUnavailable('the retained native hook body is invalid')
       await admitStart(structuredClone(pending.intake.payload), { deliveryId: pending.intake.id, firedAt: pending.intake.firedAt,
         ...(pending.intake.wire ? { wire: pending.intake.wire } : {}),
         recovery: { agentId: pending.intake.agentId, key: context.key, owner: pending.intake.owner } }, () => {})
@@ -1242,7 +1387,7 @@ export function startHookServer(
         let body: BoundHookBody
         try {
           const parsed: unknown = JSON.parse(raw)
-          if (!validHookBody(parsed) || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,96}$/.test(id)
+          if (!validHookBody(parsed, true) || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,96}$/.test(id)
             || typeof fired !== 'string' || !/^[1-9]\d{0,15}$/.test(fired) || !firedAt) throw Error('invalid native envelope')
           const origin = inspectNativeHookOrigin(parsed.nativeOrigin)
           if (origin.callerPid !== parsed.callerPid) throw Error('native caller changed')
@@ -1259,10 +1404,21 @@ export function startHookServer(
           json(202, { pending: false, retry: true,
             detail: `Waiting for native receipt recovery: ${error instanceof Error ? error.message : 'storage unavailable'}`.slice(0, 1024) }); return
         }
-        if (body.engine === 'cursor' && body.hookEvent === 'stop'
+        if (body.generationId !== undefined) {
+          try {
+            nativeHookGeneration({ id: delivery.id, firedAt: delivery.firedAt, wire,
+              agentId: 'native-generation-validation', conversationId: body.sessionId ?? '', payload: { ...body } })
+            if (!handlers.onNativeGenerations) throw Error('Native generation control is unavailable.')
+          } catch (error) {
+            json(202, { pending: false, retry: true, detail: error instanceof Error ? error.message : 'Waiting for native generation evidence.' }); return
+          }
+        }
+        if (body.engine === 'cursor' && body.hookEvent === 'stop' && body.generationId === undefined
           || body.engine === 'commandcode' && (body.hookEvent === 'Stop' || body.hookEvent === 'StopFailure')) {
           json(202, { pending: false, retry: true, detail: 'Waiting for durable linked Stop admission.' }); return
         }
+        if (await retainBoundGenerationStop(body, delivery.id, delivery.firedAt, wire, json,
+          nativeHookAcknowledgement(delivery, phase, 'owned'))) return
         await admitStart(body, { deliveryId: delivery.id, firedAt: delivery.firedAt, wire }, (status, reply, ownership) => {
           if (ownership && (status >= 200 && status < 300 || ownership === 'complete' && status === 400)) {
             json(200, nativeHookAcknowledgement(delivery, phase, ownership))

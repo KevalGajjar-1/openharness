@@ -87,6 +87,7 @@ beforeAll(() => {
         } else if (operation === 'pause') { pauseKind = 'claim'
         } else if (operation === 'pause-ack') { pauseKind = 'ack'
         } else if (operation === 'pause-generation') { pauseKind = 'generation'
+        } else if (operation === 'pause-intake') { pauseKind = 'intake'
         } else if (operation === 'pause-confirmation') { pauseNextSync = true
         } else if (operation === 'consume-normal') {
           for (let index = 0; index < value; index++) { const lease = await pool.acquire(); await lease.close() }
@@ -158,6 +159,41 @@ async function accepted(writer: Worker, operation: string, value?: unknown) {
   expect(reply, reply.error).toMatchObject({ ok: true })
   return reply.value
 }
+
+it.each(['intake', 'direct'])('keeps the %s representation exclusive while another core sees its unfinished publication', async first => {
+  const a = worker(), b = worker(), body = intake(), fact = generationFact('stopped', body.id)
+  if (fact.kind !== 'stopped') throw Error('fixture Stop')
+  fact.source.identityV1 = createHash('sha256').update('fixture original image').digest('hex')
+  await accepted(a, 'snapshot')
+  await accepted(a, first === 'intake' ? 'pause-intake' : 'pause-generation')
+  const paused = a.event('paused')
+  const publishing = a.call(first === 'intake' ? 'retain' : 'generation', first === 'intake' ? body : fact)
+  await paused
+  const expected = first === 'intake' ? 'already has an original intake' : 'already has a direct receipt'
+  const operation = first === 'intake' ? 'generation' : 'retain', input = first === 'intake' ? fact : body
+  expect(await b.call(operation, input)).toMatchObject({ ok: false, error: expect.stringContaining(expected) })
+  await accepted(a, 'release')
+  expect(await publishing).toMatchObject({ ok: true })
+  expect(await b.call(operation, input)).toMatchObject({ ok: false, error: expect.stringContaining(expected) })
+  expect((await accepted(b, 'snapshot')).deliveries).toHaveLength(first === 'intake' ? 1 : 0)
+  expect((await accepted(b, 'generation-snapshot')).generations).toHaveLength(first === 'direct' ? 1 : 0)
+}, 30_000)
+
+it.each(['intake', 'direct'])('revokes an inspected %s representation if another core publishes first', async delayed => {
+  const a = worker(), b = worker(), body = intake(), fact = generationFact('stopped', body.id)
+  if (fact.kind !== 'stopped') throw Error('fixture Stop')
+  fact.source.identityV1 = createHash('sha256').update('fixture original image').digest('hex')
+  await accepted(a, 'snapshot'); await accepted(b, 'snapshot')
+  await accepted(a, 'pause-confirmation')
+  const paused = a.event('paused')
+  const publishing = a.call(delayed === 'intake' ? 'retain' : 'generation', delayed === 'intake' ? body : fact)
+  await paused
+  await accepted(b, delayed === 'intake' ? 'generation' : 'retain', delayed === 'intake' ? fact : body)
+  await accepted(a, 'release')
+  expect(await publishing).toMatchObject({ ok: false })
+  expect((await accepted(b, 'snapshot')).deliveries).toHaveLength(delayed === 'direct' ? 1 : 0)
+  expect((await accepted(b, 'generation-snapshot')).generations).toHaveLength(delayed === 'intake' ? 1 : 0)
+}, 30_000)
 
 it.each([false, true])('grants one effect to separate cores with distinct/same IDs (same=%s)', async same => {
   const a = worker(), b = worker(), first = intake(), second = same ? first : intake('fixture-delivery-0002', 'agent-two')

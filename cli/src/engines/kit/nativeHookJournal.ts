@@ -567,6 +567,9 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const terminal = fact.kind === 'stopped' || fact.kind === 'cancelled'
       return operation('terminal', async () => {
         const before = await snapshot(), known = before.generations.get(fact.id)
+        if (fact.source.type === 'native' && fact.source.identityV1 !== undefined && before.deliveries.has(fact.source.deliveryId)) {
+          held('the native Stop already has an original intake')
+        }
         if (known) {
           if (JSON.stringify(known) !== JSON.stringify(fact)) held('NATIVE_GENERATION_CONFLICT')
           await before.confirm(); before.verify(); return
@@ -598,6 +601,10 @@ function createNativeHookLog({ directory, processKey, current = () => true,
       const intake = structuredClone(input)
       if (!valid(intake)) held('invalid native delivery')
       const before = await snapshot(), known = before.deliveries.get(intake.id)
+      if ([...before.generations.values()].some(fact => fact.source.type === 'native'
+        && fact.source.identityV1 !== undefined && fact.source.deliveryId === intake.id)) {
+        held('the native Stop already has a direct receipt')
+      }
       if (known) {
         if (known.intake.fingerprint !== intake.fingerprint || kind === 'outbox' && JSON.stringify(known.intake) !== JSON.stringify(intake)) held('HOOK_DELIVERY_CONFLICT')
         if (known.intake.agentId !== intake.agentId) held('the native process has a different agent owner')

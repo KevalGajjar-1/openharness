@@ -84,6 +84,22 @@ it('reserves Stop capacity only for actual execution, not rejected submissions',
   await expect(owner.recordGeneration(generationFact('activity', 'fixture-activity-second', 'generation-two'))).resolves.toBeUndefined()
 })
 
+it.each(['intake', 'direct'])('keeps the original %s representation exclusive across generation retries', async first => {
+  const body = intake(), fact = generationFact('stopped', body.id)
+  if (fact.kind !== 'stopped') throw Error('fixture Stop')
+  fact.source.identityV1 = hash('fixture original image')
+  const owner = journal()
+  if (first === 'intake') {
+    await owner.retain(body)
+    await expect(journal().recordGeneration(fact)).rejects.toThrow('already has an original intake')
+    expect((await journal().snapshot()).generations.size).toBe(0)
+  } else {
+    await owner.recordGeneration(fact)
+    await expect(journal().retain(body)).rejects.toThrow('already has a direct receipt')
+    expect((await journal().snapshot()).deliveries.size).toBe(0)
+  }
+})
+
 it('shares record and byte reservations between legacy effects and native generations', async () => {
   const owner = journal({ maxRecords: 7, maxBytes: 90_000 }), body = intake()
   await owner.retain(body)

@@ -605,6 +605,49 @@ fallback. Preserve the original UUID, time, body and caller across loading, and
 bound all work by the hook deadline. These requirements received independent
 design review; they are not yet a completed client implementation.
 
+## Generation admission and terminal capacity
+
+The October 12 HTTP integration retains a Cursor generation observation before
+the original registration can claim or bind. The eager generation source is
+installed before the recovery barrier releases attach. Its effect proof covers
+the complete retained frontier, the original conversation and process, and a
+fresh native process read after asynchronous confirmation. An unavailable
+consumer or incomplete provenance keeps admission held.
+
+A matching Stop for an already-running generation uses the terminal space that
+execution reserved. It does not require a new ordinary intake or registration
+claim. Its minimal receipt includes the original process-image digest and exact
+wire identity; duplicate receipt lookup remains read-only after the engine exits.
+The ordinary and direct representations are mutually exclusive under the
+journal's exclusive append boundary. A retry with an existing intake must finish
+that representation even if later activity made the generation running.
+
+The crash regression exposed a queue deadlock: an interrupted original Stop had
+no in-memory admission job; newer activity queued ahead of it, then waited on
+that same durable predecessor. Equal-time retries could never release the queue.
+Newer intake now remains owned but unqueued until the original predecessor has
+an admission job. Recovery and the original retry can restore that job without
+replaying a completed effect. Separate-process tests cover competing receipt
+formats, partial publication and confirmation races.
+
+Receipt `20261012T011733.111620Z-15321` passes types and all 321 cases in thirteen
+files, including four unchanged goldens. Its mutation aggregate failed: eighteen
+mutants were caught and two initially survived. The claim proof is protected by
+both the server and the journal; removing both fences is caught by assertion in
+`20261012T012650.657955Z-52930`. The retry fixture initially bypassed Registry's
+session index. Binding through its real publication API makes the isolated HTTP
+guard deletion fail the required completed-receipt assertion. Types, the selected
+HTTP/mapper baselines and that corrected mutant pass in
+`20261012T013401.203035Z-80921`. Together these establish all twenty mutation
+oracles, not an uninterrupted passing mutation run. Earlier fixture failures and
+the mutation-runner syntax error remain failed receipts.
+
+Independent review approved this HTTP/journal scope over `a1eb2b74d`, including
+the queue recovery and symmetric format exclusion. Controller, input, Cancel,
+task, response and recap effects remain outside this approval. The production
+client still needs the versioned protocol and the actual Cursor acceptance
+remains a landing blocker. No merge or release occurred at this checkpoint.
+
 ## Ownership before acknowledgement
 
 Core must durably retain the immutable native body, delivery ID, native time,
