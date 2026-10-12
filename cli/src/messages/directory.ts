@@ -9,7 +9,8 @@
  */
 
 export interface Member { machineId: string; agentId: string }
-export interface DirectoryTab { id: string; name: string; enabled: boolean; panes: Member[] }
+/** `named`: the person named the tab; any other is labelled by the windows themselves (backend lib/agentMessages.ts). */
+export interface DirectoryTab { id: string; name: string; named: boolean; enabled: boolean; panes: Member[] }
 export interface Directory { revision: number; machines: ReadonlyMap<string, string | null>; tabs: DirectoryTab[] }
 
 export const POLL_MS = 15_000
@@ -35,7 +36,8 @@ export function parseDirectory(value: unknown): Directory | null {
       const machineId = str(p?.machineId, 128), agentId = str(p?.agentId, 160)
       return machineId && agentId ? [{ machineId, agentId }] : []
     })
-    tabs.push({ id, name, enabled: t.enabled === true, panes })
+    // A backend from before `named` says nothing: then only the window's own default name is no name.
+    tabs.push({ id, name, named: typeof t.named === 'boolean' ? t.named : name !== 'New Tab', enabled: t.enabled === true, panes })
   }
   return { revision: typeof v.revision === 'number' ? v.revision : 0, machines, tabs }
 }

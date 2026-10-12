@@ -13,6 +13,8 @@ afterEach(() => rmSync(dataDir, { recursive: true, force: true }))
 const place = { cwd: null, read: () => null }
 const claudeLine = ['--settings', JSON.stringify({ attribution: { pr: `🤖 Generated with [Claude Code](https://claude.com/claude-code)\n${AGENT_ATTRIBUTION_LINE}` } })]
 const claudeTold = ['--append-system-prompt', HARNESS_INSTRUCTIONS]
+/** Codex is told besides that its sandbox cannot reach Harness (engines/codex/launch.ts). */
+const CODEX_TOLD = `${HARNESS_INSTRUCTIONS} Codex's sandbox cannot reach Harness: run each harness command outside it, with escalated permissions.`
 /** The pull request line told as an instruction too: a setting alone was dropped once a task spelled out the body. */
 const claudePrTold = expect.stringContaining(`its body must include this exact line once, near the end and after any other attribution line: \`${AGENT_ATTRIBUTION_LINE}\``)
 const codexValue = (...texts: string[]) => ['-c', `developer_instructions=${JSON.stringify(texts.join('\n\n'))}`]
@@ -33,9 +35,9 @@ describe('what Harness tells an agent as it starts', () => {
     const instruction = expect.stringContaining(AGENT_ATTRIBUTION_LINE)
     const both = agentLaunchArgs('codex', 'agent', place, dataDir)
     expect(both).toHaveLength(2)
-    expect(JSON.parse(both[1].slice('developer_instructions='.length))).toEqual(expect.stringMatching(new RegExp(`^${HARNESS_INSTRUCTIONS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n\nWhen you create or update a pull request`)))
+    expect(JSON.parse(both[1].slice('developer_instructions='.length))).toEqual(expect.stringMatching(new RegExp(`^${CODEX_TOLD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n\nWhen you create or update a pull request`)))
     expect(both[1]).toEqual(instruction)
-    expect(agentLaunchArgs('codex', null, place, dataDir)).toEqual(codexValue(HARNESS_INSTRUCTIONS))
+    expect(agentLaunchArgs('codex', null, place, dataDir)).toEqual(codexValue(CODEX_TOLD))
     // An engine with no way to be told: nothing.
     expect(agentLaunchArgs('opencode', 'agent', place, dataDir)).toEqual([])
   })
@@ -60,8 +62,8 @@ describe('what Harness tells an agent as it starts', () => {
 
   it('keeps the person\'s own Codex instructions first, and says nothing they already say', () => {
     const theirs = { cwd: null, read: (path: string) => path.endsWith('config.toml') ? 'developer_instructions = "Be brief."\n' : null }
-    expect(agentLaunchArgs('codex', null, theirs, dataDir)).toEqual(codexValue('Be brief.', HARNESS_INSTRUCTIONS))
-    const said = { cwd: null, read: (path: string) => path.endsWith('config.toml') ? `developer_instructions = ${JSON.stringify(HARNESS_INSTRUCTIONS)}\n` : null }
+    expect(agentLaunchArgs('codex', null, theirs, dataDir)).toEqual(codexValue('Be brief.', CODEX_TOLD))
+    const said = { cwd: null, read: (path: string) => path.endsWith('config.toml') ? `developer_instructions = ${JSON.stringify(CODEX_TOLD)}\n` : null }
     expect(agentLaunchArgs('codex', null, said, dataDir)).toEqual([])
   })
 

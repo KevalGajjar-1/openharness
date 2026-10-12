@@ -54,6 +54,9 @@ export interface MailboxDeps {
   refused(delivery: LocalDelivery): string | null
   /** Whether who may message whom is known yet: until it is, nothing is typed and nothing refused. */
   ready(): boolean
+  /** Why a delivery may never be made, whatever the tabs say, or null: asked as the mailbox starts, before the
+   *  directory is read and before anything goes back to a hook, which takes what waits in its inbox on its own. */
+  forbidden?(delivery: LocalDelivery): string | null
   /** The text an agent reads for a delivery: the message, and the roster note when it is new to the agent. */
   text(delivery: LocalDelivery, message: Message): string
   /** A delivery changed; the store is saved after. */
@@ -94,6 +97,10 @@ export class Mailbox {
   start(): void {
     if (this.started) return
     this.started = true
+    for (const delivery of this.local) {
+      const forbidden = delivery.state === 'queued' ? this.deps.forbidden?.(delivery) : null
+      if (forbidden) this.fail(delivery, forbidden)
+    }
     this.takeBackAttempts()
     // Anything left taken back from a hook goes back to it, unless its delivery is over.
     for (const [pane, key] of this.deps.inbox.reclaimed()) {

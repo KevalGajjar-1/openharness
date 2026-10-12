@@ -1,15 +1,15 @@
 /**
  * Harness for agents on the real daemon (docs/design/2026-10-11-agent-client.md): an agent, from its own pane, runs
  * the `harness` verbs as it would through its shell tool. It lists the harnesses, starts one with a task, waits for
- * it, reads its answer, messages it without any tab having Agent Messages on, and closes it; it may not close one it
- * did not start. The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
+ * it, reads its answer, and closes it; it may not close one it did not start. Neither may message the other while no
+ * tab has Agent Messages on (owner, 2026-10-11: Agent Messages off means off). The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
  * requests it opens: in the arguments its engine is launched with, each launch, until the person turns it off.
  *
  * Signed in to the fake backend, which answers the account's tabs: none has Agent Messages on.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient } from './harness/client.js'
@@ -72,7 +72,7 @@ describe('Harness for agents, end to end', () => {
     await backend?.close(); backend = undefined
   })
 
-  it('an agent sees, starts, waits for, reads, messages and closes a harness of its own', async () => {
+  it('an agent sees, starts, waits for, reads and closes a harness of its own, and may not message it with Agent Messages off', async () => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
@@ -103,13 +103,12 @@ describe('Harness for agents, end to end', () => {
     expect(ps.out).toMatch(/^You are "lead" \(/)
     expect(ps.out).toMatch(/\nlead +Claude Code +\w+ +person \(you\)/)
 
-    // It starts a harness with a task, which reads who sent it.
-    const kidDir = join(d.projectsDir, 'kid')
-    mkdirSync(kidDir, { recursive: true })
-    const started = await run('new', 'claude', kidDir, '--name', 'kid', '--', 'hello kid')
+    // It starts a harness with a task, which reads who sent it, in a project Harness makes for it.
+    const started = await run('new', 'claude', 'kid', '--name', 'kid', '--', 'hello kid')
     expect(started.code, started.err).toBe(0)
-    expect(started.out).toContain('Created kid on this computer')
+    expect(started.out).toContain(`Created kid on this computer in ${join(d.env.HOME!, 'harnesses', 'kid')}.`)
     expect(started.out).toContain('Read it: harness show kid · wait for it: harness wait kid')
+    expect(started.out).not.toContain('harness send')
     const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: lead.id, name: 'lead' }), child: expect.objectContaining({ name: 'kid' }) })])
 
@@ -122,17 +121,22 @@ describe('Harness for agents, end to end', () => {
     expect(shown.out).toContain('kid · Claude Code · ')
     expect(shown.out).toContain('· idle · started by you')
     expect(shown.out).toContain('asked: [from lead · Claude Code · ')
-    expect(shown.out).toContain('the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]')
+    expect(shown.out).toContain('the harness that started you. It reads your answer itself.]')
+    expect(shown.out).not.toContain('harness send')
     expect(shown.out).toContain('hello kid')
     expect((await run('ps')).out).toMatch(/\nkid +Claude Code +\w+ +you /)
 
-    // No tab has Agent Messages on, and still the two message each other.
+    // No tab has Agent Messages on: neither messages the other, either way, as for any two harnesses. Since #1180 the
+    // two messaged each other with no tab, and the owner found agents talking before turning Agent Messages on.
+    const off = 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab'
     const sent = await run('send', 'kid', 'Also check the footer.')
-    expect(sent.code, sent.out + sent.err).toBe(0)
-    expect(sent.out).toMatch(/→ kid: (queued|delivered)/)
+    expect(sent.code, sent.out + sent.err).toBe(1)
+    expect(sent.err).toContain(off)
     const kid = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'kid')!
     const back = await harness(d, String(kid.tmuxPane), ['send', 'lead', 'Footer checked.'])
-    expect(back.code, back.out + back.err).toBe(0)
+    expect(back.code, back.out + back.err).toBe(1)
+    expect(back.err).toContain(off)
+    expect((await harness(d, String(kid.tmuxPane), ['send'])).err).toContain(off)
 
     // It closes what it started, and only that; the harness it started may not close it.
     const own = await run('close', 'lead')
@@ -191,9 +195,7 @@ describe('Harness for agents, end to end', () => {
     const ps = await run('ps')
     expect(ps.code, ps.err).toBe(0)
     expect(ps.out.split('\n')[0]).toBe('You are Claude Code, outside Harness.')
-    const dir = join(d.projectsDir, 'helper')
-    mkdirSync(dir, { recursive: true })
-    const started = await run('new', 'claude', dir, '--name', 'helper', '--', 'check it')
+    const started = await run('new', 'claude', 'helper', '--name', 'helper', '--', 'check it')
     expect(started.code, started.out + started.err).toBe(0)
     // Nothing can message an agent with no pane: no `send` in what to do next.
     expect(started.out).toContain('Read it: harness show helper · wait for it: harness wait helper')
@@ -238,11 +240,16 @@ describe('Harness for agents, end to end', () => {
     const tools = (await server.request('tools/list')).result.tools.map((t: { name: string }) => t.name)
     expect(tools).toEqual(['harness_list', 'harness_start', 'harness_wait', 'harness_read', 'harness_close'])
 
-    const dir = join(d.projectsDir, 'mcp-kid')
-    mkdirSync(dir, { recursive: true })
-    const started = await server.call('harness_start', { task: 'hello from mcp', folder: dir, name: 'mcpkid' })
+    // An empty folder of its own: refused, with the project it can ask for instead.
+    const scratch = join(d.root, 'tmp', 'mcp-scratch')
+    mkdirSync(scratch, { recursive: true })
+    const scratchRefused = await server.call('harness_start', { task: 'hello from mcp', folder: scratch, name: 'mcpkid' })
+    expect(scratchRefused).toEqual({ isError: true, text: `Claude Code would ask the person to trust ${scratch} before it starts, and it is empty: `
+      + 'for scratch or new work give a project name instead — harness_start (project: "mcpkid", …)  (Harness makes ~/harnesses/mcpkid, '
+      + 'which needs no approval). Nothing was started.' })
+    const started = await server.call('harness_start', { task: 'hello from mcp', project: 'mcp-kid', name: 'mcpkid' })
     expect(started.isError, started.text).toBe(false)
-    expect(started.text).toContain('Created mcpkid on this computer')
+    expect(started.text).toContain(`Created mcpkid on this computer in ${join(d.env.HOME!, 'harnesses', 'mcp-kid')}.`)
     // Its next steps are named as the tools: an MCP client may have no shell to run `harness show` in.
     expect(started.text).toContain('Read it: harness_read (name: "mcpkid") · wait for it: harness_wait (names: "mcpkid")')
     const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
@@ -261,6 +268,53 @@ describe('Harness for agents, end to end', () => {
     expect(closed).toEqual({ text: 'Closed mcpkid. Its conversation is kept.', isError: false })
     server.close()
     client.close()
+  })
+
+  it('an agent is told, not left waiting, when Claude Code or Codex would ask the person to trust its folder', async () => {
+    // A Codex harness asked for a second opinion from Claude Code made `mktemp -d /tmp/shell-opinion.XXXX` and started
+    // Claude Code there, which stopped on its trust question: the agent could only report that it was waiting (a clean
+    // VM, CLI 0.3.75, 2026-10-11). The fake engines ask as the real ones do, of a folder their settings do not trust.
+    const d = await IsolatedDaemon.create({ trustPrompt: true })
+    daemon = d
+    onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
+    // Both engines have run here before: their settings exist, which is when Harness adds the folders it makes.
+    writeFileSync(join(d.env.HOME!, '.claude.json'), '{}')
+    appendFileSync(join(d.env.CODEX_HOME!, 'config.toml'), '')
+    await d.start()
+    // Codex in a terminal app: no pane, the session its shell names.
+    const run = (...args: string[]) => harness(d, '', args, { CODEX_THREAD_ID: 'lead-thread' })
+
+    // An empty folder of its own: refused before anything starts, with what to run instead.
+    const scratch = join(d.root, 'tmp', 'shell-opinion.e0ynGN')
+    mkdirSync(scratch, { recursive: true })
+    const refused = await run('new', 'claude', scratch, '--name', 'opinion', '--', 'a second opinion on the shell script')
+    expect(refused.code, refused.out).toBe(1)
+    expect(refused.err.trim()).toBe(`Claude Code would ask the person to trust ${scratch} before it starts, and it is empty: for scratch or new work `
+      + 'give a project name instead — harness new claude opinion --name opinion -- …  (Harness makes ~/harnesses/opinion, which needs no '
+      + 'approval). Nothing was started.')
+    expect(JSON.parse((await run('ps', '--json')).out).harnesses).toEqual([])
+
+    // The project it names instead: Harness makes it, answers the question for it, and the work is done with nobody asked.
+    const started = await run('new', 'claude', 'opinion', '--name', 'opinion', '--', 'a second opinion on the shell script')
+    expect(started.code, started.out + started.err).toBe(0)
+    expect(started.out).toContain(`Created opinion on this computer in ${join(d.env.HOME!, 'harnesses', 'opinion')}.`)
+    expect(started.out).not.toContain('trust')
+    const waited = await run('wait', 'opinion', '--timeout', '2m')
+    expect(waited.out.trim(), waited.err).toBe('opinion: idle · read it: harness show opinion')
+    expect((await run('show', 'opinion')).out).toContain('a second opinion on the shell script')
+
+    // A folder with something in it may be just what the work needs: it starts, and the agent is told it waits for the person.
+    const work = join(d.root, 'work')
+    mkdirSync(work, { recursive: true })
+    writeFileSync(join(work, 'README.md'), 'the person\'s work\n')
+    const asked = await run('new', 'codex', work, '--name', 'checker', '--', 'check the readme')
+    expect(asked.code, asked.out + asked.err).toBe(0)
+    expect(asked.out).toContain(`Codex will ask the person to trust ${work} before it starts, so it waits for them until they answer `
+      + '(harness wait exits 3). For new work, a project name avoids this: harness new codex checker --name checker -- …')
+    const held = await run('wait', 'checker', '--timeout', '2m')
+    expect(held.code, held.out + held.err).toBe(3)
+    expect(held.out.trim()).toMatch(/^checker: needs-input · /)
+    expect((await run('close', 'opinion')).code).toBe(0)
   })
 
   it('an agent may not start a harness once the person turns that off', async () => {
@@ -312,13 +366,13 @@ describe('Harness for agents, end to end', () => {
     const run = (...args: string[]) => harness(d, String(lead.tmuxPane), args)
 
     // Claude Code, started by it: Claude Code's own pull request line kept, and Harness's after it.
-    expect((await run('new', 'claude', folder('kid'), '--name', 'kid', '--', 'hello kid')).code).toBe(0)
+    expect((await run('new', 'claude', 'kid', '--name', 'kid', '--', 'hello kid')).code).toBe(0)
     const kid = await live('kid')
     // `ps` may print the emoji and the dash as it likes; the rest is as the engine was given it.
     expect(await commandsIn(d, String(kid.tmuxPane))).toMatch(new RegExp(`--settings \\{"attribution":\\{"pr":"${ascii('🤖 Generated with [Claude Code](https://claude.com/claude-code)')}\\\\n${ascii(AGENT_ATTRIBUTION_LINE)}"\\}\\}`))
 
     // Codex, started by it: told as Codex is told its own attribution.
-    expect((await run('new', 'codex', folder('kidx'), '--name', 'kidx', '--', 'hello kidx')).code).toBe(0)
+    expect((await run('new', 'codex', 'kidx', '--name', 'kidx', '--', 'hello kidx')).code).toBe(0)
     const kidx = await live('kidx')
     // Codex, started by it: told how to use Harness, then told as Codex is told its own attribution, in one value.
     expect(await commandsIn(d, String(kidx.tmuxPane))).toMatch(new RegExp(`-c developer_instructions="${ascii(HARNESS_INSTRUCTIONS)}.*When you create or update a pull request, .*\`${ascii(AGENT_ATTRIBUTION_LINE)}\``))
@@ -335,7 +389,7 @@ describe('Harness for agents, end to end', () => {
     const off = await harness(d, '', ['settings', 'pull-request-line', 'off'])
     expect(off.code, off.err).toBe(0)
     expect(off.out.trim()).toBe('pull-request-line is off.')
-    expect((await run('new', 'claude', folder('quiet'), '--name', 'quiet', '--', 'hello quiet')).code).toBe(0)
+    expect((await run('new', 'claude', 'quiet', '--name', 'quiet', '--', 'hello quiet')).code).toBe(0)
     const quiet = await live('quiet')
     const command = await commandsIn(d, String(quiet.tmuxPane))
     expect(command).toContain('hello quiet')

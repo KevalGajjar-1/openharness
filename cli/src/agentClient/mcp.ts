@@ -23,9 +23,9 @@ export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '202
 /** What an agent is told once, as it connects: when Harness is the right tool, and whose harnesses are whose. */
 export const INSTRUCTIONS = `Harness runs coding agents (Claude Code, Codex) in sessions of their own, on this computer or the person's other machines. The person can watch and join every one in the Harness app.
 
-Start a harness (harness_start) for work that can run beside yours, needs another agent's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do small, quick work yourself.
+Start a harness (harness_start) for work that can run beside yours, needs another agent's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do small, quick work yourself. For scratch or new work give it a project name (project), not a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 
-List first (harness_list). Send follow-ups for the same work to the harness you started for it, not a new one. Never give work to, or close, a harness you did not start: those are the person's.
+List first (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in a tab where the person turned Agent Messages on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
 
 Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it when you are done (harness_close). Never ask a harness to publish, deploy, delete or push.`
 
@@ -55,17 +55,23 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_start',
-    description: 'Start a new harness: an agent in a session of its own, working on [task] in [folder]. Returns at once; wait for it with harness_wait and read its answer with harness_read.',
+    description: 'Start a new harness: an agent in a session of its own, working on [task] in an existing [folder], or in a new [project] Harness makes for it. Returns at once; wait for it with harness_wait and read its answer with harness_read.',
     inputSchema: schema({
       task: { type: 'string', description: 'The whole task, as you would write it to a colleague: what to do, where, and what to answer with.' },
-      folder: { type: 'string', description: 'The folder to work in: an absolute path, or one relative to where this server runs.' },
+      folder: { type: 'string', description: 'An existing folder to work in: an absolute path, or one relative to where this server runs. Claude Code and Codex ask the person to trust a folder Harness did not make, and wait until they answer.' },
+      project: { type: 'string', description: 'For scratch or new work, instead of folder: a name for a new project folder Harness makes (~/harnesses/<name>), which needs no approval. With neither, Harness names one.' },
       name: { type: 'string', description: 'A short name to call it by (e.g. "reviewer"). Always give one.' },
       agent: { type: 'string', enum: ['claude', 'codex'], description: 'Claude Code (default) or Codex.' },
       machine: { type: 'string', description: 'Another of the person\'s machines, by name, to run it there.' },
-    }, ['task', 'folder', 'name']),
+    }, ['task', 'name']),
     argv: (a, cwd) => {
-      const folder = str(a.folder)
-      return ['new', str(a.agent) || 'claude', ...(str(a.machine) ? [`@${str(a.machine)}`] : []), isAbsolute(folder) || folder.startsWith('~') ? folder : resolve(cwd, folder || '.'),
+      // A folder was required, and a relative one was resolved against this server's folder, so an MCP agent could not
+      // ask for a project Harness makes: Codex started Claude Code in an empty ~/work, which waited on its trust question
+      // (a clean VM, CLI 0.3.75, 2026-10-11). Both given, `harness new` says to name one.
+      const folder = str(a.folder), project = str(a.project)
+      const where = folder ? [isAbsolute(folder) || folder.startsWith('~') ? folder : resolve(cwd, folder)] : []
+      return ['new', str(a.agent) || 'claude', ...(str(a.machine) ? [`@${str(a.machine)}`] : []), ...where,
+        ...(project || !folder ? ['--new', ...(project ? [project] : [])] : []),
         '--name', str(a.name), '--task', typeof a.task === 'string' ? a.task : '']
     },
   },
@@ -93,8 +99,8 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_send',
-    description: 'Send a message to a harness you started, while it works: a follow-up, a correction, more context.',
-    inputSchema: schema({ to: { type: 'string', description: 'The harness\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
+    description: 'Send a message to a teammate: a harness in the same tab as you, where the person turned Agent Messages on (the tab\'s chat icon). Refused anywhere else, even to a harness you started.',
+    inputSchema: schema({ to: { type: 'string', description: 'The teammate\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
     argv: (a) => ['send', str(a.to), typeof a.text === 'string' ? a.text : ''],
   },
   {

@@ -61,7 +61,7 @@ export const EXIT = { ok: 0, failed: 1, usage: 2, needsInput: 3, stopped: 4, tim
 
 /** Set by `harness mcp` (mcp.ts) for the verbs it runs: their next steps are then named as its tools. */
 export const VIA_MCP_ENV = 'HARNESS_VIA_MCP'
-const TOOL_OF = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait', send: 'harness_send', close: 'harness_close' } as const
+const TOOL_OF = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait', close: 'harness_close' } as const
 
 /**
  * A next step as the caller can take it: the shell's `harness show x`, or the tool `harness mcp` offers for it. An MCP
@@ -69,8 +69,8 @@ const TOOL_OF = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait'
  * clean VM). [option] is a flag and its MCP argument: `--chars 9000` / `chars: 9000`.
  */
 export function step(env: NodeJS.ProcessEnv, verb: keyof typeof TOOL_OF, name = '', option?: { flag: string; arg: string }): string {
-  if (env[VIA_MCP_ENV] !== '1') return ['harness', verb, name, option?.flag, verb === 'send' ? '"…"' : ''].filter(Boolean).join(' ')
-  const args = [name && `${verb === 'send' ? 'to' : verb === 'wait' ? 'names' : 'name'}: "${name}"`, option?.arg].filter(Boolean)
+  if (env[VIA_MCP_ENV] !== '1') return ['harness', verb, name, option?.flag].filter(Boolean).join(' ')
+  const args = [name && `${verb === 'wait' ? 'names' : 'name'}: "${name}"`, option?.arg].filter(Boolean)
   return `${TOOL_OF[verb]}${args.length ? ` (${args.join(', ')})` : ''}`
 }
 
@@ -494,7 +494,7 @@ const memberKey = (machineId: string, agentId: string): string => `${machineId}/
  */
 export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number): string | null {
   if (ledger.depthOf(caller) >= SPAWN_LIMITS.depth) {
-    return 'A harness started this far down may not start more. Do the work yourself, or tell the harness that started you.'
+    return 'A harness started this far down may not start more. Do the work yourself, or say so in your answer.'
   }
   const mine = ledger.childrenOf(caller)
   const liveMine = new Set(mine.filter((row) => live.has(memberKey(row.child.machineId, row.child.agentId))).map((row) => memberKey(row.child.machineId, row.child.agentId)))
@@ -541,9 +541,9 @@ async function liveFor(s: Setup, o: Opened, caller: Caller): Promise<Set<string>
   return live
 }
 
-/** How another harness names [caller] to `harness send`: its name when that is a plain word or two, else its id's
- *  start. An unnamed harness is called by its session title, which is a sentence ("so we have built harness web,")
- *  that a recipient list splits at the comma. */
+/** How a next step names a harness: its name when that is a plain word or two, else its id's start. An unnamed
+ *  harness is called by its session title, which is a sentence ("so we have built harness web,") that `wait`'s list
+ *  of names splits at the comma. */
 export function addressOf(caller: Caller): string {
   return /^[\w.-]+( [\w.-]+)?$/.test(caller.name) && caller.name.length <= 40 ? (caller.name.includes(' ') ? `"${caller.name}"` : caller.name) : caller.agentId.slice(0, 8)
 }
@@ -579,15 +579,14 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     },
     prompt: (text, machineId) => {
       // Said once, at the top: the task is from an agent, not the person (the lamp team's tmux paste read as the
-      // owner's). The answer route works where the two share a machine (Agent Messages' lineage scope).
+      // owner's). It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its
+      // whole report back as a message as well, which would land in the middle of the starter's own turn. Nor is the
+      // new harness told to message it: being started by it gives no way to, only a tab with Agent Messages on does
+      // (owner, 2026-10-11: "Agent Messages off means off").
       const here = machineId === o.where.machineId
-      // It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its whole report
-      // back as a message as well, which would land in the middle of the starter's own turn. An agent outside Harness
-      // has no pane for a message to reach.
-      const reply = here && !caller.outside ? ` It reads your answer itself; to ask it something while you work: harness send ${addressOf(caller)} "…"` : ' It reads your answer itself.'
       const header = caller.outside
-        ? `[from ${caller.name} outside Harness · ${o.machine}, the agent that started you.${reply}]\n\n`
-        : `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you.${reply}]\n\n`
+        ? `[from ${caller.name} outside Harness · ${o.machine}, the agent that started you. It reads your answer itself.]\n\n`
+        : `[from ${caller.name} · ${engineName(caller.engine)} · ${o.machine}, the harness that started you. It reads your answer itself.]\n\n`
       if (header.length + text.length <= MAX_FIRST_PROMPT_CHARS) return header + text
       // A first message holds 2,000 characters (engineLaunch.ts), and a task an agent hands on is often longer: the
       // first eval's prompts were refused whole. The task goes in a file the new harness is told to read.
@@ -624,7 +623,7 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     },
     next: (agent) => {
       const at = addressOf({ machineId: '', agentId: String(agent.id ?? ''), name: String(agent.name ?? ''), engine: '' })
-      return `Read it: ${step(s.env, 'show', at)} · wait for it: ${step(s.env, 'wait', at)}${caller.outside ? '' : ` · message it: ${step(s.env, 'send', at)}`}`
+      return `Read it: ${step(s.env, 'show', at)} · wait for it: ${step(s.env, 'wait', at)}`
     },
   }
 }
