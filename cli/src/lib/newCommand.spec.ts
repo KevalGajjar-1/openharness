@@ -378,6 +378,32 @@ describe('harness new: the daemon', () => {
     expect(atTerminal.sent[1]!.payload).not.toHaveProperty('startedBy')
   })
 
+  it('run by a harness here: names it as the one that started the new harness, so the windows open it beside it', async () => {
+    const origin = {
+      check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', parentAgentId: 'lead-agent',
+    }
+    const created = (id: string) => new FakeSocket((frame) => frame.type === 'fs_list_dir' ? { path: '/Users/mini', entries: [] }
+      : frame.type === 'agent_create' ? { state: 'created', agent: { id, name: id } } : null)
+    const here = created('kid')
+    expect(await newCommand(deps(['codex', '--', 'review it'], here, { origin: async () => origin }))).toBe(0)
+    expect(here.sent[1]!.payload).toMatchObject({ startedBy: 'agent', parentAgentId: 'lead-agent' })
+    // `@this computer` is still here.
+    const named = created('kid2')
+    expect(await newCommand(deps(['codex', '@MacBook', '--', 'go'], named, { origin: async () => origin }))).toBe(0)
+    expect(named.sent.find((frame) => frame.type === 'agent_create')!.payload.parentAgentId).toBe('lead-agent')
+    // Another machine has no harness by that id: it records only that an agent started it.
+    const far = created('far')
+    expect(await newCommand(deps(['codex', '@mini', '~/w', '--', 'go'], far, { origin: async () => origin }))).toBe(0)
+    const farCreate = far.sent.find((frame) => frame.type === 'agent_create')!.payload
+    expect(farCreate.startedBy).toBe('agent')
+    expect(farCreate).not.toHaveProperty('parentAgentId')
+    // An agent outside Harness has no harness to name.
+    const outside = created('helper')
+    expect(await newCommand(deps(['codex', '--', 'go'], outside, { origin: async () => ({ ...origin, parentAgentId: undefined }) }))).toBe(0)
+    expect(outside.sent[1]!.payload.startedBy).toBe('agent')
+    expect(outside.sent[1]!.payload).not.toHaveProperty('parentAgentId')
+  })
+
   it('turns the machine\'s refusal into words, and a usage slip into the usage', async () => {
     const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? { error: 'INVALID_CWD', detail: '/nope' } : null)
     const d = deps(['codex', '/nope'], socket)

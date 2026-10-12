@@ -580,6 +580,14 @@ describe('harness new, run by an agent', () => {
     await expect((await agentOrigin(harness(d).deps))!.check()).resolves.toBeUndefined()
   })
 
+  it('names its own harness as the one that started the new one; an agent outside Harness names none', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    expect((await agentOrigin(harness(d).deps))!.parentAgentId).toBe('lead')
+    const outside = (await agentOrigin(harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 't' } }).deps))!
+    expect(outside).not.toHaveProperty('parentAgentId')
+  })
+
   it('refuses from what is left of an agent whose harness is gone', async () => {
     const origin = (await agentOrigin(harness(new FakeDaemon(), { pane: '%gone', where: () => ({ ...where, harnessPane: true }) }).deps))!
     await expect(origin.check()).rejects.toThrow(/no longer running/)

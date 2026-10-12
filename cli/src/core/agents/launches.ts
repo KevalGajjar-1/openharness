@@ -29,7 +29,7 @@ import { parseGridLaunchOverride, type GridLaunchOverride } from '../../lib/grid
 import { parseNewAgentModel, type NewAgentModel } from '../../lib/newAgentModel.js'
 import { parseProjectFolder, prepareProjectFolder, projectsRoot, ProjectFolderError, type ProjectFolder } from '../../lib/projectFolder.js'
 import type { ScmLaunchRecord } from '../../scm/types.js'
-import type { RegisteredSession } from '../../lib/registry.js'
+import { parentAgentIdOf, type RegisteredSession } from '../../lib/registry.js'
 import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
 import type { LaunchAuthority, LaunchPreparation } from '../../lib/launchPreparation.js'
 import { createPendingLaunches } from './pendingLaunches.js'
@@ -379,6 +379,15 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, pre
     if (payload.startedBy !== undefined && payload.startedBy !== null && payload.startedBy !== 'agent') {
       reply({ error: 'INVALID_STARTED_BY', detail: 'startedBy is agent, or absent for the person' }); return
     }
+    // Which harness here that agent is (`harness new` or `harness_start` from its pane): the windows open the new one
+    // beside it and say who started it. Only with `startedBy: 'agent'`, and only an agent id; one this machine does not
+    // know is left out rather than refused, so a harness that just closed does not stop its child from starting.
+    let parentAgentId: string | null = null
+    if (payload.parentAgentId !== undefined && payload.parentAgentId !== null) {
+      parentAgentId = payload.startedBy === 'agent' ? parentAgentIdOf(payload.parentAgentId) : null
+      if (!parentAgentId) { reply({ error: 'INVALID_STARTED_BY', detail: 'parentAgentId is the agent id of the harness that started it, with startedBy agent' }); return }
+      if (!byAgent(parentAgentId)) parentAgentId = null
+    }
     const input = {
       engine,
       cwd: typeof cwd === 'string' ? cwd : terminal ? homedir() : '',
@@ -395,6 +404,7 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, pre
       takeOver,
       // Only when set: a person's create keeps the fingerprint its receipt was recorded with before the field.
       ...(payload.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
+      ...(parentAgentId ? { parentAgentId } : {}),
     }
     const fingerprintInput = model.state === 'ok' ? { ...input, modelSelection: model.selection } : input
     if (creationId !== undefined) {

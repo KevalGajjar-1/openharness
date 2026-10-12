@@ -2481,6 +2481,15 @@ class _TerminalPanelState extends State<TerminalPanel>
       // equality, so a frame that changed nothing but the verdict must still
       // be seen as a change by the one field that can say so.
       verdict: agent?.verdict,
+      // The header says who started it by that harness's name now. Renaming
+      // the starter changes nothing in this agent's own frame, so its name is
+      // a field of its own here, or the header kept the old one.
+      startedBy: agent?.parentAgentId == null
+          ? null
+          : machine?.agents
+                .where((a) => a.id == agent!.parentAgentId)
+                .firstOrNull
+                ?.displayName,
       project: agent == null ? null : machine?.projectOf(agent),
       compact: widget.compactHeader,
       close: widget.onClose != null,
@@ -2723,8 +2732,18 @@ class _TerminalHeader extends StatelessWidget {
         .firstOrNull;
     final project = agent == null ? null : machine?.projectOf(agent);
     final machineName = machine?.machine.displayName ?? session.machineId;
+    // Started by another harness's agent: that harness by the name it shows
+    // now, which the person may have changed since. Nothing when it is not
+    // listed here any more: an id would mean nothing to them.
+    final startedBy = agent?.parentAgentId == null
+        ? null
+        : machine?.agents
+              .where((a) => a.id == agent!.parentAgentId)
+              .firstOrNull
+              ?.displayName;
     final identityDetail = [
       session.agentName,
+      if (startedBy != null) 'Started by $startedBy',
       machineName,
       if (project != null) project.cwd,
       ?project?.branchDetail,
@@ -3115,6 +3134,7 @@ class _TerminalHeader extends StatelessWidget {
                             message: [
                               if (forkedFrom != null)
                                 'Forked from ${forkedFrom.name}',
+                              if (startedBy != null) 'Started by $startedBy',
                               if (project != null) project.cwd,
                               ?project?.branchDetail,
                               machineName,
@@ -3131,8 +3151,15 @@ class _TerminalHeader extends StatelessWidget {
                                 // Not a branch Harness made up that waits for the
                                 // session's name, nor a commit an agent checked out.
                                 branch: narrow ? null : project?.shownBranch,
-                                leading: !narrow && forkedFrom != null
+                                // Then who started it: the one fact a
+                                // harness an agent opened beside it has
+                                // that its folder cannot tell.
+                                leading: narrow
+                                    ? null
+                                    : forkedFrom != null
                                     ? 'forked from ${forkedFrom.name}'
+                                    : startedBy != null
+                                    ? 'started by $startedBy'
                                     : null,
                               ),
                             ),

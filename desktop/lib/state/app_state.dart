@@ -96,6 +96,7 @@ import 'machine_profile.dart';
 import 'pane_layout_store.dart';
 import 'terminal_pane.dart';
 import 'device_visit.dart';
+import 'started_children.dart';
 import 'swarm.dart';
 import '../terminal/terminal_binary.dart';
 import '../update/desktop_updater.dart';
@@ -369,6 +370,12 @@ class MachineState {
   /// Moves with every change of [agents]: a list read before one is older than it
   /// ([AppNotifier._syncAgentsIfChanged]).
   int agentsRevision = 0;
+
+  /// Whether this window has read the machine's whole list once. What was in
+  /// it, or pushed before it, was there when the window came: a harness an
+  /// agent started opens beside its starter only when it appears after
+  /// (`AppNotifier._openStartedChild`), never on a restore.
+  bool agentsListedOnce = false;
   AgentLoadStatus agentLoadStatus = AgentLoadStatus.idle;
   bool agentsRefreshing = false;
   String? agentsLoadError;
@@ -7482,7 +7489,15 @@ class AppNotifier extends ChangeNotifier {
             .toList(),
         nameRevision,
       );
-      if (agentsEqual(machine.agents, agents)) return;
+      if (agentsEqual(machine.agents, agents)) {
+        // A whole list read, even one that changes nothing: what pushes
+        // brought before it was the window's restore, and what comes after it
+        // is new (`_openStartedChild`). Left unset when the first load failed
+        // and pushes filled the list, no harness an agent started would ever
+        // open beside it (review of #1217).
+        machine.agentsListedOnce = true;
+        return;
+      }
       _replaceAgents(machine, agents);
       notifyListeners();
     } catch (_) {
@@ -9990,6 +10005,8 @@ class AppNotifier extends ChangeNotifier {
   }
 
   void _replaceAgents(MachineState machine, List<Agent> agents) {
+    final listedBefore = machine.agentsListedOnce;
+    machine.agentsListedOnce = true;
     final previousWork = {for (final agent in machine.agents) agent.id: agent};
     agents = [
       for (final agent in agents)
@@ -10064,6 +10081,11 @@ class AppNotifier extends ChangeNotifier {
     _warmPreviews(machine);
     for (final agent in agents) {
       _syncViewerPane(machine, agent);
+    }
+    // A harness an agent started that this list brings for the first time:
+    // beside its starter. Not from the first list, which is the restore.
+    for (final agent in agents) {
+      _openStartedChild(machine, agent, arrived: listedBefore);
     }
   }
 
@@ -13860,6 +13882,66 @@ class AppNotifier extends ChangeNotifier {
     revealAgentView(machineId, agentId);
   }
 
+  /// Harnesses another harness's agent started that this window has already
+  /// placed or passed over, by machine and agent id: each is decided once, the
+  /// first time it is seen live, so a pane the person closes stays closed.
+  final _decidedStartedChildren = <(String, String)>{};
+
+  /// A harness an agent here started (`harness new`, or `harness_start`
+  /// through `harness mcp`, from its pane) opens right beside that agent's
+  /// pane, in the tab that shows it, without taking the focus or the terminal
+  /// from anyone (owner, 2026-10-11; `state/started_children.dart`).
+  ///
+  /// Only one [arrived] after this window read the machine's list, and seen
+  /// live: what the first list or a push before it brings is the window's
+  /// restore, and is passed over for good. Never one this window has shown
+  /// before ([hasOpenedHarness]): the person closed it. Where the starter is
+  /// in no tab here nothing changes; it is in ⌘O as before.
+  ///
+  /// Every window that shows the starter does this, on every computer, and
+  /// that is still one pane: each picks the same tab (the first in the desk's
+  /// order that shows the starter), the desk's `pane.add` is idempotent per
+  /// tab, machine and agent (`desk_sync.dart`), and a window that hears of the
+  /// pane from the desk first finds the child already in a tab and leaves it.
+  /// Placing it in the daemon instead would need the desk's layout rules
+  /// there, and a signed-out computer has no desk at all.
+  void _openStartedChild(
+    MachineState machine,
+    Agent child, {
+    required bool arrived,
+  }) {
+    if (child.parentAgentId == null || machine.machine.isShared) return;
+    final machineId = machine.machine.machineId;
+    final key = (machineId, child.id);
+    if (_decidedStartedChildren.contains(key)) return;
+    if (arrived && !startedChildLive(child)) return;
+    _decidedStartedChildren.add(key);
+    if (_decidedStartedChildren.length > 4096) {
+      _decidedStartedChildren.remove(_decidedStartedChildren.first);
+    }
+    if (!arrived || hasOpenedHarness(machineId, child.id)) return;
+    final place = startedChildPlacement(
+      tabs: swarms,
+      machineId: machineId,
+      child: child,
+      now: DateTime.now(),
+      maxPanes: maxPanes,
+    );
+    if (place == null) return;
+    unawaited(
+      assignAgentToPane(
+        null,
+        machineId,
+        child.id,
+        swarmId: place.tab.id,
+        besidePaneId: place.parent.id,
+        autoTile: true,
+        focus: false,
+        intent: AttachIntent.automatic,
+      ),
+    );
+  }
+
   /// Every tile on the machine, not just the focused one: the machine is what
   /// went away, so a tile of the same machine sitting in another corner of the
   /// grid is just as dead and must say so rather than keep showing a terminal
@@ -14508,6 +14590,10 @@ class AppNotifier extends ChangeNotifier {
     /// touching this Mac, so the terminal they show must not be taken from
     /// whoever is typing in it.
     AttachIntent intent = AttachIntent.person,
+
+    /// A new tile goes right after this one, where the tab reads it, rather
+    /// than at the end: a harness another harness started opens beside it.
+    int? besidePaneId,
   }) async {
     final target = swarms
         .where((s) => s.id == (swarmId ?? activeSwarmId))
@@ -14556,9 +14642,23 @@ class AppNotifier extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final beside = replaced == null && split == null && besidePaneId != null
+        ? targetPanes.where((p) => p.id == besidePaneId).firstOrNull
+        : null;
+    if (beside != null) {
+      // The tab's reading order first, as `Swarm.remove` does: the reflow
+      // below lays the list out in order, and a split earlier in the tab's
+      // life may have put the list out of step with what the person sees.
+      final ordered = target.panesInReadingOrder;
+      targetPanes
+        ..clear()
+        ..addAll(ordered);
+    }
     final insertion = replaced == null
         ? split == null
-              ? targetPanes.length
+              ? beside == null
+                    ? targetPanes.length
+                    : targetPanes.indexOf(beside) + 1
               : split.paneIds.indexOf(split.paneId) + 1
         : targetPanes.indexOf(replaced);
     final pendingLayout =
@@ -14592,6 +14692,12 @@ class AppNotifier extends ChangeNotifier {
       );
       target.arranged = null;
       target.arrangedKey = null;
+    }
+    if (beside != null) {
+      // Pins stay with their panes, wherever the new tile moved them.
+      target.pinnedSlots.updateAll(
+        (id, _) => targetPanes.indexWhere((p) => p.id == id),
+      );
     }
     if (split != null) {
       target.pinnedSlots.updateAll(
@@ -17232,6 +17338,11 @@ class AppNotifier extends ChangeNotifier {
           try {
             final agent = Agent.fromJson(Map<String, dynamic>.from(raw));
             var changed = _upsertAgent(machine, agent);
+            _openStartedChild(
+              machine,
+              agent,
+              arrived: machine.agentsListedOnce,
+            );
             if (agent.terminalAvailable) {
               // A pane created before this agent's terminal was verified is still sitting on
               // "Attaching…" with no session — nothing else re-checks it once agentLoadStatus is
@@ -17265,6 +17376,11 @@ class AppNotifier extends ChangeNotifier {
           try {
             final agent = Agent.fromJson(Map<String, dynamic>.from(raw));
             _upsertAgent(machine, agent);
+            _openStartedChild(
+              machine,
+              agent,
+              arrived: machine.agentsListedOnce,
+            );
             // Same reattach as `agent_synced` above — a pane can be waiting on this exact agent
             // (e.g. one this window's own New Agent dialog just opened) with no session yet.
             _attachPendingPanes(machine, intent: AttachIntent.automatic);
@@ -17521,6 +17637,10 @@ class AppNotifier extends ChangeNotifier {
   @visibleForTesting
   Future<void> restorePaneLayoutForTest({bool claimOnAttach = false}) =>
       _restorePaneLayout(claimOnAttach: claimOnAttach);
+
+  @visibleForTesting
+  Future<void> syncAgentsIfChangedForTest(String machineId) =>
+      _syncAgentsIfChanged(machineStates[machineId]!);
 
   @visibleForTesting
   Future<void> handleMachineEventForTest(
