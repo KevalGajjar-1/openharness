@@ -17,12 +17,15 @@ export interface AgentSettings {
   /** A harness another agent started adds a line to the pull requests it opens (lib/agentAttribution.ts). Read at
    *  each launch of one, so a harness running when it is turned off keeps its line until it restarts. */
   pullRequestLine: boolean
+  /** Agents in the same tab may message each other (`harness send`, messages/service.ts). It replaced each tab's own
+   *  switch, a chat icon beside its × that was easy to hit by mistake (owner, 2026-10-12). */
+  agentMessages: boolean
 }
 
-export const AGENT_SETTINGS_DEFAULTS: AgentSettings = { agentsStartAgents: true, pullRequestLine: true }
+export const AGENT_SETTINGS_DEFAULTS: AgentSettings = { agentsStartAgents: true, pullRequestLine: true, agentMessages: true }
 
 /** Each setting's name in `harness settings`, and its key. */
-export const AGENT_SETTING_NAMES: Record<string, keyof AgentSettings> = { 'agents-start-agents': 'agentsStartAgents', 'pull-request-line': 'pullRequestLine' }
+export const AGENT_SETTING_NAMES: Record<string, keyof AgentSettings> = { 'agents-start-agents': 'agentsStartAgents', 'pull-request-line': 'pullRequestLine', 'agent-messages': 'agentMessages' }
 
 export const agentSettingsPath = (dataDir: string): string => join(dataDir, 'agent-settings.json')
 
@@ -59,7 +62,7 @@ export function agentSettingsRoutes(dataDir: string): { read: () => Promise<{ st
     read: async () => ({ status: 200, body: { ...readAgentSettings(dataDir) } }),
     write: async (body) => {
       const next = writeAgentSettings(dataDir, body)
-      return next ? { status: 200, body: { ...next } } : { status: 400, body: { error: { code: 'BAD_REQUEST', message: 'Nothing to change: send {"agentsStartAgents": true|false} or {"pullRequestLine": true|false}.' } } }
+      return next ? { status: 200, body: { ...next } } : { status: 400, body: { error: { code: 'BAD_REQUEST', message: 'Nothing to change: send {"agentsStartAgents": true|false}, {"pullRequestLine": true|false} or {"agentMessages": true|false}.' } } }
     },
   }
 }

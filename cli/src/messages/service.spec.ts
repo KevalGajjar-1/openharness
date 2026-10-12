@@ -9,9 +9,10 @@ import { PaneInbox } from './inbox.js'
 import { deliveryKey, FYI_REASON, PUMP_MS } from './mailbox.js'
 import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, type Message } from './model.js'
 import type { Rpc } from './rpc.js'
-import { HELD_OFF_REASON, HELD_OUTSIDE_MS, REMOTE_STATUS_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS } from './service.js'
+import { HELD_OFF_REASON, HELD_OUTSIDE_MS, MESSAGES_OFF_TEXT, REMOTE_STATUS_MS, SETTING_FRESH_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS, WHO_MS } from './service.js'
 import { MessageStore } from './store.js'
 import { Ledger, ledgerPath } from '../agentClient/ledger.js'
+import { writeAgentSettings } from '../lib/agentSettings.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'agent-messages-')) })
@@ -23,7 +24,7 @@ const session = (agentId: string, pane: string, engine = 'claude', cwd = `/work/
   ({ agentId, sessionId: `s-${agentId}`, engine, cwd, tmuxPane: pane, active: true, title: agentId }) as unknown as RegisteredSession
 
 interface Setup {
-  tabs?: Array<{ id: string; name: string; enabled: boolean; panes: Array<{ machineId: string; agentId: string }> }>
+  tabs?: Array<{ id: string; name: string; panes: Array<{ machineId: string; agentId: string }> }>
   agents?: RegisteredSession[]
   rpc?: Rpc
   backendStatus?: number
@@ -32,7 +33,7 @@ interface Setup {
 function setup(over: Setup = {}) {
   let clock = 1_000_000
   const agents = over.agents ?? [session('lead', '%1', 'codex'), session('api', '%2'), session('web', '%3')]
-  const tabs = over.tabs ?? [{ id: 'app', name: 'app', enabled: true, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }, { machineId: 'm2', agentId: 'phone' }] }]
+  const tabs = over.tabs ?? [{ id: 'app', name: 'app', panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }, { machineId: 'm2', agentId: 'phone' }] }]
   const directory = { revision: 4, machines: [{ machineId: 'm1', name: 'studio' }, { machineId: 'm2', name: 'laptop' }], tabs }
   const delivered: Array<[string, string, string]> = []
   const windows: Array<Record<string, unknown>> = []
@@ -71,6 +72,9 @@ function setup(over: Setup = {}) {
     service, ask, delivered, windows, backend, rpcCalls, agents, tabs, directory, changed,
     inbox: new PaneInbox(join(root, 'inbox-root')),
     tick: (ms: number) => { clock += ms },
+    /** Settings ▸ Agents on this computer, as the person turns Agent Messages on or off: read at the service's next
+     *  look, once what it read last is no longer fresh. */
+    setting: (on: boolean) => { writeAgentSettings(root, { agentMessages: on }); clock += SETTING_FRESH_MS },
     deliveryEvent: (event: TurnDelivery) => { for (const l of deliveryListeners) l(event) },
     notice: (notice: BackendNotice) => { for (const l of noticeListeners) l(notice) },
   }
@@ -194,7 +198,7 @@ describe('harness send', () => {
   it('tells two teammates with the same start apart only by more of the name', async () => {
     const t = setup({
       agents: [session('lead', '%1'), session('api-a', '%2'), session('api-b', '%3')],
-      tabs: [{ id: 'app', name: 'app', enabled: true, panes: ['lead', 'api-a', 'api-b'].map((agentId) => ({ machineId: 'm1', agentId })) }],
+      tabs: [{ id: 'app', name: 'app', panes: ['lead', 'api-a', 'api-b'].map((agentId) => ({ machineId: 'm1', agentId })) }],
     })
     expect((await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).error).toBe('AMBIGUOUS_RECIPIENT')
     expect((await t.ask({ action: 'send', pane: '%1', to: 'api-b', text: 'x' })).recipients).toEqual([{ name: 'api-b', state: 'queued' }])
@@ -206,7 +210,7 @@ describe('harness send', () => {
     const titled = (agentId: string, pane: string) => ({ ...session(agentId, pane, 'codex'), title: 'Ask teammate to create notes' }) as unknown as RegisteredSession
     const t = setup({
       agents: [titled('efedc3c7-lead', '%1'), titled('07934321-one', '%2'), titled('11112222-two', '%3')],
-      tabs: [{ id: 'app', name: 'app', enabled: true, panes: ['efedc3c7-lead', '07934321-one', '11112222-two'].map((agentId) => ({ machineId: 'm1', agentId })) }],
+      tabs: [{ id: 'app', name: 'app', panes: ['efedc3c7-lead', '07934321-one', '11112222-two'].map((agentId) => ({ machineId: 'm1', agentId })) }],
     })
     const roster = String((await t.ask({ action: 'send', pane: '%1' })).roster)
     expect(roster).toContain('Ask teammate to create notes (07934321)')
@@ -230,7 +234,7 @@ describe('harness send', () => {
     const t = setup({
       agents: [session('lead', '%1'), { ...session('cx', '%2', 'codex'), title: 'claude-code-2026-10-1...' } as unknown as RegisteredSession,
         { ...session('dots', '%3', 'codex'), title: '...' } as unknown as RegisteredSession],
-      tabs: [{ id: 'app', name: 'app', enabled: true, panes: ['lead', 'cx', 'dots'].map((agentId) => ({ machineId: 'm1', agentId })) }],
+      tabs: [{ id: 'app', name: 'app', panes: ['lead', 'cx', 'dots'].map((agentId) => ({ machineId: 'm1', agentId })) }],
     })
     expect((await t.ask({ action: 'send', pane: '%1', to: 'claude-code-2026-10-12-02-15', text: 'x' })).recipients)
       .toEqual([{ name: 'claude-code-2026-10-1...', state: 'queued' }])
@@ -245,37 +249,82 @@ describe('harness send', () => {
     const pair = [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }]
     const roster = async (tabs: Array<Record<string, unknown>>) =>
       String((await setup({ tabs: tabs as unknown as Setup['tabs'] }).ask({ action: 'send', pane: '%1' })).roster).split('\n')[0]
-    expect(await roster([{ id: 'a', name: 'claude-code-2026-10-12-02-15', named: false, enabled: true, panes: pair }]))
+    expect(await roster([{ id: 'a', name: 'claude-code-2026-10-12-02-15', named: false, panes: pair }]))
       .toBe('[Harness] Agent Messages are on in this tab. Teammates:')
-    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
-    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }, { id: 'b', name: 'web', named: true, enabled: true, panes: pair }]))
+    expect(await roster([{ id: 'a', name: 'app', named: true, panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', named: true, panes: pair }, { id: 'b', name: 'web', named: true, panes: pair }]))
       .toBe('[Harness] Agent Messages are on in tabs "app", "web". Teammates:')
-    expect(await roster([{ id: 'a', name: 'app', named: true, enabled: true, panes: pair }, { id: 'b', name: 'New Tab', named: false, enabled: true, panes: pair }]))
+    expect(await roster([{ id: 'a', name: 'app', named: true, panes: pair }, { id: 'b', name: 'New Tab', named: false, panes: pair }]))
       .toBe('[Harness] Agent Messages are on in tab "app" and this one. Teammates:')
     // A backend from before `named`: only the window's own default name is no name.
-    expect(await roster([{ id: 'a', name: 'New Tab', enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in this tab. Teammates:')
-    expect(await roster([{ id: 'a', name: 'app', enabled: true, panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
+    expect(await roster([{ id: 'a', name: 'New Tab', panes: pair }])).toBe('[Harness] Agent Messages are on in this tab. Teammates:')
+    expect(await roster([{ id: 'a', name: 'app', panes: pair }])).toBe('[Harness] Agent Messages are on in tab "app". Teammates:')
   })
 
-  it('refuses in a tab with Agent Messages off, and when the directory cannot be read', async () => {
-    const off = setup({ tabs: [{ id: 'app', name: 'app', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'api' }] }] })
-    expect(await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
+  it('refuses while Agent Messages are off on this computer, saying where to turn them on, and when the directory cannot be read', async () => {
+    // One Settings ▸ Agents switch replaced each tab's chat icon, which the owner hit by mistake (2026-10-12).
+    const off = setup()
+    off.setting(false)
+    const refused = { error: 'MESSAGES_OFF', detail: 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.' }
+    expect(await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
+    expect(MESSAGES_OFF_TEXT).toBe(refused.detail)
+    // Nor does `harness send` alone list anyone.
+    expect(await off.ask({ action: 'send', pane: '%1' })).toEqual(refused)
+    expect(off.delivered).toEqual([])
+    // Off is the person's word: said so even when the tabs cannot be read.
+    const offAndDown = setup({ backendStatus: 500 })
+    expect(await offAndDown.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(refused)
+    // On again: it sends at the next look.
+    off.setting(true)
+    expect((await off.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).recipients).toEqual([{ name: 'api', state: 'queued' }])
     const down = setup({ backendStatus: 500 })
     expect(await down.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toMatchObject({ error: 'DIRECTORY_UNAVAILABLE' })
   })
 
-  it('sends nothing when the tab turns Agent Messages off while it asks another machine for names', async () => {
+  it('says a harness alone in its tab, or in none, has no teammates, and still lists its last messages', async () => {
+    const alone = setup({ tabs: [{ id: 'app', name: 'app', panes: [{ machineId: 'm1', agentId: 'lead' }] }, { id: 'web', name: 'web', panes: [{ machineId: 'm1', agentId: 'api' }] }] })
+    const none = { error: 'NO_TEAMMATES', detail: 'No other harness is in this tab. The person puts harnesses in one tab for them to message each other.' }
+    expect(await alone.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual(none)
+    expect(await alone.ask({ action: 'send', pane: '%1', text: 'x' })).toEqual(none)
+    // web is in no tab at all.
+    expect(await alone.ask({ action: 'send', pane: '%3', to: 'lead', text: 'x' })).toEqual(none)
+    expect(await alone.ask({ action: 'send', pane: '%1' })).toEqual({ roster: 'No teammates in this tab yet.', recent: [] })
+    expect(await alone.ask({ action: 'send', pane: '%3' })).toEqual({ roster: 'No teammates in this tab yet.', recent: [] })
+    expect(alone.delivered).toEqual([])
+  })
+
+  /** A send that asks another machine for names, with [meanwhile] done while that machine is asked: the directory is
+   *  read and every name learned first, then the names grow old, so only the send asks again. */
+  const whileAsking = async (meanwhile: (t: ReturnType<typeof setup>) => Promise<void> | void) => {
     let t: ReturnType<typeof setup>
+    let armed = false
     t = setup({ rpc: async (_target, payload) => {
       if (payload.action === 'who') {
-        t.tabs[0].enabled = false
-        t.notice({ type: 'desk_changed', revision: 5 })
-        await new Promise((settle) => setTimeout(settle, 0))
+        if (armed) await meanwhile(t)
         return { agents: [{ agentId: 'phone', name: 'phone', engine: 'claude' }] }
       }
       return { statuses: [] }
     } })
-    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual({ error: 'MESSAGES_OFF', detail: 'api is no longer in a tab with you that has Agent Messages on. Nothing was sent.' })
+    expect(String((await t.ask({ action: 'send', pane: '%1' })).roster)).toContain('phone')
+    t.tick(WHO_MS)
+    armed = true
+    return t
+  }
+
+  it('sends nothing when Agent Messages are turned off while it asks another machine for names', async () => {
+    const t = await whileAsking((t) => t.setting(false))
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual({ error: 'MESSAGES_OFF', detail: `${MESSAGES_OFF_TEXT} Nothing was sent.` })
+    expect(t.delivered).toEqual([])
+    expect((await t.ask({ action: 'history' })).messages).toEqual([])
+  })
+
+  it('sends nothing when the teammate leaves the tab while it asks another machine for names', async () => {
+    const t = await whileAsking(async (t) => {
+      t.tabs[0].panes = t.tabs[0].panes.filter((p) => p.agentId !== 'api')
+      t.notice({ type: 'desk_changed', revision: 5 })
+      await new Promise((settle) => setTimeout(settle, 0))
+    })
+    expect(await t.ask({ action: 'send', pane: '%1', to: 'api', text: 'x' })).toEqual({ error: 'NOT_IN_TAB', detail: 'api is no longer in a tab with you. Nothing was sent.' })
     expect(t.delivered).toEqual([])
     expect((await t.ask({ action: 'history' })).messages).toEqual([])
   })
@@ -341,27 +390,31 @@ describe('a harness and the harnesses it started', () => {
     at: 1, depth: 1, by: { machineId: 'm1', agentId: by, name: by, engine: 'codex' }, child: { machineId: childMachine, agentId: child, name: child },
   })
 
-  it('may not message each other where no tab has Agent Messages on, either way', async () => {
-    const t = setup({ tabs: [{ id: 'app', name: 'app', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'web' }] }] })
+  it('may not message each other while Agent Messages are off, nor without a tab they share, either way', async () => {
+    const t = setup({ tabs: [{ id: 'app', name: 'app', panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'web' }] }] })
     start('lead', 'web')
+    t.setting(false)
     expect(await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'Also check the footer.' })).toMatchObject({ error: 'MESSAGES_OFF' })
     expect(await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'Done: 3 fixes.' })).toMatchObject({ error: 'MESSAGES_OFF' })
     // Nor does `harness send` alone list them.
     expect(await t.ask({ action: 'send', pane: '%1' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    t.setting(true)
     const none = setup({ tabs: [] })
-    expect(await none.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    expect(await none.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })).toMatchObject({ error: 'NO_TEAMMATES' })
+    expect(await none.ask({ action: 'send', pane: '%3', to: 'lead', text: 'x' })).toMatchObject({ error: 'NO_TEAMMATES' })
+    expect(String((await none.ask({ action: 'send', pane: '%1' })).roster)).not.toMatch(/\bweb\b/)
     expect(t.delivered).toEqual([])
     expect(none.delivered).toEqual([])
   })
 
   it('are refused as any other recipient outside the sender\'s tabs, and listed only as tab teammates', async () => {
-    // lead and api share a tab with Agent Messages on; web, which lead started, is in none.
+    // lead and api share a tab; web, which lead started, is in none.
     const t = setup()
     start('lead', 'web')
     start('lead', 'api')
     const refused = await t.ask({ action: 'send', pane: '%1', to: 'web', text: 'x' })
     expect(refused).toEqual({ error: 'UNKNOWN_RECIPIENT', detail: 'No teammate named "web" in this tab. Teammates: api, phone.' })
-    expect(await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'x' })).toMatchObject({ error: 'MESSAGES_OFF' })
+    expect(await t.ask({ action: 'send', pane: '%3', to: 'lead', text: 'x' })).toMatchObject({ error: 'NO_TEAMMATES' })
     const roster = await t.ask({ action: 'send', pane: '%1' })
     expect(roster.roster).toContain('Teammates:')
     expect(roster.roster).not.toMatch(/\bweb\b/)
@@ -375,7 +428,7 @@ describe('a harness and the harnesses it started', () => {
   it('a message an older version queued between them under no tab is never delivered, read directory or not', async () => {
     vi.useFakeTimers()
     // Queued by 0.3.75 under its `started` log: one waiting in web's inbox for its hook, and one to api, which shares
-    // a tab with Agent Messages on with lead now.
+    // a tab with lead now.
     const store = new MessageStore(join(root, 'state'))
     const old = (id: string, to: string) => ({ id, tabId: 'started', at: 1, text: 'Also check the footer.',
       from: { machineId: 'm1', agentId: 'lead', name: 'lead', engine: 'codex', machine: 'studio' }, to: [{ machineId: 'm1', agentId: to, name: to }] })
@@ -399,24 +452,24 @@ describe('a harness and the harnesses it started', () => {
     expect(t.delivered).toEqual([])
     const history = await t.ask({ action: 'history', tabId: 'started' })
     expect((history.messages as Array<{ statuses: unknown[] }>).map((m) => m.statuses)).toEqual([
-      [expect.objectContaining({ machineId: 'm1', agentId: 'web', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })],
-      [expect.objectContaining({ machineId: 'm1', agentId: 'api', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })],
+      [expect.objectContaining({ machineId: 'm1', agentId: 'web', state: 'failed', reason: 'it was sent outside any tab' })],
+      [expect.objectContaining({ machineId: 'm1', agentId: 'api', state: 'failed', reason: 'it was sent outside any tab' })],
     ])
     t.service.stop()
   })
 
-  it('a hand-over an older machine logged under `started` is failed even between two in a tab with Agent Messages on', async () => {
+  it('a hand-over an older machine logged under `started` is failed even between two in one tab', async () => {
     const t = setup()
     const answer = await t.ask({ action: 'deliver', message: { id: 'm00000cc', tabId: 'started', text: 'hi', at: 5,
       from: { machineId: 'm2', agentId: 'phone', name: 'phone', engine: 'claude', machine: 'laptop' }, to: [{ machineId: 'm1', agentId: 'api', name: 'api' }] } }, OWNER_REMOTE)
-    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'api', state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })])
+    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'api', state: 'failed', reason: 'it was sent outside any tab' })])
     expect(t.delivered).toEqual([])
   })
 
   it('reach a tab teammate by the start of its id, for a harness whose name is a sentence', async () => {
     const titled = { ...session('abcdef99-1', '%3'), title: 'so we have built it, then' } as unknown as RegisteredSession
     const t = setup({ agents: [session('lead', '%1', 'codex'), titled],
-      tabs: [{ id: 'app', name: 'app', enabled: true, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'abcdef99-1' }] }] })
+      tabs: [{ id: 'app', name: 'app', panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm1', agentId: 'abcdef99-1' }] }] })
     expect((await t.ask({ action: 'send', pane: '%1', to: 'abcdef', text: 'x' })).recipients).toEqual([{ name: 'so we have built it, then', state: 'queued' }])
     // Too short to be an id's start.
     expect((await t.ask({ action: 'send', pane: '%1', to: 'abcde', text: 'x' })).error).toBe('UNKNOWN_RECIPIENT')
@@ -442,7 +495,13 @@ describe('a harness and the harnesses it started', () => {
   it('stay apart across machines: another machine checks against its own tabs', async () => {
     const t = setup({ tabs: [] })
     start('lead', 'phone', 'm2')
+    expect((await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'x' })).error).toBe('NO_TEAMMATES')
+    // And while Agent Messages are off here, whatever the tabs say.
+    t.tabs.push({ id: 'app', name: 'app', panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm2', agentId: 'phone' }] })
+    t.notice({ type: 'desk_changed', revision: 5 })
+    t.setting(false)
     expect((await t.ask({ action: 'send', pane: '%1', to: 'phone', text: 'x' })).error).toBe('MESSAGES_OFF')
+    expect(t.rpcCalls.filter(([, p]) => p.action === 'deliver')).toEqual([])
   })
 })
 
@@ -490,9 +549,19 @@ describe('from the owner\'s other machines', () => {
   it('refuses a message for an agent outside the sender\'s tabs, and one that is not a message', async () => {
     const t = setup()
     const answer = await t.ask({ action: 'deliver', message: incoming('web') }, OWNER_REMOTE)
-    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'web', state: 'failed' })])
+    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'web', state: 'failed', reason: 'it is not in a tab with the sender' })])
     expect(t.delivered).toHaveLength(0)
     expect(await t.ask({ action: 'deliver', message: { id: 'x' } }, OWNER_REMOTE)).toMatchObject({ error: 'INVALID_MESSAGE' })
+  })
+
+  it('refuses a hand-over while this machine has Agent Messages off, whatever the sender\'s machine says', async () => {
+    // Each computer has its own switch: the sender's had it on, and this one's person turned it off.
+    const t = setup()
+    t.setting(false)
+    const answer = await t.ask({ action: 'deliver', message: incoming() }, OWNER_REMOTE)
+    expect(answer.statuses).toEqual([expect.objectContaining({ agentId: 'api', state: 'failed', reason: 'Agent Messages are off on its computer' })])
+    expect(t.delivered).toEqual([])
+    expect(t.inbox.waiting('%2', deliveryKey('m00000aa', 'api'))).toBe(false)
   })
 
   it('names its agents for another machine, and only those it has', async () => {
@@ -504,7 +573,7 @@ describe('from the owner\'s other machines', () => {
 })
 
 describe('the roster note and the directory', () => {
-  it('puts the note in each agent\'s inbox once the tab has a teammate, and takes it back when the tab turns off', async () => {
+  it('puts the note in each agent\'s inbox once the tab has a teammate, and takes it back when Agent Messages are turned off', async () => {
     vi.useFakeTimers()
     const t = setup()
     t.service.start()
@@ -516,7 +585,7 @@ describe('the roster note and the directory', () => {
     }
     expect(waiting('%1').some((n) => n.startsWith('0note-'))).toBe(true)
     expect(waiting('%2').some((n) => n.startsWith('0note-'))).toBe(true)
-    // Web is in no tab with Agent Messages on: nothing.
+    // Web shares no tab: nothing.
     expect(waiting('%3')).toEqual([])
     // The hook took lead's note: it is not put again.
     const note = waiting('%1').find((n) => n.startsWith('0note-'))!.replace(/\.json$/, '')
@@ -524,11 +593,41 @@ describe('the roster note and the directory', () => {
     require('node:fs').renameSync(join(t.inbox.paneDir('%1')!, `${note}.json`), join(root, 'inbox-root', 'claimed', `1-${note}.json`))
     await vi.advanceTimersByTimeAsync(TICK_MS)
     expect(waiting('%1')).toEqual([])
-    // Turned off: the notes go.
-    t.tabs[0].enabled = false
-    t.notice({ type: 'desk_changed', revision: 5 })
-    await vi.advanceTimersByTimeAsync(0)
+    // Turned off: the notes go at the next look, with no word from the backend.
+    t.setting(false)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
     expect(waiting('%2')).toEqual([])
+    // On again: put back.
+    t.setting(true)
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(waiting('%2').some((n) => n.startsWith('0note-'))).toBe(true)
+    t.service.stop()
+  })
+
+  it('counts Agent Messages turned on or off as a change of the directory, at its next read', async () => {
+    // Deliveries and notes get another look at once, as for a tab changed (messages/directory.ts).
+    vi.useFakeTimers()
+    const t = setup()
+    t.service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    const reads = () => t.changed.mock.calls.length
+    const first = reads()
+    expect(first).toBeGreaterThan(0)
+    // Read again with nothing changed: no change.
+    t.notice({ type: 'desk_changed', revision: 4 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads()).toBe(first)
+    t.setting(false)
+    t.notice({ type: 'desk_changed', revision: 4 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads()).toBe(first + 1)
+    t.notice({ type: 'desk_changed', revision: 4 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads()).toBe(first + 1)
+    t.setting(true)
+    t.notice({ type: 'desk_changed', revision: 4 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads()).toBe(first + 2)
     t.service.stop()
   })
 
@@ -561,8 +660,9 @@ describe('the roster note and the directory', () => {
     again.stop()
   })
 
-  it('holds a waiting delivery while its tab has Agent Messages off, goes on once it is on again, and fails it later', async () => {
-    // Turned off by a slip of the mouse and on again a minute later, a tab failed the message waiting in it (2026-10-12).
+  it('holds a waiting delivery while Agent Messages are off, goes on once they are on again, and fails it later', async () => {
+    // Turned off by a slip of the mouse and on again a minute later, a tab's switch failed the message waiting in it
+    // (2026-10-12). The switch is Settings ▸ Agents now, and a slip there must cost nothing either.
     vi.useFakeTimers()
     const t = setup()
     t.service.start()
@@ -571,8 +671,8 @@ describe('the roster note and the directory', () => {
     const key = deliveryKey(reply.id as string, 'api')
     const status = async () => ((await t.ask({ action: 'history', limit: 10 })).messages as Array<{ id: string; statuses: Array<{ state: string; reason?: string }> }>)
       .find((m) => m.id === reply.id)!.statuses[0]
-    const turn = async (enabled: boolean) => {
-      t.tabs[0].enabled = enabled
+    const turn = async (on: boolean) => {
+      t.setting(on)
       t.notice({ type: 'desk_changed', revision: 6 })
       await vi.advanceTimersByTimeAsync(0)
     }
@@ -596,7 +696,7 @@ describe('the roster note and the directory', () => {
     expect(await status()).toMatchObject({ state: 'queued', reason: HELD_OFF_REASON })
     t.tick(HELD_OUTSIDE_MS)
     await vi.advanceTimersByTimeAsync(PUMP_MS)
-    expect(await status()).toMatchObject({ state: 'failed', reason: 'Agent Messages were turned off in this tab' })
+    expect(await status()).toMatchObject({ state: 'failed', reason: 'Agent Messages were turned off on its computer' })
     expect(t.inbox.waiting('%2', key)).toBe(false)
     t.service.stop()
   })

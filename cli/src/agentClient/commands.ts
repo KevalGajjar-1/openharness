@@ -857,8 +857,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       // Said once, at the top: the task is from an agent, not the person (a teammate's tmux paste read as the
       // owner's). It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its
       // whole report back as a message as well, which would land in the middle of the starter's own turn. Nor is the
-      // new harness told to message it: being started by it gives no way to, only a tab with Agent Messages on does
-      // (owner, 2026-10-11: "Agent Messages off means off").
+      // new harness told to message it: being started by it gives no way to, only sharing a tab does (owner,
+      // 2026-10-11: "Agent Messages off means off").
       const here = machineId === o.where.machineId
       const header = caller.outside
         ? `[from ${caller.name} outside Harness · ${o.machine}, the agent that started you. It reads your answer itself.]\n\n`

@@ -17,6 +17,7 @@ import type { RecentTurn } from '../cable/cableHost.js'
 import type { ReviewedAnswer } from '../cable/questionInbox.js'
 import type { AgentEngine } from '../engines/types.js'
 import type { AppSwarms } from '../cable/cableSession.js'
+import type { AgentSettings } from '../lib/agentSettings.js'
 import type { UnreadNotification } from '../lib/notificationRead.js'
 import type { AutonomousDeviceAgent, AutonomousDeviceDelivery, AutonomousDeviceReceipt } from '../lib/autonomous-device/service.js'
 import type { StoreAgent } from '../lib/autonomous-device/store.js'
@@ -574,7 +575,8 @@ export const MESSAGES_REQUESTS = ['agent_messages'] as const
  * The experiments: services that cost nothing until they are on (docs/design/2026-10-06-core-boundary-next.md,
  * "Experimental features: move only"). Each runs in a process of its own that the master starts only once the
  * core asks for it (harnessd/services.ts `onDemand`): when one of its `requests` arrives, or at start when its
- * saved `state` is in the data folder (paths under it; `dir/*.ext` for a file of that kind in that folder).
+ * saved `state` is in the data folder (paths under it; `dir/*.ext` for a file of that kind in that folder), or
+ * while its Settings ▸ Agents `setting` is on (lib/agentSettings.ts).
  * Off, it has no process and none of its code is loaded anywhere. Each may act on the core through the hooks
  * an experiment has (core/experimentQueries.ts, core/deliveries.ts), and no other process may.
  *
@@ -583,10 +585,11 @@ export const MESSAGES_REQUESTS = ['agent_messages'] as const
  * entry here; and its start for the core's own process (services/inline.ts `EXPERIMENT_STARTS`). Removing
  * one is deleting those.
  */
-export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[]; state: readonly string[] }>> = {
+export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[]; state: readonly string[]; setting?: keyof AgentSettings }>> = {
   orchestrator: { requests: ORCHESTRATOR_REQUESTS, state: ['orchestrator/*.json'] },
   // Agent Messages. Its history and waiting deliveries: a message was sent from here or delivered to an agent here.
-  messages: { requests: MESSAGES_REQUESTS, state: ['agent-messages'] },
+  // On by default (Settings ▸ Agents), so it starts with the core: its agents hear of `harness send` from it.
+  messages: { requests: MESSAGES_REQUESTS, state: ['agent-messages'], setting: 'agentMessages' },
   // Its invitations and links: a harness was shared from here.
   sharing: { requests: SHARE_REQUESTS, state: ['harness-shares.json', 'harness-collaboration.json'] },
   // Request-only, on from its first request until the daemon stops: another machine's Memories pane asks, and

@@ -1,12 +1,12 @@
 /**
- * Agent Messages (docs/design/2026-10-10-agent-messages.md): harnesses in a tab with Agent Messages on message
- * each other with `harness send`. This is the whole service, on the core's API, in the core's process or in its
- * own (services/messages.ts, services/messagesProcess.ts):
+ * Agent Messages (docs/design/2026-10-10-agent-messages.md): harnesses in one tab message each other with `harness
+ * send`, while this computer has Agent Messages on (Settings ▸ Agents, on by default). This is the whole service,
+ * on the core's API, in the core's process or in its own (services/messages.ts, services/messagesProcess.ts):
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
  * - `history`: the windows' log of a tab.
  * - `started`: another machine's record of a harness it started here, for the agent client's limits and depth
- *   (agentClient/ledger.ts). It lets no one message anyone: only a tab with Agent Messages on does.
+ *   (agentClient/ledger.ts). It lets no one message anyone: only sharing a tab does.
  * Deliveries to this machine's agents are the mailbox's (mailbox.ts); a message for another machine's agent is
  * handed to that machine's daemon, which owns its delivery and is asked what became of it.
  */
@@ -15,6 +15,7 @@ import { hostname } from 'node:os'
 import { basename, join } from 'node:path'
 import type { CoreApi, ServiceRequests, TurnDelivery } from '../core/api.js'
 import { env } from '../config/env.js'
+import { readAgentSettings } from '../lib/agentSettings.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
@@ -58,10 +59,16 @@ export const REMOTE_STATUS_MS = 15_000
 export const WHO_MS = 60_000
 /** How old an inbox file nothing here waits on must be before a start sweeps it away. */
 export const SWEEP_AFTER_MS = 10 * 60_000
-/** How long a delivery no tab with Agent Messages on carries is held, given to no one, before it fails. */
+/** How long a delivery no tab carries (Agent Messages turned off, or the tab left) is held, given to no one, before
+ *  it fails. */
 export const HELD_OUTSIDE_MS = 5 * 60_000
-export const HELD_OFF_REASON = 'Agent Messages are off in this tab: it waits 5 minutes for them to be on again, then fails'
+export const HELD_OFF_REASON = 'Agent Messages are off on its computer: it waits 5 minutes for them to be on again, then fails'
 export const HELD_LEFT_REASON = 'it is not in a tab with the sender: it waits 5 minutes for that to change, then fails'
+/** How long this computer's Agent Messages setting (Settings ▸ Agents) is taken as read: the mailbox's pump asks
+ *  every 2 s (mailbox.ts PUMP_MS), and a send or a hand-over asks too. */
+export const SETTING_FRESH_MS = 2_000
+/** What `harness send` says while this computer has Agent Messages off: where the person turns them on again. */
+export const MESSAGES_OFF_TEXT = 'Agent Messages are off on this computer. The person turns them on in Settings ▸ Agents, or with `harness settings agent-messages on`.'
 
 const PANE = /^%\d{1,9}$/
 /** The most messages `harness send` alone gives an agent at once, unread ones first. */
@@ -81,9 +88,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   const self = (): string => core.daemon.machineId()
   const at = (machineId: string) => ({ port: core.daemon.port, machineId, dataDir: options.dataDir ?? core.dataDir })
   const store = new MessageStore(options.stateDir ?? join(core.dataDir, 'agent-messages'))
-  // Who started which harness is the agent client's (limits, depth, who may close what), never a way to message.
-  // Agent Messages off means off: a harness started by another reaches it only through a tab with Agent Messages
-  // on, like any teammate (owner, 2026-10-11, on finding agents messaging each other with no tab turned on).
+  // Who started which harness is the agent client's (limits, depth, who may close what), never a way to message: a
+  // harness started by another reaches it only through a tab they share, like any teammate (owner, 2026-10-11, on
+  // finding agents messaging each other with no tab turned on).
   const lineage = new Ledger(options.ledgerFile ?? ledgerPath(core.dataDir))
   const inbox = new PaneInbox(options.inboxRoot ?? env.HARNESS_AGENT_MESSAGES_DIR)
   /** Other machines' names for their agents, with when they were asked. */
@@ -95,7 +102,17 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   let timer: ReturnType<typeof setInterval> | null = null
   let lastRemoteStatus = -Infinity
 
+  // Settings ▸ Agents, kept by the core in the data folder (lib/agentSettings.ts) and written by `harness settings`
+  // too, which tells no one: a small file, read again at most every SETTING_FRESH_MS, so a switch turned off takes
+  // effect at the next look.
+  let setting = { on: true, at: -Infinity }
+  const messagingOn = (): boolean => {
+    if (now() - setting.at >= SETTING_FRESH_MS) setting = { on: readAgentSettings(options.dataDir ?? core.dataDir).agentMessages, at: now() }
+    return setting.on
+  }
+
   const directory = new MessageDirectory({
+    on: messagingOn,
     read: async () => {
       const response = await core.account.backend('GET', '/api/agent-messages')
       if (response.status !== 200 || response.body.success !== true) throw new Error('directory unavailable')
@@ -133,23 +150,24 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
 
   /**
    * Why a local delivery may never be made, whatever the tabs say, or null. Before 2026-10-11 a harness and one it
-   * started messaged each other with no tab on, logged under `started`; Agent Messages off means off, so what an
-   * older version left waiting there is never delivered, even to two that share a tab with it on now. Asked before
+   * started messaged each other with no tab on, logged under `started`; only a tab carries a message, so what an
+   * older version left waiting there is never delivered, even to two that share a tab now. Asked before
    * the directory is read too: the hook takes what waits in a pane's inbox without asking, and a directory that
    * cannot be read (signed out, the backend down) would otherwise leave it there to be taken.
    */
   function forbidden(delivery: LocalDelivery): string | null {
-    return store.entry(delivery.messageId)?.message.tabId === 'started' ? 'it was sent outside any tab with Agent Messages on' : null
+    return store.entry(delivery.messageId)?.message.tabId === 'started' ? 'it was sent outside any tab' : null
   }
 
   /** When the tabs stopped carrying each local delivery (`messageId agentId`), while they do not. */
   const outsideSince = new Map<string, number>()
 
   /**
-   * Whether a local delivery may be made: null; held, given to no one, while no tab with Agent Messages on carries
-   * it, for HELD_OUTSIDE_MS; refused after that, or at once when it may never be made. Only what may never be made is
-   * refused before the directory is read. A tab turned off by a slip of the mouse and on again a minute later failed
-   * the message waiting in it (owner, 2026-10-12): held, it goes on once the tab is on again.
+   * Whether a local delivery may be made: null; held, given to no one, while no tab carries it (Agent Messages are
+   * off here, or the two no longer share a tab), for HELD_OUTSIDE_MS; refused after that, or at once when it may never
+   * be made. Only what may never be made is refused before the directory is read. A tab's switch turned off by a slip
+   * of the mouse and on again a minute later failed the message waiting in it (owner, 2026-10-12): held, it goes on
+   * once it is carried again.
    */
   function verdict(delivery: LocalDelivery): { refused: string } | { held: string } | null {
     const entry = store.entry(delivery.messageId)
@@ -159,17 +177,16 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!directory.current()) return null
     const key = `${delivery.messageId} ${delivery.agentId}`
     const recipient = { machineId: self(), agentId: delivery.agentId }
-    // Only a tab with Agent Messages on carries a message.
+    // Only a tab the two share carries a message, and none while Agent Messages are off here.
     if (directory.shared(entry.message.from, recipient)) { outsideSince.delete(key); return null }
-    const tab = directory.current()!.tabs.find((t) => t.id === entry.message.tabId)
-    const off = Boolean(tab && !tab.enabled)
+    const off = !directory.on()
     const since = outsideSince.get(key) ?? now()
     if (now() - since < HELD_OUTSIDE_MS) {
       outsideSince.set(key, since)
       return { held: off ? HELD_OFF_REASON : HELD_LEFT_REASON }
     }
     outsideSince.delete(key)
-    return { refused: off ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender' }
+    return { refused: off ? 'Agent Messages were turned off on its computer' : 'it is no longer in a tab with the sender' }
   }
 
   function localChanged(status: DeliveryStatus, delivery: LocalDelivery): void {
@@ -263,7 +280,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (wait) await done
   }
 
-  /** The note a local agent should have read, or null when it is in no tab with Agent Messages on and a teammate. */
+  /** The note a local agent should have read, or null when it shares no tab with a teammate, or Agent Messages are
+   *  off here. */
   function rosterOf(agentId: string): { text: string; signature: string } | null {
     const me = { machineId: self(), agentId }
     const peers = directory.peers(me)
@@ -332,10 +350,11 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!PANE.test(pane)) throw new MessageError('NOT_A_HARNESS', 'Run harness send from a harness pane.')
     const session = live().find((s) => s.tmuxPane === pane)
     if (!session) throw new MessageError('NOT_A_HARNESS', 'This pane is not a harness Harness knows. Run harness send from an agent\'s pane.')
-    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. Try again in a moment.')
+    // Off is the person's word, answered before the tabs are read: a backend that cannot be reached is not the reason.
+    if (!directory.on()) throw new MessageError('MESSAGES_OFF', MESSAGES_OFF_TEXT)
+    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read who is in which tab. Try again in a moment.')
     const me = { machineId: self(), agentId: session.agentId }
     const peers = directory.peers(me)
-    if (!directory.tabsOf(me).length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
     await learnNames(peers, true)
     const mates = distinct(me, peers)
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])
@@ -345,6 +364,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     // was compacted asks this to learn again what it was told: seen on a real team, one rebuilt it from its team
     // history in five commands.
     if (!names.length && !text) return { roster: rosterOf(session.agentId)?.text ?? 'No teammates in this tab yet.', recent: recentFor(me) }
+    // Alone in its tab, or in none: a name it gives can be no one's, and the person is the one who can change that.
+    if (!peers.length) throw new MessageError('NO_TEAMMATES', 'No other harness is in this tab. The person puts harnesses in one tab for them to message each other.')
     if (!names.length) throw new MessageError('USAGE', 'Name who to message: harness send <name> "text"')
     if (!text.trim()) throw new MessageError('USAGE', 'Write the message: harness send <name> "text"')
     if (text.length > LIMITS.text) throw new MessageError('TOO_LONG', `A message holds at most ${LIMITS.text} characters.`)
@@ -364,10 +385,12 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       }
     }
     if (recipients.length > LIMITS.recipients) throw new MessageError('TOO_MANY_RECIPIENTS', `A message goes to at most ${LIMITS.recipients} teammates.`)
-    // The first recipient's tab names the message's log. The directory can change while other machines are asked
-    // for names: a tab turned off, or left, meanwhile leaves none, and nothing is sent.
+    // The first recipient's tab names the message's log. The directory and the setting can change while other
+    // machines are asked for names: Agent Messages turned off, or the tab left, meanwhile leaves none, and nothing is
+    // sent.
     const tab = directory.shared(me, recipients[0])
-    if (!tab) throw new MessageError('MESSAGES_OFF', `${recipients[0].name} is no longer in a tab with you that has Agent Messages on. Nothing was sent.`)
+    if (!tab && !directory.on()) throw new MessageError('MESSAGES_OFF', `${MESSAGES_OFF_TEXT} Nothing was sent.`)
+    if (!tab) throw new MessageError('NOT_IN_TAB', `${recipients[0].name} is no longer in a tab with you. Nothing was sent.`)
     const times = (sent.get(session.agentId) ?? []).filter((t) => now() - t < LIMITS.window)
     if (times.length >= LIMITS.perSender) {
       core.clients.windows({ type: 'messages_changed', payload: { limited: { machineId: self(), agentId: session.agentId } } })
@@ -480,7 +503,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!message) throw new MessageError('INVALID_MESSAGE', 'That is not a message.')
     // This machine's own harnesses send through `send`, which names them by their pane: never as another's.
     if (message.from.machineId === self()) throw new MessageError('NOT_FROM_THERE', 'A message from this machine is sent here, not handed over.')
-    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. It is handed over again later.')
+    if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read who is in which tab. It is handed over again later.')
     if (store.state.local.filter((d) => d.state === 'queued').length >= LIMITS.waiting) {
       throw new MessageError('MAILBOX_FULL', 'Too many messages are waiting on that machine. It is handed over again later.')
     }
@@ -489,8 +512,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const statuses: DeliveryStatus[] = []
     for (const r of message.to.filter((r) => r.machineId === self())) {
       if (!known && !store.state.local.some((d) => d.messageId === message.id && d.agentId === r.agentId)) {
-        if (directory.current() && !directory.shared(message.from, r)) {
-          store.status({ messageId: message.id, machineId: self(), agentId: r.agentId, state: 'failed', reason: 'it is not in a tab with Agent Messages on with the sender', at: now() })
+        // Off here, a hand-over fails at once, as one to an agent outside the sender's tabs does: only what already
+        // waits here is held through a switch turned off and on again.
+        if (!directory.shared(message.from, r)) {
+          store.status({ messageId: message.id, machineId: self(), agentId: r.agentId, state: 'failed', reason: directory.on() ? 'it is not in a tab with the sender' : 'Agent Messages are off on its computer', at: now() })
         } else {
           store.status({ messageId: message.id, machineId: self(), agentId: r.agentId, state: 'queued', at: now() })
           mailbox.accept(message, r.agentId)

@@ -4,8 +4,9 @@
  * that leaves this machine.
  *
  * - `GET /api/machines`: the account's machines, each `running` or `offline` as the test says.
- * - `GET /api/agent-messages`: the account's tabs and their Agent Messages flag, as the test sets them.
- * - `PATCH /api/agent-messages/tabs/:id`: one tab's flag turned, as a window turns it through its daemon.
+ * - `GET /api/agent-messages`: the account's tabs and who is in each, as the test sets them.
+ * - `PATCH /api/agent-messages/tabs/:id`: one tab's old Agent Messages flag turned, as an older window turns it
+ *   through its daemon; no daemon reads it now (Settings ▸ Agents decides).
  * - `/api/adapter-ws`: each daemon's own socket, as the node of its machine. Frames for it arrive as
  *   `{t:'down', connId, frame}`; what it sends comes back as `{t:'up', targetConnId?, commanderEligible?, frame}`.
  * - `/api/device-ws`: a daemon's lane to its owner's other machines, as a device holding a commander
@@ -81,7 +82,7 @@ const bytes = (raw: RawData): Uint8Array => new Uint8Array(Array.isArray(raw) ? 
 
 export class FakeBackend {
   readonly seen: string[] = []
-  /** What `GET /api/agent-messages` answers: the account's tabs with Agent Messages on or off; null, a 404. */
+  /** What `GET /api/agent-messages` answers: the account's tabs and who is in each; null, a 404. */
   agentMessages: Record<string, unknown> | null = null
   private readonly machines = new Map<string, FakeMachine>()
   private readonly online = new Map<string, boolean>()

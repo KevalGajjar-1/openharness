@@ -184,8 +184,9 @@ like any other. Named in `HARNESSD_SERVICES`, it starts with the others.
 
 - **What asks.** A request for a service that has not connected yet (`serviceLinks` `onDemand`, in
   `src/core/main.ts`) asks for it and waits for it, within the request's own wait. The service is welcomed
-  before its queued requests are delivered. Each experiment with saved state in the data folder is
-  asked for as the core starts (`src/core/experiments.ts`). The devices are asked for once there is a device:
+  before its queued requests are delivered. Each experiment with saved state in the data folder, or with its
+  Settings ▸ Agents switch on (Agent Messages, on by default), is asked for as the core starts, and when a
+  Settings ▸ Agents write leaves that switch on (`src/core/experiments.ts`). The devices are asked for once there is a device:
   a dial's port in /dev, a paired Wi-Fi device, or its session (`src/core/devicesWake.ts`). Models is asked
   for as the core starts when grid is in use here: a managed grid, whose pin it follows, saved grid pictures,
   which agents' grid notes are read from, or local models (`src/core/modelsWake.ts`); otherwise its first
@@ -206,7 +207,8 @@ like any other. Named in `HARNESSD_SERVICES`, it starts with the others.
 
 An experiment (the orchestrator, Agent Messages, Share, memory, the router) is a service that costs nothing until it is
 on: its own process, which the master starts only when the core asks for it (`want`), when one of
-its requests arrives or, as the core starts, when its saved state is in the data folder. Off, nothing of it runs or
+its requests arrives or, as the core starts, when its saved state is in the data folder or its Settings ▸ Agents
+switch is on (Agent Messages, on by default since 2026-10-12, so its agents get its note). Off, nothing of it runs or
 is loaded anywhere; one failing costs its own process and nothing else. `e2e/experiments.e2e.ts` proves it:
 off, on by request, on by saved state, killed, hung and crashing on every start.
 
@@ -221,7 +223,8 @@ To add one:
    also reads the backend as the account (`core.account.backend`) and has its welcomes signed by the gateway
    (`core.account.observerKey`), so it holds no credential, and watches terminals read-only
    (`core.terminals.watch`, `services/watchLink.ts`).
-2. Its entry in `EXPERIMENTS` (`src/core/api.ts`): its requests and its saved state.
+2. Its entry in `EXPERIMENTS` (`src/core/api.ts`): its requests, its saved state, and its Settings ▸ Agents
+   `setting` if the person turns it on and off there (`src/lib/agentSettings.ts`).
 3. Its process in `SERVICE_HOSTS` (`src/harnessd/services.ts`) with `onDemand: true`, and its runner in
    `SERVICE_RUNNERS` (`src/serviceProcess.ts`).
 4. Its start for the core's own process, in `services/inline.ts`, and one line in `core/main.ts` that starts

@@ -1,16 +1,18 @@
 /**
  * Who may message whom (docs/design/2026-10-10-agent-messages.md, "Who may message whom"): the account's
- * desk tabs, each with its owned panes and whether Agent Messages is on in it, read from the backend
- * (`GET /api/agent-messages`). A message goes only between harnesses that share a tab whose flag is on.
+ * desk tabs, each with its owned panes, read from the backend (`GET /api/agent-messages`). A message goes only
+ * between harnesses that share a tab, while this computer has Agent Messages on (Settings ▸ Agents, on by default).
+ * Each tab's own flag, which the backend still answers for older windows, is not read: the tab's switch was a chat
+ * icon beside its × that was easy to hit by mistake, and the owner made it one setting, on by default (2026-10-12).
  *
- * Read when the service starts, every 15 seconds while it runs, again on the account's `desk_changed` (which a
- * flag change publishes too), and fresh before a send. An unreadable directory never clears what was read: a
- * failed read keeps the last one, and before any read nothing may be sent.
+ * Read when the service starts, every 15 seconds while it runs, again on the account's `desk_changed`, and fresh
+ * before a send. An unreadable directory never clears what was read: a failed read keeps the last one, and before
+ * any read nothing may be sent.
  */
 
 export interface Member { machineId: string; agentId: string }
 /** `named`: the person named the tab; any other is labelled by the windows themselves (backend lib/agentMessages.ts). */
-export interface DirectoryTab { id: string; name: string; named: boolean; enabled: boolean; panes: Member[] }
+export interface DirectoryTab { id: string; name: string; named: boolean; panes: Member[] }
 export interface Directory { revision: number; machines: ReadonlyMap<string, string | null>; tabs: DirectoryTab[] }
 
 export const POLL_MS = 15_000
@@ -37,7 +39,7 @@ export function parseDirectory(value: unknown): Directory | null {
       return machineId && agentId ? [{ machineId, agentId }] : []
     })
     // A backend from before `named` says nothing: then only the window's own default name is no name.
-    tabs.push({ id, name, named: typeof t.named === 'boolean' ? t.named : name !== 'New Tab', enabled: t.enabled === true, panes })
+    tabs.push({ id, name, named: typeof t.named === 'boolean' ? t.named : name !== 'New Tab', panes })
   }
   return { revision: typeof v.revision === 'number' ? v.revision : 0, machines, tabs }
 }
@@ -48,6 +50,8 @@ export interface DirectoryDeps {
   read(): Promise<unknown>
   /** The directory changed: deliveries and notes may need another look. */
   changed?(): void
+  /** Whether this computer has Agent Messages on (Settings ▸ Agents); on when not said. */
+  on?(): boolean
   now?(): number
 }
 
@@ -56,10 +60,14 @@ export class MessageDirectory {
   private readAt = -Infinity
   private reading: Promise<Directory | null> | null = null
   private timer: ReturnType<typeof setInterval> | null = null
+  private wasOn = true
   constructor(private readonly deps: DirectoryDeps) {}
   private now(): number { return this.deps.now?.() ?? Date.now() }
 
   current(): Directory | null { return this.value }
+
+  /** Whether this computer has Agent Messages on: off, no tab carries a message. */
+  on(): boolean { return this.deps.on?.() ?? true }
 
   /** The directory, read again unless the last read is fresh; a failed read keeps the last one. */
   refresh(force = false): Promise<Directory | null> {
@@ -67,10 +75,12 @@ export class MessageDirectory {
     return this.reading ??= this.deps.read().then((raw) => {
       const next = parseDirectory(raw)
       if (next) {
-        const before = JSON.stringify(this.value ? [this.value.revision, this.value.tabs] : null)
+        // The setting counts as part of what was read: turned on or off, deliveries and notes get another look.
+        const before = JSON.stringify(this.value ? [this.value.revision, this.value.tabs, this.wasOn] : null)
         this.value = next
+        this.wasOn = this.on()
         this.readAt = this.now()
-        if (JSON.stringify([next.revision, next.tabs]) !== before) this.deps.changed?.()
+        if (JSON.stringify([next.revision, next.tabs, this.wasOn]) !== before) this.deps.changed?.()
       }
       return this.value
     }, () => this.value).finally(() => { this.reading = null })
@@ -88,17 +98,18 @@ export class MessageDirectory {
     this.timer = null
   }
 
-  /** The tabs with Agent Messages on that a harness is in. */
+  /** The tabs a harness is in, while Agent Messages are on; none while they are off. */
   tabsOf(member: Member): DirectoryTab[] {
-    return (this.value?.tabs ?? []).filter((tab) => tab.enabled && tab.panes.some((p) => same(p, member)))
+    if (!this.on()) return []
+    return (this.value?.tabs ?? []).filter((tab) => tab.panes.some((p) => same(p, member)))
   }
 
-  /** The first tab with Agent Messages on that two harnesses share, or null. */
+  /** The first tab two harnesses share while Agent Messages are on, or null. */
   shared(a: Member, b: Member): DirectoryTab | null {
     return this.tabsOf(a).find((tab) => tab.panes.some((p) => same(p, b))) ?? null
   }
 
-  /** Everyone a harness may message: the other members of its tabs with Agent Messages on, once each. */
+  /** Everyone a harness may message: the other members of its tabs, once each, while Agent Messages are on. */
   peers(member: Member): Member[] {
     const out: Member[] = []
     for (const tab of this.tabsOf(member)) {

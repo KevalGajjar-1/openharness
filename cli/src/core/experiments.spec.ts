@@ -2,12 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAccountNotices, createExperimentHooks, stateIsThere, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
+import { writeAgentSettings } from '../lib/agentSettings.js'
+import { EXPERIMENTS } from './api.js'
+import { createAccountNotices, createExperimentHooks, stateIsThere, wakeExperiments, writeAgentSettingsAndWake } from './experiments.js'
 
 describe('the experiments on as the core starts', () => {
   let dataDir: string
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'experiments-')) })
   afterEach(() => rmSync(dataDir, { recursive: true, force: true }))
+  /** Agent Messages as core/api.ts declares it: on by its Settings ▸ Agents switch, or by its saved state. */
+  const experiments = { messages: { state: ['agent-messages'], setting: 'agentMessages' as const }, orchestrator: { state: ['orchestrator/*.json'] } }
 
   it('finds saved state by path, or by a file of its kind in its folder', () => {
     expect(stateIsThere(dataDir, ['agent-messages'])).toBe(false)
@@ -37,6 +41,30 @@ describe('the experiments on as the core starts', () => {
     })
     expect(woken).toEqual(['orchestrator'])
     expect(want.mock.calls).toEqual([['orchestrator']])
+  })
+
+  it('asks for an experiment whose Settings ▸ Agents switch is on, with no saved state, and not once it is off', () => {
+    // Agent Messages is on by default: its agents hear of `harness send` only from its process, which nothing else
+    // starts on a machine where no one has sent yet (owner, 2026-10-12).
+    const wake = (outOfProcess = new Set(['messages', 'orchestrator'])) => {
+      const want = vi.fn()
+      return { woken: wakeExperiments({ dataDir, experiments, outOfProcess, want }), want }
+    }
+    const first = wake()
+    expect(first.woken).toEqual(['messages'])
+    expect(first.want.mock.calls).toEqual([['messages']])
+    // As core/api.ts declares the experiments: on a fresh data folder, Agent Messages alone.
+    const outOfProcess = new Set(Object.keys(EXPERIMENTS))
+    expect(wakeExperiments({ dataDir, experiments: EXPERIMENTS, outOfProcess, want: vi.fn() })).toEqual(['messages'])
+    // In the core's process it is started there, not asked for.
+    expect(wake(new Set()).woken).toEqual([])
+    writeAgentSettings(dataDir, { agentMessages: false })
+    const off = wake()
+    expect(off.woken).toEqual([])
+    expect(off.want).not.toHaveBeenCalled()
+    // Off, its saved state still wakes it: what waits there is held, then failed, rather than left behind.
+    mkdirSync(join(dataDir, 'agent-messages'))
+    expect(wake().woken).toEqual(['messages'])
   })
 
   it('hands the account\'s notices to each listener here, guarded, and to the experiments\' processes', () => {
@@ -85,16 +113,20 @@ describe('the experiments on as the core starts', () => {
     createExperimentHooks({ want: vi.fn(), notify, outOfProcess: new Set(), experiments: [] }).want('x')
   })
 
-  it('asks for Agent Messages once a tab is turned on, and not when one is turned off or the backend refuses', async () => {
+  it('asks for an experiment once a Settings ▸ Agents write leaves its switch on, and not when off or refused', async () => {
     // On one machine nothing else starts it: no agent heard of `harness send` (a fresh Mac, 2026-10-12).
     const want = vi.fn()
-    const ok = { status: 200, body: { success: true } }
-    expect(await writeAgentMessagesTab(async () => ok, { enabled: true }, want)).toBe(ok)
-    expect(want).toHaveBeenCalledTimes(1)
-    await writeAgentMessagesTab(async () => ok, { enabled: false }, want)
-    await writeAgentMessagesTab(async () => ok, null, want)
-    await writeAgentMessagesTab(async () => ({ status: 404, body: {} }), { enabled: true }, want)
-    await writeAgentMessagesTab(async () => ({ status: 199, body: {} }), { enabled: true }, want)
-    expect(want).toHaveBeenCalledTimes(1)
+    const settings = (body: Record<string, unknown>, status = 200) => async () => ({ status, body })
+    const on = { agentsStartAgents: true, pullRequestLine: true, agentMessages: true }
+    const answer = await writeAgentSettingsAndWake(settings(on), experiments, want)
+    expect(answer).toEqual({ status: 200, body: on })
+    expect(want.mock.calls).toEqual([['messages']])
+    // Another switch written, this one left on: asked for again, which changes nothing for one already running.
+    await writeAgentSettingsAndWake(settings({ ...on, pullRequestLine: false }), experiments, want)
+    expect(want).toHaveBeenCalledTimes(2)
+    await writeAgentSettingsAndWake(settings({ ...on, agentMessages: false }), experiments, want)
+    await writeAgentSettingsAndWake(settings({ error: { code: 'BAD_REQUEST' } }, 400), experiments, want)
+    await writeAgentSettingsAndWake(settings(on, 199), experiments, want)
+    expect(want).toHaveBeenCalledTimes(2)
   })
 })

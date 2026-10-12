@@ -139,14 +139,14 @@ Machine:
   harness machines             list the machines on this account (this computer's is marked)
   harness search <words>       find the conversation on this computer that said them: every turn of
                                every harness, live or stopped (--limit=N, --json)
-  harness send <name> "text"   from an agent's pane: message a teammate in this tab, when Agent Messages
-                               are on there (the tab's chat icon); \`harness send\` alone lists who is here
+  harness send <name> "text"   from an agent's pane: message a teammate in this tab (Agent Messages,
+                               Settings ▸ Agents); \`harness send\` alone lists who is here
   harness ps [--all]           the harnesses here: state, who started each, what each is about
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
   harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
   harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
-  harness settings [<name> on|off]  what agents may do here (agents-start-agents, pull-request-line), as Settings ▸ Agents
+  harness settings [<name> on|off]  what agents may do here (agents-start-agents, pull-request-line, agent-messages), as Settings ▸ Agents
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})

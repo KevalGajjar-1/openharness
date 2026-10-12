@@ -33,7 +33,8 @@ Harness is for:
    and resumes later.
 4. **The person sees it**: what an agent starts appears as a pane on the desktop and the phone, where the person
    can watch, answer or stop it. Sub-agents are invisible.
-5. **Existing peers**: harnesses the person started, in a tab with Agent Messages on.
+5. **Existing peers**: harnesses the person started, in the agent's tab, while Agent Messages are on (Settings ▸
+   Agents, on by default).
 
 Claude Code itself now has `ListAgents`, `SendMessage` and `notify_when_idle` for its own sessions on one
 machine. The verbs below take the same shape on purpose; what Harness adds is every engine, every machine,
@@ -46,7 +47,7 @@ harness ps [--all]                                  # the harnesses here: state,
 harness new [agent] [@machine] [folder] --name N -- <task>     # exists; now knows when an agent runs it
 harness show <name> [--chars N]                     # its state, the last ask and the answer
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
-harness send <name>[,<name>…] "text"                # exists (Agent Messages): teammates in a tab with it on, only
+harness send <name>[,<name>…] "text"                # exists (Agent Messages): teammates in its tab, while it is on, only
 harness close <name> [--now]                        # save its screen and stop it; resumable
 ```
 
@@ -94,10 +95,10 @@ itself: it is a capable model and knows its own task better than any router. It 
 which `harness ps` gives it (name, what it is about, state, engine, machine, folder, how long ago it stopped),
 and one rule, in its startup note:
 
-1. **Ownership first.** An agent may give work only to a harness it started, or to one in a tab with Agent
-   Messages on. A harness a person is driving is read-only to agents: `show` and `wait` it, never `send`.
+1. **Ownership first.** An agent may give work only to a harness it started, or to a teammate in its tab while
+   Agent Messages are on. A harness a person is driving is read-only to agents: `show` and `wait` it, never `send`.
 2. **Then sameness.** If a harness it may use is on the same work on the same subject (the router's question),
-   is idle or resumable, and is its teammate in a tab with Agent Messages on, send there: it holds the context.
+   is idle or resumable, and is its teammate in its tab while Agent Messages are on, send there: it holds the context.
    Otherwise `new`: a follow-up with the fuller task, unrelated work, work to run in parallel, another engine or
    machine, or the matching harness is busy with something else. Starting a harness gives no way to message it
    (below, "Agent Messages off means off").
@@ -187,7 +188,7 @@ server's environment as it removes harnessd's own (`lib/agentSessionEnv.ts`).
 `harness mcp` serves the verbs as MCP tools on stdin and stdout, for agents that reach tools through MCP rather
 than a shell (Claude Desktop, Cursor, Windsurf; Claude Code and Codex with the Harness plugin): `harness_list`,
 `harness_start`, `harness_wait`, `harness_read`, `harness_close`, and `harness_send` only in a harness's own pane,
-since nothing can message an agent outside one, and then only to teammates in a tab with Agent Messages on. Each
+since nothing can message an agent outside one, and then only to teammates in its tab while Agent Messages are on. Each
 call runs the verb as `harness` in a process of its own, so the rules above decide what it may do, and the tool's
 answer is the text the verb prints. `initialize` carries the when-to-use rules as the server's instructions.
 
@@ -233,7 +234,8 @@ its launch contract (`EngineLaunch.attribution`) and applied by `engines/kit/att
 The person turns it off per computer with `harness settings pull-request-line off`: `pullRequestLine` in
 `<data>/agent-settings.json`, beside `agentsStartAgents`, on by default and read at each launch, so a harness running
 then keeps its line until it restarts. `/api/agent-settings` reads and writes it too; Settings ▸ Agents does not show it
-yet, as a setting in the apps needs an agreed mockup first. Not covered yet: the other eleven engines (no contract),
+yet, as a setting in the apps needs an agreed mockup first. The same file keeps `agentMessages` since October 12:
+Agent Messages within a tab, on by default (`harness settings agent-messages on|off`, 2026-10-10-agent-messages.md). Not covered yet: the other eleven engines (no contract),
 the orchestrator's harnesses, and a machine whose daemon predates `startedBy`, which ignores it.
 
 ## Limits
@@ -259,7 +261,7 @@ spends the person's tokens. Every limit refuses with a clear error; nothing is d
 "No asking. Just do. The best UX." Every verb needs the daemon, which Codex's sandbox cannot reach, so Codex asked
 the person before each one: about four questions for one hand-off (new, wait, show, close). In its auto mode it
 answered itself, but only after a failed try inside the sandbox. The safety is Harness's own, above: the switch for
-agents starting agents, the limits, closing only what you started, and Agent Messages per tab. So the engines run
+agents starting agents, the limits, closing only what you started, and Agent Messages only within a tab. So the engines run
 the verbs without asking.
 
 - **Codex, shell.** `<CODEX_HOME>/rules/harness.rules`, which Harness owns whole (written at every daemon start and
@@ -378,8 +380,8 @@ No core change, no new service.
   holds is asked after by its creation id for up to a minute, so a held launch is not left running with an agent's
   task and no record. `new` also stopped printing "Created" for a launch the daemon refused or could not confirm.
   Two starts at the same moment from one harness can both pass the limits: they count what was recorded before.
-- **`send`**: nothing of its own. A harness messages another only where the person turned Agent Messages on in a
-  tab the two share, like any teammate (`harness send` also takes the start of an id there).
+- **`send`**: nothing of its own. A harness messages another only in a tab the two share, while Agent Messages are
+  on, like any teammate (`harness send` also takes the start of an id there).
 - **Another machine.** `new @mini` works as before; `show`, `wait` and `close` find a harness the caller started
   there through its record and reach it over the paired relay.
 
@@ -389,18 +391,21 @@ The first version let a harness and the harnesses it started message each other 
 machine (the lineage exception), kept in a `started` log beside the tabs' logs, and the new harness's header invited
 it to. With CLI 0.3.75 live, the owner found agents messaging each other before turning Agent Messages on
 anywhere, and decided: **Agent Messages off means off; a harness started by another gets no exception.** A harness
-may message another only where the person turned Agent Messages on (the tab's chat icon), like any teammate.
+may message another only where the person turned Agent Messages on, like any teammate: then a tab's chat icon,
+since October 12 one switch per computer, on by default, within a tab the two share (Settings ▸ Agents,
+2026-10-10-agent-messages.md).
 
 - `messages/service.ts` reads who started what only to keep another machine's record (`started`, for limits and
   depth); `send`, `harness send` alone and delivery go through the tabs alone. A send to a harness one started, with
-  no shared tab on, is refused with the same words as any other recipient: `MESSAGES_OFF` in a tab with it off,
-  `UNKNOWN_RECIPIENT` ("No teammate named …") otherwise.
+  no shared tab, is refused with the same words as any other recipient: `MESSAGES_OFF` while Agent Messages are off
+  on the computer, `NO_TEAMMATES` for a harness alone in its tab or in none, `UNKNOWN_RECIPIENT` ("No teammate named
+  …") otherwise.
 - A message an older version queued under `started` is never delivered: it is failed and its inbox file withdrawn
   as the service starts, before the directory is read (the hook takes what waits in an inbox without asking, and a
-  directory that cannot be read would have left it there), even between two that now share a tab with it on.
+  directory that cannot be read would have left it there), even between two that now share a tab.
 - The record (`agent-client/started.jsonl`) stays: `ps`, the limits, the depth and `close` read it.
-- For a follow-up to a harness it started, an agent starts it with everything in the task, or, where Agent Messages
-  are on in its tab, sends.
+- For a follow-up to a harness it started, an agent starts it with everything in the task, or, where the two share
+  a tab and Agent Messages are on, sends.
 
 ### Verified
 

@@ -1,11 +1,11 @@
 /**
  * Harness for agents on the real daemon (docs/design/2026-10-11-agent-client.md): an agent, from its own pane, runs
  * the `harness` verbs as it would through its shell tool. It lists the harnesses, starts one with a task, waits for
- * it, reads its answer, and closes it; it may not close one it did not start. Neither may message the other while no
- * tab has Agent Messages on (owner, 2026-10-11: Agent Messages off means off). The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
+ * it, reads its answer, and closes it; it may not close one it did not start. Neither may message the other while
+ * they share no tab (owner, 2026-10-11: Agent Messages off means off). The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
  * requests it opens: in the arguments its engine is launched with, each launch, until the person turns it off.
  *
- * Signed in to the fake backend, which answers the account's tabs: none has Agent Messages on.
+ * Signed in to the fake backend, which answers the account's tabs: there are none.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
@@ -73,7 +73,7 @@ describe('Harness for agents, end to end', () => {
     await backend?.close(); backend = undefined
   })
 
-  it('an agent sees, starts, waits for, reads and closes a harness of its own, and may not message it with Agent Messages off', async () => {
+  it('an agent sees, starts, waits for, reads and closes a harness of its own, and may not message it outside a shared tab', async () => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
@@ -134,9 +134,10 @@ describe('Harness for agents, end to end', () => {
     expect(shown.out).toContain('hello kid')
     expect((await run('ps')).out).toMatch(/\nkid +Claude Code +\w+ +you /)
 
-    // No tab has Agent Messages on: neither messages the other, either way, as for any two harnesses. Since #1180 the
-    // two messaged each other with no tab, and the owner found agents talking before turning Agent Messages on.
-    const off = 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab'
+    // They share no tab: neither messages the other, either way, as for any two harnesses, though Agent Messages are on
+    // (Settings ▸ Agents, the default). Since #1180 the two messaged each other with no tab, and the owner found agents
+    // talking before turning Agent Messages on.
+    const off = 'No other harness is in this tab. The person puts harnesses in one tab for them to message each other.'
     const sent = await run('send', 'kid', 'Also check the footer.')
     expect(sent.code, sent.out + sent.err).toBe(1)
     expect(sent.err).toContain(off)
@@ -149,7 +150,10 @@ describe('Harness for agents, end to end', () => {
     const back = await harness(d, String(kid.tmuxPane), ['send', 'lead', 'Footer checked.'])
     expect(back.code, back.out + back.err).toBe(1)
     expect(back.err).toContain(off)
-    expect((await harness(d, String(kid.tmuxPane), ['send'])).err).toContain(off)
+    // Nor does `harness send` alone name the other.
+    const listed = await harness(d, String(kid.tmuxPane), ['send'])
+    expect(listed.code, listed.err).toBe(0)
+    expect(listed.out.trim()).toBe('No teammates in this tab yet.')
 
     // It closes what it started, and only that; the harness it started may not close it.
     const own = await run('close', 'lead')
@@ -523,7 +527,7 @@ describe('Harness for agents, end to end', () => {
     expect(JSON.parse(listed.out).harnesses).toEqual([])
     // The setting is the daemon's, as the window reads it.
     const read = await fetch(`http://127.0.0.1:${d.port}/api/agent-settings`)
-    expect(await read.json()).toEqual({ agentsStartAgents: false, pullRequestLine: true })
+    expect(await read.json()).toEqual({ agentsStartAgents: false, pullRequestLine: true, agentMessages: true })
   })
   it('a harness an agent starts says so in the pull requests it opens, on every launch, until the person turns it off', async () => {
     const relay = await FakeBackend.start()

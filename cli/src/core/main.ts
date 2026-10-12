@@ -179,7 +179,7 @@ import { answerAgentQuery } from './agentQueries.js'
 import { createDeliveries } from './deliveries.js'
 import { createTerminalWatch } from './terminalWatch.js'
 import { createSharingLink } from './sharingLink.js'
-import { createExperimentHooks, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
+import { createExperimentHooks, wakeExperiments, writeAgentSettingsAndWake } from './experiments.js'
 import { answerExperimentQuery, createForExperiment } from './experimentQueries.js'
 import { answerConnectorsQuery } from './connectorsQueries.js'
 import { createOrchestratorLink } from './orchestratorLink.js'
@@ -1822,14 +1822,14 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // route and hears about everyone else's edits as `desk_changed` (backendSocket.ts).
     onDeskRead: () => proxyBackend('GET', '/api/desk'),
     onDeskOps: (body) => proxyBackend('POST', '/api/desk/ops', body),
-    // Which tabs have Agent Messages on, for the window's tabs (backend routes/agentMessages.ts).
+    // The account's tabs for Agent Messages (backend routes/agentMessages.ts). A tab's flag is an older window's only:
+    // Settings ▸ Agents decides, so its switch is passed on and wakes nothing.
     onAgentMessagesRead: () => proxyBackend('GET', '/api/agent-messages'),
-    onAgentMessagesWrite: (tabId, body) => writeAgentMessagesTab(() => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body), body,
-      () => experimentHooks.want('messages')),
+    onAgentMessagesWrite: (tabId, body) => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body),
     onExperimentalRead: () => proxyBackend('GET', '/api/experimental-settings'),
     onExperimentalWrite: (body) => proxyBackend('PATCH', '/api/experimental-settings', body),
     onAgentSettingsRead: agentSettings.read,
-    onAgentSettingsWrite: agentSettings.write,
+    onAgentSettingsWrite: (body) => writeAgentSettingsAndWake(() => agentSettings.write(body), EXPERIMENTS, (service) => experimentHooks.want(service)),
     onStore: (method, path, body) => proxyBackend(method, path, body),
   }, { socketPath: localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })
   try { saveDaemonPort(env.ADAPTER_DATA_DIR, env.PORT, hookPort) } catch (error) {
@@ -1848,8 +1848,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (coreLink.supervised) {
     coreLink.bound(hookPort)
     coreLink.startHeartbeat()
-    // The experiments with saved state are on: their processes are asked for now, the master heeding a
-    // bound core alone (core/experiments.ts). The others wait for their first request.
+    // The experiments with saved state, or with their Settings ▸ Agents switch on, are on: their processes are
+    // asked for now, the master heeding a bound core alone (core/experiments.ts). The others wait for their first
+    // request.
     wakeExperiments({ dataDir: env.ADAPTER_DATA_DIR, experiments: EXPERIMENTS, outOfProcess, want: (service) => experimentHooks.want(service) })
     devicesWake.start(outOfProcess)
     wakeModels({ outOfProcess, dataDir: env.ADAPTER_DATA_DIR, runtimeDir: env.ADAPTER_RUNTIME_DIR, want: (service) => coreLink.want(service) })

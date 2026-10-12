@@ -1,13 +1,16 @@
 /**
  * Which experiments are on as the core starts (core/api.ts `EXPERIMENTS`): one whose saved state is in the
  * data folder is asked for at once, so that what it does on its own (a saved project's queued work) goes on
- * after a restart, as it did when it ran in the core's process. One with none waits for its first request:
- * off, it has no process. Read once, at start, and bounded: a name or a folder listing, never a file's
- * contents.
+ * after a restart, as it did when it ran in the core's process; so is one whose Settings ▸ Agents switch is on
+ * (Agent Messages, on by default). One with neither waits for its first request: off, it has no process. Read
+ * once, at start, and bounded: a name or a folder listing, and the one small settings file.
  */
 import { readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { readAgentSettings, type AgentSettings } from '../lib/agentSettings.js'
 import type { BackendNotice } from './api.js'
+
+type Experiments = Readonly<Record<string, { state: readonly string[]; setting?: keyof AgentSettings }>>
 
 /** Whether any of `state` is in `dataDir`: a path under it, or `dir/*.ext` for a file of that kind in that folder. */
 export function stateIsThere(dataDir: string, state: readonly string[]): boolean {
@@ -23,28 +26,36 @@ export function stateIsThere(dataDir: string, state: readonly string[]): boolean
   })
 }
 
-/** Ask for each experiment that runs in its own process and has saved state here. */
+/** Ask for each experiment that runs in its own process and has saved state here, or whose Settings ▸ Agents switch
+ *  is on (Agent Messages, on by default: its agents hear of `harness send` only from its process). */
 export function wakeExperiments(options: {
   dataDir: string
-  experiments: Readonly<Record<string, { state: readonly string[] }>>
+  experiments: Experiments
   outOfProcess: ReadonlySet<string>
   want: (service: string) => void
 }): string[] {
+  const settings = readAgentSettings(options.dataDir)
   const woken = Object.entries(options.experiments)
-    .filter(([name, experiment]) => options.outOfProcess.has(name) && stateIsThere(options.dataDir, experiment.state))
+    .filter(([name, experiment]) => options.outOfProcess.has(name)
+      && (stateIsThere(options.dataDir, experiment.state) || (experiment.setting !== undefined && settings[experiment.setting])))
     .map(([name]) => name)
   for (const name of woken) options.want(name)
   return woken
 }
 
 /**
- * A tab's Agent Messages switch, written through the backend. Turned on, the experiment is asked for at once, so the
- * tab's agents get its note now: otherwise only its first request or its saved state starts it, and on one machine
- * neither comes, so no agent heard of `harness send` (a fresh Mac, 2026-10-12).
+ * A Settings ▸ Agents change, written by the core. An experiment whose switch it leaves on is asked for at once, so it
+ * acts now (Agent Messages' agents get its note) rather than at its first request or the next start: on one machine
+ * neither came, and no agent heard of `harness send` (a fresh Mac, 2026-10-12). Asking again for one already running
+ * changes nothing. A tab's own switch, which older windows still write, decides nothing and wakes nothing.
  */
-export async function writeAgentMessagesTab<T extends { status: number }>(write: () => Promise<T>, body: unknown, want: () => void): Promise<T> {
+export async function writeAgentSettingsAndWake<T extends { status: number; body: Record<string, unknown> }>(
+  write: () => Promise<T>, experiments: Experiments, want: (service: string) => void,
+): Promise<T> {
   const result = await write()
-  if (result.status >= 200 && result.status < 300 && (body as { enabled?: unknown } | null)?.enabled === true) want()
+  if (result.status >= 200 && result.status < 300) {
+    for (const [name, experiment] of Object.entries(experiments)) if (experiment.setting && result.body[experiment.setting] === true) want(name)
+  }
   return result
 }
 

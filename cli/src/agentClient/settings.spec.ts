@@ -17,6 +17,7 @@ describe('harness settings', () => {
     expect(out.pop()).toBe([
       'agents-start-agents   on   agents may start, wait for and close harnesses of their own',
       'pull-request-line     on   a harness another agent starts says so in the pull requests it opens',
+      'agent-messages        on   agents in the same tab may message each other',
     ].join('\n'))
     expect(run('agents-start-agents', 'off')).toBe(0)
     expect(out.pop()).toBe('agents-start-agents is off.')
@@ -27,7 +28,14 @@ describe('harness settings', () => {
     expect(readAgentSettings(dir).agentsStartAgents).toBe(true)
     expect(run('pull-request-line', 'off')).toBe(0)
     expect(out.pop()).toBe('pull-request-line is off.')
-    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: false })
+    expect(readAgentSettings(dir)).toEqual({ agentsStartAgents: true, pullRequestLine: false, agentMessages: true })
+    // Agent Messages, where `harness send` tells the person to turn them on again.
+    expect(run('agent-messages', 'off')).toBe(0)
+    expect(out.pop()).toBe('agent-messages is off.')
+    expect(readAgentSettings(dir).agentMessages).toBe(false)
+    expect(run('agent-messages', 'on')).toBe(0)
+    expect(out.pop()).toBe('agent-messages is on.')
+    expect(readAgentSettings(dir).agentMessages).toBe(true)
   })
 
   it('refuses what it does not know with the usage, and prints it for --help', () => {
