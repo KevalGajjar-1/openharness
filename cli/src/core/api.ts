@@ -749,7 +749,8 @@ export const VIEWERS_UNAVAILABLE = { error: 'SERVICE_UNAVAILABLE', service: 'vie
 
 /** What the core gets when the viewers fail: agents' frames carry no DSH context and the windows
  *  no viewer, a client's viewer stream is refused at once (core/viewerStreams.ts) and its surface
- *  answered unavailable, and a restart or shutdown goes on. */
+ *  answered unavailable, and a restart or shutdown goes on. Their process on demand, before it has
+ *  first connected, holds a stream and a surface while it starts instead (core/viewersLink.ts). */
 export const VIEWERS_FALLBACKS: PortFallbacks<ViewersPort> = {
   attach: undefined, detach: undefined, frameContext: null, forwardingUrl: null, stop: later(undefined),
   stream: false, surface: later(VIEWERS_UNAVAILABLE), closed: undefined,

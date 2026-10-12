@@ -1,6 +1,7 @@
 /**
  * The Harness Store in its own process, beside the viewers (harnessd/services.ts `SERVICE_HOSTS`), on the
- * real daemon. The harnesses the release bundles are put in place by the Store's start; an install from a
+ * real daemon, started once something needs it (core/viewersWake.ts; e2e/viewersOnDemand.e2e.ts). The harnesses
+ * the release bundles are put in place by the Store's start; an install from a
  * repository runs there, its progress reaches the window as `dsh_install_status` through the core, and an
  * agent created on the harness the moment the install answers finds it installed, though the core keeps
  * the installed index for two seconds (dsh/installed.ts). Whatever happens to the process costs the Store
@@ -73,6 +74,10 @@ describe('the Store in its own process, beside the viewers', () => {
     daemon = d
     onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
     await d.start()
+    // Its process runs once something needs it (core/viewersWake.ts): the list asks for it, as a window's does.
+    const window = await LocalClient.connect(d)
+    expect(Array.isArray((await window.request('dsh_list', {}, 60_000)).dsh)).toBe(true)
+    window.close()
     await until('the Store to connect to the core', () => connected(d) >= 1 || null, 30_000, 200)
     return d
   }
@@ -184,7 +189,9 @@ describe('the Store in its own process, beside the viewers', () => {
     await turn(client, plain.id, 'ready without the Store')
     const cwd = join(d.projectsDir, 'refused-package')
     mkdirSync(cwd)
-    const refused = await client.request('agent_create', { engine: 'claude', cwd, dsh: HARNESS, bypassPermission: true }, 10_000)
+    // The Store has not connected to this core since it started: on demand, a request waits for it as long as a
+    // start (core/serviceLinks.ts `ON_DEMAND_START_MS`), and is then refused, as every one after it is at once.
+    const refused = await client.request('agent_create', { engine: 'claude', cwd, dsh: HARNESS, bypassPermission: true }, 30_000)
     expect(refused).toMatchObject({ error: 'DSH_UNAVAILABLE' })
     expect(readdirSync(cwd)).toEqual([])
     for (const agent of agents) expect(await row(client, agent.id)).toMatchObject({ launch: { state: 'held' } })

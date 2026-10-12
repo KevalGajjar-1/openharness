@@ -24,8 +24,8 @@ export interface ServiceSpec {
   heapLimitMiB: number
   /** Resident memory past which it is restarted, MiB; 0: off. */
   rssLimitMiB: number
-  /** A process on demand (an experiment's, the devices'): not started with the others, only once the core
-   *  asks for one of its services (`want`), and then kept running like any other. */
+  /** A process on demand (an experiment's, the devices', the viewers'): not started with the others, only once
+   *  the core asks for one of its services (`want`), and then kept running like any other. */
   onDemand?: boolean
   /** The core protocol (./protocol.ts) from which a core asks for this process on demand; 3, the experiments',
    *  when unset. A core that speaks an older one never asks for it, and it is started as that core binds. */
@@ -331,7 +331,8 @@ export class ServiceSupervisor {
   /**
    * A core bound that speaks [protocol], older than this master's: every process that became on demand after it
    * starts now, since that core never asks for one and ran it as it ran every other service. A core from before
-   * `want` (2) asks for none; one from before the devices were on demand (3) never asks for theirs.
+   * `want` (2) asks for none; one from before the devices were on demand (3) never asks for theirs, and one from
+   * before the viewers were (4) never for theirs.
    */
   unasked(protocol: number): void {
     for (const each of this.services) if (each.spec.onDemand && (each.spec.askedSince ?? 3) > protocol) each.want()
@@ -374,7 +375,10 @@ export const SERVICE_HOSTS: Readonly<Record<string, ServiceHostSpec>> = {
   // Its file watches on every harness's workspace; the viewer servers it starts are processes of their
   // own, outside this budget. The Store beside them: its installs run git and the harnesses' toolchains
   // in their own processes too, and take minutes, which is what it must not spend in the core.
-  viewers: { services: ['viewers', 'store'], heapLimitMiB: 512, rssLimitMiB: 1_024 },
+  // Started only once something needs it (core/viewersWake.ts): a harness here, a Store or viewer request, or
+  // the release's own harnesses to put in place. It idled at about 96 MiB on every computer, and few harnesses
+  // have a viewer: 1 of 14 on one real machine, 2 of 35 on another (2026-10-12).
+  viewers: { services: ['viewers', 'store'], heapLimitMiB: 512, rssLimitMiB: 1_024, onDemand: true, askedSince: 5 },
   // The git work (workspaces, the project readers) runs in git's own processes, and the monitor's
   // samples in ps's and ioreg's; what it holds is the agents the core sent it and one parsed sample.
   // The monitor parses up to 8 MB of ioreg output per Monitor poll on a Mac with a GPU, hence more
@@ -517,7 +521,7 @@ export function servicesTheMasterRuns(env: NodeJS.ProcessEnv, known: readonly st
  * named as one of its services is named whole: `viewers` runs the viewers' process, the Store beside
  * them, as it ran the viewers' before the Store joined it. `HARNESSD_SERVICE_HEAP_LIMIT_MIB` gives every
  * one the same heap limit instead (tests, support). A process on demand (`onDemand`: an experiment's, the
- * devices') waits for the core to ask for it; named in `HARNESSD_SERVICES`, it starts with the others.
+ * devices', the viewers') waits for the core to ask for it; named in `HARNESSD_SERVICES`, it starts with the others.
  */
 export function serviceSpecs(env: NodeJS.ProcessEnv, hosts: Readonly<Record<string, ServiceHostSpec>>): ServiceSpec[] {
   const named = env.HARNESSD_SERVICES === undefined ? null
