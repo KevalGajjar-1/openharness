@@ -17,7 +17,17 @@ export const hooks: HookContract = {
     // Its reply, `harness send`, needs the daemon, which Codex's sandbox cannot reach: measured with
     // `codex sandbox` (codex-cli 0.162.1), neither 127.0.0.1:18473 nor the daemon's socket answered. An `allow`
     // rule runs it outside without asking; Codex reads every `.rules` file in its `rules` folder.
-    inbox: { event: 'PostToolUse', allow: { file: 'rules/harness.rules', rule: 'prefix_rule(pattern=["harness", "send"], decision="allow")' } },
+    inbox: {
+      event: 'PostToolUse',
+      allow: {
+        file: 'rules/harness.rules',
+        rules: [
+          'prefix_rule(pattern=["harness", "send"], decision="allow")',
+          'prefix_rule(pattern=["{launcher}", "send"], decision="allow")',
+          'prefix_rule(pattern=["{node}", "{cli}", "send"], decision="allow")',
+        ],
+      },
+    },
     commandNamesHome: true,
     upToDate: { command: 'first', matcher: true },
     messages: {

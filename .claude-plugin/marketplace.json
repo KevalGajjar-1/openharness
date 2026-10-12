@@ -9,7 +9,7 @@
     {
       "name": "harness",
       "source": "./plugins/harness",
-      "description": "Start, wait for, read, message and close other coding agents through Harness: the harness skill and Harness's MCP server.",
+      "description": "Start, wait for, read and close other coding agents through Harness: the harness skill and Harness's MCP server.",
       "category": "development",
       "tags": ["agents", "parallel", "codex", "claude-code", "orchestration"]
     }

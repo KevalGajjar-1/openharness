@@ -29,7 +29,8 @@ export interface Caller extends LedgerMember {
   outside?: boolean
 }
 
-export type State = 'working' | 'idle' | 'needs-input' | 'stopped' | 'offline' | 'unknown'
+/** `installing`, `starting`, `failed`: a harness asked for that has not started (commands.ts `Asked`). */
+export type State = 'working' | 'idle' | 'needs-input' | 'stopped' | 'offline' | 'unknown' | 'installing' | 'starting' | 'failed'
 
 export interface Row {
   name: string

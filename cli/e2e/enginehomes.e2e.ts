@@ -7,10 +7,10 @@
  * without the profile. An agent must still bind, take turns and come back after a restart.
  */
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest'
 import { LocalClient, type Frame } from './harness/client.js'
@@ -19,6 +19,9 @@ import { sharedCodex } from './harness/sharedCodex.js'
 
 type Engine = 'claude' | 'codex'
 type Row = Record<string, any>
+
+/** The shell of the account running the tests, by name: what a daemon given no SHELL asks (lib/userShell.ts). */
+const accountShell = (() => { try { return basename(userInfo().shell ?? '') } catch { return '' } })()
 
 const rows = async (client: LocalClient): Promise<Row[]> =>
   (await client.request<{ agents: Row[] }>('agents_list', { includeStopped: true }, 30_000)).agents
@@ -128,7 +131,14 @@ describe('the person\'s engines keeping their data elsewhere', () => {
     await d.start()
     await until('the core to read the login shell', () => /\[env\] read \d+ variables/.test(d.log()))
     const client = await LocalClient.connect(d)
-    const created = await client.request('agent_create', { engine, cwd: d.projectsDir, bypassPermission: true }, 90_000)
+    // A launch in the daemon's first seconds may be held while the moved home's hooks are confirmed: the base install
+    // and the home's adoption were both writing, one lost its turn, and a create with no creation id is answered
+    // NATIVE_LAUNCH_HELD at once (1 run in 4 on a 16-core Intel Mac, 2026-10-12). A hold is a wait, so it asks again,
+    // as the apps do by creation id.
+    const created = await until('the launch, once the hooks are confirmed', async () => {
+      const reply = await client.request('agent_create', { engine, cwd: d.projectsDir, bypassPermission: true }, 90_000)
+      return reply.error === 'NATIVE_LAUNCH_HELD' ? null : reply
+    }, 60_000, 1_000)
     expect(created.error, JSON.stringify(created)).toBeUndefined()
     const agent = await until('the model-picker agent to bind', async () => {
       const now = await row(client, created.agent.id); return now?.sessionId ? now : null
@@ -140,6 +150,22 @@ describe('the person\'s engines keeping their data elsewhere', () => {
     expect(ids).toContain(`runtime-v1:${agent.id}:${engine}:${engine === 'claude' ? 'sonnet' : 'gpt-6-luna'}@auto`)
     expect(ids.some((id: string) => id.includes(engine === 'claude' ? ':haiku@' : ':wrong-login-model@'))).toBe(false)
     client.close()
+  })
+
+  // zsh reads the first file and bash, as a login shell, the second: whichever the account running the tests has.
+  it.runIf(accountShell === 'zsh' || accountShell === 'bash')('reads the profile of the account\'s shell when the daemon is given no SHELL', async () => {
+    // As from `docker exec`, a CI step or a bare service: a shell hands SHELL on only when it was handed it. The
+    // daemon then read no profile at all, and a moved home named there never got its hooks.
+    const d = await IsolatedDaemon.create(); daemon = d
+    onTestFailed(() => console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`))
+    delete d.env.SHELL
+    const home = join(d.root, 'codex-no-shell')
+    mkdirSync(home, { mode: 0o700 })
+    for (const profile of ['.zshrc', '.bash_profile']) writeFileSync(join(d.env.HOME!, profile), `export CODEX_HOME=${JSON.stringify(home)}\n`)
+    await d.start()
+    await until('the core to read the login shell', () => /\[env\] read \d+ variables/.test(d.log()))
+    expect(d.log()).not.toContain('could not read a login shell environment')
+    await until('the moved home to receive hooks', () => existsSync(join(home, 'hooks.json')), 30_000)
   })
 
   it.each(['activity', 'resources', 'close'] as const)('a moved shared Codex server supplies %s when process environment discovery is unavailable', async operation => {

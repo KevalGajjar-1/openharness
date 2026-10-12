@@ -47,6 +47,8 @@ export interface EngineConfig {
   version?: string
   without?: string[]
   startDelayMs?: number
+  /** Hold a descriptor the daemon's process reader cannot classify for this long once started (Codex 0.162.1's first seconds). */
+  unreadableDescriptorMs?: number
   /** Hold startup before the transcript opens until this disposable path's .release file exists. */
   startupGate?: string
   firstHookDelayMs?: number

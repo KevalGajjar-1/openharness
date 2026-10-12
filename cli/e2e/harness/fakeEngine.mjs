@@ -45,7 +45,10 @@
 // rewriting its wrapper: `version` is what it reports and writes, `without` lists the flags and
 // subcommands that release no longer has, `updateAvailable` (Codex) names a newer release it asks to update
 // to before it starts, and `startDelayMs` is how long it takes, once started, before
-// it draws or announces anything (an engine's first run after an update). `firstHookDelayMs` is how long
+// it draws or announces anything (an engine's first run after an update). `unreadableDescriptorMs` is how long,
+// once started, it holds a descriptor the daemon's process reader has no name for, as Codex 0.162.1 did for its
+// first seconds in a clean macOS VM (2026-10-12): every read of its process was refused until then ("the native
+// control descriptor type is unavailable"). `firstHookDelayMs` is how long
 // its first SessionStart takes to reach the daemon once the engine is up: the hook command starting on a
 // loaded machine, while the daemon has already found the engine and its conversation. `root` is the
 // test's throwaway root, the only place whose hooks it will run, and `hookLog` where it notes every hook
@@ -61,7 +64,7 @@
 // child in the same process group and terminal (`codexWrapper`).
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -112,6 +115,23 @@ async function codexWrapper(config) {
   const ended = await new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })))
   if (ended.signal) process.kill(process.pid, ended.signal)
   else process.exit(ended.code ?? 1)
+}
+
+/**
+ * A descriptor the daemon's process reader cannot classify, held for [ms] (`unreadableDescriptorMs`). Which one the real
+ * Codex held is not known; what the daemon met is: a descriptor of a kind its reader refuses. On macOS that is a
+ * symbolic link opened as itself (O_SYMLINK: a vnode of a type the reader has no name for, the same refusal); on Linux a
+ * network namespace, whose target (`net:[…]`) is no path, socket, pipe or anonymous inode.
+ */
+function holdUnreadableDescriptor(config, ms) {
+  let fd
+  if (process.platform === 'darwin') {
+    const link = join(config.root, `unreadable-descriptor-${process.pid}`)
+    if (!within(config.root, link)) throw new Error('unreadable descriptor outside its throwaway home')
+    symlinkSync('nothing', link)
+    fd = openSync(link, constants.O_RDONLY | constants.O_SYMLINK)
+  } else fd = openSync('/proc/self/ns/net', 'r')
+  setTimeout(() => closeSync(fd), ms).unref()
 }
 
 export async function run(engine, config = {}, { native = false } = {}) {
@@ -177,6 +197,7 @@ export async function run(engine, config = {}, { native = false } = {}) {
   // terminal still in line mode keeps at most 1 KiB of a line, so a paste that arrived before the
   // engine was ready lost the rest of itself (measured: 1,018 of 2,406 characters).
   process.stdin.setRawMode?.(true)
+  if (config.unreadableDescriptorMs) holdUnreadableDescriptor(config, config.unreadableDescriptorMs)
   // Slow to start, as an engine is on its first run after an update: the process is there and holds
   // the terminal, and nothing is drawn, announced or read until it is ready.
   // October 6 sibling-conversation incident: hold startup before this process has a transcript, while

@@ -127,7 +127,7 @@ Retries: a version is recorded as installed for a MAC only on `fw.done`. A decli
   - Signed images are future work.
 - **OTA replaces only the app.** The bootloader, partition table and rollback settings always need a hand flash. Rollback protects only units whose bootloader came from a rollback-enabled `flash.sh` run.
 - **The device accepts any plain version; the daemon offers only a newer one.** To roll back a bad release, publish the old code under a higher patch.
-- **Panel orientation.** Every Pro panel is mounted turned 180° (owner, 2026-10-11), so the release image is built with `POD_PANEL_TURN=180`. A future unit mounted differently needs its own board key, or a runtime setting, before it may take this image (audit H2).
+- **Panel orientation.** Every Pro panel is mounted turned 180° (owner, 2026-10-11), so the release image is built with `POD_PANEL_TURN=180`. That flag is now only the default of a runtime setting (`screenTurned`, NVS key `turn`, set from the app): a unit mounted the other way turns its screen there and the same image serves both (audit H2).
 - **The publish script** aborts when it cannot read the manifest (unless the manifest does not exist yet). It refuses a merge that drops or changes another key, writes the manifest with a generation precondition, and never overwrites a published `.bin`.
 
 ## Testing

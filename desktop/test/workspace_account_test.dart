@@ -45,7 +45,6 @@ Future<void> _mountMenu(
   WidgetTester tester, {
   String name = 'Dee Example',
   String email = 'dee@example.com',
-  bool showAddPhone = true,
   void Function(AccountMenuChoice?)? onChoice,
 }) async {
   tester.view.devicePixelRatio = 1;
@@ -63,7 +62,6 @@ Future<void> _mountMenu(
                 context,
                 name: name,
                 email: email,
-                showAddPhone: showAddPhone,
               );
               onChoice?.call(choice);
             },
@@ -448,29 +446,25 @@ void main() {
     expect(_menu, findsNothing);
   });
 
-  testWidgets('an account with a phone is not offered one; an account with '
-      'no name says its email once', (tester) async {
-    await _mountMenu(tester, name: '', showAddPhone: false);
-    expect(find.text('Add Phone'), findsNothing);
-    expect(find.text('Appearance'), findsOneWidget);
+  testWidgets('an account with no name says its email once; Add Phone is '
+      'the first row whatever the account has', (tester) async {
+    await _mountMenu(tester, name: '');
     expect(find.text('dee@example.com'), findsOneWidget);
+    // It was hidden once the account had a phone, which the menu learned only
+    // by being opened: there at the first click and gone at the second.
+    expect(find.text('Add Phone'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     await tester.pump();
     expect(_menu, findsNothing);
-    // Down now lands on what is first.
     AccountMenuChoice? chosen;
-    await _mountMenu(
-      tester,
-      showAddPhone: false,
-      onChoice: (value) => chosen = value,
-    );
+    await _mountMenu(tester, onChoice: (value) => chosen = value);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     await tester.pump();
-    expect(chosen, AccountMenuChoice.customize);
+    expect(chosen, AccountMenuChoice.addPhone);
   });
 
   test('the one letter an account wears', () {

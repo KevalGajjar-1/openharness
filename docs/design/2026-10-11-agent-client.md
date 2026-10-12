@@ -3,8 +3,8 @@
 October 11, 2026. First version built (branch `agent-client`).
 
 Web, desktop, phone and `hn` are Harness for people. This is Harness for the agents running in it: a few
-`harness` verbs an agent calls from its shell to see other harnesses, start one, read it, wait for it, message
-it and close it. Same daemon, no screen.
+`harness` verbs an agent calls from its shell to see other harnesses, start one, read it, wait for it and close
+it. Same daemon, no screen.
 
 ## Why
 
@@ -46,17 +46,21 @@ harness ps [--all]                                  # the harnesses here: state,
 harness new [agent] [@machine] [folder] --name N -- <task>     # exists; now knows when an agent runs it
 harness show <name> [--chars N]                     # its state, the last ask and the answer
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
-harness send <name>[,<name>…] "text"                # exists (Agent Messages); now also to what you started
+harness send <name>[,<name>…] "text"                # exists (Agent Messages): teammates in a tab with it on, only
 harness close <name> [--now]                        # save its screen and stop it; resumable
 ```
 
 Text by default, for agents as much as people: they read it as well, and it is a third of JSON's size (`ps` on
 the owner's Mac, 21 harnesses: 5.8 KB of text, 16.2 KB of JSON). `--json` for programs. Every error says what to run next.
-`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out.
+`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out. A harness the caller closed itself is
+`closed (you closed it)` and exits 0 (`close` notes it in the ledger): a Codex lead that closed its harness and then
+waited on it, as it had queued, was told it had failed (October 12).
 
 **Close, not stop** (owner, October 11): `harness stop` stops the daemon, and an agent typing it with a name
 left empty would have stopped Harness. `close` is the app's close (`agent_close`): it saves the screen, stops the
-harness and keeps its conversation, and refuses while the harness is working unless `--now`.
+harness and keeps its conversation, and refuses while the harness is working unless `--now`. A harness still starting
+is closed once its first conversation binds; one that has bound none within eight seconds is closed without one, and
+says so (October 12: Codex 0.162.1 closed a second after its start was refused, its conversation not yet readable).
 
 The agent's instructions are a skill, [plugins/harness/skills/harness/SKILL.md](../../plugins/harness/skills/harness/SKILL.md):
 when to use Harness at all, the rule below, the verbs and the limits. Agents outside Harness get it as a Claude Code
@@ -87,8 +91,10 @@ and one rule, in its startup note:
 1. **Ownership first.** An agent may give work only to a harness it started, or to one in a tab with Agent
    Messages on. A harness a person is driving is read-only to agents: `show` and `wait` it, never `send`.
 2. **Then sameness.** If a harness it may use is on the same work on the same subject (the router's question),
-   and is idle or resumable, send there: it holds the context. Otherwise `new`: unrelated work, work to run in
-   parallel, another engine or machine, or the matching harness is busy with something else.
+   is idle or resumable, and is its teammate in a tab with Agent Messages on, send there: it holds the context.
+   Otherwise `new`: a follow-up with the fuller task, unrelated work, work to run in parallel, another engine or
+   machine, or the matching harness is busy with something else. Starting a harness gives no way to message it
+   (below, "Agent Messages off means off").
 
 No Jev: Jev is for ⌘B only.
 
@@ -101,22 +107,54 @@ limits, `close` and measurement read it.
 
 It is a file the CLI appends to, not a field in the core's registry, so this first version changes nothing in the
 core and can be removed whole. Like Agent Messages it is a collaboration scope, not a sandbox: any process of the
-same user can write it. If agents use this, the record moves into the registry beside `forkedFrom`, and the
-windows can show it in the pane header. The registry keeps one fact of it already, for the pull request line below:
-the row's `startedBy` is `agent`. Who, and the depth, stay in the file.
+same user can write it. The registry keeps two facts of it: the row's `startedBy` is `agent`, for the pull request
+line below, and, when the starter is a harness on the same machine, its agent id (`parentAgentId`, sent by `harness
+new` with `agent_create`; one the machine does not know is left out). The depth, and starters outside Harness or on
+another machine, stay in the file.
 
-The task a harness is started with carries one header line, so the new harness knows it is from an agent and not
-the person (the lamp team's tmux paste read as the owner's), and how to answer:
+### The person sees it (October 11)
+
+Found in a clean VM with CLI 0.3.75: a Codex harness asked for a second opinion from Claude Code ran `harness new
+claude …`, and the child ran and answered but appeared nowhere in the app, only in the Harnesses count and ⌘O. The
+owner chose, from a mockup: **the child opens as a pane in the same tab, beside the agent that started it, marked
+with who started it.**
 
 ```
-[from lead · Claude Code · studio, the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]
+┌─ code ─────────────────────────────────────────┐
+│┌ lead (Codex) ─────────┐┌ python-opinion ─────┐│
+││ › get a second opinion││ started by lead     ││
+││   from claude code…   ││ Claude Code · Opus  ││
+││ • Ran harness new     ││ › Give your opinion ││
+││ • Waiting…            ││ • I recommend spaces││
+│└───────────────────────┘└─────────────────────┘│
+└────────────────────────────────────────────────┘
+```
+
+Every agent frame carries `parentAgentId` (null for the rest). A desktop window that first sees such a harness live,
+after it has read that machine's list once, and shows its starter in a tab, adds it right after the starter in that
+tab (the first in the row where two show it, so every computer picks the same one) without moving focus or taking the
+terminal (`desktop/lib/state/started_children.dart`). Never what the first list brings (the window's restore), one the window
+has shown before (the person closed it), a stopped one, or one started more than five minutes ago (a laptop waking).
+The shell an exited engine leaves under a new id does not inherit the starter.
+Every window showing the starter does this, and it is still one pane: the desk's `pane.add` is idempotent, and a
+window the desk reaches first finds it already in a tab. The header says `started by <starter's current name>` where
+it says `forked from` for a fork. Not yet: the phone, and harnesses started by agents outside Harness (no pane to open
+beside), which stay in ⌘O as before.
+
+The task a harness is started with carries one header line, so the new harness knows it is from an agent and not
+the person (the lamp team's tmux paste read as the owner's), and that its answer is read where it is:
+
+```
+[from lead · Claude Code · studio, the harness that started you. It reads your answer itself.]
 
 Review 3f2a9c1 …
 ```
 
-The reply address is the name when it is a plain word or two, else the start of the id: an unnamed harness is
-called by its session title, a sentence that can hold the comma `harness send` splits recipients on (found in the
-live trial: "so we have built harness web,").
+Until October 11 the header went on `; to ask it something while you work: harness send lead "…"`, and `new`
+offered `message it: harness send kid`. Both are gone with the lineage exception (below). The names `new` offers
+for `show` and `wait` are the name when it is a plain word or two, else the start of the id: an unnamed harness is
+called by its session title, a sentence that can hold the comma `wait` splits names on (found in the live trial:
+"so we have built harness web,").
 
 ### Agents outside Harness
 
@@ -130,9 +168,8 @@ session is one caller in the record (`claude-code:<session>`), with the limits a
 [from Claude Code outside Harness · studio, the agent that started you. It reads your answer itself.]
 ```
 
-It may close only what its session started. Nothing can message it, having no pane, so neither the header nor
-`new` tells anyone to. A person who runs `harness` through their agent (Claude Code's `!`) is that agent here; a
-plain terminal is the person.
+It may close only what its session started. Nothing can message it, having no pane. A person who runs `harness`
+through their agent (Claude Code's `!`) is that agent here; a plain terminal is the person.
 
 An agent that installs Harness starts the daemon from its shell, and a tmux server the daemon starts hands its
 environment to every pane: every harness would have been that agent's session, with its messaging token. The
@@ -144,9 +181,9 @@ server's environment as it removes harnessd's own (`lib/agentSessionEnv.ts`).
 `harness mcp` serves the verbs as MCP tools on stdin and stdout, for agents that reach tools through MCP rather
 than a shell (Claude Desktop, Cursor, Windsurf; Claude Code and Codex with the Harness plugin): `harness_list`,
 `harness_start`, `harness_wait`, `harness_read`, `harness_close`, and `harness_send` only in a harness's own pane,
-since nothing can message an agent outside one. Each call runs the verb as `harness` in a process of its own, so
-the rules above decide what it may do, and the tool's answer is the text the verb prints. `initialize` carries the
-when-to-use rules as the server's instructions.
+since nothing can message an agent outside one, and then only to teammates in a tab with Agent Messages on. Each
+call runs the verb as `harness` in a process of its own, so the rules above decide what it may do, and the tool's
+answer is the text the verb prints. `initialize` carries the when-to-use rules as the server's instructions.
 
 The server is one agent's session. An MCP server's environment need not name the session (Codex's does not), so the
 server says it: `AI_AGENT` from the client's name in `initialize` (`codex-mcp-client` is Codex, `cursor-vscode`
@@ -243,22 +280,41 @@ No core change, no new service.
   holds is asked after by its creation id for up to a minute, so a held launch is not left running with an agent's
   task and no record. `new` also stopped printing "Created" for a launch the daemon refused or could not confirm.
   Two starts at the same moment from one harness can both pass the limits: they count what was recorded before.
-- **`send`**: Agent Messages lets a harness and the harnesses it started message each other with no tab, on the
-  same machine. It also takes the start of an id. Kept in a `started` log beside the tabs' logs. **Open for the
-  owner:** these messages pass even when the person has turned Agent Messages off in a tab the two share, and no
-  window shows the `started` log yet. Like every Agent Message they need the account's directory read.
+- **`send`**: nothing of its own. A harness messages another only where the person turned Agent Messages on in a
+  tab the two share, like any teammate (`harness send` also takes the start of an id there).
 - **Another machine.** `new @mini` works as before; `show`, `wait` and `close` find a harness the caller started
   there through its record and reach it over the paired relay.
+
+### Agent Messages off means off (owner, October 11, 2026)
+
+The first version let a harness and the harnesses it started message each other with no tab at all, on the same
+machine (the lineage exception), kept in a `started` log beside the tabs' logs, and the new harness's header invited
+it to. With CLI 0.3.75 live, the owner found agents messaging each other before turning Agent Messages on
+anywhere, and decided: **Agent Messages off means off; a harness started by another gets no exception.** A harness
+may message another only where the person turned Agent Messages on (the tab's chat icon), like any teammate.
+
+- `messages/service.ts` reads who started what only to keep another machine's record (`started`, for limits and
+  depth); `send`, `harness send` alone and delivery go through the tabs alone. A send to a harness one started, with
+  no shared tab on, is refused with the same words as any other recipient: `MESSAGES_OFF` in a tab with it off,
+  `UNKNOWN_RECIPIENT` ("No teammate named …") otherwise.
+- A message an older version queued under `started` is never delivered: it is failed and its inbox file withdrawn
+  as the service starts, before the directory is read (the hook takes what waits in an inbox without asking, and a
+  directory that cannot be read would have left it there), even between two that now share a tab with it on.
+- The record (`agent-client/started.jsonl`) stays: `ps`, the limits, the depth and `close` read it.
+- For a follow-up to a harness it started, an agent starts it with everything in the task, or, where Agent Messages
+  are on in its tab, sends.
 
 ### Verified
 
 - Unit: the module (47 tests), `harness new` (17), Agent Messages (21, with lineage, id prefixes and the
-  `started` record). An independent review found the `done` misreading, the day-long count of other machines'
-  harnesses, the limits restarting on another machine, a caller taken for the person on errors, held launches and
-  the ledger's compaction losing lines; each is fixed and tested above.
+  `started` record; since October 11 the lineage tests assert the refusal). An independent review found the `done`
+  misreading, the day-long count of other machines' harnesses, the limits restarting on another machine, a caller
+  taken for the person on errors, held launches and the ledger's compaction losing lines; each is fixed and tested
+  above.
 - End to end on the real daemon with the fake engines (`e2e/agentClient.e2e.ts`, 10 s): from an agent's pane,
-  `ps`, `new` with a task, `wait`, `show` (the header and the echoed answer), `send` both ways with no tab on,
-  `close` refused for its own harness and for one its child did not start, then allowed for its child. The fake
+  `ps`, `new` with a task, `wait`, `show` (the header and the echoed answer), `send` both ways with no tab on
+  (refused since October 11), `close` refused for its own harness and for one its child did not start, then allowed
+  for its child. The fake
   engine now takes a first message on the command line, as both CLIs do; it used to drop it.
 - Live, on the owner's Mac from this session's own pane against the running daemon: `ps` (22 harnesses, 0.8 s),
   `new claude --name probe-child -- "Reply with the single word ready"` (0.4 s), `wait` (idle in 7 s), `show`
@@ -290,5 +346,5 @@ answer itself). Not yet run: Codex as the starting agent, a red team, a held-out
 ## Not now
 
 An MCP server (a thin wrapper once the CLI holds), agents outside Harness (a Claude Code plugin, `npx`, the MCP
-registries), the windows' tree of who started whom, `ps` across all machines (today: this one, and what you
-started elsewhere), parent and child messaging across machines.
+registries), the windows' tree of who started whom beyond the pane beside its starter, `ps` across all machines (today: this one, and what you
+started elsewhere).

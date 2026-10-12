@@ -92,6 +92,7 @@ export function agentInstructionArgs(engine: AgentEngine | string, said: { instr
   const attribution = launch?.attribution
   const told = launch?.harnessInstructions
   if (!attribution && !told) return []
+  said = { ...said, instructions: said.instructions && told?.also ? `${said.instructions} ${told.also}` : said.instructions }
   if (attribution?.kind === 'instruction') {
     const instructions: Instruction[] = [
       ...(said.instructions && told?.kind === 'attribution' ? [{ text: said.instructions, mark: said.instructions }] : []),

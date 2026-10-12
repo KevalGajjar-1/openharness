@@ -4,6 +4,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fakeCore } from '../testing/fakeCore.js'
+import type { BackendNotice } from '../core/api.js'
 import { CONNECTORS_REQUESTS, startConnectors } from './connectors.js'
 import { Store } from '../lib/connectors/store.js'
 import * as gateway from '../lib/connectors/gateway.js'
@@ -29,6 +30,30 @@ describe('the connectors service', () => {
     expect(await requests.connectors!({ action: 'list' }, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
     // Signed out, the gateway's list is empty and nothing reaches the network.
     expect(await requests.connectors!({ action: 'list' }, OWNER)).toMatchObject({ signed_in: false })
+  })
+
+  it('keeps the connections the account\'s when signed in: reads them now and again at each notice that may change them', async () => {
+    const backend = vi.fn(async (_method: string, _path: string) => ({ status: 200, body: { success: true, data: { revision: 0, envelope: null } } }))
+    let hear: (notice: BackendNotice) => void = () => {}
+    const core = fakeCore({ account: { backend, onNotice: vi.fn((listener: (notice: BackendNotice) => void) => { hear = listener; return () => {} }) } as never })
+    startConnectors(core, { env, port: 0 })
+    await vi.waitFor(() => expect(backend).toHaveBeenCalledWith('GET', '/api/connector-vault'))
+    const reads = () => backend.mock.calls.filter(([, path]) => path === '/api/connector-vault').length
+    const before = reads()
+    hear({ type: 'connectors_changed', revision: 4 })
+    await vi.waitFor(() => expect(reads()).toBe(before + 1))
+    hear({ type: 'device_keys_changed' })
+    await vi.waitFor(() => expect(reads()).toBe(before + 2))
+    hear({ type: 'desk_changed', revision: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(reads()).toBe(before + 2)
+  })
+
+  it('keeps them on this computer alone while signed out', async () => {
+    const backend = vi.fn(async () => ({ status: 200, body: {} }))
+    startConnectors(fakeCore({ account: { backend, signedIn: () => false } as never }), { env, port: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(backend).not.toHaveBeenCalled()
   })
 
   it('reads this process\'s environment when given none', () => {

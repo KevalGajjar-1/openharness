@@ -99,7 +99,7 @@ export function createAgentCreator({
     if (input.resumeSessionId) return { ok: true, dispatch: () => externalResume(input) }
     const stale = () => ({ ok: false as const, error: 'LAUNCH_AUTHORITY_CHANGED', unavailable: 'launch', detail: 'Waiting for the original launch request’s authority.' })
     if (!authority.current()) return stale()
-    let { engine, cwd, bypassPermission, permissionMode, grid, codexHome, dsh, prompt, name, agent, scmLaunchRecord, startedBy } = input
+    let { engine, cwd, bypassPermission, permissionMode, grid, codexHome, dsh, prompt, name, agent, scmLaunchRecord, startedBy, parentAgentId } = input
     if (!tmuxBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
     if (blocksFolder(cwd)) return { ok: false, error: 'WORKTREE_BUSY' }
     const workspaceIdentity = () => { const info = statSync(cwd); return `${info.dev}:${info.ino}:${realpathSync(cwd)}` }
@@ -125,11 +125,12 @@ export function createAgentCreator({
       bypassPermission = permissionModeApproves(pinnedMode)
     }
     const inspected = await inspectNative?.(engine, { ...input, permissionMode, bypassPermission }, authority)
-    // An engine that ran and failed is refused, with its own reason. Held, a creation retried every two
-    // seconds and could start, task and all, whenever the engine was repaired: a Codex installed with
-    // npm on a computer without Node (fresh Ubuntu VM, 2026-10-11) held for good, and `harness new`
-    // said only that it could not confirm. A relaunch, which nobody is waiting on, still holds.
-    if (inspected && !inspected.ok) return inspected.cannotRun ? { ok: false, error: 'ENGINE_CANNOT_RUN', detail: inspected.detail } : inspected
+    // An engine that ran and failed, or whose install for this request failed, is refused with its own
+    // reason. Held, a creation retried every two seconds and could start, task and all, whenever the
+    // engine was repaired: a Codex installed with npm on a computer without Node (fresh Ubuntu VM,
+    // 2026-10-11) held for good, and `harness new` said only that it could not confirm. A relaunch,
+    // which nobody is waiting on, still holds.
+    if (inspected && !inspected.ok) return inspected.refusal ? { ok: false, error: inspected.refusal, detail: inspected.detail } : inspected
     const native = inspected?.ok ? inspected.launch : undefined
     if (engine === 'codex' && native) codexHome = nativeHookLocations(native.environment).CODEX_HOME
     const current = () => authority.current() && (!native || native.current())
@@ -374,6 +375,7 @@ export function createAgentCreator({
       defaultName: name,
       label: dshLabel,
       startedBy: startedBy ?? null,
+      parentAgentId: parentAgentId ?? null,
     })
     if (!result.ok) return { ok: false, error: result.error, detail: result.detail }
     const { spawned, pending } = result

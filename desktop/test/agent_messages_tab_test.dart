@@ -71,15 +71,17 @@ Finder _messages(String id) => find.byKey(ValueKey('tab-agent-messages:$id'));
 Finder _close(String id) => find.byKey(ValueKey('tab-close:$id'));
 Finder _label(String id) => find.byKey(ValueKey('tab-label:$id'));
 
+Finder _glyphOf(String id) =>
+    find.descendant(of: _messages(id), matching: find.byType(Icon));
+
 /// The ink the 💬 glyph is drawn in, while the pointer is not on it.
-Color _glyph(WidgetTester tester, String id) => IconTheme.of(
-  tester.element(
-    find.descendant(
-      of: _messages(id),
-      matching: find.byIcon(AppIcons.messagesSquare),
-    ),
-  ),
-).color!;
+Color _glyph(WidgetTester tester, String id) =>
+    IconTheme.of(tester.element(_glyphOf(id))).color!;
+
+/// Which 💬 is drawn: filled while on, an outline while off (owner, 2026-10-12:
+/// one outline in two tints read alike).
+IconData _drawn(WidgetTester tester, String id) =>
+    tester.widget<Icon>(_glyphOf(id)).icon!;
 
 String _tooltip(WidgetTester tester, String id) => tester
     .widget<Tooltip>(
@@ -114,7 +116,8 @@ void main() {
       expect(_messages('app').hitTestable(), findsOneWidget);
       expect(_close('app').hitTestable(), findsOneWidget);
       final grey = _glyph(tester, 'app');
-      expect(grey.a, closeTo(.45, .01));
+      expect(grey.a, closeTo(.35, .01));
+      expect(_drawn(tester, 'app'), AppIcons.agentMessagesOff);
       expect(
         grey.withValues(alpha: 1),
         grid.AppTheme.surfacePalette.foreground,
@@ -151,7 +154,8 @@ void main() {
     expect(_messages('app').hitTestable(), findsOneWidget);
     final ink = _glyph(tester, 'app');
     expect(ink.withValues(alpha: 1), _messagesColor);
-    expect(ink.a, closeTo(.85, .01));
+    expect(ink.a, closeTo(1, .01));
+    expect(_drawn(tester, 'app'), AppIcons.agentMessagesOn);
     expect(_tooltip(tester, 'app'), 'Agent messages on · click to turn off');
     expect(
       find.byKey(const ValueKey('status:app')),

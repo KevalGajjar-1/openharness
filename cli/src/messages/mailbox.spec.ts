@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaneInbox } from './inbox.js'
-import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
+import { ATTEMPT_MS, deliveryKey, FINISHED_KEEP_MS, FYI_REASON, HOOKLESS_MS, HOOKLESS_REASON, Mailbox, MAX_BACKOFF_MS, PARK_MS, PARKED_MAX_MS, PUMP_MS, WITHHELD, type MailboxAgent, type MailboxDeps } from './mailbox.js'
 import type { DeliveryStatus, Message } from './model.js'
 import { MessageStore } from './store.js'
 
@@ -95,6 +95,60 @@ describe('Agent Messages\' mailbox', () => {
     t.mailbox.pump()
     expect(delivery).toMatchObject({ state: 'delivered', via: 'hook' })
     expect(t.delivered).toHaveLength(1)
+  })
+
+  it('stops promising the next tool call once a working agent has taken nothing for a long while', () => {
+    // A Codex lead running since before Agent Messages never ran the hook: every message to it read "arrives at its
+    // next tool call" for an hour while it read them with `harness send` (2026-10-12).
+    const t = setup()
+    const delivery = t.accept()
+    t.event(delivery.attempt!.id, 'rejected', 'team_waiting_idle')
+    expect(t.statuses.at(-1)).toMatchObject({ reason: 'working: arrives at its next tool call' })
+    t.tick(HOOKLESS_MS - 1)
+    t.mailbox.pump()
+    expect(t.statuses.at(-1)).toMatchObject({ reason: 'working: arrives at its next tool call' })
+    t.tick(1)
+    t.mailbox.pump()
+    expect(t.statuses.at(-1)).toMatchObject({ state: 'queued', reason: HOOKLESS_REASON })
+    // And a later refusal while it works says the same, never the promise again.
+    t.event(delivery.attempt!.id, 'rejected', 'team_waiting_idle')
+    expect(delivery.reason).toBe(HOOKLESS_REASON)
+  })
+
+  it('delivers what the agent read itself, withdrawing the hook\'s copy, but never under a typed attempt in flight', () => {
+    const t = setup()
+    const parked = t.accept()
+    t.event(parked.attempt!.id, 'rejected', 'team_waiting_idle')
+    const typing = t.accept(message('m0000002'))
+    expect(typing.attempt).toBeDefined()
+    expect(t.mailbox.read('api', ['m0000001', 'm0000002', 'm0000009'])).toEqual(['m0000001'])
+    expect(parked).toMatchObject({ state: 'delivered', via: 'read' })
+    expect(t.inbox.waiting('%3', parked.key)).toBe(false)
+    expect(t.statuses.at(-1)).toMatchObject({ messageId: 'm0000001', state: 'delivered', via: 'read' })
+    expect(typing.state).toBe('queued')
+    // Read once: a second look marks nothing, and another agent's messages are never its.
+    expect(t.mailbox.read('api', ['m0000001'])).toEqual([])
+    expect(t.mailbox.read('web', ['m0000002'])).toEqual([])
+    t.mailbox.pump()
+    expect(t.delivered.filter(([, , id]) => id.includes(parked.key))).toHaveLength(1)
+  })
+
+  it('never types news into an idle agent: it waits for its next tool call, or for the agent to read it', () => {
+    // Six quiet-window notices in 45 minutes each woke an idle teammate for a turn that said only "noted" (2026-10-12).
+    const t = setup()
+    const news = t.accept({ ...message(), fyi: true })
+    t.tick(PUMP_MS * 10)
+    t.mailbox.pump()
+    expect(t.delivered).toEqual([])
+    expect(news).toMatchObject({ state: 'queued', reason: FYI_REASON })
+    expect(t.inbox.waiting('%3', news.key)).toBe(true)
+    t.claim('%3', news.key)
+    t.mailbox.pump()
+    expect(news).toMatchObject({ state: 'delivered', via: 'hook' })
+    const read = t.accept({ ...message('m0000002'), fyi: true })
+    expect(t.mailbox.read('api', ['m0000002'])).toEqual(['m0000002'])
+    expect(read).toMatchObject({ state: 'delivered', via: 'read' })
+    expect(t.delivered).toEqual([])
   })
 
   it('waits longer between typed attempts at an agent that keeps refusing, up to a limit, and says why', () => {
@@ -310,6 +364,27 @@ describe('Agent Messages\' mailbox', () => {
     t.writable.mockClear()
     t.mailbox.takeBackAttempts()
     expect(t.writable).not.toHaveBeenCalled()
+  })
+
+  it('on start, fails what may never be delivered before the directory is read and before anything goes back to a hook', () => {
+    const t = setup()
+    const never = t.accept(message('m0000006'))
+    const fine = t.accept(message('m0000007'))
+    expect(never.attempt).toBeDefined()
+    t.store.save()
+    const statuses: DeliveryStatus[] = []
+    // The directory is not read yet (signed out, the backend down): nothing else is refused.
+    const restarted = new Mailbox({ store: new MessageStore(join(root, 'state')), inbox: t.inbox, agent: () => null, deliver: () => {}, refused: () => 'refused', ready: () => false,
+      forbidden: (d) => (d.messageId === 'm0000006' ? 'it was sent outside any tab with Agent Messages on' : null), text: () => '', changed: (s) => { statuses.push(s) }, now: t.now })
+    restarted.start()
+    restarted.stop()
+    const state = new MessageStore(join(root, 'state')).state.local
+    expect(state.find((d) => d.key === never.key)).toMatchObject({ state: 'failed', reason: 'it was sent outside any tab with Agent Messages on' })
+    expect(statuses).toEqual([expect.objectContaining({ messageId: 'm0000006', state: 'failed' })])
+    // Its attempt in flight did not go back to the hook; the other one's did.
+    expect(t.inbox.waiting('%3', never.key)).toBe(false)
+    expect(state.find((d) => d.key === fine.key)).toMatchObject({ state: 'queued' })
+    expect(t.inbox.waiting('%3', fine.key)).toBe(true)
   })
 
   it('pumps on its own every few seconds once started, and stops', () => {

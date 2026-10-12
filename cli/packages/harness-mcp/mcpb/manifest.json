@@ -32,7 +32,7 @@
     },
     {
       "name": "harness_start",
-      "description": "Start a new harness: an agent in a session of its own, working on a task in a folder. Returns at once."
+      "description": "Start a new harness: an agent in a session of its own, working on a task in a folder, or in a new project Harness makes for it. Returns at once."
     },
     {
       "name": "harness_wait",

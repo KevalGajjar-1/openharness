@@ -21,7 +21,9 @@ export const hooks: HookContract = {
     // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
     // Its reply, `harness send`, is allowed in the person's permission rules: auto mode's check refused a
     // Harness command outright, and a person away from the pane cannot answer a question.
-    inbox: { event: 'PostToolUse', allow: { list: ['permissions', 'allow'], rule: 'Bash(harness send:*)' } },
+    // The launcher's full path too; not `{node} {cli}`, whose versioned path would leave a stale rule in the
+    // person's list at every runtime update (a rules file of its own can be rewritten; this list is theirs).
+    inbox: { event: 'PostToolUse', allow: { list: ['permissions', 'allow'], rules: ['Bash(harness send:*)', 'Bash({launcher} send:*)'] } },
     commandNamesHome: false,
     upToDate: { command: 'first-ours', matcher: false },
     messages: {

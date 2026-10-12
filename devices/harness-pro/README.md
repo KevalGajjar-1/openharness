@@ -14,8 +14,9 @@ idf.py -B build -DPROJECT_VER=0.0.99-pod -DPOD_PANEL_TURN=180 build
 ```
 
 - `PROJECT_VER=0.0.99-pod` keeps a dev build from being overwritten by the daemon's OTA update.
-- `POD_PANEL_TURN=180` is for a unit whose panel is mounted upside down: the picture and the touch turn together.
-  Leave it out for an upright panel.
+- `POD_PANEL_TURN=180` sets the **default** turn (picture and touch together) for a unit that has never been set.
+  Each unit keeps its own choice in NVS: the app's "Rotate screen 180°" switch (`settings.set {"screenTurned"}`)
+  turns it at run time, no rebuild. Release images use 180.
 
 ## Flash
 

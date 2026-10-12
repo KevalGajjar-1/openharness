@@ -16,6 +16,7 @@ import { deviceKeyRoutes } from './routes/deviceKeys.js'
 import { qrSignInRoutes } from './routes/qrSignIn.js'
 import { deskRoutes } from './routes/desk.js'
 import { connectorRoutes } from './routes/connectors.js'
+import { connectorVaultRoutes } from './routes/connectorVault.js'
 import { agentMessagesRoutes } from './routes/agentMessages.js'
 import { zooRoutes } from './routes/zoo.js'
 import { experimentalSettingsRoutes } from './routes/experimentalSettings.js'
@@ -180,6 +181,7 @@ async function start(): Promise<void> {
   await app.register(deviceKeyRoutes)     // the account's device key log: signing in is what trusts a device
   await app.register(deskRoutes)          // the account's tabs, the same on every computer (lib/desk.ts)
   await app.register(connectorRoutes)     // sign-in to GitHub, Slack, Google… for local agents (lib/connectorGateway.ts)
+  await app.register(connectorVaultRoutes) // those connections sealed for the account's computers, which keep them in step
   await app.register(agentMessagesRoutes)   // which tabs' harnesses may message each other (lib/agentMessages.ts)
   await app.register(experimentalSettingsRoutes, { daemons: DAEMONS })
   // Availability is separate from opt-in: every account starts off, and its collection is retained.

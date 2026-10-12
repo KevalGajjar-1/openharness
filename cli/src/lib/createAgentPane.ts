@@ -46,6 +46,7 @@ export interface CreateAgentPaneDeps {
     forkedFrom?: ForkOrigin | null
     externalResume?: ExternalResumeIntent
     startedBy?: StartedBy | null
+    parentAgentId?: string | null
   }) => RegisteredSession | null }
   nativeToken?: string
   engine: AgentEngine
@@ -83,6 +84,8 @@ export interface CreateAgentPaneDeps {
   /** `agent` when another agent started it, recorded on the row so every relaunch keeps its pull request line
    *  (lib/agentAttribution.ts). Already in `argv`: this is the record, not the launch. */
   startedBy?: StartedBy | null
+  /** The harness here whose agent started it (registry.ts `parentAgentId`), recorded on the row; null otherwise. */
+  parentAgentId?: string | null
   externalResume?: ExternalResumeIntent
   /** Rechecked by the backend after its gates and immediately before process dispatch. */
   current?: () => boolean
@@ -134,6 +137,7 @@ export async function createAndRegisterPane(deps: CreateAgentPaneDeps): Promise<
       forkedFrom: deps.forkedFrom,
       ...(deps.externalResume ? { externalResume: deps.externalResume } : {}),
       ...(deps.startedBy ? { startedBy: deps.startedBy } : {}),
+      ...(deps.startedBy && deps.parentAgentId ? { parentAgentId: deps.parentAgentId } : {}),
     })
     if (pending) return { ok: true, spawned, pending }
     console.warn(`[agent] create ${deps.engine} registration failed · pane ${spawned.runtime.paneId} · `

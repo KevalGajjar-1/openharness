@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { env } from '../../config/env.js'
 import type { HookSettings } from '../facets/hooks.js'
 import { prepareReviewed } from './hookReview.js'
+import { managedNodePath } from '../../lib/nodeRuntime.js'
 import { isMessagesBlock, messagesCommand, writeMessagesHook } from './messagesHook.js'
 import { command, HOOK_SCRIPT, isOurs, foreignHookBlocks, type Settings } from './notifyHooks.js'
 import { HookPreparationHeld, inspectHookFile, runHookPreparation, type HookPreparationAttempt } from './nativeHookFiles.js'
@@ -70,7 +71,9 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     const ours = blocks.filter(isMessagesBlock)
     blockChanged = ours.length !== 1 || ours[0].matcher !== undefined || ours[0].hooks?.length !== 1
       || ours[0].hooks[0]?.command !== inboxCommand || ours[0].hooks[0]?.timeout !== settings.timeout
-    const changed = (allow && 'list' in allow && withRule(current, allow.list, allow.rule)) || blockChanged
+    let allowed = false
+    if (allow && 'list' in allow) for (const rule of allow.rules) allowed = withRule(current, allow.list, sendRule(rule)) || allowed
+    const changed = allowed || blockChanged
     current.hooks[event] = [...foreignHookBlocks(blocks, isMessagesBlock), { hooks: [{ type: 'command', command: inboxCommand, timeout: settings.timeout }] }]
     const next = changed ? JSON.stringify(current, null, 2) + '\n' : observed.content!
     const reviewed = settings.reviewed ? prepareReviewed(settings.reviewed, home, file, JSON.parse(next) as Settings) : null
@@ -91,10 +94,19 @@ async function installMessagesBlock(settings: HookSettings, home: string, attemp
     verifyRequired()
   }
   if (allow && 'file' in allow) {
-    try { writeRulesFile(join(home, allow.file), allow.rule) } catch (err) {
+    // Each path written as a Starlark string's contents: the file's rules are `prefix_rule(pattern=["…"])`.
+    try { writeRulesFile(join(home, allow.file), allow.rules.map((rule) => sendRule(rule, (path) => JSON.stringify(path).slice(1, -1))).join('\n')) } catch (err) {
       console.warn(`[hooks] could not allow harness send in ${join(home, allow.file)} (the engine asks before each one):`, err instanceof Error ? err.message : err)
     }
   }
+}
+
+/** A declared allowance with this computer's paths in place of `{launcher}`, `{node}` and `{cli}` (SEND_RULE_PATHS). */
+function sendRule(rule: string, quote: (path: string) => string = (path) => path): string {
+  const paths: Record<string, string> = {
+    launcher: join(env.HARNESS_BIN_DIR, 'harness'), node: managedNodePath(), cli: join(env.ADAPTER_CLI_DIR, 'cli.js'),
+  }
+  return rule.replace(/\{(launcher|node|cli)\}/g, (_, name: string) => quote(paths[name]))
 }
 
 /**
@@ -111,8 +123,8 @@ function withRule(settings: Settings, [table, list]: readonly [string, string], 
 }
 
 /** A rules file Harness owns whole: written atomically, and only when it does not already say exactly this. */
-function writeRulesFile(file: string, rule: string): void {
-  const text = `# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n${rule}\n`
+function writeRulesFile(file: string, rules: string): void {
+  const text = `# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n${rules}\n`
   try { if (readFileSync(file, 'utf8') === text) return } catch { /* not written yet */ }
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const temporary = `${file}.${process.pid}.tmp`

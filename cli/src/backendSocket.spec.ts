@@ -2604,6 +2604,25 @@ describe('desk_changed relay', () => {
     await socket.stop()
   })
 
+  it('hands the backend\'s connectors_changed on, for the connectors service to merge, and only the backend\'s', async () => {
+    const socket = relaySocket('token')
+    const heard: unknown[] = []
+    socket.onAccountNotice = (notice) => { heard.push(notice) }
+    socket.registerLocalClient('local:vault', { sendFrame: () => true, sendBinary: () => true })
+    socket.connect()
+    const ws = wsMock.instances[0]
+    ws.open()
+    ws.message({ t: 'down', connId: '', frame: { type: 'connectors_changed', payload: { revision: 6 } } })
+    await vi.waitFor(() => expect(heard).toContainEqual({ type: 'connectors_changed', revision: 6 }))
+    // A client relayed with its own connId is not the backend.
+    ws.message({ t: 'down', connId: 'web-1', frame: { type: 'connectors_changed', payload: { revision: 99 } } })
+    socket.handleLocalFrame('local:vault', { type: 'connectors_changed', payload: { revision: 98 } })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(heard).toHaveLength(1)
+    await socket.unregisterLocalClient('local:vault')
+    await socket.stop()
+  })
+
   it('hands the backend\'s zoo_changed to the window as its own frame, and only the backend\'s', async () => {
     const socket = relaySocket('token')
     const frames: Array<Record<string, unknown>> = []

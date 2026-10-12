@@ -7,7 +7,7 @@ description: Harness runs coding agents (Claude Code, Codex and others) as harne
 
 Harness runs coding agents in sessions of their own, called harnesses, and shows each one to the person in its
 desktop, web and phone apps. With the `harness` command (or Harness's MCP tools) you can start harnesses, read
-them, wait for them, message them and close them.
+them, wait for them and close them, and message teammates in a tab where the person turned Agent Messages on.
 
 ## Is it here?
 
@@ -24,6 +24,10 @@ only for the person's other machines and their phone. If `harness ps` is an unkn
 these verbs: `harness update`. The agent you start must be installed as well (`claude` for Claude Code, `codex`
 for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
 asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
+
+In Codex, run `harness` commands outside your sandbox: they talk to Harness's local daemon, which the sandbox
+blocks, so ask for escalated permissions the first time. A sandbox in the way is not a stopped Harness: do not run
+`harness start` unless a command run outside the sandbox says Harness is not running.
 
 ## When to start a harness
 
@@ -44,18 +48,19 @@ sub-agents: cheaper and faster. Everything you start appears in Harness, where t
 2. You may give work only to a harness **you started**, or to a teammate in a tab with Agent Messages on
    (`harness send` alone lists them). Never give work to, or close, a harness you did not start: those are the
    person's. You may `show` and `wait` on them.
-3. Follow-ups for the same work go to the harness you started for it, if it is idle and you can message it (see
-   below). Otherwise start a new one: for unrelated work, for work to run in parallel, for another agent or
-   machine, or when the matching one is busy with something else.
+3. Put everything in the task when you start a harness: starting it does not let you message it. A follow-up
+   for the same work goes to it with `harness send` only if it is your teammate in a tab where the person turned
+   Agent Messages on (the tab's chat icon); otherwise start a new harness with the fuller task. Start a new one
+   too for unrelated work, for work to run in parallel, or for another agent or machine.
 
 ## The verbs
 
 ```
 harness ps [--all]                                  # the harnesses here
-harness new [agent] [@machine] [folder] --name <name> -- <task>
+harness new [agent] [@machine] [folder | project] --name <name> -- <task>
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
 harness show <name> [--chars N]                     # its state, the last ask and its answer
-harness send <name> "text"                          # a follow-up to one you started (from inside a harness)
+harness send <name> "text"                          # a teammate in this tab, when Agent Messages are on there
 harness close <name> [--now]                        # when you are done with one you started
 ```
 
@@ -63,20 +68,24 @@ harness close <name> [--now]                        # when you are done with one
   changes. Every verb also takes the start of an id.
 - `agent` is `claude` (the default), `codex`, or another agent installed on that machine. The folder defaults
   to the current directory.
+- For scratch or new work, give a project name (`harness new codex review -- …`, which makes `~/harnesses/review`)
+  rather than a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 - Put the whole task in `-- <task>`: what to do, where, what done looks like, and what to answer with. A task
   holds 2,000 characters; for a longer one, write it to a file and name the file in the task.
-- `wait` exits 0 when it is idle, 3 when it needs the person (a question or a permission: only the person
-  answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0` waits as long as
-  it takes.
+- `wait` exits 0 when it is idle (or you closed it), 3 when it needs the person (a question or a permission:
+  only the person answers those, so tell them), 4 when it stopped or is gone, 124 on timeout. `--timeout 0`
+  waits as long as it takes.
 - Read the result with `show` instead of asking for a summary.
 - `close` what you started once you have what you need. It keeps the conversation; the person can resume it.
-  It refuses while the harness is working, unless `--now`.
+  It refuses while the harness is working, unless `--now`. One closed while still starting may have no
+  conversation to keep yet, and `close` says so.
 - Add `--json` to any verb for JSON. Every error says what to run next.
 
 ## Inside a harness, or outside
 
-- **In a harness** (Harness made your terminal pane): `harness send` works, to what you started and to
-  teammates in a tab with Agent Messages on, and the harnesses you start are told how to message you.
+- **In a harness** (Harness made your terminal pane): `harness send` works only to teammates in a tab where the
+  person turned Agent Messages on. A harness you started, or the one that started you, is no exception: with
+  Agent Messages off, put everything in the task and read the answer with `show`.
 - **Outside Harness** (Claude Code or Codex in a terminal app, an editor or the person's own tmux): Harness tells
   you by your session. `harness ps` says "You are Claude Code, outside Harness." and marks what this session
   started as `you`; the limits below apply; and you may close only what this session started. Nothing can
@@ -99,7 +108,7 @@ the answer. For several at once, start each with its own name and wait on all of
 ## Harness's MCP tools
 
 If Harness's MCP server (`harness mcp`) is connected, its tools are the same verbs under the same rules:
-`harness_list` (ps), `harness_start` (new: task, folder and name, `agent` claude or codex, `machine`),
+`harness_list` (ps), `harness_start` (new: task, name, `folder` or `project`, `agent` claude or codex, `machine`),
 `harness_wait` (up to 120 seconds by default and 600 at most; if they are still working, call it again),
 `harness_read` (show), `harness_close` (close), and `harness_send` (send), offered only inside a harness.
 

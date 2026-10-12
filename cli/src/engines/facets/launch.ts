@@ -231,4 +231,7 @@ export interface EngineLaunch {
  * config value both live in (`attribution`, Codex's `developer_instructions`: a second `-c` of the same key would
  * replace the first, and the person's own value).
  */
-export type HarnessInstructionsContract = { kind: 'append'; args: readonly string[] } | { kind: 'attribution' }
+export type HarnessInstructionsContract = ({ kind: 'append'; args: readonly string[] } | { kind: 'attribution' }) & {
+  /** Said after Harness's instructions to this engine's agents alone: what about the engine changes how they use them. */
+  also?: string
+}

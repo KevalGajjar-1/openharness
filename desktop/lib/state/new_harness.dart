@@ -3373,7 +3373,34 @@ class NewHarnessController extends ChangeNotifier {
   bool get checking => _attempt?.awaitingConfirmation == true;
   bool get canCancelPending => _attempt?.canCancelPending == true;
 
+  /// The check [followHeld] is making. Nobody pressed for it, so it shows
+  /// nothing until it has an answer.
+  Future<NewHarnessOutcome>? _following;
+
+  /// Asks after a request the machine holds, without the person pressing
+  /// Check status. The machine starts a held harness by itself (an agent it is
+  /// installing, a model waking). The line said "Installing Kilo. The harness
+  /// starts once it is installed." and stayed after Kilo had started, with no
+  /// pane, until Check status was pressed (desktop 1.2.65, a fresh Ubuntu VM,
+  /// 2026-10-12). Created once it has started; failed while it still waits,
+  /// or when it was refused, which the line then says.
+  Future<NewHarnessOutcome> followHeld() {
+    if (_following case final check?) return check;
+    if (_disposed || busy || !canCancelPending) {
+      return Future.value(NewHarnessOutcome.failed);
+    }
+    final check = create(quiet: true);
+    _following = check;
+    return check.whenComplete(() => _following = null);
+  }
+
   Future<void> cancelPending() async {
+    // A check nobody pressed for is let finish: it holds `busy` for a moment
+    // without saying so, and a Cancel pressed just then must still count.
+    if (_following case final check?) {
+      await check;
+      if (_disposed) return;
+    }
     if (busy || !canCancelPending) return;
     busy = true;
     notifyListeners();
@@ -3418,7 +3445,9 @@ class NewHarnessController extends ChangeNotifier {
     return !endCompletion();
   }
 
-  Future<NewHarnessOutcome> create() async {
+  /// [quiet] is [followHeld]'s: a check on a held request that changes
+  /// nothing on screen until it has an answer.
+  Future<NewHarnessOutcome> create({bool quiet = false}) async {
     if (busy || linkingProfile) {
       return NewHarnessOutcome.failed;
     }
@@ -3534,9 +3563,11 @@ class NewHarnessController extends ChangeNotifier {
     }
     final attempt = _attempt!;
     busy = true;
-    error = null;
-    status = recheck ? 'Checking on the harness…' : 'Starting harness…';
-    notifyListeners();
+    if (!(quiet && recheck)) {
+      error = null;
+      status = recheck ? 'Checking on the harness…' : 'Starting harness…';
+      notifyListeners();
+    }
     if (_model != null && !recheck) {
       await refreshModels();
       if (_disposed) return NewHarnessOutcome.failed;

@@ -1,10 +1,11 @@
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { localSocketPath } from '../lib/localSocket.js'
+import { NOT_RUNNING, SANDBOXED } from '../lib/unreachable.js'
 import { messagesRpc } from './rpc.js'
 
 type Behave = (ws: WebSocket, frame: { type: string; payload: Record<string, unknown> }) => void
@@ -92,5 +93,20 @@ describe('one Agent Messages request through the daemon', () => {
     await expect(messagesRpc(target({ signal: aborted.signal }), {})).rejects.toMatchObject({ code: 'CANCELLED' })
     await expect(messagesRpc({ port: 1, machineId: 'm', dataDir: join(dir, 'none') }, {}, 2_000)).rejects.toMatchObject({ code: 'DAEMON_UNREACHABLE' })
     await expect(messagesRpc({ port: 1, machineId: 'm' }, {}, 2_000)).rejects.toMatchObject({ code: 'DAEMON_UNREACHABLE' })
+  })
+
+  // Root opens a socket whatever its mode, so the refusal cannot be made there.
+  it.skipIf(process.getuid?.() === 0)('says a sandbox is in the way only when the daemon it was refused is there', async () => {
+    const env = { CODEX_SANDBOX: process.env.CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED: process.env.CODEX_SANDBOX_NETWORK_DISABLED }
+    delete process.env.CODEX_SANDBOX
+    delete process.env.CODEX_SANDBOX_NETWORK_DISABLED
+    try {
+      // A socket this process may not open answers EACCES, as one a sandbox refuses does.
+      chmodSync(localSocketPath(dir, PORT)!, 0)
+      // No pid file in the daemon's folder: nothing to reach, whatever refused the connect.
+      await expect(messagesRpc(target(), {}, 2_000)).rejects.toMatchObject({ code: 'DAEMON_UNREACHABLE', message: NOT_RUNNING })
+      writeFileSync(join(dir, 'adapter.pid'), `${process.pid}\n`)
+      await expect(messagesRpc(target(), {}, 2_000)).rejects.toMatchObject({ code: 'DAEMON_UNREACHABLE', message: SANDBOXED })
+    } finally { for (const [name, value] of Object.entries(env)) if (value !== undefined) process.env[name] = value }
   })
 })

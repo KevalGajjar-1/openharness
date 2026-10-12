@@ -2,7 +2,8 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
-import { engineLabel } from '../lib/agentNames.js'
+import { engineName } from '../lib/agentNames.js'
+import { failureReason } from '../lib/failureReason.js'
 import { permissionFlagToVerify, type PermissionLaunchChoice } from '../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../lib/engineInstall.js'
 import { patientDeadline } from '../lib/patientExec.js'
@@ -37,12 +38,15 @@ export interface NativeLaunch {
 export type NativeLaunchResult =
   | { ok: true; launch: NativeLaunch }
   | { ok: false; error: 'NATIVE_LAUNCH_HELD'; unavailable: 'native'; detail: string; install?: EngineInstallRecipe; environment?: Record<string, string>
-      /** The selected executable ran and exited with a failure. A creation is refused with it rather than
-       *  held (core/agents/create.ts); a relaunch, which nobody is waiting on, still holds. */
-      cannotRun?: true }
+      /** No wait ends this by itself: the selected executable ran and failed, or this request's own installer
+       *  did. A creation is refused with this code rather than held (core/agents/create.ts); a relaunch,
+       *  which nobody is waiting on, still holds. */
+      refusal?: 'ENGINE_CANNOT_RUN' | 'ENGINE_INSTALL_FAILED'
+      /** Harness is installing the engine for this launch (engines/prepareNativeLaunch.ts). */
+      installing?: true }
 const waiting = (detail: string): Extract<NativeLaunchResult, { ok: false }> => ({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail })
 const cannotRun = (engine: AgentEngine, reason: string): Extract<NativeLaunchResult, { ok: false }> =>
-  ({ ...waiting(`${engine === 'claude' ? 'Claude Code' : engineLabel(engine)} is installed but cannot run: ${reason}`), cannotRun: true })
+  ({ ...waiting(`${engineName(engine)} is installed but cannot run: ${reason}`), refusal: 'ENGINE_CANNOT_RUN' })
 const noNative: NativeLaunch = {
   opencodeMajor: null, environment: {}, proofs: [], current: () => true,
   prepareHooks: async () => true, permission: async () => 'supported',
@@ -90,18 +94,6 @@ async function read(executable: string, args: readonly string[], environment: Re
   })
 }
 
-/**
- * Why an executable that exited non-zero cannot run, in its own words: the line that names the
- * failure, else its first line. A Codex installed with npm on a computer without Node says
- * "/usr/bin/env: ‘node’: No such file or directory" (fresh Ubuntu VM, 2026-10-11); a Node stack
- * trace starts with a source location and ends with the Node version, so neither end is the reason.
- */
-function failureReason(output: ProbeOutput): string {
-  const lines = `${output.stderr}\n${output.stdout}`.split('\n').map(line => line.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).filter(Boolean)
-  const line = lines.find(text => /\b(error|cannot|can't|no such|not found|denied|failed|missing)\b/i.test(text)) ?? lines[0]
-  return line ? line.slice(0, 300) : `it exited with status ${output.code}`
-}
-
 /** Probe only. No settings, workspace, model or process mutation occurs here. */
 export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLaunchSource = {},
   deps: { confirmHome?: (engine: 'claude' | 'codex', home: string) => void } = {},
@@ -130,7 +122,7 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
   const output = engine === 'opencode' ? await read(executable.command, OPENCODE_VERSION.args, environment) : null
   // The version is read from standard output only, as it always was; help below reads both streams.
   const opencodeMajor = output?.code !== 0 ? null : parseMajor(OPENCODE_VERSION, output.stdout)
-  if (output && output.code !== 0 && executable.current()) return cannotRun(engine, failureReason(output))
+  if (output && output.code !== 0 && executable.current()) return cannotRun(engine, failureReason(`${output.stderr}\n${output.stdout}`, `it exited with status ${output.code}`))
   // Unknown is an observation of this attempt, never a permanent installed-file answer.
   if (engine === 'opencode' && opencodeMajor === null) return waiting('Waiting to confirm the selected OpenCode executable’s version.')
   if (!executable.current()) return waiting('Waiting for the selected engine executable to stop changing.')
@@ -197,7 +189,7 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
       failed = null
       const probe = await read(executable.command, ['--help'], selectedEnvironment)
       if (!probe || !current() || observedRevision !== revision) return 'unknown'
-      if (probe.code !== 0) { failed = failureReason(probe); return 'unknown' }
+      if (probe.code !== 0) { failed = failureReason(`${probe.stderr}\n${probe.stdout}`, `it exited with status ${probe.code}`); return 'unknown' }
       // Help on either stream, as the shell probe reads it (`2>&1`, lib/engineLaunch.ts). OpenCode
       // 1.19.0 prints its help to standard error and exits 0 (stdout 0 bytes, stderr 4,285, measured
       // in clean macOS and Ubuntu VMs, 2026-10-11): read from stdout alone, every launch of it held

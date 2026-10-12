@@ -9,6 +9,7 @@ import { defaultHookHome, installHookSettings } from './hookSettings.js'
 import { HOOK_SCRIPT } from './notifyHooks.js'
 import type { HookPreparationProof } from './nativeHookFiles.js'
 import { messagesCommand } from './messagesHook.js'
+import { managedNodePath } from '../../lib/nodeRuntime.js'
 import * as preparations from './nativeHookFiles.js'
 import { reviewHash, reviewRecords } from './hookReview.js'
 
@@ -156,7 +157,9 @@ it('allows harness send in Claude Code beside the person\'s own rules, once', as
   writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'], deny: ['Bash(rm:*)'], defaultMode: 'auto' } }))
   expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
   const first = readFileSync(file, 'utf8')
-  expect(JSON.parse(first).permissions).toEqual({ allow: ['Bash(npm test:*)', 'Bash(harness send:*)'], deny: ['Bash(rm:*)'], defaultMode: 'auto' })
+  // By its full path too: an agent where `harness` is not on its PATH runs the launcher itself (2026-10-12).
+  expect(JSON.parse(first).permissions).toEqual({ allow: ['Bash(npm test:*)', 'Bash(harness send:*)', `Bash(${join(env.HARNESS_BIN_DIR, 'harness')} send:*)`],
+    deny: ['Bash(rm:*)'], defaultMode: 'auto' })
   expect(await installHookSettings('claude', claude.settings, 19473, home)).toBe(true)
   expect(readFileSync(file, 'utf8')).toBe(first)
 })
@@ -179,8 +182,12 @@ it('allows harness send in a Codex rules file of its own, leaving the person\'s 
   writeFileSync(own, 'prefix_rule(pattern=["git", "push"], decision="allow")\n')
   expect(await installHookSettings('codex', codex.settings, 19473, home)).toBe(true)
   const rules = join(home, 'rules', 'harness.rules')
+  // By its full path too, the launcher's or the managed Node's with the CLI's bundle: a Codex lead sent that way,
+  // and each send asked to leave the sandbox (2026-10-12).
   expect(readFileSync(rules, 'utf8')).toBe('# Written by Harness: agents in a tab with Agent Messages on reply with harness send. Do not edit.\n'
-    + 'prefix_rule(pattern=["harness", "send"], decision="allow")\n')
+    + 'prefix_rule(pattern=["harness", "send"], decision="allow")\n'
+    + `prefix_rule(pattern=[${JSON.stringify(join(env.HARNESS_BIN_DIR, 'harness'))}, "send"], decision="allow")\n`
+    + `prefix_rule(pattern=[${JSON.stringify(managedNodePath())}, ${JSON.stringify(join(env.ADAPTER_CLI_DIR, 'cli.js'))}, "send"], decision="allow")\n`)
   expect(statSync(rules).mode & 0o777).toBe(0o600)
   expect(readFileSync(own, 'utf8')).toBe('prefix_rule(pattern=["git", "push"], decision="allow")\n')
   const written = statSync(rules).ino

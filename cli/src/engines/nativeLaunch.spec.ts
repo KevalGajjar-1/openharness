@@ -56,7 +56,7 @@ it('says why an OpenCode that ran and failed cannot run, and waits for one that 
   // A Node stack trace: the line naming the failure, not its first or last.
   fixture.exit = 1; fixture.version = ''
   fixture.stderr = 'node:internal/modules/cjs/loader:1228\n  throw err;\n\nError: Cannot find module \'opencode-linux-x64\'\n\nNode.js v22.20.0\n'
-  expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: false, cannotRun: true,
+  expect(await inspectNativeLaunch('opencode')).toMatchObject({ ok: false, refusal: 'ENGINE_CANNOT_RUN',
     detail: 'OpenCode is installed but cannot run: Error: Cannot find module \'opencode-linux-x64\'' })
   fixture.stderr = 'Segmentation fault\n'
   expect(await inspectNativeLaunch('opencode')).toMatchObject({ detail: 'OpenCode is installed but cannot run: Segmentation fault' })
@@ -65,11 +65,11 @@ it('says why an OpenCode that ran and failed cannot run, and waits for one that 
   fixture.current = false
   const changing = await inspectNativeLaunch('opencode')
   expect(changing).toMatchObject({ ok: false, unavailable: 'native' })
-  expect(changing).not.toHaveProperty('cannotRun')
+  expect(changing).not.toHaveProperty('refusal')
 })
 it('says Claude Code by its name when it cannot run', async () => {
   fixture.exit = 127; fixture.stderr = 'env: node: No such file or directory\n'
-  expect(await inspectNativeLaunch('claude', { permissionMode: 'auto' })).toMatchObject({ cannotRun: true,
+  expect(await inspectNativeLaunch('claude', { permissionMode: 'auto' })).toMatchObject({ refusal: 'ENGINE_CANNOT_RUN',
     detail: 'Claude Code is installed but cannot run: env: node: No such file or directory' })
 })
 

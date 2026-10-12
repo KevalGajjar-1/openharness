@@ -462,7 +462,8 @@ private extension SwarmTabButton {
   }
 
   func checkHoverClose() throws {
-    frame = NSRect(x: 0, y: 0, width: 240, height: 40)
+    // Room for the name beside 20pt targets 8pt apart (they were 16pt and 3pt apart, in 240pt).
+    frame = NSRect(x: 0, y: 0, width: 260, height: 40)
     contentCenterY = 20
     name = "1: Release planning"
     displayLabel = name
@@ -476,8 +477,8 @@ private extension SwarmTabButton {
       timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
     mouseEntered(with: hover)
     try checkTitlebar(!closeButton.isHidden && closeButton.frame.minX > title.maxX &&
-      closeButton.frame.size == NSSize(width: 16, height: 32) && closeButton.frame.maxX == bounds.maxX - 8,
-      "A hovered tab exposes a separate 16x32pt close target at its right inset")
+      closeButton.frame.size == NSSize(width: 20, height: 32) && closeButton.frame.maxX == bounds.maxX - 8,
+      "A hovered tab exposes a separate 20x32pt close target at its right inset")
     try checkTitlebar(accessibilityChildren()?.count == 2 && closeButton.accessibilityLabel() == "Close 1: Release planning",
       "The hover close button has the exact custom title as its accessible purpose")
     let closeBitmap = closeButton.renderedBitmap()
@@ -490,7 +491,7 @@ private extension SwarmTabButton {
     let inkWidth = (closeInk.map(\.x).max() ?? 0) - (closeInk.map(\.x).min() ?? 0) + 1
     let inkHeight = (closeInk.map(\.y).max() ?? 0) - (closeInk.map(\.y).min() ?? 0) + 1
     try checkTitlebar(!closeInk.isEmpty && inkWidth <= 7 && inkHeight <= 7,
-      "The tab close paints a tiny regular cross inside its unchanged target")
+      "The tab close paints the pane's 7pt cross inside its target")
     closeButton.performClick(nil)
     try checkTitlebar(events == ["close"], "Clicking the close control closes once without selecting the tab")
     let hoveredBitmap = renderedBitmap()
@@ -637,7 +638,7 @@ private extension SwarmTabButton {
       "Revealed, the title moves only left, and only as far as 💬 and × need")
     try checkTitlebar(selectButton.frame == bounds, "Selection and drag retain the whole tab target beneath its accessory")
     try checkTitlebar(subviews.count == 3 && closeButton.frame.maxX == bounds.maxX - 8 &&
-      closeButton.frame.minX - messagesButton.frame.maxX == 3,
+      closeButton.frame.minX - messagesButton.frame.maxX == 8,
       "The close action, and 💬 left of it past a dead gap, stay inset inside the tab's curved body")
   }
 
@@ -657,6 +658,10 @@ private extension SwarmTabButton {
     defer { emit = nil }
     let hover = NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [],
       timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+    /// Which symbol the button draws: filled while on, outlined while off (owner, 2026-10-12).
+    func drawn(_ button: NSButton, _ symbol: String) -> Bool {
+      button.image?.tiffRepresentation == HarnessControlSymbols.image(symbol)?.tiffRepresentation
+    }
     func hasMessagesInk(_ view: NSView? = nil) -> Bool {
       let bitmap = (view ?? self).renderedBitmap()
       return (0..<bitmap.pixelsWide).contains { x in
@@ -682,10 +687,10 @@ private extension SwarmTabButton {
     let title = titleRect
     mouseEntered(with: hover)
     try checkTitlebar(!messagesButton.isHidden && !closeButton.isHidden &&
-      closeButton.frame.minX - messagesButton.frame.maxX == 3 &&
-      messagesButton.foreground == foreground && messagesButton.restingOpacity == 0.45 &&
-      !hasMessagesInk(messagesButton),
-      "Hovered and off: a grey 💬 just left of ×")
+      closeButton.frame.minX - messagesButton.frame.maxX == 8 &&
+      messagesButton.foreground == foreground && messagesButton.restingOpacity == 0.35 &&
+      drawn(messagesButton, "bubble.left.and.bubble.right") && !hasMessagesInk(messagesButton),
+      "Hovered and off: a quiet outlined 💬, 8pt clear of ×")
     let gap = NSPoint(x: closeButton.frame.minX - 1.5, y: closeButton.frame.midY)
     try checkTitlebar(!messagesButton.frame.contains(gap) && !closeButton.frame.contains(gap),
       "A click between 💬 and × lands on neither")
@@ -705,10 +710,11 @@ private extension SwarmTabButton {
     try checkTitlebar(messagesButton.isHidden && !hasMessagesInk(), "On and quiet, a tab at rest shows nothing extra")
     mouseEntered(with: hover)
     try checkTitlebar(!messagesButton.isHidden && messagesButton.foreground == messagesColor &&
-      messagesButton.restingOpacity == 0.85 && hasMessagesInk(messagesButton) && !hasMessagesInk() &&
+      messagesButton.restingOpacity == 1 && drawn(messagesButton, "bubble.left.and.bubble.right.fill") &&
+      hasMessagesInk(messagesButton) && !hasMessagesInk() &&
       messagesButton.toolTip == "Agent messages on · click to turn off" &&
       messagesButton.accessibilityValue() as? String == "On",
-      "Hovered and on: 💬 in Agent Messages' color, which turns it off")
+      "Hovered and on: 💬 filled in Agent Messages' color, which turns it off")
     mouseExited(with: hover)
 
     agentMessages = SwarmTabMessages(on: true, flowing: true)

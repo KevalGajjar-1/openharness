@@ -5,6 +5,8 @@
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
  * - `history`: the windows' log of a tab.
+ * - `started`: another machine's record of a harness it started here, for the agent client's limits and depth
+ *   (agentClient/ledger.ts). It lets no one message anyone: only a tab with Agent Messages on does.
  * Deliveries to this machine's agents are the mailbox's (mailbox.ts); a message for another machine's agent is
  * handed to that machine's daemon, which owns its delivery and is asked what became of it.
  */
@@ -17,7 +19,7 @@ import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
 import { Mailbox, type MailboxAgent } from './mailbox.js'
-import { LIMITS, MessageError, engineName, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
+import { type DeliveryStatus, LIMITS, LONG_TEXT, longAdvice, type Message, MessageError, messageId, note, parseMessage, type Recipient, rendered, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
 import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
 import { MessageStore, type LocalDelivery } from './store.js'
@@ -30,7 +32,8 @@ export interface MessagesOptions {
   rpc?: Rpc
   /** The local socket's folder (`ADAPTER_DATA_DIR`) the other machines are reached through. */
   dataDir?: string
-  /** Who started which harness (agentClient/ledger.ts); an isolated fixture's own. */
+  /** Who started which harness (agentClient/ledger.ts), where another machine's `started` is kept; an isolated
+   *  fixture's own. */
   ledgerFile?: string
   /** Something that decides whether a typed delivery may be written changed: the process tells the core. */
   changed?: () => void
@@ -57,10 +60,16 @@ export const WHO_MS = 60_000
 export const SWEEP_AFTER_MS = 10 * 60_000
 
 const PANE = /^%\d{1,9}$/
+/** The most messages `harness send` alone gives an agent at once, unread ones first. */
+const UNREAD_MAX = 20
+/** Whether `wanted` is the whole of a name the engine cut short: Codex titles its terminal with the folder cut to fit
+ *  ("claude-code-2026-10-1..."), and an agent that wrote the folder out in full was told no teammate had that name
+ *  (a fresh Mac, 2026-10-12). Both arguments in lower case. */
+const cutShort = (name: string, wanted: string): boolean => {
+  const stem = name.replace(/\s*(?:\.{3}|…)$/u, '')
+  return stem !== name && stem.length >= 3 && wanted.startsWith(stem)
+}
 const key = (m: Member): string => `${m.machineId}/${m.agentId}`
-const same = (a: Member, b: Member): boolean => a.machineId === b.machineId && a.agentId === b.agentId
-/** Where a message between a harness and one it started is kept: they need share no tab. */
-export const STARTED_TAB = { id: 'started', name: 'started' } as const
 
 export function startAgentMessages(core: CoreApi, options: MessagesOptions = {}): AgentMessages {
   const now = options.now ?? Date.now
@@ -68,13 +77,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   const self = (): string => core.daemon.machineId()
   const at = (machineId: string) => ({ port: core.daemon.port, machineId, dataDir: options.dataDir ?? core.dataDir })
   const store = new MessageStore(options.stateDir ?? join(core.dataDir, 'agent-messages'))
+  // Who started which harness is the agent client's (limits, depth, who may close what), never a way to message.
+  // Agent Messages off means off: a harness started by another reaches it only through a tab with Agent Messages
+  // on, like any teammate (owner, 2026-10-11, on finding agents messaging each other with no tab turned on).
   const lineage = new Ledger(options.ledgerFile ?? ledgerPath(core.dataDir))
-  /**
-   * The harnesses [me] may message without a tab: the one that started it and those it started
-   * (docs/design/2026-10-11-agent-client.md). This machine's only: another machine checks a delivery against its
-   * own directory, and has no record of who started what here.
-   */
-  const linked = (me: Member): Member[] => (me.machineId === self() ? lineage.links(me).filter((m) => m.machineId === self()) : [])
   const inbox = new PaneInbox(options.inboxRoot ?? env.HARNESS_AGENT_MESSAGES_DIR)
   /** Other machines' names for their agents, with when they were asked. */
   const who = new Map<string, { name: string; engine: string; project?: string; at: number }>()
@@ -110,6 +116,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     },
     deliver: (agentId, text, deliveryId) => { core.turns.deliver(agentId, text, deliveryId); options.changed?.() },
     refused: (delivery) => refusal(delivery),
+    forbidden: (delivery) => forbidden(delivery),
     ready: () => directory.current() !== null,
     text: (delivery, message) => {
       const roster = rosterOf(delivery.agentId)
@@ -119,14 +126,28 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     writable: () => options.changed?.(),
   })
 
-  /** Why a local delivery can no longer be made, or null. Nothing is refused before the directory is read. */
+  /**
+   * Why a local delivery may never be made, whatever the tabs say, or null. Before 2026-10-11 a harness and one it
+   * started messaged each other with no tab on, logged under `started`; Agent Messages off means off, so what an
+   * older version left waiting there is never delivered, even to two that share a tab with it on now. Asked before
+   * the directory is read too: the hook takes what waits in a pane's inbox without asking, and a directory that
+   * cannot be read (signed out, the backend down) would otherwise leave it there to be taken.
+   */
+  function forbidden(delivery: LocalDelivery): string | null {
+    return store.entry(delivery.messageId)?.message.tabId === 'started' ? 'it was sent outside any tab with Agent Messages on' : null
+  }
+
+  /** Why a local delivery can no longer be made, or null. Only what may never be made is refused before the
+   *  directory is read. */
   function refusal(delivery: LocalDelivery): string | null {
     const entry = store.entry(delivery.messageId)
     if (!entry) return 'the message is no longer kept'
+    const never = forbidden(delivery)
+    if (never) return never
     if (!directory.current()) return null
     const recipient = { machineId: self(), agentId: delivery.agentId }
+    // Only a tab with Agent Messages on carries a message.
     if (directory.shared(entry.message.from, recipient)) return null
-    if (linked(recipient).some((m) => same(m, entry.message.from))) return null
     const tab = directory.current()!.tabs.find((t) => t.id === entry.message.tabId)
     return tab && !tab.enabled ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender'
   }
@@ -170,6 +191,25 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   }
 
   /**
+   * Teammates each with a name it can be told apart by, from `me`'s side. A name is a session's title, and two can
+   * share one: two Codex agents in a tab both titled themselves after the task one gave the other, so the roster
+   * named the teammate as the agent itself (a fresh Mac, 2026-10-12). A name shared with anyone here, the sender
+   * included, gets the start of its id, which `harness send` takes on its own.
+   */
+  function distinct(me: Member, members: Member[]): Array<ReturnType<typeof teammate>> {
+    const mates = members.map(teammate)
+    const counts = new Map<string, number>()
+    for (const name of [teammate(me).name, ...mates.map((m) => m.name)]) counts.set(name.toLowerCase(), (counts.get(name.toLowerCase()) ?? 0) + 1)
+    return mates.map((m) => (counts.get(m.name.toLowerCase()) ?? 0) > 1 ? { ...m, name: `${m.name} (${m.member.agentId.slice(0, 8)})` } : m)
+  }
+
+  /** This harness's own name as its teammates see it: with the start of its id when one of them shares it. */
+  function ownName(me: Member, members: Member[]): string {
+    const name = teammate(me).name
+    return members.some((m) => teammate(m).name.toLowerCase() === name.toLowerCase()) ? `${name} (${me.agentId.slice(0, 8)})` : name
+  }
+
+  /**
    * Ask other machines for their agents' names, those not known or too old; a machine asked lately, answering or
    * not, is not asked again yet. The notes are looked at again only when a name changed: looked at on every
    * answer, a teammate no machine can name (a stopped harness here) asked again at once, without end.
@@ -208,9 +248,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     const me = { machineId: self(), agentId }
     const peers = directory.peers(me)
     if (!peers.length) return null
-    const tabs = directory.tabsOf(me).map((t) => t.name)
-    const mates = peers.map(teammate)
-    const text = note(tabs.join('", "'), mates)
+    const mates = distinct(me, peers)
+    const text = note(directory.tabsOf(me), mates)
     return { text, signature: createHash('sha256').update(text).digest('hex').slice(0, 12) }
   }
 
@@ -224,15 +263,6 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!core.agents.live().some((s) => s.agentId === row.child.agentId)) throw new MessageError('UNKNOWN_HARNESS', 'No such harness on this machine.')
     lineage.append(row)
     return { recorded: true }
-  }
-
-  /** The harnesses an agent started, or the one that started it, as `harness send` alone lists them. */
-  function linkedNote(links: Member[]): string {
-    const mates = links.map(teammate)
-    const width = Math.max(...mates.map((t) => t.name.length))
-    return ['[Harness] The harness that started you, and those you started:',
-      ...mates.map((t) => `  ${t.name.padEnd(width)}  ${[engineName(t.engine), t.machine, t.where].filter(Boolean).join(' · ')}`),
-      'Message them: harness send <name> "…"'].join('\n')
   }
 
   function withdrawNote(agentId: string): void {
@@ -284,22 +314,17 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!session) throw new MessageError('NOT_A_HARNESS', 'This pane is not a harness Harness knows. Run harness send from an agent\'s pane.')
     if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. Try again in a moment.')
     const me = { machineId: self(), agentId: session.agentId }
-    const inTabs = directory.peers(me)
-    const links = linked(me).filter((m) => !inTabs.some((p) => same(p, m)))
-    const peers = [...inTabs, ...links]
-    if (!directory.tabsOf(me).length && !links.length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
+    const peers = directory.peers(me)
+    if (!directory.tabsOf(me).length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
     await learnNames(peers, true)
-    const mates = peers.map(teammate)
+    const mates = distinct(me, peers)
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])
       .map((n) => String(n).trim()).filter(Boolean)
     const text = typeof payload.text === 'string' ? payload.text : ''
     // No recipient and no text: who is here, the rules, and this agent's last messages. An agent whose context
     // was compacted asks this to learn again what it was told: seen on a real team, one rebuilt it from its team
     // history in five commands.
-    if (!names.length && !text) {
-      const started = links.length ? linkedNote(links) : null
-      return { roster: [rosterOf(session.agentId)?.text, started].filter(Boolean).join('\n\n') || 'No teammates in this tab yet.', recent: recentFor(me) }
-    }
+    if (!names.length && !text) return { roster: rosterOf(session.agentId)?.text ?? 'No teammates in this tab yet.', recent: recentFor(me) }
     if (!names.length) throw new MessageError('USAGE', 'Name who to message: harness send <name> "text"')
     if (!text.trim()) throw new MessageError('USAGE', 'Write the message: harness send <name> "text"')
     if (text.length > LIMITS.text) throw new MessageError('TOO_LONG', `A message holds at most ${LIMITS.text} characters.`)
@@ -307,9 +332,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     for (const name of names) {
       const wanted = name.toLowerCase()
       const exact = mates.filter((m) => m.name.toLowerCase() === wanted)
-      const prefix = exact.length ? exact : mates.filter((m) => m.name.toLowerCase().startsWith(wanted))
+      const prefix = exact.length ? exact : mates.filter((m) => m.name.toLowerCase().startsWith(wanted) || cutShort(m.name.toLowerCase(), wanted))
       // Or the start of its id: a name is the session's title until someone names it, and a title can hold a comma,
-      // which the recipient list splits on (a harness that started another tells it its id to answer to).
+      // which the recipient list splits on.
       const found = prefix.length || wanted.length < 6 ? prefix : mates.filter((m) => m.member.agentId.toLowerCase().startsWith(wanted))
       const list = mates.map((m) => m.name).join(', ') || 'nobody yet'
       if (!found.length) throw new MessageError('UNKNOWN_RECIPIENT', `No teammate named "${name}" in this tab. Teammates: ${list}.`)
@@ -319,6 +344,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       }
     }
     if (recipients.length > LIMITS.recipients) throw new MessageError('TOO_MANY_RECIPIENTS', `A message goes to at most ${LIMITS.recipients} teammates.`)
+    // The first recipient's tab names the message's log. The directory can change while other machines are asked
+    // for names: a tab turned off, or left, meanwhile leaves none, and nothing is sent.
+    const tab = directory.shared(me, recipients[0])
+    if (!tab) throw new MessageError('MESSAGES_OFF', `${recipients[0].name} is no longer in a tab with you that has Agent Messages on. Nothing was sent.`)
     const times = (sent.get(session.agentId) ?? []).filter((t) => now() - t < LIMITS.window)
     if (times.length >= LIMITS.perSender) {
       core.clients.windows({ type: 'messages_changed', payload: { limited: { machineId: self(), agentId: session.agentId } } })
@@ -328,10 +357,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       throw new MessageError('MAILBOX_FULL', 'Too many messages are waiting on this machine. Try again once some are delivered.')
     }
     sent.set(session.agentId, [...times, now()])
-    const tab = directory.shared(me, recipients[0]) ?? STARTED_TAB
     const message: Message = {
-      id: messageId(), tabId: tab.id, to: recipients, text, at: now(),
-      from: { ...me, name: core.agents.displayName(session) || session.agentId.slice(0, 8), engine: session.engine, machine: machineName(self()) },
+      id: messageId(), tabId: tab.id, to: recipients, text, at: now(), ...(payload.fyi === true ? { fyi: true as const } : {}),
+      from: { ...me, name: ownName(me, peers), engine: session.engine, machine: machineName(self()) },
     }
     store.record(message)
     for (const r of recipients) store.status({ messageId: message.id, machineId: r.machineId, agentId: r.agentId, state: 'queued', at: now() })
@@ -349,17 +377,27 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
         const status = entry.statuses.find((s) => s.machineId === r.machineId && s.agentId === r.agentId)
         return { name: r.name, state: status?.state ?? 'queued', ...(status?.via ? { via: status.via } : {}), ...(status?.reason ? { reason: status.reason } : {}) }
       }),
+      ...(text.length > LONG_TEXT ? { advice: longAdvice(text.length) } : {}),
     }
   }
 
-  /** The last messages a harness sent or was sent, oldest first, as `harness send` lists them. */
+  /**
+   * What `harness send` alone gives an agent besides the roster: every message still waiting for it, which it has
+   * now read, then its last few. An agent whose engine started before Agent Messages never runs the hook and, always
+   * working, is never typed to: it read its messages this way, but only the last five, each still "queued", and a
+   * restart would have given it all of them again (a Codex lead, 2026-10-12).
+   */
   function recentFor(me: Member, count = 5): Array<Record<string, unknown>> {
     const mine = (m: Member) => m.machineId === me.machineId && m.agentId === me.agentId
-    return store.state.history.filter((e) => mine(e.message.from) || e.message.to.some(mine)).slice(-count).map((e) => {
+    const involving = store.state.history.filter((e) => mine(e.message.from) || e.message.to.some(mine))
+    const waiting = involving.filter((e) => !mine(e.message.from) && e.statuses.find((s) => mine(s))?.state === 'queued').slice(-UNREAD_MAX)
+    const read = new Set(mailbox.read(me.agentId, waiting.map((e) => e.message.id)))
+    const shown = [...new Set([...waiting, ...involving.slice(-count)])].sort((a, b) => a.message.at - b.message.at)
+    return shown.map((e) => {
       const sent = mine(e.message.from)
       const status = sent ? e.statuses.find((s) => s.state !== 'delivered') ?? e.statuses[0] : e.statuses.find((s) => mine(s))
       return { id: e.message.id, at: e.message.at, ...(sent ? { to: e.message.to.map((r) => r.name) } : { from: e.message.from.name }),
-        text: e.message.text, state: status?.state ?? 'queued' }
+        text: e.message.text, state: read.has(e.message.id) ? 'delivered' : status?.state ?? 'queued', ...(read.has(e.message.id) ? { unread: true } : {}) }
     })
   }
 
@@ -385,12 +423,16 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (due.length) saveQuietly()
   }
 
-  /** What another machine said became of its agents' deliveries. */
+  /**
+   * What another machine said became of its agents' deliveries. Every way one arrives is kept: a message an agent
+   * read with `harness send` came back as a bare "delivered" to the machine that sent it, so its sender never saw
+   * that it was read (two machines, 2026-10-12).
+   */
   function applyRemote(machineId: string, statuses: unknown): void {
     for (const s of Array.isArray(statuses) ? statuses as Record<string, unknown>[] : []) {
       if (typeof s.messageId !== 'string' || typeof s.agentId !== 'string' || !['queued', 'delivered', 'failed'].includes(String(s.state))) continue
       const status: DeliveryStatus = { messageId: s.messageId, machineId, agentId: s.agentId, state: s.state as DeliveryStatus['state'],
-        ...(s.via === 'hook' || s.via === 'prompt' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
+        ...(s.via === 'hook' || s.via === 'prompt' || s.via === 'read' ? { via: s.via } : {}), ...(typeof s.reason === 'string' ? { reason: s.reason } : {}), at: now() }
       if (store.status(status)) tellWindows(status.messageId)
     }
   }

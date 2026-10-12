@@ -222,6 +222,8 @@ export interface CoreApi {
     lane: LaneSeal
     /** This machine's E2EE identity as Share's owner signs with it, held by the gateway (`ObserverKey`). */
     observerKey: ObserverKey
+    /** The account's connected services, sealed and opened by the gateway for its machines (`ConnectorVault`). */
+    connectorVault: ConnectorVault
     /** Whether this computer holds an account: a sign-in or sign-out restarts the daemon. */
     signedIn(): boolean
     /** The account's environment (`prod`, …), which the backend checks every request against. */
@@ -371,6 +373,23 @@ export const OBSERVER_KEY_OFF: ObserverKey = {
   signWelcome: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
 }
 
+/**
+ * The account's connected services sealed for its machines (lib/e2ee/connectorVault.ts), by the gateway,
+ * which holds this machine's identity and reads the device key log: `seal` makes an envelope for every
+ * machine of the account's log (not suspended, not pending), `open` reads one only if such a machine
+ * signed it, and answers null otherwise. `complete` says it was sealed for every such machine: one that
+ * is not misses a machine added since, and is sealed again. The envelope is opaque JSON for the backend.
+ */
+export interface ConnectorVault {
+  seal(plaintext: string): Promise<Record<string, unknown>>
+  open(envelope: unknown): Promise<{ plaintext: string, complete: boolean } | null>
+}
+/** A process with no key of the core's: it seals and opens nothing. */
+export const CONNECTOR_VAULT_OFF: ConnectorVault = {
+  seal: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
+  open: async () => null,
+}
+
 /** A service in its own process that acts on no agent: it creates none and reads no harness's frame. */
 export const AGENT_ACTIONS_OFF: Pick<CoreApi['agents'], 'create' | 'dsh'> = {
   create: async () => ({ ok: false, error: 'SERVICE_UNAVAILABLE' }),
@@ -378,10 +397,11 @@ export const AGENT_ACTIONS_OFF: Pick<CoreApi['agents'], 'create' | 'dsh'> = {
 }
 
 /** The account as a service that reads no backend, hears no notice and signs nothing has it. */
-export const ACCOUNT_BACKEND_OFF: Pick<CoreApi['account'], 'backend' | 'onNotice' | 'observerKey'> = {
+export const ACCOUNT_BACKEND_OFF: Pick<CoreApi['account'], 'backend' | 'onNotice' | 'observerKey' | 'connectorVault'> = {
   backend: async () => ({ status: 503, body: { error: 'SERVICE_UNAVAILABLE' } }),
   onNotice: () => () => {},
   observerKey: OBSERVER_KEY_OFF,
+  connectorVault: CONNECTOR_VAULT_OFF,
 }
 
 /** Where a service that was never told runs this daemon from: the installed CLI, on no port it knows. */
@@ -1043,6 +1063,7 @@ export type BackendNotice =
   | { type: 'zoo_changed'; revision: number }
   | { type: 'machines_changed'; reason: string }
   | { type: 'device_keys_changed' }
+  | { type: 'connectors_changed'; revision: number }
 
 /** What a person has open on this computer, per surface (lib/windowSurfaces.ts). */
 export type { LocalWindows, WindowSurface } from '../lib/windowSurfaces.js'
@@ -1257,6 +1278,8 @@ export interface GatewayOps {
   lane: LaneSeal
   /** Share's owner's signature on a welcome, with this machine's identity (`core.account.observerKey`). */
   observerKey: ObserverKey
+  /** The account's connected services sealed for its machines (`core.account.connectorVault`). */
+  connectorVault: ConnectorVault
 }
 
 /** A window on this computer working on another of the owner's machines, through the relay: what the
@@ -1336,6 +1359,7 @@ export interface CoreApiDeps {
   accessToken: CoreApi['account']['accessToken']
   lane: CoreApi['account']['lane']
   observerKey: CoreApi['account']['observerKey']
+  connectorVault: CoreApi['account']['connectorVault']
   observer: CoreApi['clients']['observer']
   privateGridName: CoreApi['account']['privateGridName']
   machineName: CoreApi['account']['machineName']
@@ -1374,7 +1398,7 @@ export interface CoreApiDeps {
 
 export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
-  gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, observer, privateGridName, machineName, backend, onNotice,
+  gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, connectorVault, observer, privateGridName, machineName, backend, onNotice,
   runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
   signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
@@ -1412,7 +1436,7 @@ export function createCoreApi({
     turns,
     questions,
     transcripts: { databaseHistory, lastTurn },
-    account: { mintGridName, accessToken, lane, observerKey, privateGridName, machineName, backend, onNotice, signedIn, environment, machines },
+    account: { mintGridName, accessToken, lane, observerKey, connectorVault, privateGridName, machineName, backend, onNotice, signedIn, environment, machines },
     clients: {
       viewerChanged, gridNamed, gridModelsChanged, dshInstallStatus, windows, observer, hasWindow, devicesChanged, dialWatching,
       // A viewers process speaks to the core as a service: what it may send a client is a viewer stream's

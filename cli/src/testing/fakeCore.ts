@@ -61,6 +61,7 @@ export function fakeCore(over: Overrides = {}): CoreApi {
       machineName: vi.fn(() => null),
       backend: vi.fn(async () => ({ status: 200, body: {} })),
       observerKey: { publicKey: vi.fn(async () => 'cHVi'), signWelcome: vi.fn(async () => 'c2ln') },
+      connectorVault: { seal: vi.fn(async () => ({})), open: vi.fn(async () => null) },
       onNotice: vi.fn(() => () => {}),
       signedIn: vi.fn(() => true),
       environment: vi.fn(() => 'prod'),
