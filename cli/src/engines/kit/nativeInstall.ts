@@ -39,6 +39,14 @@ interface Result { token: string; claim: string; code: number | null; signal: st
 export type NativeInstallation = { complete: true } | { complete: false; detail: string; running?: true; failed?: true }
 const hold = (detail: string): NativeInstallation => ({ complete: false, detail })
 const running = (detail: string): NativeInstallation => ({ complete: false, detail, running: true })
+// The helper ends its installer at 20 minutes and then records the result. A dispatch older than that with no result
+// is a helper that died (a reboot during an install): it is never replayed, and no longer said to be installing, which
+// `harness new` would otherwise wait on for minutes at every attempt.
+const INSTALLER_SETTLES_MS = 1_200_000 + 60_000
+const installing = (dispatched: { file: string } | undefined, detail: string): NativeInstallation => {
+  try { if (dispatched && Date.now() - lstatSync(dispatched.file).mtimeMs < INSTALLER_SETTLES_MS) return running(detail) } catch { /* A vanished record is not a live installer. */ }
+  return hold(detail)
+}
 
 /** Never read a growing journal file without a bound, or tighten foreign permissions to trust it. */
 function readRecord(file: string): { text: string; file: string; stamp: string; facts: NativePathFact[]; verify(): void } {
@@ -292,7 +300,7 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
       }
       if (complete && !pending) return { complete: true }
       if (query) return pending && (pending.claim.engine === engine || pending.claim.request === request)
-        ? running('Waiting for the saved installer to settle. An executable appearing before completion is not installation authority.')
+        ? installing(pending.slot, 'Waiting for the saved installer to settle. An executable appearing before completion is not installation authority.')
         : complete ? { complete: true } : null
       if (!pending && names.length >= MAX_INSTALLATIONS) return hold('The engine installation history is full. Its saved records need review before another installation.')
       // HOME gets a fresh budget after history enumeration and yields.
@@ -311,7 +319,7 @@ export function createNativeInstallations({ directory, node = managedNodePath, d
       const claimCurrent = () => { try { authority!.verify(); claimed.verify(); verifyNativePathFacts(claim.routes); return physical() } catch { return false } }
       const result = JSON.stringify({ token: claim.token, claim: hash, code: null, signal: null, notDispatched: true } satisfies Result)
       if (pending?.slot) {
-        return running('Waiting for the dispatched installer result. An uncertain dispatch is never repeated.')
+        return installing(pending.slot, 'Waiting for the dispatched installer result. An uncertain dispatch is never repeated.')
       }
       // A missing outside witness with an inside sentinel is a lost history, not a new dispatch.
       if (maybe(`${file}.dispatch`)) return hold('The installer dispatch witness is missing; its previous worker may still own the installation.')

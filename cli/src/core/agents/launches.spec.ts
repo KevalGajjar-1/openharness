@@ -557,6 +557,17 @@ describe('agent_create with a receipt', () => {
     expect(prepareProjectFolder).not.toHaveBeenCalled()
   })
 
+  it('refuses a new project for a harness it does not have at once, before any engine install or folder', async () => {
+    const prepareEngine = vi.fn<NonNullable<LaunchRequestDeps['prepareEngine']>>()
+    const prepareCreate = vi.fn<NonNullable<LaunchRequestDeps['prepareCreate']>>()
+    const { ask, deps } = setup({ prepareCreate, prepareEngine })
+    expect(await ask({ engine: 'codex', projectSource: 'new', projectName: 'scratch1', creationId: CREATION, dsh: 'acme/notes' }))
+      .toStrictEqual({ error: 'INVALID_DSH', detail: 'acme/notes is not installed on this machine' })
+    expect(deps.receipts.status(CREATION)).toEqual({ state: 'missing' })
+    expect(prepareEngine).not.toHaveBeenCalled()
+    expect(prepareProjectFolder).not.toHaveBeenCalled()
+  })
+
   it('refuses a new project whose engine could not be installed, before any folder exists', async () => {
     const prepareEngine = vi.fn<NonNullable<LaunchRequestDeps['prepareEngine']>>(async () => ({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native',
       refusal: 'ENGINE_INSTALL_FAILED', detail: 'Codex could not be installed: getaddrinfo ENOTFOUND registry.npmjs.org' }))

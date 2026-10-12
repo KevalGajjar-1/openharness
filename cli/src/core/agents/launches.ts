@@ -193,7 +193,7 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, pre
           const ready = await prepareCreate(prepared, { ...authority, label }, { local })
           return ready.ok ? ready.dispatch() : { ok: false, error: ready.error, ...(ready.detail ? { detail: ready.detail } : {}) }
         }
-        return () => executeCreate(input, projectFolder, local, invoke, true)
+        return () => executeCreate(input, projectFolder, local, invoke)
       }
       const ready = await prepareCreate(input, { ...authority, label }, { local })
       if (!authority.current()) return null
@@ -406,7 +406,9 @@ export function createLaunchRequests({ receipts, createAgent, prepareCreate, pre
         const fingerprint = creationFingerprint(projectFolder ? { ...fingerprintInput, projectFolder } : fingerprintInput)
         // A new project too, which waits for its engine as any other create does (above).
         const durableNative = !!prepareCreate && !resumeSessionId
-        if (!durableNative && model.state !== 'ok' && !receipts.has(creationId, fingerprint)) {
+        // A new project is refused at once for a harness or named agent it cannot have, as it always was, rather than
+        // after its engine is installed and its folder made.
+        if ((!durableNative || projectFolder) && model.state !== 'ok' && !receipts.has(creationId, fingerprint)) {
           const refusal = await validateInstalled(input, installed)
           if (refusal) { reply(refusal); return }
         }

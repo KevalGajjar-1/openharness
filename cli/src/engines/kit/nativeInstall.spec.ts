@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -125,6 +125,20 @@ it('refuses a failed installation to its own request in its output\'s words, and
   expect(await again.ensure('opencode', recipe, environment, 'new-request', () => true)).toMatchObject({ complete: false, running: true })
   expect(again.dispatch).toHaveBeenCalledOnce()
   expect(await controller().status('codex', 'unrelated-request', () => true)).toBeNull()
+  expect(install.dispatch).toHaveBeenCalledOnce()
+})
+
+it('stops saying an installer whose helper never settled is installing, without ever replaying it', async () => {
+  const install = controller()
+  expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ running: true })
+  expect(await controller().ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ running: true })
+  expect(await controller().status('opencode', 'other', () => true)).toMatchObject({ running: true })
+  // A reboot during the install: no result, ever, and the dispatch older than the helper's 20 minutes.
+  const witness = `${directory}.00000000.dispatch`, past = new Date(Date.now() - 30 * 60_000)
+  utimesSync(witness, past, past)
+  const stale = await controller().ensure('opencode', recipe, environment, 'request', () => true)
+  expect(stale).toEqual({ complete: false, detail: 'Waiting for the dispatched installer result. An uncertain dispatch is never repeated.' })
+  expect(await controller().status('opencode', 'other', () => true)).not.toHaveProperty('running')
   expect(install.dispatch).toHaveBeenCalledOnce()
 })
 
