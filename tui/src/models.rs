@@ -264,7 +264,17 @@ pub fn parse_api_models(reply: &Value) -> Option<Vec<ApiModel>> {
 /// An agent account's subscription, from the usage the status line reads (`usage_read`): how much
 /// of its tightest window is left.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sub { pub engine: String, pub title: String, pub account: String, pub left: Option<f64>, pub status: String, pub details: Vec<String> }
+pub struct Sub {
+    pub engine: String, pub title: String, pub account: String, pub left: Option<f64>, pub status: String, pub details: Vec<String>,
+    /// The machines this account's plan was read on, by name, this computer's first — what tells two plans apart, as the
+    /// status line does. (The account key itself is a hash: it says nothing to a person.)
+    pub machines: Vec<String>,
+}
+
+/// A machine as a person knows it: its name, never its id.
+fn machine_name(app: &App, id: &str) -> String {
+    app.fleet.machine(id).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Unnamed machine".into())
+}
 
 /// What is left of a window, as the desktop says it: never a positive remainder rounded to 0.
 fn left_of(used: f64) -> String { let left = (100.0 - used).clamp(0.0, 100.0); if left > 0.0 && left < 1.0 { "<1%".into() } else { format!("{}%", left.floor() as u32) } }
@@ -276,7 +286,12 @@ pub fn subscriptions(app: &App) -> Vec<Sub> {
     for m in machines {
         for u in &app.usage[m] {
             let account = u.account.clone().unwrap_or_default();
-            if out.iter().any(|s| s.engine == u.provider && s.account == account) { continue }
+            let name = machine_name(app, m);
+            // The same account on another machine is the same plan: one row, every machine it is on.
+            if let Some(seen) = out.iter_mut().find(|s| s.engine == u.provider && s.account == account) {
+                if !seen.machines.contains(&name) { seen.machines.push(name) }
+                continue;
+            }
             let tightest = u.windows.iter().max_by(|a, b| a.used.total_cmp(&b.used));
             let title = match u.provider.as_str() { "claude" => "Anthropic".to_string(), "codex" => "OpenAI".to_string(), p => engine_label(p).to_string() };
             out.push(Sub {
@@ -284,6 +299,7 @@ pub fn subscriptions(app: &App) -> Vec<Sub> {
                 left: tightest.map(|w| (100.0 - w.used).clamp(0.0, 100.0)),
                 status: tightest.map(|w| format!("{} left", left_of(w.used))).unwrap_or_else(|| "Usage unavailable".into()),
                 details: u.windows.iter().map(|w| format!("{} — {} left", w.label, left_of(w.used))).collect(),
+                machines: vec![name],
             });
         }
     }
@@ -762,20 +778,21 @@ fn sub_word(app: &App, sub: &Sub, t: Option<&Target>) -> String {
 const LOW_WATER: f64 = 20.0;
 
 
-/// A subscription's row, as the desktop's: the account (`Anthropic 315df1`), then how much of it is
-/// left (`20% remaining`) — the one figure worth a glance; Enter on it is the preview's to say. Its
-/// mark says it is in use (✓) or running low (!).
-fn sub_row(app: &App, sub: &Sub, t: Option<&Target>, group: &str, twin: bool) -> Row {
+/// A subscription's row: the plan's maker, the machines it is on (`Anthropic  studio, laptop`), then how
+/// much of it is left (`20% remaining`) — the one figure worth a glance; Enter on it is the preview's to
+/// say. Its mark says it is in use (✓) or running low (!). [ordinal]: which of several plans of one maker
+/// on the same machines this is — the only case a machine's name cannot tell them apart.
+fn sub_row(app: &App, sub: &Sub, t: Option<&Target>, group: &str, ordinal: Option<usize>) -> Row {
     let word = sub_word(app, sub, t);
     let low = sub.left.is_some_and(|l| l <= LOW_WATER);
-    let short: String = sub.account.chars().take(6).collect();
-    let label = if twin && !short.is_empty() { format!("{} · {short}", sub.title) } else { sub.title.clone() };
+    let label = ordinal.map_or_else(|| sub.title.clone(), |n| format!("{} {n}", sub.title));
+    let machines = sub.machines.join(", ");
     let (dot, color) = if word.starts_with('✓') { ("✓ ", if low { theme::WARN } else { theme::accent() }) } else if low { ("! ", theme::WARN) } else { ("◇ ", theme::SOFT) };
     let left = sub.left.map(|l| format!("{} remaining", left_of(100.0 - l))).unwrap_or_else(|| sub.status.clone());
     Row::new(format!("mv:sub:{}\t{}", sub.engine, sub.account), label).group(group.to_string())
-        .extra(format!("{} {} subscription own login {word}", sub.engine, sub.account))
+        .extra(format!("{} {machines} subscription own login {word}", sub.engine))
         .lead(vec![span(dot, fg(color))])
-        .detail(vec![span(if twin { String::new() } else { short }, fg(theme::MUTED))])
+        .detail(vec![span(machines, fg(theme::MUTED))])
         .right(left)
 }
 
@@ -801,7 +818,12 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
     // Subscriptions: every account's, as the desktop lists them — how much of it is left and whether
     // that is running low; the harness's own login says it is in use.
     let subs = subscriptions(app);
-    out.extend(subs.iter().map(|sub| sub_row(app, sub, t, SUBSCRIPTIONS, subs.iter().filter(|s| s.title == sub.title).count() > 1)));
+    out.extend(subs.iter().enumerate().map(|(i, sub)| {
+        // (Two plans of one maker on the same machines have only their order to tell them apart.)
+        let alike: Vec<usize> = subs.iter().enumerate().filter(|(_, s)| s.title == sub.title && s.machines == sub.machines).map(|(j, _)| j).collect();
+        let ordinal = (alike.len() > 1).then(|| alike.iter().position(|j| *j == i).unwrap_or(0) + 1);
+        sub_row(app, sub, t, SUBSCRIPTIONS, ordinal)
+    }));
 
     // APIs saved on this computer: each folds its models until Enter (or a search) opens it.
     match &v.apis {
@@ -2086,6 +2108,7 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
         out.extend(failed(""));
         out.push(Line::raw(""));
         out.extend(sub.details.iter().take(3).map(|d| kv("Window", d.clone())));
+        out.push(kv(if sub.machines.len() > 1 { "Machines" } else { "Machine" }, sub.machines.join(", ")));
         out.push(kv("Agent", engine_label(&sub.engine).to_string()));
         out.push(kv("Source", "Subscription"));
         let said = match sub_payload(app, &sub, t) { Ok(_) => "Enter puts this harness back on its own login.".to_string(), Err(w) => w };
@@ -2406,6 +2429,37 @@ mod tests {
     fn toast(app: &App) -> String { app.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default() }
     fn flash(p: &Picker) -> String { p.flash.as_ref().map(|f| f.0.clone()).unwrap_or_default() }
     fn text(lines: &[Line]) -> String { lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n") }
+
+    /// A subscription row names the machines its plan is on, never the account's hash; the same plan on two
+    /// machines is one row, and only two plans of one maker on the same machines are told apart by number.
+    #[test]
+    fn subscriptions_name_their_machines_and_not_their_account_keys() {
+        let mut app = app();
+        app.fleet.machines.push(Machine { shared: false, id: "m2".into(), name: "laptop".into(), local: false, status: "online".into(), reach: Reach::Ready });
+        let win = || vec![Window { label: "5h".into(), used: 10.0, resets: None }];
+        let claude = |account: &str| Usage { provider: "claude".into(), account: Some(account.into()), windows: win() };
+        let codex = |account: &str| Usage { provider: "codex".into(), account: Some(account.into()), windows: win() };
+        // The app() fixture has claude 7f0c on studio (local). The same account is on the laptop too, with a codex plan.
+        app.usage.insert("m2".into(), vec![claude("7f0c"), codex("aa11")]);
+        let text_of = |r: &Row| r.detail.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let rows = rows(&app, "");
+        let one = row(&rows, "mv:sub:claude\t7f0c");
+        assert_eq!((one.label.as_str(), text_of(one).as_str()), ("Anthropic", "studio, laptop"), "one plan, every machine it is on");
+        let alone = row(&rows, "mv:sub:codex\taa11");
+        assert_eq!((alone.label.as_str(), text_of(alone).as_str()), ("OpenAI", "laptop"));
+        for r in [one, alone] { assert!(![r.label.clone(), text_of(r), r.right.clone()].join(" ").contains("7f0c") && !r.label.contains("aa11"), "no account key shown") }
+        assert!(!rows.iter().any(|r| r.label.contains("this Mac") || text_of(r).contains("this Mac")), "machines are named, never 'this Mac'");
+        // A second Anthropic plan on the same two machines: only now do the plans need a number.
+        app.usage.get_mut("local").unwrap().push(claude("cc33"));
+        app.usage.get_mut("m2").unwrap().push(claude("cc33"));
+        let rows = super::rows(&app, "");
+        let labels: Vec<&str> = rows.iter().filter(|r| r.id.starts_with("mv:sub:claude")).map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Anthropic 1", "Anthropic 2"]);
+        assert!(rows.iter().filter(|r| r.id.starts_with("mv:sub:claude")).all(|r| text_of(r) == "studio, laptop"));
+        // The preview names them too.
+        let preview = text(&super::preview(&app, "mv:sub:claude\t7f0c"));
+        assert!(preview.contains("Machines") && preview.contains("studio, laptop"), "{preview}");
+    }
 
     /// The owner's flow, end to end on fake replies: the subscription runs low, so the focused
     /// harness is moved onto a local model that is not downloaded yet — Get (asked twice) →

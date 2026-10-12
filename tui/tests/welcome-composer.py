@@ -12,7 +12,8 @@ assert 19780 <= PORT <= 19789
 NAME = 'hn-welcome-composer-' + str(os.getpid())
 HN = BASE / 'hn'; shutil.copy2(os.environ.get('HN_WELCOME_TEST_BINARY', ROOT / 'target/release/harness-tui'), HN)
 TMUX = shutil.which('tmux'); assert TMUX
-LOCAL_LABEL = 'This Mac' if os.uname().sysname == 'Darwin' else 'This Computer'
+# This computer by its name (the mock's, under MOCK_DEMO): never "This Mac" once it has one.
+LOCAL_LABEL = 'studio'
 ENV = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'TZ') if k in os.environ}
 ENV.update(HOME=str(BASE), HN_TMPDIR=str(BASE), HN_SOCKET_NAME=NAME, PORT=str(PORT),
            TERM='xterm-256color', COLORTERM='truecolor', SHELL='/bin/sh', HN_DESKTOP='off',
@@ -95,8 +96,9 @@ try:
     initial_header=header()
     assert initial_header.index('OpenCode') < initial_header.index(LOCAL_LABEL) < initial_header.rfind('[ '), initial_header
     task='Keep this task while choosing computers'
-    type_text(task); shows(task); keys('Enter')
-    assert not created(), 'Task Enter must focus Start without submitting'
+    # (Enter with a task starts it since #1130; this keeps the task typed while choosing computers.)
+    type_text(task); shows(task)
+    assert not created(), 'typing the task submits nothing'
     snapshot('welcome-wide')
 
     choose_machine('gpu-box'); assert '[ gpu-box ▾ ]' in header(),header()
@@ -165,14 +167,13 @@ try:
     print('PASS keyboard traversal, All action, wide/narrow/light rendering, preserved task, New Terminal',flush=True)
     hn('workspace-menu','new-tab'); shows('What should it do?')
     task="what's 1+1"
-    type_text(task); keys('Enter')
-    assert len(created())==count, 'first task Enter only highlights New Harness'
-    snapshot('welcome-ready-to-start')
+    type_text(task); snapshot('welcome-ready-to-start')
+    # With a task, Enter starts it (#1130: the second Enter, on Start, was where a newcomer stopped).
     keys('Enter')
-    wait(lambda:len(created())==count+1 and 'New Terminal' not in screen(),'second Enter creates and opens the harness')
+    wait(lambda:len(created())==count+1 and 'New Terminal' not in screen(),'task Enter creates and opens the harness')
     assert created()[-1]['prompt']==task, created()[-1]
     snapshot('welcome-created')
-    print('PASS task Enter highlights New Harness; second Enter creates exactly one harness with the task',flush=True)
+    print('PASS task Enter creates exactly one harness with the task',flush=True)
     print('Captures: '+str(OUTPUT),flush=True)
 finally:
     if HN.exists(): hn('kill-server',ok=False)

@@ -685,7 +685,6 @@ pub fn machine_rows(app: &App) -> Vec<Row> {
         // (The harnesses' marks, no round ones: `✓` connected, a spinner connecting, `?` to link…)
         let (dot, color) = theme::machine_mark(&m.reach, m.online(), app.tick);
         let word: String = match &m.reach {
-            _ if m.local && m.reach == Reach::Ready => "this computer".into(),
             Reach::Ready => "connected".into(),
             Reach::Connecting => "connecting…".into(),
             Reach::NeedsLink => "not linked — M-l links it".into(),
@@ -824,7 +823,7 @@ pub fn new_machine_rows(app: &App, prefer: &str) -> Vec<Row> {
         let running = app.fleet.agents.values().filter(|a| a.machine_id == m.id && a.status == "active").count();
         Row::new(m.id.clone(), app.fleet.machine_name(&m.id))
             .lead(vec![span(if m.id == prefer { "✓ " } else { "  " }, fg(theme::accent()))])
-            .detail(vec![span(format!("{}{running} running", if m.local { "this computer · " } else { "" }), fg(theme::MUTED))])
+            .detail(vec![span(format!("{running} running"), fg(theme::MUTED))])
     }).collect();
     rows.sort_by_key(|r| r.id != prefer);
     rows
