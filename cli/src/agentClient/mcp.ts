@@ -25,7 +25,7 @@ export const INSTRUCTIONS = `Harness runs coding agents (Claude Code, Codex) in 
 
 Start a harness (harness_start) for work that can run beside yours, needs another agent's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do small, quick work yourself.
 
-List first (harness_list). Send follow-ups for the same work to the harness you started for it, not a new one. Never give work to, or close, a harness you did not start: those are the person's.
+List first (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in a tab where the person turned Agent Messages on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
 
 Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it when you are done (harness_close). Never ask a harness to publish, deploy, delete or push.`
 
@@ -93,8 +93,8 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_send',
-    description: 'Send a message to a harness you started, while it works: a follow-up, a correction, more context.',
-    inputSchema: schema({ to: { type: 'string', description: 'The harness\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
+    description: 'Send a message to a teammate: a harness in the same tab as you, where the person turned Agent Messages on (the tab\'s chat icon). Refused anywhere else, even to a harness you started.',
+    inputSchema: schema({ to: { type: 'string', description: 'The teammate\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
     argv: (a) => ['send', str(a.to), typeof a.text === 'string' ? a.text : ''],
   },
   {

@@ -578,14 +578,17 @@ describe('harness new, run by an agent', () => {
     expect(origin.next({})).toBe('')
   })
 
-  it('heads the task with who sent it, records what it started, and says how to follow it', async () => {
+  it('heads the task with who sent it, records what it started, and says how to follow it, never to message it', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' })]
     const h = harness(d)
     const origin = (await agentOrigin(h.deps))!
     expect(d.closed).toBe(true)
     await expect(origin.check()).resolves.toBeUndefined()
-    expect(origin.prompt('review it', 'm')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]\n\nreview it')
+    // Being started by it is no way to message it (owner, 2026-10-11: Agent Messages off means off): the header
+    // invited the new harness to `harness send` its starter, and agents talked with no tab turned on.
+    expect(origin.prompt('review it', 'm')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself.]\n\nreview it')
+    expect(origin.prompt('review it', 'm')).not.toContain('harness send')
     expect(origin.prompt('train it', 'mini')).toBe('[from lead · Claude Code · studio, the harness that started you. It reads your answer itself.]\n\ntrain it')
     // A task longer than a first message holds: the whole of it in a file, its start in the message.
     const long = `Review all of it. ${'x'.repeat(3_000)}`
@@ -600,7 +603,7 @@ describe('harness new, run by an agent', () => {
     expect(h.ledger.all()).toEqual([{ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'reviewer' } }])
     await origin.created('m', { id: 'kid2', name: 7 })
     expect(h.ledger.all()[1].child.name).toBe('')
-    expect(origin.next({ id: 'kid', name: 'reviewer' })).toBe('Read it: harness show reviewer · wait for it: harness wait reviewer · message it: harness send reviewer "…"')
+    expect(origin.next({ id: 'kid', name: 'reviewer' })).toBe('Read it: harness show reviewer · wait for it: harness wait reviewer')
     // A name that is a sentence, or Harness's own stand-in: the id's start instead.
     expect(origin.next({ id: 'abcdef123456', name: 'Claude harness 10-11 8:38' })).toContain('harness show abcdef12 ·')
     expect(origin.next({ id: 'abcdef123456', name: 'code review' })).toContain('harness show "code review" ·')

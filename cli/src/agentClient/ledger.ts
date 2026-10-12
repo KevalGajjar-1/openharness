@@ -3,9 +3,9 @@
  * agent started with `harness new`, appended by the CLI to the data folder of the daemon that owns the agent's
  * pane. A harness with no line was started by the person.
  *
- * Read by `harness ps` (who started each), by `new` and `stop` (limits, and which harnesses an agent may stop),
- * and by Agent Messages, which lets a harness and the harnesses it started message each other without a tab.
- * Like Agent Messages it is a collaboration scope, not a sandbox: any process of this user can write the file.
+ * Read by `harness ps` (who started each), and by `new` and `close` (limits, depth, and which harnesses an agent
+ * may close). It never lets two harnesses message each other: only a tab with Agent Messages on does (owner,
+ * 2026-10-11). It is a collaboration scope, not a sandbox: any process of this user can write the file.
  */
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -94,20 +94,5 @@ export class Ledger {
   /** 0 for a harness the person started. */
   depthOf(m: LedgerMember): number {
     return this.parentOf(m)?.depth ?? 0
-  }
-
-  /** Whether one of the two started the other. */
-  linked(a: LedgerMember, b: LedgerMember): boolean {
-    return this.all().some((row) => (same(row.by, a) && same(row.child, b)) || (same(row.by, b) && same(row.child, a)))
-  }
-
-  /** The harnesses [m] may message without a tab: its parent and its children. */
-  links(m: LedgerMember): LedgerMember[] {
-    const out: LedgerMember[] = []
-    for (const row of this.all()) {
-      const other = same(row.by, m) ? row.child : same(row.child, m) ? row.by : null
-      if (other && !out.some((o) => same(o, other))) out.push({ machineId: other.machineId, agentId: other.agentId })
-    }
-    return out
   }
 }

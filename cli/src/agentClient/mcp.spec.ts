@@ -30,6 +30,12 @@ describe('harness mcp', () => {
     expect(outside.every((t) => t.argv === undefined)).toBe(true)
     expect((await names(true)).map((t) => t.name)).toContain('harness_send')
     expect(await answer(call('harness_send', { to: 'x', text: 'y' }), deps())).toMatchObject({ error: { code: -32602 } })
+    // It reaches teammates in a tab with Agent Messages on, and nothing else: not a harness the agent started
+    // (owner, 2026-10-11: Agent Messages off means off).
+    const send = (await names(true)).find((t) => t.name === 'harness_send') as unknown as { description: string }
+    expect(send.description).toMatch(/teammate.*Agent Messages on.*Refused anywhere else, even to a harness you started/)
+    expect(INSTRUCTIONS).toContain('starting a harness does not let you message it')
+    expect(INSTRUCTIONS).not.toContain('Send follow-ups for the same work to the harness you started')
   })
 
   it('runs each tool as its verb', async () => {
@@ -75,11 +81,9 @@ describe('harness mcp', () => {
     const mcp = { HARNESS_VIA_MCP: '1' }
     expect(step(mcp, 'show', 'reviewer')).toBe('harness_read (name: "reviewer")')
     expect(step(mcp, 'wait', 'reviewer')).toBe('harness_wait (names: "reviewer")')
-    expect(step(mcp, 'send', 'reviewer')).toBe('harness_send (to: "reviewer")')
     expect(step(mcp, 'ps')).toBe('harness_list')
     expect(step(mcp, 'show', 'reviewer', { flag: '--chars 9000', arg: 'chars: 9000' })).toBe('harness_read (name: "reviewer", chars: 9000)')
     expect(step({}, 'show', 'reviewer', { flag: '--chars 9000', arg: 'chars: 9000' })).toBe('harness show reviewer --chars 9000')
-    expect(step({}, 'send', 'reviewer')).toBe('harness send reviewer "…"')
     expect(step({}, 'ps')).toBe('harness ps')
   })
 

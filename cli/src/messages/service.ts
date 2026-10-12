@@ -5,6 +5,8 @@
  * - `send`: from `harness send` in an agent's pane, over this machine's socket. The pane names the sender.
  * - `deliver`, `status`, `who`: from the owner's other machines, over the paired relay.
  * - `history`: the windows' log of a tab.
+ * - `started`: another machine's record of a harness it started here, for the agent client's limits and depth
+ *   (agentClient/ledger.ts). It lets no one message anyone: only a tab with Agent Messages on does.
  * Deliveries to this machine's agents are the mailbox's (mailbox.ts); a message for another machine's agent is
  * handed to that machine's daemon, which owns its delivery and is asked what became of it.
  */
@@ -17,7 +19,7 @@ import type { RegisteredSession } from '../lib/registry.js'
 import { MessageDirectory, type Member } from './directory.js'
 import { PaneInbox } from './inbox.js'
 import { Mailbox, type MailboxAgent } from './mailbox.js'
-import { LIMITS, MessageError, engineName, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
+import { LIMITS, MessageError, messageId, note, parseMessage, rendered, type DeliveryStatus, type Message, type Recipient, type Teammate } from './model.js'
 import { messagesRpc, type Rpc } from './rpc.js'
 import { Ledger, ledgerPath, parseStarted } from '../agentClient/ledger.js'
 import { MessageStore, type LocalDelivery } from './store.js'
@@ -30,7 +32,8 @@ export interface MessagesOptions {
   rpc?: Rpc
   /** The local socket's folder (`ADAPTER_DATA_DIR`) the other machines are reached through. */
   dataDir?: string
-  /** Who started which harness (agentClient/ledger.ts); an isolated fixture's own. */
+  /** Who started which harness (agentClient/ledger.ts), where another machine's `started` is kept; an isolated
+   *  fixture's own. */
   ledgerFile?: string
   /** Something that decides whether a typed delivery may be written changed: the process tells the core. */
   changed?: () => void
@@ -58,9 +61,6 @@ export const SWEEP_AFTER_MS = 10 * 60_000
 
 const PANE = /^%\d{1,9}$/
 const key = (m: Member): string => `${m.machineId}/${m.agentId}`
-const same = (a: Member, b: Member): boolean => a.machineId === b.machineId && a.agentId === b.agentId
-/** Where a message between a harness and one it started is kept: they need share no tab. */
-export const STARTED_TAB = { id: 'started', name: 'started' } as const
 
 export function startAgentMessages(core: CoreApi, options: MessagesOptions = {}): AgentMessages {
   const now = options.now ?? Date.now
@@ -68,13 +68,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
   const self = (): string => core.daemon.machineId()
   const at = (machineId: string) => ({ port: core.daemon.port, machineId, dataDir: options.dataDir ?? core.dataDir })
   const store = new MessageStore(options.stateDir ?? join(core.dataDir, 'agent-messages'))
+  // Who started which harness is the agent client's (limits, depth, who may close what), never a way to message.
+  // Agent Messages off means off: a harness started by another reaches it only through a tab with Agent Messages
+  // on, like any teammate (owner, 2026-10-11, on finding agents messaging each other with no tab turned on).
   const lineage = new Ledger(options.ledgerFile ?? ledgerPath(core.dataDir))
-  /**
-   * The harnesses [me] may message without a tab: the one that started it and those it started
-   * (docs/design/2026-10-11-agent-client.md). This machine's only: another machine checks a delivery against its
-   * own directory, and has no record of who started what here.
-   */
-  const linked = (me: Member): Member[] => (me.machineId === self() ? lineage.links(me).filter((m) => m.machineId === self()) : [])
   const inbox = new PaneInbox(options.inboxRoot ?? env.HARNESS_AGENT_MESSAGES_DIR)
   /** Other machines' names for their agents, with when they were asked. */
   const who = new Map<string, { name: string; engine: string; project?: string; at: number }>()
@@ -125,8 +122,9 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!entry) return 'the message is no longer kept'
     if (!directory.current()) return null
     const recipient = { machineId: self(), agentId: delivery.agentId }
+    // Only a tab with Agent Messages on carries a message: one an older version queued between a harness and one
+    // it started, under no tab (`started`), is refused here like any other.
     if (directory.shared(entry.message.from, recipient)) return null
-    if (linked(recipient).some((m) => same(m, entry.message.from))) return null
     const tab = directory.current()!.tabs.find((t) => t.id === entry.message.tabId)
     return tab && !tab.enabled ? 'Agent Messages were turned off in this tab' : 'it is no longer in a tab with the sender'
   }
@@ -226,15 +224,6 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     return { recorded: true }
   }
 
-  /** The harnesses an agent started, or the one that started it, as `harness send` alone lists them. */
-  function linkedNote(links: Member[]): string {
-    const mates = links.map(teammate)
-    const width = Math.max(...mates.map((t) => t.name.length))
-    return ['[Harness] The harness that started you, and those you started:',
-      ...mates.map((t) => `  ${t.name.padEnd(width)}  ${[engineName(t.engine), t.machine, t.where].filter(Boolean).join(' · ')}`),
-      'Message them: harness send <name> "…"'].join('\n')
-  }
-
   function withdrawNote(agentId: string): void {
     const pending = store.state.notes[agentId]
     if (!pending) return
@@ -284,10 +273,8 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     if (!session) throw new MessageError('NOT_A_HARNESS', 'This pane is not a harness Harness knows. Run harness send from an agent\'s pane.')
     if (!await directory.refresh()) throw new MessageError('DIRECTORY_UNAVAILABLE', 'Harness could not read which tabs have Agent Messages on. Try again in a moment.')
     const me = { machineId: self(), agentId: session.agentId }
-    const inTabs = directory.peers(me)
-    const links = linked(me).filter((m) => !inTabs.some((p) => same(p, m)))
-    const peers = [...inTabs, ...links]
-    if (!directory.tabsOf(me).length && !links.length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
+    const peers = directory.peers(me)
+    if (!directory.tabsOf(me).length) throw new MessageError('MESSAGES_OFF', 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab, or the tab\'s right-click menu.')
     await learnNames(peers, true)
     const mates = peers.map(teammate)
     const names = (Array.isArray(payload.to) ? payload.to : typeof payload.to === 'string' ? payload.to.split(',') : [])
@@ -296,10 +283,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
     // No recipient and no text: who is here, the rules, and this agent's last messages. An agent whose context
     // was compacted asks this to learn again what it was told: seen on a real team, one rebuilt it from its team
     // history in five commands.
-    if (!names.length && !text) {
-      const started = links.length ? linkedNote(links) : null
-      return { roster: [rosterOf(session.agentId)?.text, started].filter(Boolean).join('\n\n') || 'No teammates in this tab yet.', recent: recentFor(me) }
-    }
+    if (!names.length && !text) return { roster: rosterOf(session.agentId)?.text ?? 'No teammates in this tab yet.', recent: recentFor(me) }
     if (!names.length) throw new MessageError('USAGE', 'Name who to message: harness send <name> "text"')
     if (!text.trim()) throw new MessageError('USAGE', 'Write the message: harness send <name> "text"')
     if (text.length > LIMITS.text) throw new MessageError('TOO_LONG', `A message holds at most ${LIMITS.text} characters.`)
@@ -309,7 +293,7 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       const exact = mates.filter((m) => m.name.toLowerCase() === wanted)
       const prefix = exact.length ? exact : mates.filter((m) => m.name.toLowerCase().startsWith(wanted))
       // Or the start of its id: a name is the session's title until someone names it, and a title can hold a comma,
-      // which the recipient list splits on (a harness that started another tells it its id to answer to).
+      // which the recipient list splits on.
       const found = prefix.length || wanted.length < 6 ? prefix : mates.filter((m) => m.member.agentId.toLowerCase().startsWith(wanted))
       const list = mates.map((m) => m.name).join(', ') || 'nobody yet'
       if (!found.length) throw new MessageError('UNKNOWN_RECIPIENT', `No teammate named "${name}" in this tab. Teammates: ${list}.`)
@@ -319,6 +303,10 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       }
     }
     if (recipients.length > LIMITS.recipients) throw new MessageError('TOO_MANY_RECIPIENTS', `A message goes to at most ${LIMITS.recipients} teammates.`)
+    // The first recipient's tab names the message's log. The directory can change while other machines are asked
+    // for names: a tab turned off, or left, meanwhile leaves none, and nothing is sent.
+    const tab = directory.shared(me, recipients[0])
+    if (!tab) throw new MessageError('MESSAGES_OFF', `${recipients[0].name} is no longer in a tab with you that has Agent Messages on. Nothing was sent.`)
     const times = (sent.get(session.agentId) ?? []).filter((t) => now() - t < LIMITS.window)
     if (times.length >= LIMITS.perSender) {
       core.clients.windows({ type: 'messages_changed', payload: { limited: { machineId: self(), agentId: session.agentId } } })
@@ -328,7 +316,6 @@ export function startAgentMessages(core: CoreApi, options: MessagesOptions = {})
       throw new MessageError('MAILBOX_FULL', 'Too many messages are waiting on this machine. Try again once some are delivered.')
     }
     sent.set(session.agentId, [...times, now()])
-    const tab = directory.shared(me, recipients[0]) ?? STARTED_TAB
     const message: Message = {
       id: messageId(), tabId: tab.id, to: recipients, text, at: now(),
       from: { ...me, name: core.agents.displayName(session) || session.agentId.slice(0, 8), engine: session.engine, machine: machineName(self()) },

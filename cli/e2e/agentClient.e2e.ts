@@ -1,8 +1,8 @@
 /**
  * Harness for agents on the real daemon (docs/design/2026-10-11-agent-client.md): an agent, from its own pane, runs
  * the `harness` verbs as it would through its shell tool. It lists the harnesses, starts one with a task, waits for
- * it, reads its answer, messages it without any tab having Agent Messages on, and closes it; it may not close one it
- * did not start. The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
+ * it, reads its answer, and closes it; it may not close one it did not start. Neither may message the other while no
+ * tab has Agent Messages on (owner, 2026-10-11: Agent Messages off means off). The fake engines answer by echoing (harness/fakeEngine.mjs). A harness it starts says so in the pull
  * requests it opens: in the arguments its engine is launched with, each launch, until the person turns it off.
  *
  * Signed in to the fake backend, which answers the account's tabs: none has Agent Messages on.
@@ -72,7 +72,7 @@ describe('Harness for agents, end to end', () => {
     await backend?.close(); backend = undefined
   })
 
-  it('an agent sees, starts, waits for, reads, messages and closes a harness of its own', async () => {
+  it('an agent sees, starts, waits for, reads and closes a harness of its own, and may not message it with Agent Messages off', async () => {
     const relay = await FakeBackend.start()
     backend = relay
     relay.addMachine(ME)
@@ -110,6 +110,7 @@ describe('Harness for agents, end to end', () => {
     expect(started.code, started.err).toBe(0)
     expect(started.out).toContain('Created kid on this computer')
     expect(started.out).toContain('Read it: harness show kid · wait for it: harness wait kid')
+    expect(started.out).not.toContain('harness send')
     const ledger = readFileSync(join(d.dataDir, 'agent-client', 'started.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(ledger).toEqual([expect.objectContaining({ depth: 1, by: expect.objectContaining({ agentId: lead.id, name: 'lead' }), child: expect.objectContaining({ name: 'kid' }) })])
 
@@ -122,17 +123,22 @@ describe('Harness for agents, end to end', () => {
     expect(shown.out).toContain('kid · Claude Code · ')
     expect(shown.out).toContain('· idle · started by you')
     expect(shown.out).toContain('asked: [from lead · Claude Code · ')
-    expect(shown.out).toContain('the harness that started you. It reads your answer itself; to ask it something while you work: harness send lead "…"]')
+    expect(shown.out).toContain('the harness that started you. It reads your answer itself.]')
+    expect(shown.out).not.toContain('harness send')
     expect(shown.out).toContain('hello kid')
     expect((await run('ps')).out).toMatch(/\nkid +Claude Code +\w+ +you /)
 
-    // No tab has Agent Messages on, and still the two message each other.
+    // No tab has Agent Messages on: neither messages the other, either way, as for any two harnesses. Since #1180 the
+    // two messaged each other with no tab, and the owner found agents talking before turning Agent Messages on.
+    const off = 'Agent Messages are off in this tab. The person turns them on with the chat icon on the tab'
     const sent = await run('send', 'kid', 'Also check the footer.')
-    expect(sent.code, sent.out + sent.err).toBe(0)
-    expect(sent.out).toMatch(/→ kid: (queued|delivered)/)
+    expect(sent.code, sent.out + sent.err).toBe(1)
+    expect(sent.err).toContain(off)
     const kid = ((await client.request<{ agents: Array<Record<string, any>> }>('agents_list', {}, 30_000)).agents).find((a) => a.name === 'kid')!
     const back = await harness(d, String(kid.tmuxPane), ['send', 'lead', 'Footer checked.'])
-    expect(back.code, back.out + back.err).toBe(0)
+    expect(back.code, back.out + back.err).toBe(1)
+    expect(back.err).toContain(off)
+    expect((await harness(d, String(kid.tmuxPane), ['send'])).err).toContain(off)
 
     // It closes what it started, and only that; the harness it started may not close it.
     const own = await run('close', 'lead')

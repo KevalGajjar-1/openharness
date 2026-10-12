@@ -139,8 +139,7 @@ Machine:
   harness search <words>       find the conversation on this computer that said them: every turn of
                                every harness, live or stopped (--limit=N, --json)
   harness send <name> "text"   from an agent's pane: message a teammate in this tab, when Agent Messages
-                               are on there (the tab's chat icon), or a harness it started;
-                               \`harness send\` alone lists who is here
+                               are on there (the tab's chat icon); \`harness send\` alone lists who is here
   harness ps [--all]           the harnesses here: state, who started each, what each is about
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
