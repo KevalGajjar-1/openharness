@@ -29,7 +29,10 @@ describe('the connectors service', () => {
     expect(Object.keys(requests)).toEqual([...CONNECTORS_REQUESTS])
     expect(await requests.connectors!({ action: 'list' }, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
     // Signed out, the gateway's list is empty and nothing reaches the network.
-    expect(await requests.connectors!({ action: 'list' }, OWNER)).toMatchObject({ signed_in: false })
+    // The core is signed in to the account, so a connection made here is shared with its computers.
+    expect(await requests.connectors!({ action: 'list' }, OWNER)).toMatchObject({ signed_in: false, shared: true })
+    expect(await startConnectors(fakeCore(), { env, vaultPort: null }).connectors!({ action: 'list' }, OWNER))
+      .toMatchObject({ shared: false })
   })
 
   it('keeps the connections the account\'s when signed in: reads them now and again at each notice that may change them', async () => {
@@ -76,6 +79,10 @@ describe('the connectors service', () => {
     expect(await requests.connectors!({ action: 'connect', connector: 'github' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('harness login') })
     expect(await requests.connectors!({ action: 'flow', flow: 'gone' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('ended') })
     expect(await requests.connectors!({ action: 'flow' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED' })
+    // A phone's caught redirect for a sign-in this computer no longer holds is refused, never followed.
+    expect(await requests.connectors!({ action: 'callback', flow: 'gone', url: 'http://127.0.0.1:51789/callback?code=x' }, OWNER))
+      .toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('ended') })
+    expect(await requests.connectors!({ action: 'callback' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED' })
     expect(await requests.connectors!({ action: 'nope' }, OWNER)).toEqual({ error: 'CONNECTORS_FAILED', detail: 'Unknown action.' })
     expect(await requests.connectors!({ action: 'custom', name: 'Mine', url: 'https://mine.example/mcp', headers: { Authorization: 'Bearer pat' } }, OWNER))
       .toEqual({ connector: 'mine', state: 'connected' })

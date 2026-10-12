@@ -366,7 +366,12 @@ The installed system keeps hn's standard status bar. Super+u records an update
 request and selects the Updates terminal; the request starts checking/applying
 without another key. `harness updates` opens the same screen for inspection,
 with a clickable **Update** button. An hn-only change reconnects the screen;
-a CLI change also restarts its supervised service. Failure restores the previous
+a CLI change also restarts its supervised service. Only `harness-daemon.service`'s own
+daemon counts: one serving beside it is stopped first, and activation fails unless the
+unit's daemon answers afterward. The CLI starts and stops the daemon through that unit
+on Harness OS (`cli/src/lib/platformDaemon.ts`), so a sign-in or sign-out cannot move it
+outside systemd. Never `systemctl stop` the unit: every pane's scope is PartOf it.
+Failure restores the previous
 selection. `harness updates rollback` restores the previous runtime and holds
 rejected versions until a newer release arrives. Ordinary macOS/Linux hn is unchanged.
 

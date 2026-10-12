@@ -103,6 +103,8 @@ function matches(s: RegisteredSession | undefined, request: AgentCloseRequest, a
 export interface CloseAgentServiceDeps {
   registry: Pick<typeof liveRegistry, 'byAgent' | 'list' | 'setClosePlan'>
   activity(s: RegisteredSession): Promise<CloseActivity>
+  /** Cheap revocation after the final activity read, at each physical Stop boundary. */
+  idleCurrent?(s: RegisteredSession): boolean
   checkpoint(s: RegisteredSession, phase: 'before' | 'after'): Promise<void>
   stop(agentId: string, options: StopAgentOptions): Promise<void>
   changed(s: RegisteredSession): void
@@ -235,6 +237,7 @@ export class CloseAgentService {
 
   private async attempt(request: AgentCloseRequest, target: string, revision: number, withoutConversation = false): Promise<AgentCloseResult> {
     let unkept = false
+    let idleRevoked = false
     const current = () => {
       const s = this.deps.registry.byAgent(request.agentId)
       return !this.disposed && (this.revisions.get(request.agentId) ?? 0) === revision
@@ -268,7 +271,15 @@ export class CloseAgentService {
       if (request.mode === 'idle' && activity !== 'idle') return { error: 'SESSION_NOT_IDLE', activity }
       await this.deps.stop(s.agentId, {
         ...(withoutConversation ? { withoutConversation: () => { unkept = true } } : {}),
-        current: () => !!current(),
+        current: () => {
+          const latest = current()
+          if (!latest) return false
+          if (request.mode === 'now') return true
+          // A hold after beforeStop also revokes this attempt. Remember it so
+          // clearing the hold cannot revive an old command waiting in a queue.
+          if (this.deps.idleCurrent?.(latest) === false) idleRevoked = true
+          return !idleRevoked
+        },
         checkpoint: (s, phase) => this.deps.checkpoint(s, phase),
         confirmUnusedConversation: async captured => {
           // A missing ID alone could be failed discovery of active work. Only
@@ -296,6 +307,10 @@ export class CloseAgentService {
     } catch (error) {
       if (error instanceof CloseRefused) return { error: 'SESSION_NOT_IDLE', activity: error.activity }
       const code = (error as { code?: unknown })?.code
+      // Stop keeps an uncertain physical outcome as STOP_UNCONFIRMED. When its
+      // own guard specifically refused an idle close, retain the queued intent
+      // exactly as beforeStop does; a service hold must never make it failed.
+      if (code === 'STOP_UNCONFIRMED' && idleRevoked && current()) return { error: 'SESSION_NOT_IDLE', activity: 'unknown' }
       return { error: typeof code === 'string' ? code : 'CLOSE_FAILED',
         detail: error instanceof Error ? error.message : 'Could not close this session safely. Please try again.' }
     }

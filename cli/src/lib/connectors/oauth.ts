@@ -119,6 +119,15 @@ class Callback {
     })
   }
   get redirectUri(): string { return `http://127.0.0.1:${this.port}/callback` }
+  /** The same redirect, read by another device whose browser was sent to it (a phone, over the relay). */
+  deliver(address: string): void {
+    let url: URL
+    try { url = new URL(address) } catch { throw new SignInError('This is not the sign-in address.') }
+    if (url.origin + url.pathname !== this.redirectUri) throw new SignInError('This is not the sign-in address.')
+    if (this.result) return
+    this.result = Object.fromEntries(url.searchParams)
+    this.done()
+  }
   close(): void { this.server.close(); this.server.closeAllConnections?.() }
 }
 
@@ -197,6 +206,8 @@ export interface SignIn {
   /** The address to open in a browser, or null when the server needs no sign-in. */
   prepare(): Promise<string | null>
   wait(cancelled?: () => boolean): Promise<Token>
+  /** The browser's redirect, when it reached another device instead of this computer. */
+  deliver?(url: string): void
 }
 
 /** One browser sign-in to an MCP server: prepare() gives the address to open, wait() the token. */
@@ -223,6 +234,16 @@ export class LocalSignIn implements SignIn {
     if (this.meta.scopes.length) query.set('scope', this.meta.scopes.join(' '))
     const endpoint = this.client.authorization_endpoint
     return endpoint + (endpoint.includes('?') ? '&' : '?') + query.toString()
+  }
+
+  /**
+   * A phone that opened the sign-in in its own browser caught the redirect to this computer's
+   * 127.0.0.1 address and sent it here. Only that exact address counts; wait() then checks state
+   * and exchanges the code with the PKCE verifier, which never leaves this computer.
+   */
+  deliver(url: string): void {
+    if (!this.callback) throw new SignInError('This sign-in needs no address.')
+    this.callback.deliver(url)
   }
 
   async wait(cancelled: () => boolean = () => false): Promise<Token> {

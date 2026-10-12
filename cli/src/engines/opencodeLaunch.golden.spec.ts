@@ -138,7 +138,7 @@ it('records create, fork, relaunch and actual retarget dispatch before the extra
         setActive: (...args: unknown[]) => event(['active', ...args]) },
       runtimeProfiles: { selectedModel: () => null },
       launchOverridesDeps: { machine: world.machine, tmuxSupportsSessionEnv: world.tmuxSupportsSessionEnv },
-      captureTerminal: async () => 'fixture idle', readScreen: async () => ({ pane: { idle: true } }),
+      sessionTurnOpen: () => false,
       acquireTerminalControl: () => () => event(['release']), relaunchOverrides: shapes.relaunch,
       downgradedPermission: async () => ({ bypassPermission: false, permissionMode: null }),
       agentReconciler: { holdRoute: () => { event(['holdRoute']); return () => event(['releaseRoute']) } },
