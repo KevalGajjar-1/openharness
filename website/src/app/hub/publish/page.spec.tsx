@@ -87,7 +87,7 @@ describe('explicit publication', () => {
   it('shows a one-file game as the output without asking for a preview.html', async () => {
     render(<PublishPage />); await act(async () => {});
     const game = '<canvas></canvas><script>requestAnimationFrame(function loop(){requestAnimationFrame(loop)})</script>';
-    const folder = [['index.html', game], ['notes.md', '# Snake']].map(([path, text]) => Object.assign(new File([text], path), { webkitRelativePath: `project/${path}`, text: async () => text }));
+    const folder = [['docs/guide.html', '<p>Guide</p>'], ['snake/index.html', game], ['notes.md', '# Snake']].map(([path, text]) => Object.assign(new File([text], path), { webkitRelativePath: `project/${path}`, text: async () => text }));
     fireEvent.change(screen.getByLabelText('Choose project folder'), { target: { files: folder } });
     expect(await screen.findByTitle('Publication preview')).toBeInTheDocument();
     expect(screen.queryByText(/The Hub shows what a session made/)).not.toBeInTheDocument();
