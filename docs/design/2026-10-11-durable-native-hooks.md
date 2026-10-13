@@ -1,5 +1,34 @@
 # Durable native hook delivery
 
+October 13 recap checkpoint: the recaps port now derives a bounded summary from
+the exact answer retained for an owner and generation. Core copies the input
+before a service wait and checks the reply's generation identity, input digest
+and derivation version. Missing service or mismatched content returns a visible
+hold. `ready` means derived, not saved, delivered or acknowledged.
+
+The native journal already retains the answer; no second persistence system is
+needed. This port never reads the latest transcript, changes legacy session
+history or live cards, writes recap files, or emits notifications. Reconnect and
+late A requests cannot overwrite B. Activation must reacquire the source proof
+and the original one-use presentation token after a service wait. A successor,
+Cancel or recovery revokes that token permanently; retries remain bounded and
+cannot delay turn closure.
+
+Receipt `20261013T075143.150202Z-30240` passes types and 149 cases in eight files,
+including architecture and unchanged legacy recap behavior, with 100% per-file
+statements, branches, functions and lines for the five covered modules. The
+earlier receipt `20261013T074945.072192Z-23122` remains failed: its 144 passing
+cases omitted existing conversation fallback coverage. Adding those existing
+tests completed the scope without changing source or goldens. All ten identity,
+digest, version, caller-mutation and service-wiring faults fail by assertion in
+`20261013T075325.247733Z-36085` (11.9 seconds), after passing their baselines.
+
+Independent review approved this delta over `1604b9b89`, conditional on the now
+completed checks. It is not activation or whole-PR approval. Implementation and
+review ran approximately 07:34–07:55 UTC, with validation overlapping. Merge and
+publication remain zero. Durable Cancel/rearm, atomic composition, bounded recap
+retry/presentation and final installed-client acceptance remain required.
+
 October 13 task checkpoint: native turns now carry bounded, immutable task
 observations keyed by agent, conversation, process incarnation, generation and
 tool ID. Duplicate observations coalesce; conflicting inputs stay ambiguous.
