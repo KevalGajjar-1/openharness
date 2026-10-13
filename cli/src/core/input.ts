@@ -53,6 +53,9 @@ export interface InputDeps {
   /** A prompt is about to be typed, and `capture` is the pane as read right before: what is on it belongs
    *  to the turns before the one it starts (the question watcher's, lib/askQuestion.ts `notePrompt`). */
   promptTyped?: (session: RegisteredSession, capture: string | null, screen: ScreenReading) => void
+  /** The person sent text to an agent from a window or the phone (a `message` frame, by agent or session id): one
+   *  another agent started is theirs from then on (services/agentCleanup.ts). */
+  typed?: (id: string) => void
 }
 
 /**
@@ -225,7 +228,7 @@ export function createInput(deps: InputDeps) {
     console.log(`[msg] ${sid(sessionId)} recv · engine=${engine} · bytes=${Buffer.byteLength(adapted, 'utf8')}`)
     input.submit(record?.agentId ?? sessionId, adapted, deliveryId)
   }
-  const messageRequest = createMessageRequest(submitAgent)
+  const messageRequest = createMessageRequest(submitAgent, deps.typed)
   return { input, deviceInput, acquireTerminalControl, submitAgent, messageRequest }
 }
 
@@ -236,11 +239,14 @@ export function createInput(deps: InputDeps) {
  *
  * Moved verbatim out of the socket's request switch (docs/design/2026-10-03-harnessd.md).
  */
-export function createMessageRequest(submit: (id: string, content: string) => void) {
+export function createMessageRequest(submit: (id: string, content: string) => void, typed?: (id: string) => void) {
   return (payload: Record<string, unknown>): void => {
     const content = payload.content as string | undefined
     const target = (payload.agentId as string | undefined) || (payload.sessionId as string | undefined)
     if (!content || !target) return
+    // A `message` frame is a person's: the windows' and the phone's composer. Agents and experiments deliver theirs
+    // under a delivery id (`turns.deliver`), which never comes this way.
+    typed?.(target)
     // From the relay this is only reached sealed: text typed into an agent is never taken from the relay
     // in the clear.
     submit(target, content)

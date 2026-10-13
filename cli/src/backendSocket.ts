@@ -1,4 +1,4 @@
-import { withoutUpdate } from './lib/cardUpdate.js'
+import { isLocalOnly, withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
 import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport } from './core/api.js'
 import { ServiceUnavailableError } from './core/serviceHost.js'
@@ -29,6 +29,7 @@ import { gridCliPresence } from './lib/gridBinary.js'
 import { GRID_FLEET_PROTOCOL, GRID_FLEET_MAX_TIMEOUT_MS } from './lib/gridFleetProtocol.js'
 import { isApiLaunch, parseGridLaunchOverride, type GridLaunchOverride } from './lib/gridLaunchWire.js'
 import type { ScmLaunchRecord } from './scm/types.js'
+import type { StartedBy } from './lib/agentAttribution.js'
 import { probeEngines } from './lib/engineProbe.js'
 import { engineInstallRecipe } from './lib/engineInstall.js'
 import { agentFrame, type AgentDshContext, type AgentFrame } from './lib/agentFrame.js'
@@ -164,6 +165,12 @@ export class BackendSocket {
     /** What the SCM that prepared `cwd` needs on every relaunch (registry `scmLaunch`). Present only
      *  when this create prepared a folder, and null when no SCM made it (a new folder, a clone). */
     scmLaunchRecord?: ScmLaunchRecord | null
+    /** `agent` when another agent started it (`harness new` from its pane); absent for the person. Kept on the
+     *  row: every launch of it adds a line to the pull requests it opens (lib/agentAttribution.ts). */
+    startedBy?: StartedBy | null
+    /** The harness here whose agent started it, when one in a Harness pane did (registry `parentAgentId`); only with
+     *  `startedBy: 'agent'`. The windows open the new harness beside it and say who started it. */
+    parentAgentId?: string | null
   }) =>
     Promise<{ ok: true; session: RegisteredSession } | { ok: false; error: string; detail?: string }>) | null = null
   /** Called on `remote_terminal_handoff` — cli.ts names the agent whose tile is that tmux pane, or null. */
@@ -594,6 +601,7 @@ export class BackendSocket {
    *  the group key, so the backend relays only ciphertext; system/presence frames pass through. */
   sendCommander(frame: Frame): void {
     this.onOutboundCommander?.(frame)
+    if (isLocalOnly(frame)) return
     if (env.LOG_FRAMES) logFrame('→', 'device', frame)
     // The sentence a processing card carries for the Pro's cable stays on this computer (onOutboundCommander).
     this.toGateway('device', (gateway) => gateway.commander(withoutUpdate(frame)))

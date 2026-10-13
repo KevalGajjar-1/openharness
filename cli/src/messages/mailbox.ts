@@ -18,7 +18,7 @@ import type { TurnDelivery } from '../core/api.js'
 import { isMessageHold } from '../lib/messageHolds.js'
 import { TERMINAL_LEASE_REFUSED } from '../lib/terminalTypes.js'
 import type { PaneInbox } from './inbox.js'
-import type { DeliveryStatus, Message } from './model.js'
+import { paneNotice, type DeliveryStatus, type Message } from './model.js'
 import type { LocalDelivery, MessageStore } from './store.js'
 
 export const PUMP_MS = 2_000
@@ -37,6 +37,17 @@ export const ATTEMPT_MS = 120_000
 export const PARK_MS = 20_000
 /** How long a parked attempt is left with the core before it is forgotten: the core may have lost it. */
 export const PARKED_MAX_MS = 10 * 60_000
+/**
+ * How long a message waits on a working agent's hook before its reason stops promising the next tool call. An
+ * engine reads its hooks as it starts: Codex agents running since before Agent Messages never ran the hook, and
+ * every message to their lead read "arrives at its next tool call" for an hour while it polled `harness send`
+ * (2026-10-12).
+ */
+export const HOOKLESS_MS = 10 * 60_000
+/** Why news (`harness send --fyi`) waits: it is never typed, so it starts no turn of the agent's. */
+export const FYI_REASON = 'news: arrives at its next tool call, or when it reads its messages; it starts no turn'
+export const HOOKLESS_REASON = 'working, and no tool call has taken it: it may have started before Agent Messages. '
+  + 'It reads its messages with `harness send`; restarting it gives it them at once'
 /** How long a finished delivery is kept: its outcome lives on in the history. */
 export const FINISHED_KEEP_MS = 24 * 3600_000
 
@@ -52,14 +63,22 @@ export interface MailboxDeps {
   /** Null while a delivery may still be made; otherwise why it can no longer be (it left the tab, the tab
    *  turned Agent Messages off). */
   refused(delivery: LocalDelivery): string | null
+  /** Null while a delivery may be made; otherwise why it waits, given to no one, the hook included: its tab no longer
+   *  carries it, for less long than it is held before it is refused. */
+  held?(delivery: LocalDelivery): string | null
   /** Whether who may message whom is known yet: until it is, nothing is typed and nothing refused. */
   ready(): boolean
+  /** Why a delivery may never be made, whatever the tabs say, or null: asked as the mailbox starts, before the
+   *  directory is read and before anything goes back to a hook, which takes what waits in its inbox on its own. */
+  forbidden?(delivery: LocalDelivery): string | null
   /** The text an agent reads for a delivery: the message, and the roster note when it is new to the agent. */
   text(delivery: LocalDelivery, message: Message): string
   /** A delivery changed; the store is saved after. */
   changed(status: DeliveryStatus, delivery: LocalDelivery): void
   /** Whether a typed attempt may be written changed: its process tells the core (services/messagesProcess.ts). */
   writable?(): void
+  /** Whether Agent Messages sleep here (off, or signed out): then the pump stops once nothing waits. */
+  asleep?(): boolean
   now?(): number
 }
 
@@ -78,12 +97,17 @@ const NOT_TYPED: ReadonlySet<string> = new Set(['agent_gone', 'runtime_gone_pre_
 const notTyped = (reason: string | undefined): boolean =>
   !!reason && (reason.startsWith('team_waiting_') || NOT_TYPED.has(reason) || isMessageHold(reason))
 
+/** Why a typed message was not sent, for the person: it is in the input box, and Enter in the pane sends it. */
+export const WITHHELD = 'typed into its input box but not sent: something opened over it first; press Enter in its pane to send it'
+
 export const deliveryKey = (messageId: string, agentId: string): string =>
   `${messageId}-${createHash('sha256').update(agentId).digest('hex').slice(0, 8)}`
 
 export class Mailbox {
   private timer: ReturnType<typeof setInterval> | null = null
   private started = false
+  /** Deliveries held out of the hook's reach while their tab does not carry them ([hold]). */
+  private readonly holding = new Set<LocalDelivery>()
   constructor(private readonly deps: MailboxDeps) {}
   private now(): number { return this.deps.now?.() ?? Date.now() }
   private get local(): LocalDelivery[] { return this.deps.store.state.local }
@@ -91,6 +115,10 @@ export class Mailbox {
   start(): void {
     if (this.started) return
     this.started = true
+    for (const delivery of this.local) {
+      const forbidden = delivery.state === 'queued' ? this.deps.forbidden?.(delivery) : null
+      if (forbidden) this.fail(delivery, forbidden)
+    }
     this.takeBackAttempts()
     // Anything left taken back from a hook goes back to it, unless its delivery is over.
     for (const [pane, key] of this.deps.inbox.reclaimed()) {
@@ -101,13 +129,37 @@ export class Mailbox {
     // Finished deliveries are only kept a day: their outcome is in the history.
     this.deps.store.state.local = this.local.filter((d) => d.state === 'queued' || this.now() - d.at < FINISHED_KEEP_MS)
     this.save()
-    this.timer = setInterval(() => { try { this.pump() } catch { /* the next pump looks again */ } }, PUMP_MS)
-    this.timer.unref?.()
+    this.resume()
   }
 
   stop(): void {
+    this.pause()
+  }
+
+  /**
+   * Look every PUMP_MS from now on, unless it already does: while Agent Messages are on, and while they sleep with a
+   * delivery still waiting here, which the pump holds out of the hook's reach and fails once it has waited
+   * HELD_OUTSIDE_MS (messages/service.ts). Then it stops by itself.
+   */
+  resume(): void {
+    if (!this.started || this.timer) return
+    this.timer = setInterval(() => {
+      try { this.pump() } catch { /* the next pump looks again */ }
+      // Off costs nothing: once what waited has settled, nothing is looked at until Agent Messages wake.
+      if (this.deps.asleep?.() && !this.waiting()) this.pause()
+    }, PUMP_MS)
+    this.timer.unref?.()
+  }
+
+  /** Look no more until resumed: Agent Messages sleep, with nothing here to settle or no account to settle it by. */
+  pause(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+  }
+
+  /** Whether any delivery here still waits to be delivered or failed. */
+  waiting(): boolean {
+    return this.local.some((d) => d.state === 'queued')
   }
 
   /**
@@ -157,16 +209,16 @@ export class Mailbox {
     if (event.state === 'delivered' || event.state === 'started') return this.finish(delivery, 'prompt')
     // It may have reached the engine: never typed again.
     if (event.state === 'unknown') return this.finish(delivery, 'prompt', 'unconfirmed: inspect its pane')
-    if (!notTyped(event.reason)) {
-      return this.finish(delivery, 'prompt', event.reason === 'enter_withheld'
-        ? 'typed into its composer; a dialog opened before Enter' : 'unconfirmed: inspect its pane')
-    }
+    // Typed, its Enter held back: the text waits in the agent's input box, unread, so it is not called delivered.
+    // Its sender saw "delivered" while a Codex agent never read it (a fresh Mac, 2026-10-12).
+    if (event.reason === 'enter_withheld') return this.fail(delivery, WITHHELD)
+    if (!notTyped(event.reason)) return this.finish(delivery, 'prompt', 'unconfirmed: inspect its pane')
     // Refused before anything was written: back to the hook, and the next attempt waits longer. A parked one is
     // the hook's already, and its turn has ended: the next attempt finds the agent idle.
     delivery.attempt = undefined
     delivery.nextTryAt = this.now() + (attempt.parked ? 0 : Math.min(MAX_BACKOFF_MS, PUMP_MS * 2 ** Math.min(delivery.tries, 4)))
     if (!attempt.parked) this.deps.inbox.restore(delivery.pane, delivery.key)
-    this.report(delivery, WAITING[event.reason ?? ''] ?? event.reason ?? 'waiting')
+    this.report(delivery, event.reason === 'team_waiting_idle' ? this.idleReason(delivery) : WAITING[event.reason ?? ''] ?? event.reason ?? 'waiting')
     this.save()
   }
 
@@ -181,11 +233,18 @@ export class Mailbox {
     }
     for (const delivery of this.local) {
       if (delivery.state !== 'queued') continue
+      if (delivery.reason === WAITING.team_waiting_idle) this.report(delivery, this.idleReason(delivery))
       if (delivery.pane && taken.has(`${delivery.pane.slice(1)}-${delivery.key}`) && this.deps.inbox.claimed(delivery.pane, delivery.key)) { this.finish(delivery, 'hook'); continue }
-      if (delivery.attempt) { this.watch(delivery); continue }
+      if (delivery.attempt) {
+        // A parked attempt is back in the hook's inbox: where its tab no longer carries it, the hook must not take it.
+        if (!delivery.attempt.parked || !this.outside(delivery)) { this.watch(delivery); continue }
+        delivery.attempt = undefined
+      }
       if (!this.deps.ready()) continue
       const refused = this.deps.refused(delivery)
       if (refused) { this.fail(delivery, refused); continue }
+      const held = this.deps.held?.(delivery)
+      if (held) { this.hold(delivery, held); continue }
       const agent = this.deps.agent(delivery.agentId)
       const message = this.deps.store.entry(delivery.messageId)?.message
       if (!message) { this.fail(delivery, 'the message is no longer kept'); continue }
@@ -201,9 +260,12 @@ export class Mailbox {
         delivery.pane = agent.pane
         delivery.session = agent.session
         this.put(delivery, message, agent)
-        if (delivery.reason === 'its harness is stopped') this.report(delivery, undefined)
+        const wasHeld = this.holding.delete(delivery)
+        if (wasHeld || delivery.reason === 'its harness is stopped') this.report(delivery, undefined)
         this.save()
       }
+      // News waits for the hook, or for the agent to read it: typed, it would start a turn of its own.
+      if (message.fyi) { this.report(delivery, FYI_REASON); continue }
       if (this.now() < delivery.nextTryAt) continue
       if (!this.deps.inbox.reclaim(delivery.pane, delivery.key)) continue
       delivery.tries += 1
@@ -213,14 +275,31 @@ export class Mailbox {
     }
   }
 
-  /** Withdraw what waits for an agent's messages in a tab that turned off, or that it left. */
+  /** Withdraw what waits for an agent's messages in a tab that turned off, or that it left: held for a while, then
+   *  refused. */
   refuseAll(): void {
     if (!this.deps.ready()) return
     for (const delivery of this.local) {
-      if (delivery.state !== 'queued' || delivery.attempt) continue
+      if (delivery.state !== 'queued' || (delivery.attempt && !delivery.attempt.parked)) continue
       const refused = this.deps.refused(delivery)
+      const held = refused ? null : this.deps.held?.(delivery)
+      if (refused || held) delivery.attempt = undefined
       if (refused) this.fail(delivery, refused)
+      else if (held) this.hold(delivery, held)
     }
+  }
+
+  /** Whether the tabs no longer carry a delivery, for now or for good. */
+  private outside(delivery: LocalDelivery): boolean {
+    return this.deps.ready() && Boolean(this.deps.refused(delivery) || this.deps.held?.(delivery))
+  }
+
+  /** Its tab does not carry it, for now: out of the hook's reach, given to no one, and put back once it is carried
+   *  again (the pump puts what is missing from the inbox). */
+  private hold(delivery: LocalDelivery, reason: string): void {
+    this.holding.add(delivery)
+    if (delivery.pane && this.deps.inbox.waiting(delivery.pane, delivery.key)) { this.deps.inbox.withdraw(delivery.pane, delivery.key); this.save() }
+    this.report(delivery, reason)
   }
 
   /** A typed attempt in flight: parked once the core has held it behind a turn, forgotten when the core never
@@ -232,7 +311,7 @@ export class Mailbox {
       attempt.parked = true
       attempt.parkedAt = now
       this.deps.inbox.restore(delivery.pane, delivery.key)
-      this.report(delivery, WAITING.team_waiting_idle)
+      this.report(delivery, this.idleReason(delivery))
       this.save()
       this.deps.writable?.()
     } else if ((attempt.parked && now - (attempt.parkedAt ?? now) > PARKED_MAX_MS)
@@ -246,12 +325,34 @@ export class Mailbox {
     }
   }
 
+  /**
+   * The agent read what waits for it (`harness send` alone): each of [messageIds] it was not given yet is
+   * delivered, its inbox file withdrawn, so neither its hook nor a typed prompt gives it again. One being typed
+   * this moment is left to that attempt. Answers the ids it marked.
+   */
+  read(agentId: string, messageIds: readonly string[]): string[] {
+    const wanted = new Set(messageIds)
+    const marked: string[] = []
+    for (const delivery of this.local) {
+      if (delivery.state !== 'queued' || delivery.agentId !== agentId || !wanted.has(delivery.messageId)) continue
+      if (delivery.attempt && !delivery.attempt.parked) continue
+      this.finish(delivery, 'read')
+      marked.push(delivery.messageId)
+    }
+    return marked
+  }
+
+  /** Why a message waits for a working agent: its next tool call, until that has not come for a long while. */
+  private idleReason(delivery: LocalDelivery): string {
+    return this.now() - delivery.at >= HOOKLESS_MS ? HOOKLESS_REASON : WAITING.team_waiting_idle
+  }
+
   private put(delivery: LocalDelivery, message: Message, agent: MailboxAgent): void {
-    try { this.deps.inbox.put(agent.pane, delivery.key, { session: agent.session, text: this.deps.text(delivery, message) }) }
+    try { this.deps.inbox.put(agent.pane, delivery.key, { session: agent.session, text: this.deps.text(delivery, message), notice: paneNotice(message) }) }
     catch { /* the next pump puts it again */ }
   }
 
-  private finish(delivery: LocalDelivery, via: 'hook' | 'prompt', reason?: string): void {
+  private finish(delivery: LocalDelivery, via: 'hook' | 'prompt' | 'read', reason?: string): void {
     delivery.state = 'delivered'
     delivery.via = via
     delivery.reason = reason

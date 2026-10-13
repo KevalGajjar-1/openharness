@@ -19,6 +19,7 @@ import { env } from '../config/env.js'
 import type { AppSwarms } from '../cable/cableSession.js'
 import type { RecentTurn } from '../cable/cableHost.js'
 import type { UnreadNotification } from '../lib/notificationRead.js'
+import { validUsage } from '../lib/agentUsageWire.js'
 import { AGENT_ACTIONS_OFF, DAEMON_UNKNOWN, DELIVERIES_OFF, emptyPorts, resolveAgent, TERMINALS_OFF, type CoreApi, type CorePorts, type DevicesPort, type ForkResult, type ServiceRequests, type VoiceRouteReply, type WindowFocus } from '../core/api.js'
 import type { RegisteredSession } from '../lib/registry.js'
 import type { RuntimeModelOption } from '../lib/runtimeProfile.js'
@@ -26,6 +27,7 @@ import { accountLink } from './accountLink.js'
 import { startDevices, type DevicesDeps } from './devices.js'
 import { runServiceProcess, type CoreConnection, type ServiceProcess, type ServiceProcessOptions } from './process.js'
 import { processCoreApi } from './processCoreApi.js'
+import { harnessdEnv } from '../lib/harnessdEnv.js'
 
 /** An agent as the core lists it for the dial: with the name the apps show and the model it runs. */
 type Viewed = RegisteredSession & { displayName?: string; runtimeProfile?: string | null }
@@ -72,7 +74,7 @@ function faultsOf(value: string | undefined): ReadonlySet<string> {
 }
 
 export function runDevicesService(options: DevicesServiceOptions): ServiceProcess {
-  const processEnv = options.processEnv ?? process.env
+  const processEnv = options.processEnv ?? harnessdEnv()
   let core: CoreConnection | null = null
   /** Whether a dial watches, as the cable last said: told again to every core this process connects to.
    *  A dial says hello as soon as its port opens, which is often before a core that just started has
@@ -182,6 +184,10 @@ export function runDevicesService(options: DevicesServiceOptions): ServiceProces
         tell('dialWatching', { watching })
       },
       windows: () => {},
+    },
+    usageFresh: async (agentId) => {
+      const usage = (await ask('usageFresh', { agentId }).catch((): Record<string, unknown> => ({}))).usage
+      return validUsage(usage) ? usage : null
     },
     daemon: DAEMON_UNKNOWN,
     // The Wi-Fi device beside the dials has a link of its own (services/wifiProcess.ts).

@@ -18,7 +18,25 @@ use crate::pane::{encode_key, encode_mouse, Phase};
 use crate::picker::Picker;
 use crate::theme;
 
+/// A trusted OS form while sign-in is required. It receives text, never hn's
+/// root/prefix shortcuts. Resize and focus events still reach the client.
+pub fn system_form_input(app: &mut App, pane: u64, event: &CEvent) -> bool {
+    let bytes = match event {
+        CEvent::Key(key) if key.kind != KeyEventKind::Release =>
+            app.panes.get(&pane).and_then(|p| encode_key(key, p.mode())),
+        CEvent::Paste(text) => Some(text.as_bytes().to_vec()),
+        CEvent::Key(_) | CEvent::Mouse(_) => None,
+        _ => return false,
+    };
+    if let Some(bytes) = bytes {
+        if app.panes.get(&pane).is_some_and(|p| p.stream.is_some()) { app.send_input(pane, &bytes); }
+        else if let Some(p) = app.panes.get_mut(&pane) { p.queued.push(bytes); }
+    }
+    true
+}
+
 pub fn handle(app: &mut App, event: CEvent) {
+    if crate::account::entry_input(app, &event) { return }
     app.sync_copy_modal();
     match event {
         // A key is the session's activity (session_update_activity): a script's command with no -t
@@ -281,6 +299,7 @@ fn on_paste(app: &mut App, text: String) {
         chars.splice(at..at, pasted);
         prompt.value = chars.into_iter().collect();
         prompt.buttons = false;
+        prompt.error.clear();
         return;
     }
     app.tab_mut().home = false;
@@ -1761,10 +1780,10 @@ fn prompt_mouse(app: &mut App, mouse: MouseEvent) {
     if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) { return }
     let at = ratatui::layout::Position::new(mouse.column, mouse.row);
     let Some(Modal::Prompt(mut p)) = app.modal.take() else { return };
-    if !r.contains(at) { return after_prompt(app) }
+    if !r.contains(at) { prompt_cancelled(app, &p); return after_prompt(app) }
     match p.row().click(a.row, at) {
         Some(1) => submit_prompt(app, p),
-        Some(_) => {}
+        Some(_) => prompt_cancelled(app, &p),
         None => {
             if a.input.is_some_and(|i| i.contains(at)) { p.buttons = false }
             app.modal = Some(Modal::Prompt(p));
@@ -1814,14 +1833,14 @@ fn prompt_key(app: &mut App, key: KeyEvent, mut p: Prompt) {
             let mut row = p.row();
             match row.key(key.code, key.modifiers) {
                 crate::buttons::Answer::Chosen(1) => return submit_prompt(app, p),
-                crate::buttons::Answer::Chosen(_) | crate::buttons::Answer::Cancel => return,
+                crate::buttons::Answer::Chosen(_) | crate::buttons::Answer::Cancel => return prompt_cancelled(app, &p),
                 crate::buttons::Answer::Moved => p.chosen = row.chosen,
                 crate::buttons::Answer::Ignored => {}
             }
             app.modal = Some(Modal::Prompt(p));
             return;
         }
-        if key.code == KeyCode::Esc { return }
+        if key.code == KeyCode::Esc { return prompt_cancelled(app, &p) }
     }
     let (single, incremental, ptype) = match &p.kind { PromptKind::Command { one, incremental, ptype, .. } => (*one, *incremental, *ptype), PromptKind::Tree { ask, .. } => (false, false, ask.ptype()), _ => (false, false, 0) };
     // status-keys vi (tmux's default when $EDITOR names vi): Esc leaves insert for normal mode.
@@ -1846,11 +1865,11 @@ fn prompt_key(app: &mut App, key: KeyEvent, mut p: Prompt) {
     let at = p.cursor.min(size);
     let space = |i: usize| chars.get(i) == Some(&' ');
     let in_list = |i: usize| chars.get(i).map(|c| ws.contains(*c)).unwrap_or(false);
-    let set = |p: &mut Prompt, v: Vec<char>, c: usize| { p.value = v.into_iter().collect(); p.cursor = c; };
+    let set = |p: &mut Prompt, v: Vec<char>, c: usize| { p.value = v.into_iter().collect(); p.cursor = c; p.error.clear(); };
     let (mut changed, mut appended, mut prefix) = (false, false, '=');
     match key.code {
-        KeyCode::Esc => return,
-        KeyCode::Char('c' | 'g') if ctrl => return,
+        KeyCode::Esc => return prompt_cancelled(app, &p),
+        KeyCode::Char('c' | 'g') if ctrl => return prompt_cancelled(app, &p),
         KeyCode::Enter => {
             if !p.value.is_empty() && matches!(p.kind, PromptKind::Command { .. } | PromptKind::Tree { .. }) { add_history(app, ptype, &p.value) }
             // An incremental prompt has done its work as it went.
@@ -3126,8 +3145,8 @@ fn choose(app: &mut App, kind: PickerKind, mut picker: Picker, choice: Choice) {
         PickerKind::Models if id.as_deref().is_some_and(crate::models::is_row) => {
             if !matches!(choice, Choice::Enter | Choice::SplitDown) { return keep(app, kind, picker) }
             crate::models::choose(app, &mut picker, id.as_deref().unwrap_or(""), choice == Choice::SplitDown);
-            // (Set up signed out opened the account page: the sign-in is shown, not this list.)
-            if matches!(app.modal, Some(Modal::Picker { kind: PickerKind::Account, .. })) { return }
+            // (Set up signed out opened the account page, Add API its dialog: that is shown, not this list.)
+            if app.modal.is_some() { return }
             fill(app, &kind, &mut picker);
             return keep(app, kind, picker);
         }
@@ -3254,11 +3273,17 @@ fn store_install(app: &mut App, kind: PickerKind, mut picker: Picker) {
     app.modal = Some(Modal::Picker { kind, picker });
 }
 
+/// A dialog put away without its answer: one of the Models view's goes back to the view.
+fn prompt_cancelled(app: &mut App, p: &Prompt) {
+    if let PromptKind::Api(draft) = &p.kind { crate::models::api_cancelled(app, draft) }
+}
+
 fn submit_prompt(app: &mut App, p: Prompt) {
     let value = p.value.trim().to_string();
     match p.kind {
         // Answered by a key press in prompt_key; nothing to submit.
         PromptKind::Key { .. } => {}
+        PromptKind::Api(draft) => crate::models::api_answer(app, *draft, value),
         PromptKind::Tree { pane, ask } => crate::tree::answer(app, pane, ask, Some(&p.value)),
         PromptKind::Command { template, mut more, mut answers, one, digits, incremental, ptype, last } => {
             // The answer as typed (tmux keeps its spaces); the next prompt, if there is one.

@@ -4,6 +4,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fakeCore } from '../testing/fakeCore.js'
+import type { BackendNotice } from '../core/api.js'
 import { CONNECTORS_REQUESTS, startConnectors } from './connectors.js'
 import { Store } from '../lib/connectors/store.js'
 import * as gateway from '../lib/connectors/gateway.js'
@@ -28,7 +29,34 @@ describe('the connectors service', () => {
     expect(Object.keys(requests)).toEqual([...CONNECTORS_REQUESTS])
     expect(await requests.connectors!({ action: 'list' }, { local: false, owner: false })).toEqual({ error: 'OWNER_REQUIRED' })
     // Signed out, the gateway's list is empty and nothing reaches the network.
-    expect(await requests.connectors!({ action: 'list' }, OWNER)).toMatchObject({ signed_in: false })
+    // The core is signed in to the account, so a connection made here is shared with its computers.
+    expect(await requests.connectors!({ action: 'list' }, OWNER)).toMatchObject({ signed_in: false, shared: true })
+    expect(await startConnectors(fakeCore(), { env, vaultPort: null }).connectors!({ action: 'list' }, OWNER))
+      .toMatchObject({ shared: false })
+  })
+
+  it('keeps the connections the account\'s when signed in: reads them now and again at each notice that may change them', async () => {
+    const backend = vi.fn(async (_method: string, _path: string) => ({ status: 200, body: { success: true, data: { revision: 0, envelope: null } } }))
+    let hear: (notice: BackendNotice) => void = () => {}
+    const core = fakeCore({ account: { backend, onNotice: vi.fn((listener: (notice: BackendNotice) => void) => { hear = listener; return () => {} }) } as never })
+    startConnectors(core, { env, port: 0 })
+    await vi.waitFor(() => expect(backend).toHaveBeenCalledWith('GET', '/api/connector-vault'))
+    const reads = () => backend.mock.calls.filter(([, path]) => path === '/api/connector-vault').length
+    const before = reads()
+    hear({ type: 'connectors_changed', revision: 4 })
+    await vi.waitFor(() => expect(reads()).toBe(before + 1))
+    hear({ type: 'device_keys_changed' })
+    await vi.waitFor(() => expect(reads()).toBe(before + 2))
+    hear({ type: 'desk_changed', revision: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(reads()).toBe(before + 2)
+  })
+
+  it('keeps them on this computer alone while signed out', async () => {
+    const backend = vi.fn(async () => ({ status: 200, body: {} }))
+    startConnectors(fakeCore({ account: { backend, signedIn: () => false } as never }), { env, port: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(backend).not.toHaveBeenCalled()
   })
 
   it('reads this process\'s environment when given none', () => {
@@ -51,6 +79,10 @@ describe('the connectors service', () => {
     expect(await requests.connectors!({ action: 'connect', connector: 'github' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('harness login') })
     expect(await requests.connectors!({ action: 'flow', flow: 'gone' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('ended') })
     expect(await requests.connectors!({ action: 'flow' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED' })
+    // A phone's caught redirect for a sign-in this computer no longer holds is refused, never followed.
+    expect(await requests.connectors!({ action: 'callback', flow: 'gone', url: 'http://127.0.0.1:51789/callback?code=x' }, OWNER))
+      .toMatchObject({ error: 'CONNECTORS_FAILED', detail: expect.stringContaining('ended') })
+    expect(await requests.connectors!({ action: 'callback' }, OWNER)).toMatchObject({ error: 'CONNECTORS_FAILED' })
     expect(await requests.connectors!({ action: 'nope' }, OWNER)).toEqual({ error: 'CONNECTORS_FAILED', detail: 'Unknown action.' })
     expect(await requests.connectors!({ action: 'custom', name: 'Mine', url: 'https://mine.example/mcp', headers: { Authorization: 'Bearer pat' } }, OWNER))
       .toEqual({ connector: 'mine', state: 'connected' })

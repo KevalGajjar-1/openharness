@@ -5,7 +5,7 @@ import { nativePaneHold, NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { isAbsolute, basename, dirname, join } from 'node:path'
 import { baseNode } from '../harnessd/baseNode.js'
 import { env } from '../config/env.js'
@@ -23,6 +23,7 @@ import { managedNodePath } from './nodeRuntime.js'
 import { RAISE_OPEN_FILES_SH } from './openFiles.js'
 import { ENGINE_EXIT_PANE_OPTION } from './engineExitOption.js'
 import { shellSingleQuote } from './shellQuote.js'
+import { currentUserShell } from './userShell.js'
 import { harnessPaneOwner } from './harnessSessionLabel.js'
 
 export { shellSingleQuote }
@@ -54,7 +55,8 @@ export const BYPASS_PERMISSION_FLAGS: Readonly<Record<AgentEngine, string[] | nu
 /**
  * The permission modes a person can pick for a new agent (New Harness ▸ Advanced), per engine, and the
  * argv each one launches with. `auto` is the default and is exactly [BYPASS_PERMISSION_FLAGS]; `ask`
- * adds nothing, so the engine behaves as its own settings say; the rest are the engines' documented
+ * adds nothing, so the engine behaves as its own settings say, except Claude Code's, which names its asking
+ * mode (claude/launch.ts: given none, 2.1.296 started in auto); the rest are the engines' documented
  * modes (`claude --help`: `--permission-mode acceptEdits|plan`; `codex --help`: `--sandbox read-only`,
  * `--dangerously-bypass-approvals-and-sandbox`). An engine absent here offers no choice.
  *
@@ -385,16 +387,6 @@ export interface InteractiveEngineShell {
  * nvm/asdf and vendor PATH edits in .bashrc, so it must be interactive but not
  * login.  Other POSIX-like shells get the portable interactive form.
  */
-function currentUserShell(): string | undefined {
-  if (process.env.SHELL && isAbsolute(process.env.SHELL)) return process.env.SHELL
-  try {
-    const shell = userInfo().shell
-    return shell && isAbsolute(shell) ? shell : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * The shells that speak the POSIX shell language every launch script here is written in. Any other
  * login shell (fish, tcsh, csh, nushell, xonsh) cannot run one: handed the script with `-c`, it fails
@@ -1480,7 +1472,7 @@ export async function refusePermissionFlagIfUnsupported(
   return {
     error: 'CODEX_CLI_TOO_OLD',
     detail: `The ${engine} CLI on this machine does not support ${flag}, which Harness uses for this permission mode. `
-      + `Update ${engine} and try again, or choose Ask permissions for this harness.`,
+      + `Update ${engine} and try again${choice.permissionMode === 'ask' ? '.' : ', or choose Ask permissions for this harness.'}`,
   }
 }
 
@@ -1500,5 +1492,7 @@ export async function dropPermissionFlagIfUnsupported<T extends PermissionLaunch
   if (support === 'unknown') return { choice, droppedFlag: null, nativeHold: 'Waiting to confirm the selected executable’s permission flags.' }
   const droppedFlag = support === 'supported' ? null : native ? permissionFlagToVerify(engine, choice) : await unsupportedPermissionFlag(engine, choice, shell)
   if (!droppedFlag) return { choice, droppedFlag: null }
-  return { choice: { ...choice, permissionMode: 'ask', bypassPermission: false }, droppedFlag }
+  // Ask in its place, launched with no flag at all: Claude Code's Ask names its mode with the very flag a build
+  // this old may lack, so it goes as the engine's own default, which asked before auto mode existed.
+  return { choice: { ...choice, permissionMode: permissionModeFlags(engine, 'ask')?.length ? null : 'ask', bypassPermission: false }, droppedFlag }
 }

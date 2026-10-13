@@ -4,8 +4,14 @@
  * again as it starts, so an agent installed since a service was connected gets it too.
  *
  * `connectors` takes `{action}`: `list`, `connect` {connector}, `flow` {flow}, `disconnect` {connector},
- * `custom` {name, url, headers}. The app opens a returned `authorize_url` in the browser and follows the
- * flow. Never a token in a reply. Owner only, and end-to-end encrypted like `api_connections`.
+ * `custom` {name, url, headers}, `callback` {flow, url}. The app opens a returned `authorize_url` in the
+ * browser and follows the flow. A phone signing in for this computer opens it in its own browser and,
+ * for a service this computer signs in to itself, sends back the redirect to 127.0.0.1 it caught as
+ * `callback`: the code alone is useless without the PKCE verifier kept here. Never a token in a reply.
+ * Owner only, and end-to-end encrypted like `api_connections`.
+ *
+ * The connections are the account's: kept the same on every computer through the backend, sealed for the
+ * account's machines (lib/connectors/vaultSync.ts).
  */
 import type { Server } from 'node:http'
 import type { CoreApi, ServiceRequests } from '../core/api.js'
@@ -15,6 +21,7 @@ import { services, type GatewayRow } from '../lib/connectors/catalog.js'
 import { addApiKey, addCustom, cards, disconnect, Flows, signInFor } from '../lib/connectors/connect.js'
 import * as gateway from '../lib/connectors/gateway.js'
 import { ConnectorError, Store, validateCode } from '../lib/connectors/store.js'
+import { answerVaultOp, VaultSync, vaultPortOf, type VaultPort } from '../lib/connectors/vaultSync.js'
 
 /** The request connectors answers for the apps, declared in core/api.ts for the core to route. */
 export { CONNECTORS_REQUESTS } from '../core/api.js'
@@ -29,6 +36,9 @@ export interface ConnectorsDeps {
   env: NodeJS.ProcessEnv
   /** How long to wait before listening again while another process holds the port. */
   retryMs: number
+  /** The account's sealed connections (lib/connectors/vaultSync.ts), or null to keep them on this
+   *  computer alone. In the core's process it is the core's own `connector_vault` answer, signed in. */
+  vaultPort: VaultPort | null
 }
 
 /** Listen on the bridge's fixed port; while another process holds it (a core handing over), try again. */
@@ -37,11 +47,13 @@ function listen(bridge: Server, port: number, retryMs: number): void {
   bridge.listen(port, '127.0.0.1')
 }
 
-export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDeps> = {}): ServiceRequests {
+export function startConnectors(core: CoreApi, overrides: Partial<ConnectorsDeps> = {}): ServiceRequests {
   const env = overrides.env ?? process.env
   const deps: ConnectorsDeps = {
     vault: overrides.vault ?? new Store(undefined, env), port: overrides.port ?? bridgePort(env),
     offered: overrides.offered ?? (() => gateway.available()), env, retryMs: overrides.retryMs ?? 5_000,
+    vaultPort: overrides.vaultPort !== undefined ? overrides.vaultPort
+      : core.account.signedIn() ? vaultPortOf((op, payload = {}) => answerVaultOp(core.account, { ...payload, op })) : null,
   }
   const { vault } = deps
   const flows = new Flows(vault, env)
@@ -49,6 +61,17 @@ export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDep
   bridge.unref()
   listen(bridge, deps.port, deps.retryMs)
   try { sync(vault, env) } catch { /* A config that cannot be written now is written at the next connect. */ }
+
+  // Connections the same on every computer of the account: read now, at each `connectors_changed`, and
+  // written whenever this computer's change (here, by `harness connections`, by a renewal in the bridge).
+  if (deps.vaultPort) {
+    const shared = new VaultSync({ vault, port: deps.vaultPort, env, log: console.warn })
+    shared.start()
+    core.account.onNotice((notice) => {
+      if (notice.type === 'connectors_changed') shared.changed(notice.revision)
+      else if (notice.type === 'device_keys_changed') shared.changed(null)
+    })
+  }
 
   let offered: Record<string, GatewayRow> = {}
   let offeredAt = 0
@@ -59,7 +82,9 @@ export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDep
 
   const answer = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
     switch (payload.action) {
-      case 'list': return { ...cards(vault, await gatewayOffers()) }
+      // `shared`: a connection made here reaches the account's other computers. The phone signs in
+      // through one that says so before one that keeps it to itself (an older CLI says nothing).
+      case 'list': return { ...cards(vault, await gatewayOffers()), shared: deps.vaultPort !== null }
       case 'connect': {
         const code = validateCode(payload.connector)
         return { ...(await flows.start(code, signInFor(vault, code, services(await gatewayOffers())))) }
@@ -76,6 +101,7 @@ export function startConnectors(_core: CoreApi, overrides: Partial<ConnectorsDep
         return { connector: code, state: 'not_connected' }
       }
       case 'custom': return payload.kind === 'api' ? addApiKey(vault, payload, env) : addCustom(vault, flows, payload, env)
+      case 'callback': return { ...flows.deliver(String(payload.flow ?? ''), String(payload.url ?? '')) }
       default: return { error: 'CONNECTORS_FAILED', detail: 'Unknown action.' }
     }
   }

@@ -9,3 +9,8 @@ const kAppStoreUrl =
 /// app's `applicationId` (mobile `android/app/build.gradle.kts`).
 const kGooglePlayUrl =
     'https://play.google.com/store/apps/details?id=ai.autonomous.harness.android';
+
+/// The phone app, whichever phone opens it: the website sends an iPhone to
+/// [kAppStoreUrl] and an Android phone to [kGooglePlayUrl], and anything else
+/// to a page with both. Add Phone's one download code, instead of one per store.
+const kPhoneAppUrl = 'https://harness.autonomous.ai/app';

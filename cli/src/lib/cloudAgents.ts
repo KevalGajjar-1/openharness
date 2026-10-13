@@ -160,6 +160,9 @@ export function cloudAgentFrame(harness: CloudHarness): CloudAgentFrame {
     verdict: null,
     forkedFrom: null,
     forkable: false,
+    // A person starts a cloud harness from New Harness: no agent here or elsewhere started it.
+    parentAgentId: null,
+    startedBy: null,
     resumeMode: 'conversation',
     permissionMode: null,
     bypassPermission: null,

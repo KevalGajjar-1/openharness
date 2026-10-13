@@ -13,6 +13,7 @@ import { findLiveSession, findResumedTranscript, processSessionEvidence, type Re
 import { resumeSessionId } from './tmux.js'
 import { readProcessEvidence } from './processEvidence.js'
 import { NativeEvidenceBudget, nativeUnavailable } from '../engines/kit/nativeEvidence.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 import { isTerminalEngine } from '../engines/types.js'
 
 export async function captureResumeIdentity(session: RegisteredSession): Promise<RegisteredSession> {
@@ -50,28 +51,39 @@ export async function captureResumeIdentity(session: RegisteredSession): Promise
   // An engine whose process names its own session in a record (Claude Code's, removed at exit) is read now.
   const claim = await processSessionEvidence(session.engine, expected.pid, session.cwd, Date.parse(expected.startMarker), budget)
   const native = claim.session
-  const found: RepairedSession | null = native ?? (explicit
-    ? { sessionId: explicit, transcriptPath: await findResumedTranscript(session.engine, explicit, options) ?? undefined }
-    : await findLiveSession(session.engine, session.cwd, Date.parse(expected.startMarker), {
-      ...options, hermesHome: session.hermesHome ?? undefined, pid: expected.pid, bornOnly: true,
-      ...(session.forkedFrom?.sessionId ? { excludedSessionId: session.forkedFrom.sessionId } : {}),
-      expectedProcess: expected, nativeBudget: budget,
-    }))
-  // Codex's open-file finder verifies this owner, all candidate headers and its descriptor
-  // pool together. Other finders still need this final process fence before a Stop may proceed.
-  if (native || explicit || session.engine !== 'codex') await owner.verify()
-  claim.verify()
-  if (!found?.sessionId) return session
-  // A file-backed engine still has to produce a transcript this daemon can point a resume at; a
-  // database-backed one has nothing to check and is taken on its id alone.
-  const transcriptPath = found.transcriptPath && keepsFile ? verifiedPath(found.sessionId, found.transcriptPath) : found.transcriptPath
-  if (keepsFile && !transcriptPath) return nativeUnavailable('the observed conversation file is unavailable')
-  return {
-    ...session,
-    sessionId: found.sessionId,
-    ...(transcriptPath ? { transcriptPath } : {}),
-    ...(found.hermesHome ? { hermesHome: found.hermesHome } : {}),
-    source: 'stop-repair',
-    boundAt: Date.now(),
+  // Once a conversation is seen (a native record, a resume on the command line, one found live), a failure to read it
+  // holds it: a close of a harness still starting may stop one whose conversation was never seen, never this one.
+  let seen = !!native || !!explicit
+  const cwd = session.cwd
+  const capture = async (): Promise<RegisteredSession> => {
+    const found: RepairedSession | null = native ?? (explicit
+      ? { sessionId: explicit, transcriptPath: await findResumedTranscript(session.engine, explicit, options) ?? undefined }
+      : await findLiveSession(session.engine, cwd, Date.parse(expected.startMarker), {
+        ...options, hermesHome: session.hermesHome ?? undefined, pid: expected.pid, bornOnly: true,
+        ...(session.forkedFrom?.sessionId ? { excludedSessionId: session.forkedFrom.sessionId } : {}),
+        expectedProcess: expected, nativeBudget: budget,
+      }))
+    seen ||= !!found?.sessionId
+    // Codex's open-file finder verifies this owner, all candidate headers and its descriptor
+    // pool together. Other finders still need this final process fence before a Stop may proceed.
+    if (native || explicit || session.engine !== 'codex') await owner.verify()
+    claim.verify()
+    if (!found?.sessionId) return session
+    // A file-backed engine still has to produce a transcript this daemon can point a resume at; a
+    // database-backed one has nothing to check and is taken on its id alone.
+    const transcriptPath = found.transcriptPath && keepsFile ? verifiedPath(found.sessionId, found.transcriptPath) : found.transcriptPath
+    if (keepsFile && !transcriptPath) return nativeUnavailable('the observed conversation file is unavailable')
+    return {
+      ...session,
+      sessionId: found.sessionId,
+      ...(transcriptPath ? { transcriptPath } : {}),
+      ...(found.hermesHome ? { hermesHome: found.hermesHome } : {}),
+      source: 'stop-repair',
+      boundAt: Date.now(),
+    }
+  }
+  try { return await capture() } catch (error) {
+    if (!seen || !(error instanceof IdentityReadUnavailable) || error instanceof ObservedConversationUnavailable) throw error
+    throw new ObservedConversationUnavailable(error.message)
   }
 }

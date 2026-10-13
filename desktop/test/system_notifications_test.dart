@@ -512,7 +512,7 @@ void main() {
       expect(app.newDevices.single.fingerprint, 'AAAA·BBBB·CCCC·DDDD');
       final shown = os.shown.single;
       expect(shown.title, 'New device on your account');
-      expect(shown.body, endsWith('Not yours? Remove it in Settings ▸ Your devices.'));
+      expect(shown.body, endsWith('Not yours? Remove it in Machines.'));
       expect(shown.body, contains('Test iPad'));
       expect((shown.machineId, shown.agentId), ('@device', 'pub-1'));
     });

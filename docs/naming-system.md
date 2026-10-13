@@ -78,9 +78,9 @@ no CLI keeps its maker's name (Fo).
 
 A pane is a view, so closing a pane or tab closes views. **Stop Harness** ends the
 running harness. Adding harnesses to a tab groups them without a separate team
-setup. Turning on **Agent Messages** for a tab lets its harnesses message each
-other (`harness send`); it is off by default, per tab, and **Show Agent Messages**
-opens the tab's log. The word *tab* can also name the keyboard key or a
+setup. **Agent Messages** lets the harnesses in a tab message each other
+(`harness send`); it is an experiment of the account, in Settings ▸ Experimental, off
+by default, and **Show Agent Messages** opens a tab's log. The word *tab* can also name the keyboard key or a
 browser tab; context distinguishes them.
 
 A project belongs to a computer; identical paths on different computers do not

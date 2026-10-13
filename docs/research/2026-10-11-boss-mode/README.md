@@ -1,5 +1,11 @@
 # Boss Mode: ⌘B's office
 
+> **Dropped, 2026-10-11.** The owner found these four metaphors hard to follow, and the reason for a Boss
+> Mode harness went away the same day: it was to be where a person set up their Jev key, and Harness now
+> pays for ⌘B's Jev instead (#1174, docs/design/2026-10-09-auto-router.md), so ⌘B needs no setup. Kept
+> as a record. If people lose track of what they sent with ⌘B, start from a plain list of recent sends
+> under the ⌘B box, not from a metaphor.
+
 2026-10-11. ⌘B sends a typed task to the harness it belongs to, or starts a new one, in about 0.6 s
 (`docs/design/2026-10-09-auto-router.md`). It has to stay that fast, so it stays a box. Boss Mode is a
 Store harness in Essentials that serves as ⌘B's office: a viewer of everything ⌘B dispatched and

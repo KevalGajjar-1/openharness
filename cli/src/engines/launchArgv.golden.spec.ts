@@ -452,6 +452,23 @@ async function overridesCases(): Promise<Record<string, unknown>> {
   cases['codex · profile · the profile\'s file'] = await run('codex', { codexHome: profile }, null, { readCodexConfig: undefined })
   cases['codex · profile without a file'] = await run('codex', { codexHome: join(root, 'no-such-profile') }, null, { readCodexConfig: undefined })
   rmSync(join(daemonHome, 'config.toml'))
+  // Started by another agent: the pull request line last, from the person's settings as each engine reads them
+  // (lib/agentAttribution.ts, kit/attribution.ts), and none for an engine with no way to say it.
+  const settings = (files: Record<string, string>) => ({ readAttribution: (path: string) => files[path.split(homedir()).join('<home>')] ?? null })
+  for (const engine of ['claude', 'codex', 'opencode'] as const) {
+    cases[`${engine} · started by an agent`] = await run(engine, { startedBy: 'agent', cwd: '/work/app' }, null, settings({}))
+    cases[`${engine} · started by an agent, a harness on a grid as a named agent`] = await run(engine,
+      { startedBy: 'agent', gridLaunch: GRID, dsh: 'acme/studio', cwd: '/work/studio', agent: 'harness-compute' }, null, settings({}))
+  }
+  cases['claude · started by an agent, the folder\'s own pull request text'] = await run('claude', { startedBy: 'agent', cwd: '/work/app' }, null,
+    settings({ '/work/app/.claude/settings.json': '{"attribution":{"pr":"Made in the app"}}' }))
+  cases['claude · started by an agent, attribution hidden'] = await run('claude', { startedBy: 'agent', cwd: '/work/app' }, null,
+    settings({ '<home>/.claude/settings.json': '{"attribution":false}' }))
+  cases['codex · started by an agent, the person\'s own instructions'] = await run('codex', { startedBy: 'agent', cwd: '/work/app' }, null,
+    settings({ '<home>/.codex/config.toml': 'developer_instructions = "Be terse."\n' }))
+  cases['codex · profile, started by an agent, instructions it cannot keep exactly'] = await run('codex', { startedBy: 'agent', codexHome: '/profiles/work', cwd: '/work/app' }, null,
+    settings({ '/profiles/work/config.toml': 'developer_instructions = """\nmine\n"""\n' }))
+  cases['claude · not started by an agent'] = await run('claude', { startedBy: null, cwd: '/work/app' }, null, settings({}))
   return cases
 }
 

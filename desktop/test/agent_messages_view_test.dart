@@ -6,8 +6,9 @@ import 'package:harness/agent_messages/agent_messages_view.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
 import 'package:harness/widgets/terminal_prompt.dart';
 
-/// Show Agent Messages: a tab's log, newest last, with its On/Off switch. Enter
-/// opens the recipient's pane; Esc closes; nothing is composed here.
+/// Show Agent Messages: a tab's log, newest last. Enter opens the recipient's
+/// pane; Esc closes; nothing is composed or turned on here — whether agents may
+/// message is the account's, in Settings ▸ Experimental (owner, 2026-10-12).
 AgentMessage _message(
   String id,
   DateTime at, {
@@ -39,24 +40,10 @@ AgentMessage _message(
 
 void main() {
   late AgentMessagesController controller;
-  late Map<String, bool> saved;
-  late Object? writeError;
 
   setUp(() {
-    saved = {};
-    writeError = null;
     controller = AgentMessagesController(
-      read: () async => {
-        'tabs': [
-          for (final MapEntry(:key, :value) in saved.entries)
-            {'id': key, 'enabled': value},
-        ],
-      },
-      write: (tabId, enabled) async {
-        if (writeError case final error?) throw error;
-        saved[tabId] = enabled;
-        return {'tabId': tabId, 'enabled': enabled};
-      },
+      read: () async => {'tabs': const []},
       request: (_, _) async => {},
       nameOf: (_, agentId) => agentId,
     );
@@ -195,17 +182,15 @@ void main() {
     expect(opened, isEmpty);
   });
 
-  testWidgets('an empty log says how to start; an unreachable one says so', (
-    tester,
-  ) async {
+  testWidgets('an empty log says how messages come; an unreachable one says '
+      'so', (tester) async {
     await open(
       tester,
       () async => (reached: true, complete: true, messages: <AgentMessage>[]),
     );
     expect(
       find.text(
-        'No messages yet. Turn on Agent Messages, then agents use '
-        '`harness send`.',
+        'No messages yet. Agents in this tab send them with `harness send`.',
       ),
       findsOneWidget,
     );
@@ -281,24 +266,15 @@ void main() {
     expect(state.data, contains('worker-0 delivered · worker-1 queued'));
   });
 
-  testWidgets('the switch turns Agent Messages on, and back when refused', (
+  testWidgets('the log has no switch: nothing here turns anything on', (
     tester,
   ) async {
     await open(
       tester,
       () async => (reached: true, complete: true, messages: <AgentMessage>[]),
     );
-    final toggle = find.byKey(const ValueKey('agent-messages-switch'));
-    expect(tester.widget<Switch>(toggle).value, isFalse);
-    await tester.tap(toggle);
-    await tester.pumpAndSettle();
-    expect(tester.widget<Switch>(toggle).value, isTrue);
-    expect(saved, {'tab': true});
-    writeError = StateError('offline');
-    await tester.tap(toggle);
-    await tester.pumpAndSettle();
-    expect(tester.widget<Switch>(toggle).value, isTrue, reason: 'reverted');
-    expect(find.textContaining('could not be turned off'), findsOneWidget);
+    expect(find.byType(Switch), findsNothing);
+    expect(find.byKey(const ValueKey('agent-messages-switch')), findsNothing);
   });
 
   testWidgets('traffic in this tab reads the log again', (tester) async {
@@ -322,9 +298,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(reads, 2);
     expect(find.text('lead → api'), findsNWidgets(2));
-    // Let the tab's messaging run out before the test ends.
-    await tester.pump(const Duration(seconds: 11));
-    expect(controller.isFlowing('tab'), isFalse);
   });
 
   test('times read as a clock today and with the day before', () {

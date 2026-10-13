@@ -2302,11 +2302,13 @@ class AppNotifier extends ChangeNotifier {
   /// on the next read of `pending`. Gone with the sign-in, or when the key is announced afresh.
   final Set<String> _failedDismissals = {};
 
-  Future<void> _dismissInLog({String? pub, List<String>? pubs}) async {
+  /// [confirm]: "It's mine" for the one device named — the account's other devices are told too, and
+  /// stop showing it as new.
+  Future<void> _dismissInLog({String? pub, List<String>? pubs, bool confirm = false}) async {
     final log = _deviceLog;
     if (log == null) return;
     try {
-      await log.dismiss(pub: pub, pubs: pubs);
+      await log.dismiss(pub: pub, pubs: pubs, confirm: confirm);
     } catch (error) {
       debugPrint('devices: could not save the dismissal: $error');
       _failedDismissals.addAll([...?pubs, ?pub]);
@@ -2322,6 +2324,9 @@ class AppNotifier extends ChangeNotifier {
         self: await viewer.keys.identity().then<String?>((i) => b64e(i.pub), onError: (Object _) => null),
       ),
       append: (entry) => api.appendDeviceKey(entry),
+      // "It's mine", once for the account: read what other devices confirmed, share what this one does.
+      fetchAcks: (since) => api.deviceAcks(since),
+      postAck: (ack) => api.postDeviceAck(ack),
       label: () => phoneClientDescriptor().name,
       // The log saves "announced" before it calls back, so a call that found the app still starting
       // up and was dropped would never be made again: [_whenSignedIn] parks it instead. Only a
@@ -2501,7 +2506,8 @@ class AppNotifier extends ChangeNotifier {
 
   /// "It's mine" on [pub]. Only the device's own page, which shows why a key is Suspended, passes
   /// [liftSuspension]: that is the person vouching for it. Anywhere else the key stays suspended —
-  /// the banner never said so.
+  /// the banner never said so. Either way the account's other devices are told, and stop showing it as
+  /// new (opening the list, [seenNewDevices], tells nobody).
   void dismissNewDevice(String pub, {bool liftSuspension = false}) {
     newDevices.removeWhere((d) => d.pub == pub);
     // A key that joined and left before anyone looked: a "New device" for it is a stale replay, and its
@@ -2512,7 +2518,7 @@ class AppNotifier extends ChangeNotifier {
       return;
     }
     _pendingSyncGen++;
-    unawaited(liftSuspension ? _dismissInLog(pub: pub) : _dismissInLog(pubs: [pub]));
+    unawaited(liftSuspension ? _dismissInLog(pub: pub, confirm: true) : _dismissInLog(pubs: [pub], confirm: true));
     notifyListeners();
   }
 

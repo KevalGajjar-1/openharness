@@ -13,16 +13,16 @@ import 'package:harness/terminal/terminal_session.dart';
 import 'support/agent_messages_api.dart';
 
 /// Agent Messages as the window keeps it (docs/design/2026-10-10-agent-messages.md):
-/// each tab's flag, the traffic `messages_changed` reports, the pane marks it
-/// leaves, and a tab's log merged from every daemon that holds part of it.
+/// whether the account has them, the traffic `messages_changed` reports, the
+/// pane marks it leaves, and a tab's log merged from every daemon that holds
+/// part of it. A tab has no flag here: whether agents may message is the
+/// account's, in Settings ▸ Experimental (owner, 2026-10-12).
 class _Backend {
+  /// Each tab's old flag, which a backend still answers and nothing reads.
   Map<String, bool> tabs = {};
   int reads = 0;
   Object? readError;
   bool readNull = false;
-  Completer<Map<String, dynamic>>? pendingWrite;
-  Object? writeError;
-  final writes = <(String, bool)>[];
 
   Future<Map<String, dynamic>?> read() async {
     reads++;
@@ -36,14 +36,6 @@ class _Backend {
           {'id': key, 'name': key, 'enabled': value, 'panes': const []},
       ],
     };
-  }
-
-  Future<Map<String, dynamic>> write(String tabId, bool enabled) async {
-    writes.add((tabId, enabled));
-    if (pendingWrite case final pending?) return pending.future;
-    if (writeError case final error?) throw error;
-    tabs[tabId] = enabled;
-    return {'tabId': tabId, 'enabled': enabled, 'revision': writes.length};
   }
 }
 
@@ -94,7 +86,6 @@ void main() {
     AgentNameOf? nameOf,
   }) => AgentMessagesController(
     read: backend.read,
-    write: backend.write,
     request: request ?? (_, _) async => throw StateError('offline'),
     nameOf: nameOf ?? (_, agentId) => names[agentId],
   );
@@ -103,29 +94,27 @@ void main() {
     backend = _Backend();
   });
 
-  group('the flag', () {
-    test('reads each tab, and off is the default', () async {
+  group('whether the account has Agent Messages', () {
+    test('an answer says so, whatever a tab\'s old flag says', () async {
       backend.tabs = {'on': true, 'off': false};
       final messages = controller();
       addTearDown(messages.dispose);
-      expect(messages.isOn('on'), isFalse, reason: 'unknown until read');
+      expect(messages.loaded, isFalse, reason: 'unknown until read');
+      var notified = 0;
+      messages.addListener(() => notified++);
       await messages.refresh();
       expect(messages.loaded, isTrue);
-      expect(messages.isOn('on'), isTrue);
-      expect(messages.isOn('off'), isFalse);
-      expect(messages.isOn('never-seen'), isFalse);
-      expect(messages.stateOf('on'), TabMessagesState.on);
-      expect(messages.stateOf('off'), TabMessagesState.off);
+      expect(notified, 1);
+      await messages.refresh();
+      expect(notified, 1, reason: 'the same answer again changes nothing');
     });
 
     test('an older daemon or backend (404) offers nothing, for good', () async {
-      backend.tabs = {'tab': true};
       final messages = controller();
       addTearDown(messages.dispose);
       backend.readNull = true;
       await messages.refresh();
       expect(messages.loaded, isFalse);
-      expect(messages.isOn('tab'), isFalse);
       backend.readNull = false;
       await messages.refresh();
       expect(messages.loaded, isTrue);
@@ -135,7 +124,6 @@ void main() {
       messages.addListener(() => notified++);
       await messages.refresh();
       expect(messages.loaded, isFalse);
-      expect(messages.isOn('tab'), isFalse);
       expect(notified, 1);
     });
 
@@ -145,126 +133,44 @@ void main() {
       backend.readError = StateError('daemon down');
       await messages.refresh();
       expect(messages.loaded, isFalse);
-      expect(messages.isOn('tab'), isFalse);
     });
 
     test('a failed read keeps what was known', () async {
-      backend.tabs = {'tab': true};
       final messages = controller();
       addTearDown(messages.dispose);
       await messages.refresh();
       backend.readError = StateError('one dropped request');
       await messages.refresh();
-      expect(messages.isOn('tab'), isTrue);
-    });
-
-    test('a toggle shows at once, then reads again', () async {
-      final messages = controller();
-      addTearDown(messages.dispose);
-      await messages.refresh();
-      backend.pendingWrite = Completer();
-      final saved = messages.toggle('tab');
-      expect(messages.isOn('tab'), isTrue, reason: 'optimistic');
-      expect(messages.isPending('tab'), isTrue);
-      expect(
-        await messages.toggle('tab'),
-        isFalse,
-        reason: 'one write at a time',
-      );
-      backend.pendingWrite!.complete({'tabId': 'tab', 'enabled': true});
-      backend.tabs['tab'] = true;
-      final readsBefore = backend.reads;
-      expect(await saved, isTrue);
-      expect(messages.isPending('tab'), isFalse);
-      expect(messages.isOn('tab'), isTrue);
-      expect(messages.failureFor('tab'), isNull);
-      await pumpEventQueue();
-      expect(backend.reads, readsBefore + 1, reason: 're-read after a toggle');
-      expect(backend.writes, [('tab', true)]);
-    });
-
-    test('a refused toggle goes back and says why', () async {
-      final messages = controller();
-      addTearDown(messages.dispose);
-      var notified = 0;
-      messages.addListener(() => notified++);
-      backend.writeError = StateError('backend unreachable');
-      final saved = messages.setEnabled('tab', true);
-      expect(messages.isOn('tab'), isTrue);
-      expect(await saved, isFalse);
-      expect(messages.isOn('tab'), isFalse);
-      expect(messages.failureFor('tab'), contains('could not be turned on'));
-      expect(notified, greaterThanOrEqualTo(2));
-      backend.writeError = null;
-      expect(await messages.setEnabled('tab', true), isTrue);
-      expect(messages.failureFor('tab'), isNull);
-    });
-
-    test('a read that started before a toggle landed cannot undo it', () async {
-      final messages = controller();
-      addTearDown(messages.dispose);
-      final stale = Completer<Map<String, dynamic>?>();
-      final reading = AgentMessagesController(
-        read: () => stale.future,
-        write: backend.write,
-        request: (_, _) async => {},
-        nameOf: (_, _) => null,
-      );
-      addTearDown(reading.dispose);
-      final read = reading.refresh();
-      await reading.setEnabled('tab', true);
-      stale.complete({
-        'tabs': [
-          {'id': 'tab', 'enabled': false},
-        ],
-      });
-      await read;
-      expect(reading.isOn('tab'), isTrue);
+      expect(messages.loaded, isTrue);
     });
 
     test('signing out forgets the account', () async {
-      backend.tabs = {'tab': true};
       final messages = controller();
       addTearDown(messages.dispose);
       await messages.refresh();
       messages.handleEvent(_sent());
       messages.reset();
-      expect(messages.isOn('tab'), isFalse);
-      expect(messages.isFlowing('tab'), isFalse);
+      expect(messages.trafficFor('tab'), 0);
       expect(messages.markFor('studio', 'lead'), isNull);
       expect(messages.loaded, isFalse);
     });
   });
 
   group('traffic', () {
-    test('a tab flows for 10 seconds after its last message', () {
+    test('a message counts as traffic, so an open log reads again', () {
       fakeAsync((async) {
-        backend.tabs = {'tab': true};
         final messages = controller();
         unawaited(messages.refresh());
         async.flushMicrotasks();
         var notified = 0;
         messages.addListener(() => notified++);
         messages.handleEvent(_sent());
-        expect(messages.isFlowing('tab'), isTrue);
-        expect(messages.stateOf('tab'), TabMessagesState.flowing);
         expect(messages.trafficFor('tab'), 1);
-        async.elapse(const Duration(seconds: 3));
+        expect(notified, 1, reason: 'an open log reads again');
         messages.handleEvent(_sent(state: 'delivered'));
         expect(messages.trafficFor('tab'), 2);
-        async.elapse(const Duration(seconds: 9));
-        expect(messages.isFlowing('tab'), isTrue);
-        final before = notified;
-        async.elapse(const Duration(seconds: 1));
-        expect(messages.isFlowing('tab'), isFalse);
-        expect(messages.stateOf('tab'), TabMessagesState.on);
-        expect(
-          notified,
-          greaterThan(before),
-          reason: 'the status slot goes back by itself',
-        );
-        expect(async.pendingTimers, isEmpty);
         messages.dispose();
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
@@ -317,7 +223,7 @@ void main() {
         final mark = messages.markFor('studio', 'lead')!;
         expect(mark.warning, isTrue);
         expect(mark.label, '→ rate limited');
-        expect(messages.isFlowing('tab'), isFalse);
+        expect(messages.trafficFor('tab'), 0);
         messages.dispose();
       });
     });
@@ -328,9 +234,9 @@ void main() {
       messages.handleEvent({'messageId': 'm0000001'});
       messages.handleEvent({'tabId': '', 'messageId': 'm0000001'});
       messages.handleEvent({'limited': 'nobody'});
-      expect(messages.isFlowing(''), isFalse);
+      expect(messages.trafficFor(''), 0);
       messages.handleEvent({'tabId': 'tab', 'messageId': 'm0000003'});
-      expect(messages.isFlowing('tab'), isTrue);
+      expect(messages.trafficFor('tab'), 1);
       expect(messages.markFor('studio', 'lead'), isNull);
     });
   });
@@ -488,18 +394,17 @@ void main() {
     Map<String, dynamic> recent(String id, {required Duration ago}) =>
         _row(id, at: now.subtract(ago).millisecondsSinceEpoch);
 
-    test('a new message that just moved flows and marks its panes', () async {
+    test('a message that just moved is traffic and marks its panes', () async {
       final asked = <(String, Map<String, dynamic>)>[];
       final messages = AgentMessagesController(
         read: backend.read,
-        write: backend.write,
         request: (machineId, payload) async {
           asked.add((machineId, payload));
           return {
             'messages': [
               recent('m0000001', ago: const Duration(minutes: 5)),
-              // Past the 10 s a tab flows, within a round of the remote
-              // watch's: still news when a round first sees it.
+              // Within a round of the remote watch's: still news when a
+              // round first sees it.
               recent('m0000002', ago: const Duration(seconds: 30)),
             ],
           };
@@ -517,7 +422,6 @@ void main() {
         'tabId': 'tab',
         'limit': 20,
       });
-      expect(messages.isFlowing('tab'), isTrue);
       expect(messages.trafficFor('tab'), 1);
       expect(messages.markFor('studio', 'lead')?.label, '→ API worker');
       expect(messages.markFor('laptop', 'api')?.label, '← Lead');
@@ -533,37 +437,9 @@ void main() {
       expect(messages.markFor('studio', 'lead'), isNull);
     });
 
-    test('remote traffic flows one round longer, so rounds renew it', () {
-      fakeAsync((async) {
-        final messages = AgentMessagesController(
-          read: backend.read,
-          write: backend.write,
-          request: (_, _) async => {
-            'messages': [recent('m0000004', ago: const Duration(seconds: 5))],
-          },
-          nameOf: (_, _) => null,
-          now: () => now,
-        );
-        unawaited(
-          messages.pollRemote([
-            (tabId: 'tab', machineIds: ['laptop']),
-          ], round: const Duration(seconds: 15)),
-        );
-        async.flushMicrotasks();
-        expect(messages.isFlowing('tab'), isTrue);
-        async.elapse(const Duration(seconds: 24));
-        expect(messages.isFlowing('tab'), isTrue);
-        async.elapse(const Duration(seconds: 1));
-        expect(messages.isFlowing('tab'), isFalse);
-        messages.dispose();
-        expect(async.pendingTimers, isEmpty);
-      });
-    });
-
     test('older messages are remembered, not announced', () async {
       final messages = AgentMessagesController(
         read: backend.read,
-        write: backend.write,
         request: (_, _) async => {
           'messages': [recent('m0000003', ago: const Duration(minutes: 2))],
         },
@@ -574,7 +450,7 @@ void main() {
       await messages.pollRemote([
         (tabId: 'tab', machineIds: ['laptop']),
       ]);
-      expect(messages.isFlowing('tab'), isFalse);
+      expect(messages.trafficFor('tab'), 0);
       expect(messages.markFor('studio', 'lead'), isNull);
       messages.handleEvent(_sent(id: 'm0000003', state: 'delivered'));
       expect(
@@ -589,7 +465,6 @@ void main() {
       final asked = <String>[];
       final messages = AgentMessagesController(
         read: backend.read,
-        write: backend.write,
         request: (machineId, payload) {
           asked.add('$machineId/${payload['tabId']}');
           return machineId == 'laptop'
@@ -620,7 +495,6 @@ void main() {
         var rounds = 0;
         final messages = AgentMessagesController(
           read: backend.read,
-          write: backend.write,
           request: (_, _) async {
             rounds++;
             return {'messages': const []};
@@ -647,7 +521,7 @@ void main() {
         expect(rounds, 3);
         tabs = [];
         async.elapse(const Duration(seconds: 15));
-        expect(rounds, 3, reason: 'no tab is on with remote harnesses');
+        expect(rounds, 3, reason: 'no tab has remote harnesses to message');
         tabs = [
           (tabId: 'tab', machineIds: ['laptop']),
         ];
@@ -703,7 +577,7 @@ void main() {
             ],
           },
         });
-        expect(app.agentMessages.isFlowing(app.activeSwarmId), isTrue);
+        expect(app.agentMessages.trafficFor(app.activeSwarmId), 1);
         expect(
           app.agentMessages.markFor('studio', 'lead')?.label,
           '→ API worker',
@@ -716,17 +590,18 @@ void main() {
       },
     );
 
-    test('flags are read when the desk is joined, on desk_changed, and '
+    test('Agent Messages is asked about once the desk is joined, and '
         'forgotten on sign-out', () async {
       final api = await joinAgentMessagesDesk(app);
       expect(api.reads, 1);
       expect(app.agentMessages.loaded, isTrue);
+      // desk_changed no longer means a tab's flag moved: nothing to read.
       await app.handleEventForTest('studio', {
         'type': 'desk_changed',
         'payload': {'revision': 0},
       });
       await pumpEventQueue();
-      expect(api.reads, 2);
+      expect(api.reads, 1);
       app.expireSessionForTest('Signed out');
       expect(app.agentMessages.loaded, isFalse);
     });
@@ -756,7 +631,8 @@ void main() {
       );
     });
 
-    test('a tab that is on polls its harnesses on other machines', () async {
+    test('a desk tab with two harnesses polls those on other machines, '
+        'with no flag to turn on', () async {
       const laptop = Machine(
         machineId: 'laptop',
         authMode: MachineAuthMode.remote,
@@ -769,26 +645,25 @@ void main() {
         ..agents = [
           const Agent(id: 'web', name: 'Web', terminalAvailable: true),
         ];
-      final api = await joinAgentMessagesDesk(app);
-      for (final (machineId, agentId) in [
-        ('studio', 'lead'),
-        ('laptop', 'web'),
-      ]) {
-        app.adoptSessionForTest(
-          TerminalSession(
-            machineId: machineId,
-            agentId: agentId,
-            agentName: agentId,
-            engineId: 'codex',
-            send: (_, _) async => true,
-            sendBinary: (_) async => true,
-          ),
-        );
-      }
+      await joinAgentMessagesDesk(app);
+      void adopt(String machineId, String agentId) => app.adoptSessionForTest(
+        TerminalSession(
+          machineId: machineId,
+          agentId: agentId,
+          agentName: agentId,
+          engineId: 'codex',
+          send: (_, _) async => true,
+          sendBinary: (_) async => true,
+        ),
+      );
       final tab = app.activeSwarmId;
-      expect(app.agentMessagesRemoteTabs(), isEmpty, reason: 'off');
-      api.flags[tab] = true;
-      await app.agentMessages.refresh();
+      adopt('studio', 'lead');
+      expect(
+        app.agentMessagesRemoteTabs(),
+        isEmpty,
+        reason: 'one harness has nobody to message',
+      );
+      adopt('laptop', 'web');
       final remote = app.agentMessagesRemoteTabs().single;
       expect(remote.tabId, tab);
       // No daemon of this computer in this fixture: every machine is remote.

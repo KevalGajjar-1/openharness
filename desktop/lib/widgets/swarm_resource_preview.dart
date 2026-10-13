@@ -12,8 +12,12 @@ import '../models/api_connections_controller.dart'
     show ApiModels, contextWindowLabel;
 import '../models/local_model.dart';
 import '../models/model_search_catalog.dart';
+import '../core/relative_time.dart';
 import '../shared/theme/app_theme.dart' as grid;
+import '../shared/widgets/fingerprint_text.dart';
+import '../state/account_devices.dart';
 import '../state/app_state.dart';
+import '../state/machine_devices.dart';
 import '../state/harness_sessions.dart';
 import '../state/harness_placement.dart';
 import '../state/swarm_navigation.dart';
@@ -21,6 +25,8 @@ import '../state/swarm_search.dart';
 import '../terminal/terminal_text.dart';
 import '../terminal/terminal_theme.dart';
 import '../terminal/terminal_theme_store.dart';
+import 'account_device_detail.dart'
+    show confirmDeviceAction, removeDeviceDetail;
 import 'machine_picker_form.dart';
 import 'api_picker_form.dart';
 import 'swarm_search_preview.dart';
@@ -129,7 +135,52 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
   bool get _machineSetup =>
       row?.isCreate == true && widget.search.isMachineMode;
   bool get _isManagement =>
-      row?.isMachine == true || row?.isModel == true || _machineSetup;
+      row?.isMachine == true ||
+      row?.isModel == true ||
+      row?.isAccountDevice == true ||
+      _machineSetup;
+
+  MachineDevices? get _devices => widget.search.machineDevices;
+
+  /// The account's key for the selected row: the device itself, or the key of the machine it is.
+  AccountDevice? get _device {
+    final selected = row;
+    final devices = _devices;
+    if (selected == null || devices == null) return null;
+    if (selected.devicePub case final pub?) return devices.byPub(pub);
+    if (selected.isMachine) return devices.forMachine(selected.machineId!);
+    return null;
+  }
+
+  /// A dialog over the workspace: the picker steps aside while it is up, and takes the keys back after.
+  Future<T> _modal<T>(Future<T> Function() dialog) async {
+    widget.onModalChanged(true);
+    try {
+      return await dialog();
+    } finally {
+      widget.onModalChanged(false);
+      if (mounted) widget.onRefocus();
+    }
+  }
+
+  Future<bool> _confirm(String title, String detail, String action) => _modal(
+    () =>
+        confirmDeviceAction(context, title, detail, action, destructive: true),
+  );
+
+  /// Signs a phone, browser or a computer with no machine record out of the account, after asking.
+  Future<void> _removeDevice(AccountDevice device) async {
+    final devices = _devices;
+    if (devices == null) return;
+    final name = device.label.trim().isEmpty
+        ? 'this device'
+        : device.label.trim();
+    if (!await _confirm('Remove $name?', removeDeviceDetail, 'Remove')) return;
+    if (!mounted) return;
+    await devices.remove(device);
+  }
+
+  void _mine(AccountDevice device) => _devices?.mine(device);
   bool get _editingMachine => _machineForm != null && _formResource == row?.id;
 
   void _editMachine(MachinePickerFormKind kind) {
@@ -928,6 +979,25 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
         ),
       ];
     }
+    if (selected.isAccountDevice) {
+      final device = _device;
+      if (device == null) return const [];
+      final removing = _devices?.removing.contains(device.pub) == true;
+      return [
+        if (_devices?.isNew(device) == true && !device.self)
+          _ResourceAction(
+            'It’s mine',
+            removing ? null : () => _mine(device),
+            command: 'picker.device_mine',
+          ),
+        if (!device.self)
+          _ResourceAction(
+            removing ? 'Removing…' : 'Remove',
+            removing ? null : () => unawaited(_removeDevice(device)),
+            command: 'picker.resource_remove',
+          ),
+      ];
+    }
     if (selected.isMachine) {
       final machine = app.stateOf(selected.machineId!);
       if (machine == null) return [];
@@ -948,6 +1018,7 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
             command: 'picker.resource_rename',
           ),
         ...secondary.where((a) => a.command == 'picker.resource_remove'),
+        ...secondary.where((a) => a.command == 'picker.device_mine'),
         if (app.machineListError != null)
           _ResourceAction(
             'Retry',
@@ -1075,9 +1146,16 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
           ),
         if (!machine.isLocalMachine && !machine.machine.isShared)
           _ResourceAction(
-            'Delete',
+            'Remove',
             () => _editMachine(MachinePickerFormKind.delete),
             command: 'picker.resource_remove',
+          ),
+        if (_device case final device?
+            when _devices?.isNew(device) == true && !device.self)
+          _ResourceAction(
+            'It’s mine',
+            () => _mine(device),
+            command: 'picker.device_mine',
           ),
         _ResourceAction(
           'Add machine',
@@ -1319,7 +1397,18 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
                   '${gigabytesLabel(owner.freeDiskBytes!)} free',
               ].join(' · '),
             ),
-          if ((local.sizeBytes, owner.memoryBytes) case (
+          // An NVIDIA machine's against the VRAM its card has for models, which the catalog fits to.
+          if (owner.fitsInVram) ...[
+            if ((local.sizeBytes, owner.fitBytes) case (
+              final size?,
+              final room?,
+            ))
+              labelValue(
+                'VRAM',
+                '${size <= room ? 'fits' : 'needs ${gigabytesLabel(size)}'} · '
+                    'its GPU has ${gigabytesLabel(room)} for models',
+              ),
+          ] else if ((local.sizeBytes, owner.memoryBytes) case (
             final size?,
             final memory?,
           ))
@@ -1538,8 +1627,57 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
           resources?.memoryTotalBytes != null)
         'RAM ${(resources!.memoryUsedBytes! / (1024 * 1024 * 1024)).toStringAsFixed(1)} / ${(resources.memoryTotalBytes! / (1024 * 1024 * 1024)).toStringAsFixed(0)} GB',
       '${machine.agents.length} ${machine.agents.length == 1 ? 'harness' : 'harnesses'}',
+      ..._deviceFacts(_device),
       ?app.machineListError,
       ?_messages[row!.id],
+      ?_devices?.error,
+    ], controls: true);
+  }
+
+  /// What the account's device list says about [device]: when it joined and was last active, and
+  /// its key code to compare on the device itself.
+  List<Object> _deviceFacts(AccountDevice? device) {
+    if (device == null) return const [];
+    final now = DateTime.now();
+    return [
+      '',
+      ('Added', fullDateTime(device.addedAt)),
+      if (device.lastSeen case final seen?)
+        ('Last active', device.self ? 'Now' : relativeAgo(seen, now)),
+      if (device.fingerprint.isNotEmpty) ...[
+        ('Code', ''),
+        FingerprintText(
+          device.fingerprint,
+          large: false,
+          copyKey: ValueKey('device-code-copy:${device.pub}'),
+        ),
+        device.self
+            ? 'This device’s code. Your other devices show the same code for it.'
+            : fingerprintHowToCompare(computer: device.isMachine),
+      ],
+      if (device.suspended)
+        'Not trusted here: added after this device’s list and another’s split. '
+            'Review the list to trust it again.',
+    ];
+  }
+
+  Widget _devicePreview() {
+    final device = _device;
+    if (device == null) {
+      return _details([row!.title, 'No longer on your account']);
+    }
+    return _details([
+      row!.title,
+      [
+        device.isMachine ? 'Computer' : 'App',
+        if (device.self) 'This device',
+        if (device.suspended)
+          'Suspended'
+        else if (_devices?.isNew(device) == true)
+          'New',
+      ].join(' · '),
+      ..._deviceFacts(device),
+      ?_devices?.error,
     ], controls: true);
   }
 
@@ -1592,6 +1730,10 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
                 label,
                 value,
               ),
+              final Widget widget => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: widget,
+              ),
               final line => Padding(
                 padding: EdgeInsets.only(bottom: i == 0 ? 5 : 3),
                 child: Text(
@@ -1640,6 +1782,7 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
                 ),
               ],
             ),
+            final Widget widget => widget,
             final line => Text(
               '$line',
               style: i == 0
@@ -1859,6 +2002,18 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
                         app: app,
                         kind: _machineForm!,
                         machineId: row?.machineId,
+                        signsOut:
+                            _machineForm == MachinePickerFormKind.delete &&
+                            _device != null,
+                        remove:
+                            _machineForm == MachinePickerFormKind.delete &&
+                                _devices != null
+                            ? () => _devices!.removeComputer(
+                                machineId: row!.machineId!,
+                                name: row!.title,
+                                device: _device,
+                              )
+                            : null,
                         onClose: _closeMachineForm,
                         onFocusChanged: widget.search.setManaging,
                         onSwitchPane: _switchPane,
@@ -1893,6 +2048,8 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
                       ])
                     : row?.isMachine == true
                     ? _machinePreview()
+                    : row?.isAccountDevice == true
+                    ? _devicePreview()
                     : widget.search.isModelMode
                     ? _modelPreview()
                     : SwarmSearchPreview(

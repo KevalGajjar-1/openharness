@@ -9,15 +9,12 @@ import '../bootstrap/setup_progress.dart';
 import '../shared/theme/app_icons.dart';
 import '../shared/theme/app_theme.dart' as grid;
 import '../shared/widgets/app_icon_button.dart';
-import '../shortcuts/app_shortcuts.dart';
-import '../shortcuts/keymap.dart';
-import '../shortcuts/keymap_commands.dart';
 import '../state/app_state.dart';
 import 'environment_setup_screen.dart';
 import 'setup_tour_art.dart';
 import 'window_chrome.dart';
 
-/// The welcome tour: seven slides on what Harness does.
+/// The welcome tour: five slides on what Harness does.
 ///
 /// A fresh computer sees it while setup installs with nobody at the keyboard
 /// ([SetupTourScreen]), with the install as one line under it, like an OS
@@ -62,34 +59,14 @@ String get tourComputerNoun => _onMac ? 'Mac' : 'computer';
 String get setupTourInstallLine =>
     'Setting up Harness on this $tourComputerNoun';
 
-/// The keycaps for the Cmd-P search, from the live default keymap, so Linux
-/// (Alt, where the Mac takes ⌘) reads its own chord.
-List<String> get tourSearchKeys {
-  final command = harnessCommands.firstWhere(
-    (command) => command.id == 'harnesses.list',
-  );
-  final keys = command.keys;
-  return keys.isEmpty
-      ? const ['⌘', 'P']
-      : describeKeyStrokeKeys(KeyStroke.parse(keys.first));
-}
+/// The install line once everything is in place and Harness opens next.
+const setupTourOpeningLine = 'Harness is ready. Opening…';
 
-/// The keycaps for New Harness (Cmd-N), the same way.
-List<String> get tourNewHarnessKeys {
-  for (final shortcut in appShortcuts()) {
-    if (shortcut.action == ShortcutAction.newAgent) {
-      return describeShortcutKeys(shortcut.activator);
-    }
-  }
-  return const ['⌘', 'N'];
-}
+/// The same, when the sign-in step comes next instead of Harness itself.
+const setupTourReadyLine = 'Harness is ready.';
 
-/// The seven slides, in order of importance. Copy is the approved render's.
+/// The five slides, in order of importance. Copy is the approved render's.
 List<TourSlide> tourSlides() {
-  final search = tourSearchKeys;
-  final create = tourNewHarnessKeys;
-  final searchChord = search.join(chordKeySeparator);
-  final createChord = create.join(chordKeySeparator);
   final computer = tourComputerNoun;
   return [
     TourSlide(
@@ -109,24 +86,6 @@ List<TourSlide> tourSlides() {
           'each job to the agent that is best at it.',
       artLabel: 'Four agents working in a two by two grid',
       art: (_) => const TourAgentsArt(),
-    ),
-    TourSlide(
-      kicker: 'Keyboard first',
-      title: '$searchChord finds\nany harness.',
-      copy:
-          'One search over every harness on all your machines, with all your '
-          "agents. A few letters, Return, you're in it.",
-      artLabel: 'Search results from three machines and three agents',
-      art: (_) => TourSearchArt(keys: search),
-    ),
-    TourSlide(
-      kicker: 'Keyboard first',
-      title: '$createChord starts\na new harness.',
-      copy:
-          'Any agent, on any of your machines, in any project. Pick them by '
-          'keys, type what you want, press Return.',
-      artLabel: 'The New Harness box with an agent, a machine and a project',
-      art: (_) => TourNewHarnessArt(keys: create),
     ),
     TourSlide(
       kicker: 'Always there',
@@ -177,6 +136,7 @@ class SetupTour extends StatefulWidget {
     this.onManual,
     this.details,
     this.onClose,
+    this.doneLine = setupTourOpeningLine,
     this.slideDuration = tourSlideDuration,
   });
 
@@ -203,6 +163,9 @@ class SetupTour extends StatefulWidget {
 
   /// Shows a close button and lets Escape close the tour.
   final VoidCallback? onClose;
+
+  /// What the install line says once [progress] is done.
+  final String doneLine;
 
   final Duration slideDuration;
 
@@ -322,6 +285,7 @@ class _SetupTourState extends State<SetupTour> {
                         onRetry: widget.onRetry,
                         onManual: widget.onManual,
                         details: widget.details,
+                        doneLine: widget.doneLine,
                       ),
                     ),
                 ],
@@ -424,7 +388,7 @@ class _SetupTourState extends State<SetupTour> {
     );
     return Stack(
       children: [
-        const Positioned.fill(child: _Glow()),
+        const Positioned.fill(child: TourGlow()),
         Positioned.fill(
           child: Padding(
             // Top: clear of the traffic lights' band. Right: room for the
@@ -490,9 +454,9 @@ class _SetupTourState extends State<SetupTour> {
 }
 
 /// The stage's two soft glows, amber up right and gold down left, as in the
-/// render.
-class _Glow extends StatelessWidget {
-  const _Glow();
+/// render. The sign-in step (`sign_in_step.dart`) stands on the same stage.
+class TourGlow extends StatelessWidget {
+  const TourGlow({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -643,6 +607,7 @@ class _InstallBar extends StatelessWidget {
     required this.onRetry,
     required this.onManual,
     required this.details,
+    required this.doneLine,
   });
 
   final SetupProgress progress;
@@ -653,6 +618,7 @@ class _InstallBar extends StatelessWidget {
   final VoidCallback? onRetry;
   final VoidCallback? onManual;
   final Widget? details;
+  final String doneLine;
 
   @override
   Widget build(BuildContext context) {
@@ -666,7 +632,7 @@ class _InstallBar extends StatelessWidget {
         ? danger
         : grid.AppPalette.onboardingAccent;
     final line = done
-        ? 'Harness is ready. Opening…'
+        ? doneLine
         : failed
         ? progress.failure ?? 'Setup could not finish'
         : setupTourInstallLine;
@@ -848,6 +814,10 @@ class _SetupTourScreenState extends State<SetupTourScreen> {
       builder: (context, _) => SetupTour(
         progress: _progress,
         onOpen: app.finishSetupTour,
+        // Not signed in, the sign-in step comes next, not Harness itself.
+        doneLine: app.signInStepNext
+            ? setupTourReadyLine
+            : setupTourOpeningLine,
         // As the setup screen's own Retry: resume the install it asked for.
         onRetry: app.environmentSetupInFlight
             ? null

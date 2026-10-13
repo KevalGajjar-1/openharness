@@ -106,6 +106,18 @@ describe('the messages hook, as an engine runs it', () => {
     expect(inbox.claimed('%2', '0note-abc')).toBe(true)
   })
 
+  it('shows the person a line per message in the pane, and gives the model only the messages', () => {
+    // Claude Code draws systemMessage as "PostToolUse:Bash says: …", Codex 0.162.1 as "↳ Hook · …"; neither gives it
+    // to the model, and both still give it additionalContext (each run for real, 2026-10-12).
+    inbox.put('%8', '0note-abc', { session: '', text: 'the note' })
+    inbox.put('%8', 'm0000001-aaaa', { session: '', text: '[m1 from lead]\nfirst', notice: '← lead: first' })
+    inbox.put('%8', 'm0000002-bbbb', { session: '', text: '[m2 from web]\nsecond', notice: '← web · FYI: second' })
+    expect(JSON.parse(run('%8', { session_id: 's1', hook_event_name: 'PostToolUse' }).out)).toEqual({
+      systemMessage: '← lead: first\n← web · FYI: second',
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'the note\n\n[m1 from lead]\nfirst\n\n[m2 from web]\nsecond' },
+    })
+  })
+
   it('leaves another conversation\'s messages, and a Claude Code sub-agent\'s tool call takes nothing', () => {
     inbox.put('%6', 'mine', { session: 'parent', text: 'for the parent' })
     inbox.put('%6', 'anyone', { session: '', text: 'for whoever' })

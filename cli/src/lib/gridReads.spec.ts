@@ -311,6 +311,41 @@ describe('the picture', () => {
     expect(ids(section(await look(), TEAM))).toEqual([])
   })
 
+  // Stopped on another computer while the grid kept answering: no wake's blank, so not 150s more on this one.
+  it('a model that leaves while the grid keeps answering is gone by the second answer without it', async () => {
+    answer(TEAM_ID, OVERVIEW, awake([node('rig', ['big-model', 'small-model'])]))
+    await look()
+    later(16)
+    answer(TEAM_ID, OVERVIEW, awake([node('rig', ['small-model'])]))
+    // One answer without it could be a blip: kept.
+    expect(ids(section(await look(), TEAM))).toEqual(['small-model', 'big-model'])
+    later(16)
+    expect(ids(section(await look(), TEAM))).toEqual(['small-model'])
+  })
+
+  it('so does the only model of a grid whose only machine left, though the grid then answers empty', async () => {
+    answer(TEAM_ID, OVERVIEW, awake([node('harness', ['qwen3.8-27b'])]))
+    await look()
+    later(16)
+    answer(TEAM_ID, OVERVIEW, awake([]))
+    expect(ids(section(await look(), TEAM))).toEqual(['qwen3.8-27b'])
+    later(16)
+    expect(ids(section(await look(), TEAM))).toEqual([])
+  })
+
+  it('a grid that was asleep and answers empty on waking keeps its models the full 150s', async () => {
+    answer(TEAM_ID, OVERVIEW, awake([node('rig', ['big-model'])]))
+    await look()
+    later(16)
+    answer(TEAM_ID, OVERVIEW, asleep())
+    expect(ids(section(await look(), TEAM))).toEqual(['big-model'])
+    later(125) // past the asleep memo: the next look reads it woken
+    answer(TEAM_ID, OVERVIEW, awake([]))
+    expect(ids(section(await look(), TEAM))).toEqual(['big-model'])
+    later(16); expect(ids(section(await look(), TEAM))).toEqual(['big-model'])
+    later(140); expect(ids(section(await look(), TEAM))).toEqual([])
+  })
+
   it('a sleep record older than the last awake read does not replace it; a newer one does', async () => {
     answer(TEAM_ID, OVERVIEW, awake([node('rig', ['big-model'])]))
     await look()

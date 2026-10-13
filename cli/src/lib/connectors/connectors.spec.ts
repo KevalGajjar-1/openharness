@@ -2,7 +2,7 @@
  * Connected services, against fake services (testing/connectorServers.ts) in a throwaway home: never a
  * real provider, ~/.claude or ~/.codex.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -76,6 +76,22 @@ describe('signing in from this computer (MCP OAuth)', () => {
     const fake = await service()
     await expect(signIn(fake, true)).rejects.toThrow('could not be confirmed')
     expect(vault.tokens()).toEqual({})
+  })
+
+  it('finishes with the redirect a phone caught in its own browser, and only that address', async () => {
+    const fake = await service()
+    const flows = new Flows(vault, env)
+    const { flow, authorize_url } = await flows.start('linear', new LocalSignIn(vault, fake.base + '/mcp'))
+    // The phone's browser follows the service to this computer's 127.0.0.1 address, which it cannot reach.
+    const caught = (await fetch(authorize_url!, { redirect: 'manual' })).headers.get('location')!
+    const port = Number(new URL(caught).port)
+    expect(() => flows.deliver(flow, caught.replace(`:${port}/`, `:${port + 1}/`))).toThrow('not the sign-in address')
+    expect(() => flows.deliver(flow, caught.replace('/callback', '/elsewhere'))).toThrow('not the sign-in address')
+    expect(() => flows.deliver('gone', caught)).toThrow('ended')
+    expect(flows.deliver(flow, caught)).toEqual({ connector: 'linear', state: 'pending' })
+    await vi.waitFor(() => expect(flows.get(flow).state).toBe('connected'))
+    expect(vault.token('linear')).toMatchObject({ source: 'dcr', mcp_entry: { headers: { Authorization: 'Bearer access-1' } } })
+    expect(() => flows.deliver(flow, caught)).toThrow('ended')
   })
 })
 
@@ -298,6 +314,13 @@ describe('the connector gateway', () => {
     expect(fake.calls.map(([path]) => path)).toEqual(['connectors/start', 'connectors/poll', 'connectors/poll', 'connectors/refresh', 'connectors/disconnect'])
     expect(vault.token('github')).toBeUndefined()
   }, 15_000)
+
+  it('takes no caught redirect for a gateway sign-in, which the gateway finishes', async () => {
+    await signedIn()
+    const flows = new Flows(vault, env)
+    const { flow } = await flows.start('github', signInFor(vault, 'github', services(await gateway.available())))
+    expect(() => flows.deliver(flow, 'http://127.0.0.1:51789/callback?code=x&state=y')).toThrow('on its own')
+  })
 
   it('a grant the gateway no longer holds asks for connecting again; a lapsed Harness sign-in says so', async () => {
     const fake = await signedIn()

@@ -142,6 +142,19 @@ function setup(s?: RegisteredSession, kept: RegisteredSession[] = [], readerFor 
 const about = (s: RegisteredSession, timestamp: number | Date) =>
   ({ id: s.sessionId, title: 'Release notes', timestamp: new Date(timestamp).toISOString(), engine: s.engine })
 
+describe('a shell result in history', () => {
+  it('never carries the turn stats\' outputTail', async () => {
+    const s = session('devin')
+    const end = { type: 'tool_end', payload: { id: 't1', tool: 'Bash', output: 'x', outputTail: 'tail', isError: false, summary: '' } }
+    vi.mocked(devinMessagesToEvents).mockReturnValueOnce([end] as never).mockReturnValueOnce([end] as never)
+    const { sessionGet } = setup(s)
+    for (const ask of [{}, { limit: 2 }]) {
+      const events = (await sessionGet({ sessionId: s.sessionId, ...ask })).events as Array<{ payload: object }>
+      expect(events).toEqual([{ type: 'tool_end', payload: { id: 't1', tool: 'Bash', output: 'x', isError: false, summary: '' } }])
+    }
+  })
+})
+
 describe('an engine whose code could not be loaded', () => {
   it('shows an empty conversation, from a store or a transcript, and reads nothing of it', async () => {
     const { readDevinMessages } = await import('../../engines/devin/reader.js')

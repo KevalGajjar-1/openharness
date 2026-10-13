@@ -13,6 +13,7 @@
  * Moved verbatim out of the socket's request switch (docs/design/2026-10-03-harnessd.md), but for the
  * four database engines: each had its own copy of the same windowing, and they now share one.
  */
+import { withoutOutputTail } from '../../lib/cardUpdate.js'
 import { stat } from 'node:fs/promises'
 import type { EngineTranscript } from '../../engines/facets/transcript.js'
 import { EngineReadError } from '../../engines/worker/protocol.js'
@@ -131,6 +132,10 @@ export function createHistory({ resolve, stopped, pages, dbs, hermesDb, readerFo
 
   /** The reply to a `session_get` request, for the socket to send as it is. */
   const sessionGet = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const reply = await readHistory(payload)
+    return Array.isArray(reply.events) ? { ...reply, events: reply.events.map(withoutOutputTail) } : reply
+  }
+  const readHistory = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const sessionId = payload.sessionId as string | undefined
     if (!sessionId) return { error: 'MISSING_SESSION_ID' }
     // Only serve transcripts for a session this daemon REGISTERED — live, or kept as a stopped one —

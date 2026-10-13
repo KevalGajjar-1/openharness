@@ -277,6 +277,16 @@ export class Store {
 
   save(code: string, entry: Token): void { locked(this.root, () => this.put(code, entry)) }
 
+  /** Remove one connection another computer disconnected: no disconnect of this computer's is recorded.
+   *  Call inside locked(). */
+  drop(code: string): void {
+    validateCode(code)
+    const data = this.file('tokens.json')
+    if (!(code in data)) return
+    delete data[code]
+    writePrivate(join(this.root, 'tokens.json'), data)
+  }
+
   disconnect(code: string): void {
     validateCode(code)
     const names = [code, ...Object.entries(RENAMED).filter(([, now]) => now === code).map(([old]) => old)]
@@ -285,8 +295,24 @@ export class Store {
       if (names.some(name => name in data)) {
         for (const name of names) delete data[name]
         writePrivate(join(this.root, 'tokens.json'), data)
+        // When: the account's other computers drop it too, unless one connected it again since (vaultSync.ts).
+        this.putRemoved({ ...this.removed(), [code]: Math.floor(Date.now() / 1000) })
       }
     })
+  }
+
+  /** Connections disconnected here, and when (epoch seconds), for the account's other computers. */
+  removed(): Record<string, number> {
+    const result: Record<string, number> = {}
+    for (const [code, at] of Object.entries(this.file('removed.json'))) {
+      if (CODE.test(code) && typeof at === 'number' && Number.isInteger(at) && at > 0) result[code] = at
+    }
+    return result
+  }
+
+  /** Call inside locked(). */
+  putRemoved(removed: Record<string, number>): void {
+    writePrivate(join(this.root, 'removed.json'), removed)
   }
 
   client(issuer: string): Client | undefined {
@@ -294,12 +320,13 @@ export class Store {
     return entry && typeof entry === 'object' ? entry as Client : undefined
   }
 
-  saveClient(issuer: string, client: Client): void {
-    locked(this.root, () => {
-      const data = this.file('clients.json')
-      data[issuer] = client
-      writePrivate(join(this.root, 'clients.json'), data)
-    })
+  saveClient(issuer: string, client: Client): void { locked(this.root, () => this.putClient(issuer, client)) }
+
+  /** Call inside locked(). */
+  putClient(issuer: string, client: Client): void {
+    const data = this.file('clients.json')
+    data[issuer] = client
+    writePrivate(join(this.root, 'clients.json'), data)
   }
 
   status(code: string, label: string, token?: Token): Status {

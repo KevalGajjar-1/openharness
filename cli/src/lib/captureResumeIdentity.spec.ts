@@ -4,6 +4,7 @@ import { engineKeepsTranscriptFile, type RegisteredSession } from './registry.js
 import { controlTranscriptEvidence, savedTranscriptEvidence } from '../engines/transcriptBindings.js'
 import { findLiveSession, findResumedTranscript, processSessionEvidence } from './sessionRepair.js'
 import { processRows, resumeSessionId } from './tmux.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 vi.mock('./registry.js', () => ({ engineKeepsTranscriptFile: vi.fn(() => true) }))
 vi.mock('../engines/transcriptBindings.js', () => ({ savedTranscriptEvidence: vi.fn(), controlTranscriptEvidence: vi.fn() }))
 vi.mock('./sessionRepair.js', () => ({ processSessionEvidence: vi.fn(), findLiveSession: vi.fn(), findResumedTranscript: vi.fn() }))
@@ -155,4 +156,35 @@ it.each([null, { sessionId: 'missing' }, { sessionId: 'unsafe', transcriptPath: 
   vi.mocked(savedTranscriptEvidence).mockReturnValue({ path: null, fileKey: null, verify: vi.fn() })
   if (found) await expect(captureResumeIdentity(row)).rejects.toMatchObject({ code: 'IDENTITY_UNAVAILABLE' })
   else expect(await captureResumeIdentity(row)).toBe(row)
+})
+// A close of a harness still starting may stop one whose conversation was never seen (stopAgentService
+// `withoutConversation`); a conversation seen and then unreadable is held as seen.
+it.each([
+  ['a resume on its command line', () => { vi.mocked(resumeSessionId).mockReturnValue('exact'); vi.mocked(findResumedTranscript).mockResolvedValue(null) }],
+  ['its native record', () => {
+    vi.mocked(processSessionEvidence).mockResolvedValue({ session: { sessionId: 'current', transcriptPath: '/current' }, verify: vi.fn() })
+    vi.mocked(savedTranscriptEvidence).mockReturnValue({ path: null, fileKey: null, verify: vi.fn() })
+  }],
+  ['one found live', () => {
+    vi.mocked(findLiveSession).mockResolvedValue({ sessionId: 'new', transcriptPath: '/new' })
+    vi.mocked(savedTranscriptEvidence).mockImplementation(() => { throw new IdentityReadUnavailable('the transcript header is incomplete') })
+  }],
+] as const)('holds a conversation seen through %s and then unreadable as seen', async (_, arrange) => {
+  arrange()
+  await expect(captureResumeIdentity(row)).rejects.toBeInstanceOf(ObservedConversationUnavailable)
+})
+it('a conversation never seen, because its process could not be read, is not held as seen', async () => {
+  vi.mocked(findLiveSession).mockRejectedValue(new IdentityReadUnavailable('the native control descriptor type is unavailable'))
+  const error = await captureResumeIdentity(row).catch(e => e)
+  expect(error).toBeInstanceOf(IdentityReadUnavailable)
+  expect(error).not.toBeInstanceOf(ObservedConversationUnavailable)
+  const plain = new Error('disk gone')
+  vi.mocked(findLiveSession).mockRejectedValue(plain)
+  await expect(captureResumeIdentity(row)).rejects.toBe(plain)
+  vi.mocked(resumeSessionId).mockReturnValue('exact')
+  vi.mocked(findResumedTranscript).mockRejectedValue(plain)
+  await expect(captureResumeIdentity(row)).rejects.toBe(plain)
+  const seen = new ObservedConversationUnavailable('Conversation identity is held: seen.')
+  vi.mocked(findResumedTranscript).mockRejectedValue(seen)
+  await expect(captureResumeIdentity(row)).rejects.toBe(seen)
 })

@@ -2,6 +2,8 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
+import { engineName } from '../lib/agentNames.js'
+import { failureReason } from '../lib/failureReason.js'
 import { permissionFlagToVerify, type PermissionLaunchChoice } from '../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../lib/engineInstall.js'
 import { patientDeadline } from '../lib/patientExec.js'
@@ -35,32 +37,46 @@ export interface NativeLaunch {
 }
 export type NativeLaunchResult =
   | { ok: true; launch: NativeLaunch }
-  | { ok: false; error: 'NATIVE_LAUNCH_HELD'; unavailable: 'native'; detail: string; install?: EngineInstallRecipe; environment?: Record<string, string> }
+  | { ok: false; error: 'NATIVE_LAUNCH_HELD'; unavailable: 'native'; detail: string; install?: EngineInstallRecipe; environment?: Record<string, string>
+      /** No wait ends this by itself: the selected executable ran and failed, or this request's own installer
+       *  did. A creation is refused with this code rather than held (core/agents/create.ts); a relaunch,
+       *  which nobody is waiting on, still holds. */
+      refusal?: 'ENGINE_CANNOT_RUN' | 'ENGINE_INSTALL_FAILED'
+      /** Harness is installing the engine for this launch (engines/prepareNativeLaunch.ts). */
+      installing?: true }
 const waiting = (detail: string): Extract<NativeLaunchResult, { ok: false }> => ({ ok: false, error: 'NATIVE_LAUNCH_HELD', unavailable: 'native', detail })
+const cannotRun = (engine: AgentEngine, reason: string): Extract<NativeLaunchResult, { ok: false }> =>
+  ({ ...waiting(`${engineName(engine)} is installed but cannot run: ${reason}`), refusal: 'ENGINE_CANNOT_RUN' })
 const noNative: NativeLaunch = {
   opencodeMajor: null, environment: {}, proofs: [], current: () => true,
   prepareHooks: async () => true, permission: async () => 'supported',
 }
 
 let probes = 0
+/** What a probe's child said, once it exited by itself. A deadline, a signal, an output limit or a
+ *  child that never started is no answer at all: null. */
+interface ProbeOutput { code: number; stdout: string; stderr: string }
 /** Slots follow actual subprocess settlement, including deadline and output-limit kills. */
-async function read(executable: string, args: readonly string[], environment: Readonly<Record<string, string>>): Promise<string | null> {
+async function read(executable: string, args: readonly string[], environment: Readonly<Record<string, string>>): Promise<ProbeOutput | null> {
   if (probes >= 8) return null
   probes++
   return new Promise(done => {
     let settled = false, expired = false, answered = false
     let cancelDeadline = () => {}
     let drain: ReturnType<typeof setTimeout> | undefined
-    const answer = (output: string | null) => { if (!answered) { answered = true; done(output) } }
+    const answer = (output: ProbeOutput | null) => { if (!answered) { answered = true; done(output) } }
     let child: ReturnType<typeof execFile>
     try {
       // Node's timeout can discard unread output after a core stall, then
       // report exit 0. Keep its pipes and use discovery's patient deadline.
       child = execFile(executable, [...args], {
         env: nativeProcessEnvironment(environment), encoding: 'utf8', killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
-      }, (error, output) => {
+      }, (error, stdout, stderr) => {
         settled = true; probes--; cancelDeadline(); clearTimeout(drain)
-        answer(error || expired ? null : output)
+        // A numeric code is the child's own exit status. A spawn failure, a signal or the output
+        // limit leaves a string or null there, and says nothing about the executable itself.
+        const code = !error ? 0 : typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : null
+        answer(expired || code === null ? null : { code, stdout: stdout ?? '', stderr: stderr ?? '' })
       })
     } catch { probes--; answer(null); return }
     if (!settled) cancelDeadline = patientDeadline(5_000, () => {
@@ -104,7 +120,9 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
     && initialHomes.CLAUDE_PROJECTS_DIR === join(initialHomes.CLAUDE_HOME, 'projects') ? initialHomes.CLAUDE_HOME
     : engine === 'codex' && !source.codexHome ? initialHomes.CODEX_HOME : null
   const output = engine === 'opencode' ? await read(executable.command, OPENCODE_VERSION.args, environment) : null
-  const opencodeMajor = output === null ? null : parseMajor(OPENCODE_VERSION, output)
+  // The version is read from standard output only, as it always was; help below reads both streams.
+  const opencodeMajor = output?.code !== 0 ? null : parseMajor(OPENCODE_VERSION, output.stdout)
+  if (output && output.code !== 0 && executable.current()) return cannotRun(engine, failureReason(`${output.stderr}\n${output.stdout}`, `it exited with status ${output.code}`))
   // Unknown is an observation of this attempt, never a permanent installed-file answer.
   if (engine === 'opencode' && opencodeMajor === null) return waiting('Waiting to confirm the selected OpenCode executable’s version.')
   if (!executable.current()) return waiting('Waiting for the selected engine executable to stop changing.')
@@ -114,6 +132,8 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
   let preparing = false, valid = true, prepared = false, revision = 0
   const current = () => valid && !preparing && executable.current() && [...dependencies, ...proofs].every(proof => proof.current())
   const permissions = new Map<string, 'supported' | 'unsupported'>()
+  /** Why the latest help probe's executable failed, when it ran and exited non-zero. */
+  let failed: string | null = null
   const launch: NativeLaunch = {
     token: randomUUID(), executable, opencodeMajor, current, ready: () => prepared && current(),
     get environment() { return selectedEnvironment },
@@ -166,15 +186,25 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
       const known = permissions.get(flag)
       if (known) return known
       const observedRevision = revision
-      const help = await read(executable.command, ['--help'], selectedEnvironment)
-      if (!help?.trim() || !current() || observedRevision !== revision) return 'unknown'
+      failed = null
+      const probe = await read(executable.command, ['--help'], selectedEnvironment)
+      if (!probe || !current() || observedRevision !== revision) return 'unknown'
+      if (probe.code !== 0) { failed = failureReason(`${probe.stderr}\n${probe.stdout}`, `it exited with status ${probe.code}`); return 'unknown' }
+      // Help on either stream, as the shell probe reads it (`2>&1`, lib/engineLaunch.ts). OpenCode
+      // 1.19.0 prints its help to standard error and exits 0 (stdout 0 bytes, stderr 4,285, measured
+      // in clean macOS and Ubuntu VMs, 2026-10-11): read from stdout alone, every launch of it held
+      // for good, waiting to confirm its permission flags.
+      const help = `${probe.stdout}\n${probe.stderr}`
+      if (!help.trim()) return 'unknown'
       const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const answer = new RegExp(`(?:^|[^A-Za-z0-9-])${escaped}(?![A-Za-z0-9-])`).test(help) ? 'supported' : 'unsupported'
       permissions.set(flag, answer)
       return answer
     },
   }
-  if (await launch.permission(source) === 'unknown') return waiting('Waiting to confirm the selected executable’s permission flags.')
+  if (await launch.permission(source) === 'unknown') {
+    return failed ? cannotRun(engine, failed) : waiting('Waiting to confirm the selected executable’s permission flags.')
+  }
   return { ok: true, launch }
 }
 

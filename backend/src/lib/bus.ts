@@ -682,6 +682,20 @@ export function subscribeZooChanged(userId: string, cb: (msg: ZooChangedMsg) => 
   return addSub(zooChannel(userId), cb as Cb)
 }
 
+// Per-USER connector vault invalidation: some computer wrote the account's sealed connections
+// (routes/connectorVault.ts); every daemon of that user re-reads and merges it.
+export interface ConnectorsChangedMsg { revision: number }
+
+const connectorsChannel = (userId: string): string => `connvault:${userId}`
+
+export function publishConnectorsChanged(userId: string, msg: ConnectorsChangedMsg): Promise<number> {
+  return safePublish(connectorsChannel(userId), JSON.stringify(msg))
+}
+
+export function subscribeConnectorsChanged(userId: string, cb: (msg: ConnectorsChangedMsg) => void): Promise<() => void> {
+  return addSub(connectorsChannel(userId), cb as Cb)
+}
+
 // Per-USER device key log invalidation: an entry was appended to the account's log (lib/deviceKeyLog.ts).
 // Every device re-reads from its own head, so the message only needs the new head to decide whether to.
 export interface DeviceKeysChangedMsg { seq: number; hash: string }

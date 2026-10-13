@@ -93,6 +93,8 @@ pub enum PromptKind {
     /// A prompt of choose-tree's for the tree in [pane]: search, filter, kill (one key), a
     /// command for the tagged items.
     Tree { pane: u64, ask: crate::tree::Ask },
+    /// One step of adding or editing a saved API in the Models view: its name, its URL or its key.
+    Api(Box<crate::models::ApiDraft>),
 }
 
 /// A line typed: tmux's in the status line (`(rename-window) name`, `:split-window -h`), hn's own
@@ -119,16 +121,18 @@ pub struct Prompt {
     pub body: String,
     pub buttons: bool,
     pub chosen: usize,
+    /// What was wrong with the last answer, under the input in the danger colour; typing clears it.
+    pub error: String,
 }
 
 impl Prompt {
     pub fn status(kind: PromptKind, label: &str, initial: &str) -> Prompt {
-        Prompt { kind, title: String::new(), label: label.to_string(), hint: String::new(), value: initial.to_string(), secret: false, cursor: initial.chars().count(), history_at: None, vi_normal: false, saved: None, field: String::new(), body: String::new(), buttons: false, chosen: 1 }
+        Prompt { kind, title: String::new(), label: label.to_string(), hint: String::new(), value: initial.to_string(), secret: false, cursor: initial.chars().count(), history_at: None, vi_normal: false, saved: None, field: String::new(), body: String::new(), buttons: false, chosen: 1, error: String::new() }
     }
 
     /// hn's own questions are dialogs; tmux's (command-prompt, choose-tree's) keep the status line.
     pub fn dialog(&self) -> bool {
-        matches!(self.kind, PromptKind::RenameTab { .. } | PromptKind::RenameHarness { .. } | PromptKind::Send | PromptKind::Broadcast | PromptKind::Answer { .. } | PromptKind::Message { .. })
+        matches!(self.kind, PromptKind::RenameTab { .. } | PromptKind::RenameHarness { .. } | PromptKind::Send | PromptKind::Broadcast | PromptKind::Answer { .. } | PromptKind::Message { .. } | PromptKind::Api(_))
     }
 
     /// The dialog's `[ Cancel ]  [ Rename ]` (Send, Broadcast, Answer), the chosen button only
@@ -138,6 +142,7 @@ impl Prompt {
             PromptKind::RenameTab { .. } | PromptKind::RenameHarness { .. } => "Rename",
             PromptKind::Broadcast => "Broadcast",
             PromptKind::Answer { .. } => "Answer",
+            PromptKind::Api(ref d) => if d.step == crate::models::ApiStep::Key { "Save" } else { "Next" },
             _ => "Send",
         };
         let button = |label: &str| crate::buttons::Button { label: label.into(), key: None };
@@ -680,7 +685,6 @@ pub fn machine_rows(app: &App) -> Vec<Row> {
         // (The harnesses' marks, no round ones: `✓` connected, a spinner connecting, `?` to link…)
         let (dot, color) = theme::machine_mark(&m.reach, m.online(), app.tick);
         let word: String = match &m.reach {
-            _ if m.local && m.reach == Reach::Ready => "this computer".into(),
             Reach::Ready => "connected".into(),
             Reach::Connecting => "connecting…".into(),
             Reach::NeedsLink => "not linked — M-l links it".into(),
@@ -819,7 +823,7 @@ pub fn new_machine_rows(app: &App, prefer: &str) -> Vec<Row> {
         let running = app.fleet.agents.values().filter(|a| a.machine_id == m.id && a.status == "active").count();
         Row::new(m.id.clone(), app.fleet.machine_name(&m.id))
             .lead(vec![span(if m.id == prefer { "✓ " } else { "  " }, fg(theme::accent()))])
-            .detail(vec![span(format!("{}{running} running", if m.local { "this computer · " } else { "" }), fg(theme::MUTED))])
+            .detail(vec![span(format!("{running} running"), fg(theme::MUTED))])
     }).collect();
     rows.sort_by_key(|r| r.id != prefer);
     rows

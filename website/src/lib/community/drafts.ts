@@ -1,8 +1,12 @@
 import { communityLimits } from './contract';
+import type { EnglishState } from './translation';
 import type { HarnessSnapshot } from './types';
 
-/** `originalOutput` is kept only by the review page, to tell a fork's new output from the one it arrived with. */
-export type HubDraft = Partial<HarnessSnapshot> & { version?: number; clientId?: string; contextNote?: string; originalOutput?: string };
+/**
+ * `originalOutput` is kept only by the review page, to tell a fork's new output from the one it arrived with;
+ * `english`, where the draft stands with its English translation.
+ */
+export type HubDraft = Partial<HarnessSnapshot> & { version?: number; clientId?: string; contextNote?: string; originalOutput?: string; english?: EnglishState };
 export const draftDatabase = 'harness.hub.drafts';
 
 export function validateDraft(value: unknown): HubDraft {

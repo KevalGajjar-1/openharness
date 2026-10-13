@@ -646,6 +646,64 @@ describe('cable session', () => {
     await session.stop()
   })
 
+  it('carries the optional screenTurned flag of a Pro, and never invents it', async () => {
+    const seen: any[] = []
+    const { session, port } = await connect(makeHost({ onDialStatus: (s) => seen.push(s) }))
+    const base = {
+      brightness: 80, character: 0, face: 720, muted: false, quiet: false, straightTitle: false,
+      focusFace: false, scrollReversed: false, round: false, voiceLang: 'en',
+    }
+    port.say({ t: 'hello', product: 'harness', mac: 'aa:bb', board: 'pro', proto: 3, settings: { ...base, screenTurned: true } })
+    await vi.waitFor(() => expect(seen.at(-1)?.settings?.screenTurned).toBe(true))
+
+    // Round dials and Pro 0.1.0 never send it: the object still parses and the field stays absent.
+    port.say({ t: 'settings.state', ok: true, settings: base })
+    await vi.waitFor(() => expect(seen.at(-1)?.settings?.brightness).toBe(80))
+    expect(seen.at(-1).settings).not.toHaveProperty('screenTurned')
+
+    // A non-boolean is refused whole, like the other flags.
+    port.say({ t: 'settings.state', ok: true, settings: { ...base, brightness: 10, screenTurned: 'yes' } })
+    await settle()
+    expect(seen.at(-1).settings.brightness).toBe(80)
+
+    await session.setSettings({ screenTurned: false })
+    expect(port.sent.at(-1)).toEqual({ t: 'settings.set', screenTurned: false })
+    await session.stop()
+  })
+
+  it('carries the optional uiSkin of a Pro, drops only an unknown skin, and sends it', async () => {
+    const seen: any[] = []
+    const { session, port } = await connect(makeHost({ onDialStatus: (s) => seen.push(s) }))
+    const base = {
+      brightness: 80, character: 0, face: 720, muted: false, quiet: false, straightTitle: false,
+      focusFace: false, scrollReversed: false, round: false, voiceLang: 'en',
+    }
+    port.say({ t: 'hello', product: 'harness', mac: 'aa:bb', board: 'pro', proto: 3, settings: { ...base, uiSkin: 'console' } })
+    await vi.waitFor(() => expect(seen.at(-1)?.settings?.uiSkin).toBe('console'))
+    port.say({ t: 'settings.state', ok: true, settings: { ...base, brightness: 10, uiSkin: 'neon' } })
+    await settle()
+    await vi.waitFor(() => expect(seen.at(-1).settings.brightness).toBe(10))
+    expect(seen.at(-1).settings.uiSkin).toBeUndefined()
+    await session.setSettings({ uiSkin: 'console' })
+    expect(port.sent.at(-1)).toEqual({ t: 'settings.set', uiSkin: 'console' })
+    await session.stop()
+  })
+
+  it('refuses a uiSkin patch when the device never reported a uiSkin', async () => {
+    const { session, port } = await connect(makeHost({}))
+    const base = {
+      brightness: 80, character: 0, face: 720, muted: false, quiet: false, straightTitle: false,
+      focusFace: false, scrollReversed: false, round: false, voiceLang: 'en',
+    }
+    port.say({ t: 'hello', product: 'harness', mac: 'aa:bb', board: 'pro', proto: 3, settings: base })
+    await settle()
+    const before = port.sent.length
+    expect(await session.setSettings({ uiSkin: 'console' })).toBe(false)
+    expect(port.sent.length).toBe(before)
+    expect(await session.setSettings({ brightness: 10 })).toBe(true)
+    await session.stop()
+  })
+
   it('answers a repeat hello WITHOUT re-pushing the list', async () => {
     const { session, port } = await connect()
     port.say({ t: 'hello', product: 'harness', mac: 'aa:bb' })
@@ -2994,6 +3052,28 @@ describe('hello capabilities', () => {
     })
   }
 
+  it('sends turn.stats only to a stats: turn-v1 device, and only when there is something to say', async () => {
+    const { session, port } = await connect(richHost())
+    try {
+      port.say({ ...PRO_HELLO, stats: 'turn-v1' })
+      await vi.waitFor(() => expect(port.types()).toContain('notif.replace'))
+      port.sent.length = 0
+      await session.turnStats('a', {})
+      expect(port.sent).toEqual([])
+      await session.turnStats('a', { commits: 1 })
+      expect(port.sent.map((m) => JSON.stringify(m))).toEqual(['{"t":"turn.stats","agentId":"a","commits":1}'])
+      port.sent.length = 0
+      await session.turnStats('a', { tokensIn: 5, tokensOut: 7 })
+      expect(port.sent.map((m) => JSON.stringify(m))).toEqual(['{"t":"turn.stats","agentId":"a","tokensIn":5,"tokensOut":7}'])
+      port.sent.length = 0
+      port.say({ ...PRO_HELLO })   // a later hello that does not name it switches it off again
+      await vi.waitFor(() => expect(port.types()).toContain('welcome'))
+      port.sent.length = 0
+      await session.turnStats('a', { commits: 1 })
+      expect(port.sent).toEqual([])
+    } finally { await session.stop() }
+  })
+
   it('round hello gets no Pro fields', async () => {
     const { session, port } = await connect(richHost())
     try {
@@ -3057,6 +3137,32 @@ describe('hello capabilities', () => {
         { t: 'turn.activity', agentId: 'a1', text: 'Working', action: 'Reading the spec', elapsedSeconds: 931 },
         { t: 'turn.activity', agentId: 'a1', text: '', step: 'Read · cableSession.ts' },
       ])
+    } finally { await session.stop() }
+  })
+
+  it('turnReply sends the streamed paragraph as action to a steps-v1 device, clipped to a codepoint boundary', async () => {
+    const { session, port } = await connect(richHost())
+    try {
+      port.say(PRO_HELLO)
+      await vi.waitFor(() => expect(port.types()).toContain('notif.replace'))
+      port.sent.length = 0
+      await session.turnReply('a1', 'Reading the spec')
+      await session.turnReply('a1', 'é'.repeat(250))
+      expect(port.sent[0]).toEqual({ t: 'turn.activity', agentId: 'a1', text: '', action: 'Reading the spec' })
+      const action = port.sent[1].action as string
+      expect(Buffer.byteLength(action, 'utf8')).toBeLessThanOrEqual(188)
+      expect(action).toMatch(/^é+\u2026$/)
+    } finally { await session.stop() }
+  })
+
+  it('turnReply tells a round device nothing', async () => {
+    const { session, port } = await connect(richHost())
+    try {
+      port.say({ t: 'hello', product: 'harness', mac: 'aa:bb' })
+      await vi.waitFor(() => expect(port.types()).toContain('notif.replace'))
+      port.sent.length = 0
+      await session.turnReply('a1', 'Reading the spec')
+      expect(port.sent).toEqual([])
     } finally { await session.stop() }
   })
 

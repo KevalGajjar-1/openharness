@@ -333,6 +333,8 @@ class SwarmDestination {
     this.isNote = false,
     this.task,
     this.external,
+    this.devicePub,
+    this.deviceIsComputer = false,
     Iterable<String?> searchFields = const [],
     int titleFields = 1,
   }) : fields = [
@@ -399,6 +401,15 @@ class SwarmDestination {
 
   /// A conversation Harness did not start; opening it resumes it as a harness.
   final ExternalSessionRef? external;
+
+  /// A phone, browser or computer signed in to the account that is not one of its machines: the
+  /// Machines picker's Phones & apps, and a signed-in computer with no machine record. Its key in
+  /// the account's device list.
+  final String? devicePub;
+
+  /// [devicePub] is a computer rather than a phone or browser.
+  final bool deviceIsComputer;
+  bool get isAccountDevice => devicePub != null;
   final bool current;
   final List<String> fields;
   bool get isProject => projectId != null;
@@ -419,7 +430,8 @@ class SwarmDestination {
       !isStoreEntry &&
       !isAgentChoice &&
       pickerQuery == null &&
-      external == null;
+      external == null &&
+      devicePub == null;
   bool get hasView => swarmId != null;
 }
 

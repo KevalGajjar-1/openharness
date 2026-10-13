@@ -1,5 +1,5 @@
 #pragma once
-// POD_PANEL_TURN=180: the unit E8:F6:0A:E7:63:7D has its panel mounted upside down. The turn happens ONCE, in
+// The screen turn (a runtime flag; the app's setting, default -DPOD_PANEL_TURN=180) is for a panel mounted upside down. It happens ONCE, in
 // display/pro_display.c (rules in display/pro_turn.h): the strips are reversed and pro_touch_poll() hands back upright
 // coordinates. Everything above it (pro_touch.c, pro_app.c, Pod) sees an upright 720 x 720 glass, so nothing
 // in main/app may apply this turn again. pod_turn_coord() is the panel layer's rule written down; the host

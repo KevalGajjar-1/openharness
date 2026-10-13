@@ -15,6 +15,18 @@ export function isOpencodeV2(major: number | null | undefined): boolean {
 
 export const OPENCODE_VERSION = { output: /(\d+)\.\d+\.\d+/, args: ['--version'], timeoutMs: 5_000 } as const
 
+/**
+ * Whether an OpenCode 2 session is in a turn, by its own record. v2 keeps its conversation in `session_message`
+ * (the `message` table the transcript reader polls stays empty, so the daemon's turn state never opens for it)
+ * and writes a `user` row as a turn starts and an `idle` row as it ends — `outcome` succeeded, interrupted or
+ * failed alike. Measured on 2.0.24's store: 550 `idle` rows since it began writing them (2026-09-28), and no
+ * session since left with a `user` after its last `idle`.
+ */
+export const OPENCODE_V2_TURN = {
+  sql: "SELECT type FROM session_message WHERE session_id = ? AND type IN ('user', 'idle') ORDER BY seq DESC LIMIT 1;",
+  opens: 'user',
+} as const
+
 /** Native model changes: v1's picker transaction and v2's service protocol, measured before extraction. */
 export const OPENCODE_SESSION_MODEL = {
   label: 'opencode', serviceMajor: OPENCODE_V2_MAJOR, id: /^[A-Za-z0-9_]+$/,

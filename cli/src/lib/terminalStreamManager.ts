@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { typedByPerson } from './typedInput.js'
 import { unlink } from 'node:fs/promises'
 import { deflateSync } from 'node:zlib'
 import { ENGINES } from '../engines/types.js'
@@ -171,9 +172,11 @@ export interface TerminalStreamManagerDeps {
    * An agent's terminal just took input (a keystroke or a paste) from the stream that holds it — never
    * from a watcher, whose input is refused before it gets here. Called on every accepted frame, so it
    * must be cheap and must not throw; the daemon starts a sleeping grid from it (the keystroke prewarm,
-   * grid-reads-without-waking issue 03), which is why it lives here, below every client that types.
+   * grid-reads-without-waking issue 03), which is why it lives here, below every client that types. `typed`: the frame
+   * holds what the person typed or pasted, not only what the terminal sends by itself (lib/typedInput.ts), which the
+   * agent cleanup reads as the person joining a harness another agent started (services/agentCleanup.ts).
    */
-  onInput?: (agentId: string) => void
+  onInput?: (agentId: string, typed: boolean) => void
 }
 
 function sizeFrom(payload: FramePayload): TerminalStreamSize | null {
@@ -644,7 +647,7 @@ export class TerminalStreamManager {
     }
     state.lastInputSeq = inputSeq
     state.expiresAt = this.now() + HEARTBEAT_TIMEOUT_MS
-    this.tookInput(state)
+    this.tookInput(state, typedByPerson(bytes))
     // Not awaited. `writeRaw` hands its `send-keys` to the control client's FIFO synchronously, so
     // keystroke order is already fixed by the time it returns its promise — and the seq above is
     // spent, so the next frame cannot race this one. Awaiting the reply held the whole local
@@ -672,8 +675,8 @@ export class TerminalStreamManager {
   }
 
   /** See `TerminalStreamManagerDeps.onInput`. A listener's failure is its own: input is never held by it. */
-  private tookInput(state: ActiveStream): void {
-    try { this.deps.onInput?.(state.agentId) } catch (error) {
+  private tookInput(state: ActiveStream, typed: boolean): void {
+    try { this.deps.onInput?.(state.agentId, typed) } catch (error) {
       this.diagnostic(state, 'input_listener_failed', { reason: error instanceof Error ? error.message : String(error) })
     }
   }
@@ -718,7 +721,7 @@ export class TerminalStreamManager {
       return
     }
     state.expiresAt = this.now() + HEARTBEAT_TIMEOUT_MS
-    this.tookInput(state)
+    this.tookInput(state, true)
     const result = await state.handle.pasteRaw(text)
     if (result.state !== 'succeeded') {
       this.sendError(state.connId, 'TERMINAL_PASTE_FAILED', { streamId: state.streamId, message: result.reason })

@@ -57,6 +57,7 @@ import { hardenPrivateStateFileIfPresent, readPrivateStateFile, secureStateDirec
 import { mergeTerminalRuntimes, processIdentityKey, sameProcessIdentity, terminalPlacementKey, terminalRouteKey } from './terminalRuntime.js'
 import type { HookTerminalHint, ProcessIdentity, TerminalRuntimeRef } from './terminalTypes.js'
 import { externalReservations, externalResumePending, externalResumeIds, parseExternalResume, type ExternalResumeIntent } from './externalResume.js'
+import type { StartedBy } from './agentAttribution.js'
 
 export type { ProcessIdentity } from './terminalTypes.js'
 
@@ -239,6 +240,19 @@ export interface RegisteredSession {
    * other agent.
    */
   forkedFrom?: ForkOrigin | null
+  /**
+   * `agent` when another agent started this harness (`harness new` from its pane); absent when the person did.
+   * Recorded once at creation and carried into every relaunch (`launchOverrides.ts`), whose argv then has the
+   * engine add a line to the pull requests it opens (lib/agentAttribution.ts). Never re-derived from the process.
+   */
+  startedBy?: StartedBy
+  /**
+   * The harness on this machine whose agent started this one (`harness new`, or `harness_start` through `harness mcp`,
+   * run in its pane), by agent id. Absent when the person started it, and when the agent that did is outside Harness or
+   * on another machine. Recorded once at creation beside `startedBy` and carried like it, so every window can put the
+   * new harness beside the one that started it and say so in its header (docs/design/2026-10-11-agent-client.md).
+   */
+  parentAgentId?: string
   /** Legacy launcher-owned snapshots may still contain this field. New records never write it. */
   launcherId?: string
   transcriptPath: string | null
@@ -607,7 +621,7 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
   // Taken out of the spread and put back only when it is a real moment: the spread would otherwise
   // carry a hand-edited string or a negative number straight into the frame's `toISOString()`.
   // `forkedFrom` is out too, so an invalid one is dropped rather than spread back in as-is.
-  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, ...rest } = row
+  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, startedBy: rawStartedBy, parentAgentId: rawParentAgentId, ...rest } = row
   const lastOpenedAt = normalizedOpenedAt(rawOpenedAt)
   // Out of the spread for the same reason: a half-formed record is dropped, never relaunched with.
   const scmLaunch = parseScmLaunchRecord(rawScmLaunch)
@@ -628,6 +642,9 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
     defaultName: normalizedDefaultName(row.defaultName),
     agent: normalizedAgentName((row as { agent?: unknown }).agent),
     ...normalizedForkedFrom(rawForkedFrom),
+    // Out of the spread too: only `agent` is a harness another agent started; anything else is the person's.
+    ...(rawStartedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
+    ...normalizedParent(rawStartedBy, rawParentAgentId),
     cwd: typeof row.cwd === 'string' ? row.cwd : null,
     runtimes,
     primaryRuntimeKey: normalizedPrimary,
@@ -644,6 +661,20 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
     lastTranscriptAt: typeof row.lastTranscriptAt === 'number' ? row.lastTranscriptAt : Date.now(),
     ...(lastOpenedAt !== undefined ? { lastOpenedAt } : {}),
   }
+}
+
+/**
+ * An agent id as a harness that started another is named by (`parentAgentId`): one word, never a path. The registry's
+ * own ids are uuids; the bound only keeps a hand-edited row from carrying anything else into every frame.
+ */
+export function parentAgentIdOf(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) ? value : null
+}
+
+/** `parentAgentId` as a row keeps it: only beside `startedBy: 'agent'`, and only an agent id. */
+function normalizedParent(startedBy: unknown, value: unknown): { parentAgentId: string } | Record<string, never> {
+  const parentAgentId = startedBy === 'agent' ? parentAgentIdOf(value) : null
+  return parentAgentId ? { parentAgentId } : {}
 }
 
 /**
@@ -1289,6 +1320,8 @@ class Registry {
           ...(raw.bypassPermission === true ? { bypassPermission: true } : {}),
           ...(permissionModeName(raw.permissionMode) ? { permissionMode: raw.permissionMode } : {}),
           ...(raw.terminalHost === true || engine === 'terminal' ? { terminalHost: true } : {}),
+          ...(raw.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
+          ...normalizedParent(raw.startedBy, raw.parentAgentId),
           transcriptPath,
           defaultName: normalizedDefaultName(raw.defaultName),
           title: titleDisplayName(typeof raw.title === 'string' ? raw.title : null),
@@ -1592,6 +1625,10 @@ class Registry {
     /** The agent this one is a fork of — see RegisteredSession.forkedFrom. */
     forkedFrom?: ForkOrigin | null
     externalResume?: ExternalResumeIntent
+    /** Who started it — see RegisteredSession.startedBy. */
+    startedBy?: StartedBy | null
+    /** The harness here that started it — see RegisteredSession.parentAgentId. Kept only with `startedBy: 'agent'`. */
+    parentAgentId?: string | null
   }): RegisteredSession | null {
     if (this.writeBlocked) return null
     const externalResume = input.externalResume === undefined ? undefined : parseExternalResume(input.externalResume)
@@ -1628,6 +1665,8 @@ class Registry {
       ...(permissionModeName(input.permissionMode) ? { permissionMode: input.permissionMode } : {}),
       ...(isTerminalEngine(input.engine) ? { terminalHost: true } : {}),
       ...normalizedForkedFrom(input.forkedFrom),
+      ...(input.startedBy === 'agent' ? { startedBy: 'agent' as const } : {}),
+      ...normalizedParent(input.startedBy, input.parentAgentId),
       transcriptPath: null,
       projectDir: basename(input.cwd ?? '') || agentId,
       cwd: input.cwd ?? null,
@@ -1970,6 +2009,11 @@ class Registry {
       dsh: existing?.dsh ?? null,
       dshRuntime: existing?.dshRuntime ?? null,
       agent: existing?.agent ?? null,
+      // Carried forward like `agent`: dropped at the first hook, a restart of a harness another agent started came
+      // back without its pull request line (found by e2e/agentClient.e2e.ts).
+      ...(existing?.startedBy ? { startedBy: existing.startedBy } : {}),
+      // And who it was, for the same reason: dropped at the first hook, the windows lost which harness started it.
+      ...(existing?.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
       ...(existing?.bypassPermission ? { bypassPermission: true } : {}),
       ...(existing?.permissionMode ? { permissionMode: existing.permissionMode } : {}),
       ...(existing?.resumeOnly ? { resumeOnly: true, launch: { state: 'ready' as const } } : {}),
@@ -2120,6 +2164,9 @@ class Registry {
     // The archived conversation owns the original Harness ID. Preserve the physical shell under
     // a new identity, without sending input, stopping processes or claiming its route twice.
     const entry = separateShell ? { ...original, agentId: randomUUID(), dsh: null, dshRuntime: null, agent: null, defaultName: this.automaticName('Terminal', new Date()) } : original
+    // The shell under a new identity is the person's, not a harness an agent started: kept, a window took the new id for
+    // a new child and opened the shell beside the agent, even after the person had closed the child (review of #1217).
+    if (separateShell) delete entry.parentAgentId
     this.releaseBinding(entry)
     delete entry.resumeOnly
     delete entry.externalResume

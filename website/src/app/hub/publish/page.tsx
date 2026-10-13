@@ -10,12 +10,14 @@ import { findSecrets } from '@/lib/community/secrets';
 import { Header, SignIn } from '../components/Header';
 import { useSignedIn } from '../components/useSignedIn';
 import { ConversationEditor } from './components/ConversationEditor';
+import { EnglishNotice } from './components/EnglishNotice';
 import { DetailsFields } from './components/DetailsFields';
 import { FilesReview } from './components/FilesReview';
 import { OutputInputs, SourceInputs } from './components/ProjectInputs';
 import { PublishChecks } from './components/PublishChecks';
 import { originalOutput, readCover, readProjectFolder } from './projectFiles';
 import { toSnapshot, usePublishDraft, type PublishDraft } from './usePublishDraft';
+import { useEnglishDraft } from './useEnglishDraft';
 import styles from '../community.module.css';
 
 const reviewInputs = ['confirmation', 'secrets'];
@@ -23,6 +25,7 @@ const reviewInputs = ['confirmation', 'secrets'];
 export default function PublishPage() {
   const router = useRouter(), signedIn = useSignedIn();
   const { draft, update, applyBundle, saveError, publishOnce } = usePublishDraft();
+  const english = useEnglishDraft(draft, update, signedIn);
   const [confirmed, setConfirmed] = useState(false), [checkedSecrets, setCheckedSecrets] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const findings = useMemo(() => findSecrets(draft.files, draft.conversation), [draft.files, draft.conversation]);
   // The acknowledgement is for these findings: a new one needs checking again.
@@ -31,7 +34,7 @@ export default function PublishPage() {
   const html = draft.files.find(file => file.path === draft.viewerPath && !file.encoding)?.content;
   const outside = useMemo(() => html ? outsideResources(html) : [], [html]);
   const unchanged = html !== undefined && html === draft.originalOutput;
-  const ready = !!signedIn && !!html && !unchanged && confirmed && !marker && secretsChecked;
+  const ready = !!signedIn && !!html && !unchanged && confirmed && !marker && secretsChecked && draft.english.status !== 'pending';
 
   /** A changed project has to be reviewed again before it is published. */
   function replaceProject(patch: Partial<PublishDraft>) { update(patch); setConfirmed(false); setError(''); }
@@ -70,6 +73,7 @@ export default function PublishPage() {
     {signedIn === false && <SignIn action="publish your harness" />}
     <form onChange={event => { if (!(event.target instanceof HTMLInputElement && reviewInputs.includes(event.target.name))) setConfirmed(false); }} onSubmit={publish}>
       <div className={styles.importActions}><strong>Bring your harness here.</strong><p>In the desktop app, open Share → Publish to Hub. Your current files and conversation arrive here for review.</p><p>You can also choose a project folder below. Include a self-contained HTML preview so everyone can see the result.</p></div>
+      <EnglishNotice english={draft.english} signedIn={signedIn} {...english} />
       <div className={styles.publishForm}>
         <SourceInputs onFolder={files => void importFolder(files)} onBundle={file => void importBundle(file)} />
         <DetailsFields draft={draft} update={update} />
