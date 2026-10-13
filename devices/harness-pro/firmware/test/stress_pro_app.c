@@ -47,6 +47,9 @@ size_t heap_caps_get_free_size(unsigned c) { (void)c; return 0; }
 size_t heap_caps_get_largest_free_block(unsigned c) { (void)c; return 0; }
 uint8_t config_load_brightness(void) { return 220; }
 bool config_load_muted(void) { return true; }
+void audio_beep(void) {}
+bool pro_cable_send_notif_read(const char *a, const char *t) { (void)a; (void)t; return true; }
+bool pro_settings_muted(void) { return true; }
 void ram_telemetry_periodic(const char *tag) { (void)tag; }
 bool fw_was_updated(char *version, size_t cap) { (void)version; (void)cap; return false; }
 void pro_frame_init(void) {}
@@ -63,6 +66,7 @@ bool pro_cable_library_supported(void) { return true; }
 void pro_voice_begin(const char *agent) { (void)agent; }
 void pro_voice_end(bool send) { (void)send; }
 bool pro_voice_open(void) { return false; }
+unsigned pro_rec_level(void) { return 0; }
 bool pro_voice_start_pending(void) { return false; }
 bool pro_voice_waiting(void) { return false; }
 void pro_voice_close(void) {}

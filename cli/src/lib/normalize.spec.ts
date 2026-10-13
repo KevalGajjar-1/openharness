@@ -269,3 +269,32 @@ describe('the turns a transcript opens, counted', () => {
     expect(state.opened).toBe(3)
   })
 })
+
+describe('tool_end outputTail', () => {
+  const assistantToolUse = (id: string, name: string, input: Record<string, unknown>): string =>
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
+  const result = (text: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: text }] } })
+  const endOf = (text: string, tool = 'Bash') => {
+    const state = newTurnState()
+    lineToEvents(assistantToolUse('t1', tool, { command: 'ls' }), state)
+    return lineToEvents(result(text), state).find((e) => e.type === 'tool_end')!.payload as { output: string; outputTail: string }
+  }
+
+  it('keeps the last 600 raw characters beside the clipped head', () => {
+    const raw = 'a'.repeat(4400) + 'z'.repeat(600)
+    const end = endOf(raw)
+    expect(end.output.startsWith('a'.repeat(2000))).toBe(true)
+    expect(end.outputTail).toBe('z'.repeat(600))
+  })
+
+  it('is on a shell result only', () => {
+    expect('outputTail' in endOf('Tests: 44 passed', 'Bash')).toBe(true)
+    expect('outputTail' in endOf('Tests: 44 passed', 'Read')).toBe(false)
+    expect('outputTail' in endOf('Tests: 44 passed', 'mcp__x__y')).toBe(false)
+  })
+
+  it('is the output itself when it is 600 characters or fewer', () => {
+    const end = endOf('Tests: 44 passed')
+    expect(end.outputTail).toBe(end.output)
+  })
+})

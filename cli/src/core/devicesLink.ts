@@ -109,6 +109,7 @@ export function createDevicesLink(deps: DevicesLinkDeps) {
     }),
     activityText: async ({ agentId }) => ({ text: await core.agents.activityText(text(agentId)) }),
     activitySnapshot: async ({ agentId }) => ({ activity: await core.agents.activitySnapshot?.(text(agentId)) ?? null }),
+    usageFresh: async ({ agentId }) => ({ usage: await core.usageFresh?.(text(agentId)) ?? null }),
     recent: async ({ agentId, n }) => ({ turns: await core.turns.recent(text(agentId), typeof n === 'number' ? n : 3) }),
     asks: async ({ agentId }) => ({ asks: await core.turns.asks(text(agentId)) }),
     answerReviewed: async ({ answer }) => ({ ok: await core.questions.answerReviewed(answer as ReviewedAnswer) }),

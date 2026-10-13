@@ -40,7 +40,7 @@ import { createServer, type Server } from 'http'
 import { homedir, hostname } from 'os'
 import { env } from '../config/env.js'
 import { VERSION } from '../version.js'
-import { withoutUpdate } from '../lib/cardUpdate.js'
+import { isLocalOnly, withoutUpdate } from '../lib/cardUpdate.js'
 import { elapsedSecondsOf } from '../lib/footerTimer.js'
 import { sqlitePreflightMessage } from '../lib/sqliteAvailability.js'
 import { warmLoginShellEnvironment } from '../lib/loginShellEnv.js'
@@ -215,7 +215,7 @@ import { transcriptActivityAt } from '../lib/transcriptActivity.js'
 import { forgetAgentProject } from '../lib/agentProject.js'
 import { createUsageLink } from './usageLink.js'
 import type { UsageSnapshots } from './usageLink.js'
-import type { AgentUsageTarget } from '../lib/agentUsageWire.js'
+import { usageTarget, validUsage, validUsageTarget, type AgentUsageTarget } from '../lib/agentUsageWire.js'
 import { RuntimeProfileState, type RuntimeModelOption } from '../lib/runtimeProfileState.js'
 import { createRuntimeProfiles } from './engines/runtimeProfiles.js'
 import { createRuntimeTransport } from './engines/runtimeTransport.js'
@@ -1436,6 +1436,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   usagePortRef = usageLink.port
   backend.tokenUsageProvider = target => usageLink.port.get(target)
   coreApi.usage = target => usageLink.readSnapshot(target, coreApi.agents.all())
+  coreApi.usageFresh = async (agentId) => {
+    const row = registry.byAgent(agentId)
+    const target = row && usageTarget(row)
+    if (!target || !validUsageTarget(target)) return null
+    const answer = await ports.usage?.read(target)
+    return answer && validUsage(answer.value) ? answer.value : null
+  }
 
   // This machine's and each agent's resources, for the Monitor and the list's readings (services/monitor.ts):
   // in this process, or in the edge host (services/monitorProcess.ts), asked through its port (core/monitorLink.ts).
@@ -2728,7 +2735,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     const card = frame as Record<string, unknown>
     // The Pro's extras ride to the devices alone: the Wi-Fi device gets the card as it always did, and a
     // summary reaches the dial with the turn's whole answer, as it does the Wi-Fi device.
-    wifiCore.card(withoutUpdate(card))
+    if (!isLocalOnly(card)) wifiCore.card(withoutUpdate(card))
     const payload = card.payload as Record<string, unknown> | undefined
     const full = card.type === 'commander_event' && payload?.kind === 'summary' && typeof card.agentId === 'string'
       ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) : undefined

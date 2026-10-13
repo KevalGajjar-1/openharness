@@ -2,7 +2,7 @@
 // the Recent tile's face and the transport. The Pro fonts have no arrows, chevrons or ticks, so the icons are
 // drawn from POD_TRI triangles: a play triangle is one, and a chevron or tick is two strokes with a mitered joint
 // (four triangles, no round caps).
-#include "pod_view.h"
+#include "pod/pod_view.h"
 #include "pro_canvas.h"
 
 #include <stdio.h>

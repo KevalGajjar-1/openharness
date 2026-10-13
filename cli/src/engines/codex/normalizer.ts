@@ -145,6 +145,13 @@ function outputText(value: unknown): string {
   try { return JSON.stringify(value) ?? '' } catch { return String(value) }
 }
 
+/** A shell result that says it exited non-zero: exec_command prints "Process exited with code N" (or
+ * "Exit code: N") as a header line, and the older shell tool wraps `metadata.exit_code` in JSON. */
+function nonZeroExit(output: string): boolean {
+  return /^(?:Process exited with code|Exit code:)\s*[1-9]\d*/m.test(output.slice(0, 300))
+    || /"metadata"\s*:\s*\{\s*"exit_code"\s*:\s*[1-9]/.test(output.slice(-300))
+}
+
 function parseObject(value: unknown): JsonObject | null {
   const direct = object(value)
   if (direct) return direct
@@ -450,13 +457,15 @@ export class CodexNormalizer implements EngineNormalizer {
       const name = this.toolNames.get(id) || 'tool'
       this.toolNames.delete(id)
       const rawOutput = outputText(item.output)
-      const isError = item.is_error === true || item.status === 'failed'
+      const shell = name === 'Bash' // only a shell prints an exit code as a header; an MCP/web result may merely quote one
+      const isError = item.is_error === true || item.status === 'failed' || (shell && nonZeroExit(rawOutput))
       return [{
         type: 'tool_end',
         payload: {
           id,
           tool: name,
           output: clip(rawOutput, MAX_OUTPUT),
+          ...(shell ? { outputTail: rawOutput.slice(-600) } : {}),
           isError,
           summary: toolSummary(name, rawOutput, isError),
         },

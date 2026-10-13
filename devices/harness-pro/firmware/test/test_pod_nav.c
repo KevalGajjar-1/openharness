@@ -659,6 +659,102 @@ static void nav_test_inbox(void) {
     CHECK(pod_nav_follow(&N, &M, "a2", 3) && !pod_model_unread_find(&M, "a2") && M.read_count == 2);
 }
 
+static void nav_test_attention_and_steps(void) {
+    fresh();
+    pod_model_question(&M, "a1", "Which?");        // a1 and a4 both asking
+    char A[ID_MAX] = "", B[ID_MAX] = "";   // model order (the ▲ count covers all agents, not just Recent)
+    for (int i = 0; i < M.agent_count; i++) if (pod_model_eff(&M, &M.agents[i]) == POD_ASKING) { if (!A[0]) strcpy(A, M.agents[i].id); else if (!B[0]) strcpy(B, M.agents[i].id); }
+    CHECK(A[0] && B[0] && !strcmp(A, "a1") && !strcmp(B, "a4"));
+    pod_out_t o = act(POD_A_ATTENTION, 0, 0);
+    CHECK(o.fx == POD_FX_AGENT_OPEN && !strcmp(top()->agent, A));
+    act(POD_A_ATTENTION, 0, 0);
+    CHECK(!strcmp(top()->agent, B));
+    act(POD_A_ATTENTION, 0, 0);
+    CHECK(!strcmp(top()->agent, A));
+    // none asking: nothing happens
+    pod_model_question_close(&M, "a1"); pod_model_question_close(&M, "a4");
+    int d = N.depth;
+    CHECK(act(POD_A_ATTENTION, 0, 0).fx == POD_FX_NONE && N.depth == d && !strcmp(top()->agent, A));
+    // not from TALK
+    fresh();
+    to_agent(0, 0);
+    act(POD_A_TALK, 0, 5);
+    CHECK(top()->view == POD_V_TALK);
+    act(POD_A_ATTENTION, 0, 6);
+    CHECK(top()->view == POD_V_TALK);
+
+    // L15: an asking agent outside Recent (Recent holds 8) is still reached by the chip.
+    pod_model_reset(&M);
+    char id[10][ID_MAX];
+    for (int i = 0; i < 10; i++) { snprintf(id[i], ID_MAX, "z%d", i); pod_model_agent(&M, id[i], id[i], "claude", "mac"); }
+    pod_model_agents_end(&M);
+    pod_model_question(&M, "z9", "Which?");        // before any clock: no task, so Recent never lists it
+    for (int i = 0; i < 9; i++) task(id[i], 100 + (uint32_t)i * 10);
+    pod_nav_init(&N);
+    {
+        const pod_agent_t *r[POD_RECENT_MAX];
+        int rn = pod_model_recent(&M, r, POD_RECENT_MAX);
+        bool listed = false;
+        for (int i = 0; i < rn; i++) listed = listed || !strcmp(r[i]->id, "z9");
+        CHECK(rn == 8 && !listed && pod_model_eff(&M, pod_model_find(&M, "z9")) == POD_ASKING);
+        pod_out_t ao = act(POD_A_ATTENTION, 0, 500);
+        CHECK(ao.fx == POD_FX_AGENT_OPEN && !strcmp(ao.agent, "z9") && !strcmp(top()->agent, "z9"));
+    }
+
+    // BACK with arg
+    fresh();
+    to_agent(0, 0);
+    act(POD_A_BACK, 2, 0);
+    CHECK(N.depth == 1 && top()->view == POD_V_TABS);
+    to_agent(0, 0);
+    act(POD_A_BACK, 1, 0);
+    CHECK(N.depth == 2);
+    act(POD_A_BACK, 5, 0);                         // clamps at the root
+    CHECK(N.depth == 1);
+
+    // PREV/NEXT on TAB: Classic unchanged, Console steps and wraps
+    fresh();
+    act(POD_A_OPEN_TAB, 0, 0);
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->view == POD_V_TAB && top()->tab == 0);
+    N.skin = POD_SKIN_CONSOLE;
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->view == POD_V_TAB && top()->tab == 1 && !strcmp(top()->tab_id, "s2") && N.depth == 2);
+    act(POD_A_PREV, 0, 0);
+    CHECK(top()->tab == 0 && !strcmp(top()->tab_id, "s1"));
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->tab == 1);
+    // the cycle includes Recent as its first position: Recent -> 0 -> 1 -> Recent
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->tab == POD_TAB_RECENT && top()->tab_id[0] == 0 && N.depth == 2);
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->tab == 0 && !strcmp(top()->tab_id, "s1"));
+    act(POD_A_PREV, 0, 0);
+    CHECK(top()->tab == POD_TAB_RECENT);
+    act(POD_A_PREV, 0, 0);
+    CHECK(top()->tab == 1 && !strcmp(top()->tab_id, "s2") && N.depth == 2);
+    act(POD_A_BACK, 0, 0);
+    act(POD_A_OPEN_TAB, POD_TAB_RECENT, 0);
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->tab == 0 && !strcmp(top()->tab_id, "s1"));
+    act(POD_A_BACK, 0, 0);
+    act(POD_A_OPEN_TAB, POD_TAB_RECENT, 0);
+    act(POD_A_PREV, 0, 0);
+    CHECK(top()->tab == 1);
+    fresh();   // Classic: Recent does not step
+    act(POD_A_OPEN_TAB, POD_TAB_RECENT, 0);
+    act(POD_A_NEXT, 0, 0);
+    CHECK(top()->tab == POD_TAB_RECENT);
+
+    // FOLLOW (arg: index into model->agents): the Inbox rows without an unread entry
+    fresh();
+    N.skin = POD_SKIN_CONSOLE;
+    act(POD_A_INBOX, 0, 0);
+    o = act(POD_A_FOLLOW, pod_model_find(&M, "a4") - M.agents, 0);
+    CHECK(o.fx == POD_FX_AGENT_OPEN && !strcmp(o.agent, "a4") && top()->view == POD_V_AGENT && !strcmp(top()->agent, "a4"));
+    CHECK(act(POD_A_FOLLOW, 99, 0).fx == POD_FX_NONE);
+}
+
 int main(void) {
     nav_test_grid_scroll();
     nav_test_open_by_state();
@@ -682,6 +778,7 @@ int main(void) {
     nav_test_follow();
     nav_test_follow_scrolls_row_into_sight();
     nav_test_inbox();
+    nav_test_attention_and_steps();
     printf("Pod nav: PASS (%d checks)\n", checks);
     return 0;
 }

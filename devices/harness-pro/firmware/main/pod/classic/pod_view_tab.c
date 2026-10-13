@@ -1,6 +1,6 @@
 // The Tab screen: its agents in pane order, 84 px a row, right under the status bar (whose title names the tab). The
 // Recent list is the same screen over the agents with the most recent tasks.
-#include "pod_view.h"
+#include "pod/pod_view.h"
 #include "pro_canvas.h"
 
 #include <stdio.h>
@@ -103,7 +103,7 @@ void pod_view_tab(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t *m
     int shown = imin(ROWS_MAX, n - first);
 
     // The rows start right under the status bar (its title names the tab); fewer rows only if they do not fit the runs.
-    int budget = HT_RUNS - s->count - 4 - pod_spare_runs(f);   // 4: what pod_ui_render adds (the notice); the bell and the banner
+    int budget = POD_CLASSIC_RUNS - s->count - 4 - pod_spare_runs(f);   // 4: what pod_ui_render adds (the notice); the bell and the banner
     for (; shown > 0; shown--) {
         unsigned rows = 0;
         for (int i = 0; i < shown; i++) rows += row_runs(m, list[first + i]);

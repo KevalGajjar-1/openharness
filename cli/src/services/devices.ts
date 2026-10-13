@@ -21,6 +21,8 @@ import { join } from 'node:path'
 import { env } from '../config/env.js'
 import { DEVICES_REQUESTS, type CoreApi, type CorePorts, type DevicesPort, type RouteAnswer, type SendResult, type ServiceRequests, type WindowFocus } from '../core/api.js'
 import { CableFleet, testDialDiscovery, type CableFleetOptions } from '../cable/cableFleet.js'
+import { isLocalOnly } from '../lib/cardUpdate.js'
+import { TurnStats, type TurnStatsFields } from '../cable/turnStats.js'
 import { cableEventFor, cableStepFor, cableQuestionCloseFor, cableQuestionFor, DaemonCableHost } from '../cable/cableHost.js'
 import { CableSession } from '../cable/cableSession.js'
 import { PetStore } from '../cable/pets/store.js'
@@ -53,11 +55,16 @@ export interface DevicesDeps {
   /** `HARNESSD_TEST_FAULTS`: parts to fail, for the end-to-end suite. */
   faults?: ReadonlySet<string>
   log?: (line: string) => void
+  /** A monotonic clock in ms (default `performance.now`), for the reply throttle: a wall-clock step must not stall or burst it. */
+  now?: () => number
   /** How the voice router's worker is stopped when the process exits: an engine process of its own. */
   onExit?: (run: () => void) => void
   /** Read this computer's agents again before a list is built from them: in their own process the devices
    *  keep a copy, asked of the core as the dial's tick or ⌘K needs it (services/devicesProcess.ts). */
   refresh?: () => Promise<void>
+  /** An agent's conversation token totals, read fresh (not the 15 s cache); null when unknown or remote.
+   *  Defaults to the core's `usageFresh`. */
+  readUsage?: (agentId: string) => Promise<{ input?: number; cached?: number; output?: number } | null>
   /** For this service's tests: the dial's session, and how dials are found and opened. */
   Session?: ConstructorParameters<typeof CableFleet>[0]
   cable?: Partial<CableFleetOptions>
@@ -70,6 +77,7 @@ const sid = (id: string): string => id.slice(0, 8)
 
 export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps): ServiceRequests {
   const log = deps.log ?? ((line: string) => console.log(line))
+  const monotonic = deps.now ?? (() => performance.now())
   const part = createPartGuard({ log, faults: deps.faults })
 
   // What the windows on this computer last said: the desk the dial walks and whether it is in front, and
@@ -218,19 +226,118 @@ export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps)
     ...deps.cable,
   })
 
+  /** What the turn's shell results add up to (tests, commits), told to the dial just before the turn ends. */
+  const stats = new TurnStats()
+
+  const readUsage = deps.readUsage ?? (async (agentId: string) => {
+    const usage = await core.usageFresh?.(agentId)
+    return usage ? { input: usage.inputTokens, cached: usage.cachedTokens, output: usage.outputTokens } : null
+  })
+  type Reading = { input?: number; cached?: number; output?: number } | null
+  /** Each agent's reading from when its turn started, until the turn ends. */
+  const starts = new Map<string, Promise<Reading>>()
+  const TOKENS_WAIT_MS = 2000
+  const MAX_TOKENS = 50_000_000
+  const settle = (p: Promise<Reading>): Promise<Reading> => p.catch(() => null)
+  /** Input without cache reads (the usage cache's inputTokens includes them; cache creation stays, it is new
+   *  input). Unknown when cached is, so an inflated number is never shown. */
+  const fresh = (r: Reading): number | undefined =>
+    typeof r?.input === 'number' && typeof r.cached === 'number' ? r.input - r.cached : undefined
+  const diff = (a: number | undefined, b: number | undefined): number | undefined =>
+    typeof a === 'number' && typeof b === 'number' && b - a >= 0 && b - a <= MAX_TOKENS ? b - a : undefined
+  /** The tokens this turn used: the end reading minus the start one, or nothing when either is missing, the
+   *  difference is out of range, or the fresh read takes over 2 s (the turn's end never waits longer). */
+  const turnTokens = async (agentId: string, start: Promise<Reading>): Promise<Pick<TurnStatsFields, 'tokensIn' | 'tokensOut'>> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const [from, to] = await Promise.race([
+        Promise.all([settle(start), settle(readUsage(agentId))]),
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), TOKENS_WAIT_MS) }),
+      ]) ?? [null, null]
+      const tokensIn = diff(fresh(from), fresh(to)), tokensOut = diff(from?.output, to?.output)
+      return { ...(tokensIn === undefined ? {} : { tokensIn }), ...(tokensOut === undefined ? {} : { tokensOut }) }
+    } finally { clearTimeout(timer) }
+  }
+
   /** One card for the dial, in its four calls. A remote machine's and this computer's are the same calls,
    *  so a new kind of card lands on both the day it lands on either. */
-  const toDial = (event: NonNullable<ReturnType<typeof cableEventFor>>): void => {
+  const dispatch = (event: NonNullable<ReturnType<typeof cableEventFor>>): void | Promise<void> => {
     if (event.kind !== 'processing') latestUpdate.delete(event.agentId)
     if (event.kind === 'processing') {
       if (event.update) latestUpdate.set(event.agentId, event.update)
       else latestUpdate.delete(event.agentId)
       void cable.turnStarted(event.agentId, event.text, event.update)
-    } else if (event.kind === 'done') void cable.turnDone(event.agentId)
+    } else if (event.kind === 'done') {
+      const fields = stats.take(event.agentId)
+      const start = starts.get(event.agentId)
+      starts.delete(event.agentId)
+      const finish = (tokens: Pick<TurnStatsFields, 'tokensIn' | 'tokensOut'>): void => {
+        const all = { ...fields, ...tokens }
+        if (Object.keys(all).length) void cable.turnStats(event.agentId, all)
+        void cable.turnDone(event.agentId)
+      }
+      if (!start || !cable.wantsStats()) return finish({})
+      return turnTokens(event.agentId, start).then(finish)
+    }
     // Quiet when the window already has this agent on screen; silent when the turn was a sub-agent's. The
     // tile still updates — the recap is what it draws — only the beep and the drawer entry are withheld.
     else if (event.kind === 'summary') void cable.summary(event.agentId, event.recap || event.text, event.text, alreadyOnScreen(event.agentId), event.subagent, ...(event.fullText ? [event.fullText] : []))
-    else void cable.turnError(event.agentId, event.text)
+    else {
+      stats.take(event.agentId) // a failed turn's sums must not leak into the next turn
+      starts.delete(event.agentId)
+      void cable.turnError(event.agentId, event.text)
+    }
+  }
+  /**
+   * The reply as it streams: a `steps-v1` device shows the agent's latest paragraph, but a text delta arrives every
+   * few tokens and the link is lossy. So at most one send per 750 ms per agent, a trailing send of the last text
+   * when the window closes, and a flush when the turn ends. Each send is the whole paragraph (clipped by the
+   * session), so a lost one is replaced by the next, and the state is one slot per agent: nothing piles up.
+   */
+  const REPLY_EVERY_MS = 750
+  const replies = new Map<string, { sentAt: number; pending: string | null; timer: ReturnType<typeof setTimeout> | null }>()
+  const sendReply = (agentId: string, text: string): void => {
+    const slot = replies.get(agentId) ?? { sentAt: 0, pending: null, timer: null }
+    replies.set(agentId, slot)
+    slot.sentAt = monotonic(); slot.pending = null
+    inOrder(agentId, () => { void cable.turnReply(agentId, text) })
+  }
+  const replyText = (agentId: string, text: string): void => {
+    const slot = replies.get(agentId)
+    const wait = slot ? slot.sentAt + REPLY_EVERY_MS - monotonic() : 0
+    if (!slot || wait <= 0) { sendReply(agentId, text); return }
+    slot.pending = text
+    if (!slot.timer) {
+      slot.timer = setTimeout(() => {
+        slot.timer = null
+        sendReply(agentId, slot.pending as string) // the timer is cleared whenever pending is, so it is set here
+      }, wait)
+      slot.timer.unref()
+    }
+  }
+  /** The turn ends or restarts, or the agent goes: send what is waiting (when asked to) and forget the window. */
+  const endReplies = (agentId: string, flush: boolean): void => {
+    const slot = replies.get(agentId)
+    if (!slot) return
+    if (slot.timer) clearTimeout(slot.timer)
+    if (flush && slot.pending !== null) inOrder(agentId, () => { void cable.turnReply(agentId, slot.pending as string) })
+    replies.delete(agentId)
+  }
+  /** A card for an agent whose delayed `done` is still being sent waits behind it, so the dial sees them in order. */
+  const queued = new Map<string, Promise<void>>()
+  /** Every per-agent send goes through here, so a question or a step of the next turn never overtakes a delayed done. */
+  const inOrder = (agentId: string, run: () => void | Promise<void>): void => {
+    const behind = queued.get(agentId)
+    const next = behind ? behind.then(run, run) : run()
+    if (!next) return
+    const tail = next.then(undefined, () => {}) // a throwing send must not break the agent's queue for good
+    queued.set(agentId, tail)
+    void tail.then(() => { if (queued.get(agentId) === tail) queued.delete(agentId) })
+  }
+  const toDial = (event: NonNullable<ReturnType<typeof cableEventFor>>): void => {
+    // The last streamed text goes out before the turn's end, in the same per-agent order.
+    if (event.kind !== 'processing') endReplies(event.agentId, true)
+    inOrder(event.agentId, () => dispatch(event))
   }
 
   // A remote machine's cards reach the dial through the same calls. The fleet has already noted which
@@ -241,8 +348,8 @@ export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps)
     // once, and dropping a card from one the wheel is not pointed at is what a tile that never leaves
     // "Working…" looks like from the outside.
     if (event.kind === 'state') { void cable.syncMachines(); return }
-    if (event.kind === 'questionClosed') { void cable.questionClose(event.agentId, event.requestId); return }
-    if (event.kind === 'question') { void cable.question(event.agentId, event.requestId, event.questions); return }
+    if (event.kind === 'questionClosed') { inOrder(event.agentId, () => { void cable.questionClose(event.agentId, event.requestId) }); return }
+    if (event.kind === 'question') { inOrder(event.agentId, () => { void cable.question(event.agentId, event.requestId, event.questions) }); return }
     toDial({ ...event, subagent: event.subagent === true })
   }))
 
@@ -255,14 +362,31 @@ export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps)
     // reaches the dial the day it reaches the backend's devices.
     card: (frame) => part.call('dial', () => {
       const close = cableQuestionCloseFor(frame as Parameters<typeof cableQuestionCloseFor>[0])
-      if (close) { void cable.questionClose(close.agentId, close.requestId); return }
+      if (close) { inOrder(close.agentId, () => { void cable.questionClose(close.agentId, close.requestId) }); return }
       const question = cableQuestionFor(frame as Parameters<typeof cableQuestionFor>[0])
-      if (question) { void cable.question(question.agentId, question.requestId, question.questions); return }
+      if (question) { inOrder(question.agentId, () => { void cable.question(question.agentId, question.requestId, question.questions) }); return }
+      // A shell result is only the stats' input: the dial is told the sums when the turn ends.
+      const ran = frame as { type?: string; agentId?: string; payload?: { kind?: string; id?: string; command?: string; isError?: boolean; outputTail?: string } }
+      if (ran.payload?.kind === 'reply_text' && ran.agentId) {
+        const update = (ran.payload as { update?: unknown }).update
+        if (typeof update === 'string' && update) { latestUpdate.set(ran.agentId, update); replyText(ran.agentId, update) }
+        return
+      }
+      if (ran.payload?.kind === 'turn_started' && ran.agentId) {
+        endReplies(ran.agentId, false)
+        stats.take(ran.agentId)
+        if (cable.wantsStats()) starts.set(ran.agentId, settle(readUsage(ran.agentId)))
+        return
+      }
+      if (isLocalOnly(frame) && ran.agentId && ran.payload?.id) {
+        stats.toolResult(ran.agentId, ran.payload.command, ran.payload.isError === true, ran.payload.outputTail ?? '')
+        return
+      }
       // A tool card is a step for a `steps-v1` device and nothing for any other: the session drops it.
       const gone = (frame as { type?: string; payload?: { agentId?: unknown } })
-      if (gone.type === 'agent_deleted' && typeof gone.payload?.agentId === 'string') latestUpdate.delete(gone.payload.agentId)
+      if (gone.type === 'agent_deleted' && typeof gone.payload?.agentId === 'string') { latestUpdate.delete(gone.payload.agentId); endReplies(gone.payload.agentId, false) }
       const step = cableStepFor(frame as Parameters<typeof cableStepFor>[0])
-      if (step) { void cable.turnStep(step.agentId, step.step); return }
+      if (step) { inOrder(step.agentId, () => { void cable.turnStep(step.agentId, step.step) }); return }
       const event = cableEventFor(frame as Parameters<typeof cableEventFor>[0])
       // Logged at the fork, not at the send: this answers "did the daemon even decide to tell the dial",
       // a different question from "did the wire carry it", and the one nobody could answer when a tile
@@ -335,6 +459,7 @@ export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps)
     commanders: (connected) => setVoiceRouterDeviceConnected(connected),
     // The serial ports first: a port left held makes esptool fail in a way that reads like dead hardware.
     stop: async () => {
+      for (const agentId of [...replies.keys()]) endReplies(agentId, false)   // no timer may fire into a stopped cable
       await cable.stop()
       fleet?.stop()
       shutdownVoiceRouter()

@@ -10,6 +10,7 @@
  *
  * Moved verbatim out of `runForeground` (the core boundary, step 8: docs/design/2026-10-03-harnessd.md).
  */
+import { withoutOutputTail } from '../../lib/cardUpdate.js'
 import { correlateAgentEvent } from '../../lib/agentEvent.js'
 import type { AutonomousDeviceInput } from '../deviceInput.js'
 import { isDeviceInputBoundary } from '../deviceInput.js'
@@ -126,7 +127,7 @@ export function funnelFor({
         if (opts?.resumed || opts?.replay) frame.replay = true
         if (isSubagentSession(sessionId)) frame.subagent = true
       }
-      clients.send(frame)
+      clients.send(withoutOutputTail(frame))
       if (event.type === 'turn_started' || event.type === 'turn_ended') search?.touch(sessionId)
       if (event.type === 'turn_started') {
         turnStartedAt.set(sessionId, Date.now())
