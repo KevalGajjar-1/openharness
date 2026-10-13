@@ -3400,6 +3400,27 @@ class AppNotifier extends ChangeNotifier {
   /// instead; those are the transport-wide events, and they are marked.
   TerminalSession? get activeTerminal => focusedPane?.session;
 
+  /// Dial scroll handlers of the mounted cloud chat panes. A cloud harness has no
+  /// terminal session to scroll, so its conversation registers here, by machine
+  /// and agent, for as long as it is on screen.
+  final _cloudScrollHandlers =
+      <(String, String), void Function(int phase, int dy, int velocity)>{};
+
+  /// Called by a cloud chat pane while mounted; returns how to withdraw it.
+  VoidCallback registerCloudScroll(
+    String machineId,
+    String agentId,
+    void Function(int phase, int dy, int velocity) handler,
+  ) {
+    final key = (machineId, agentId);
+    _cloudScrollHandlers[key] = handler;
+    return () {
+      if (identical(_cloudScrollHandlers[key], handler)) {
+        _cloudScrollHandlers.remove(key);
+      }
+    };
+  }
+
   bool get canAddPane => panes.length < maxPanes;
 
   Iterable<TerminalPane> panesFor(String machineId) =>
@@ -17198,11 +17219,17 @@ class AppNotifier extends ChangeNotifier {
         // A finger going down is the gesture; moves and the inertial tail
         // must not keep asking macOS for focus after the person switches away.
         if (phase == 0) _requestDeviceWindow(machine);
-        activeTerminal?.scroll(
-          phase,
-          (payload['dy'] as num?)?.round() ?? 0,
-          (payload['velocity'] as num?)?.round() ?? 0,
-        );
+        final dy = (payload['dy'] as num?)?.round() ?? 0;
+        final velocity = (payload['velocity'] as num?)?.round() ?? 0;
+        final pane = focusedPane;
+        final cloudScroll = pane?.agentId == null
+            ? null
+            : _cloudScrollHandlers[(pane!.machineId, pane.agentId!)];
+        if (cloudScroll != null) {
+          cloudScroll(phase, dy, velocity);
+        } else {
+          activeTerminal?.scroll(phase, dy, velocity);
+        }
         return;
       case 'dial_selection':
         final reply = const ['search', 'match'].contains(payload['op'])
