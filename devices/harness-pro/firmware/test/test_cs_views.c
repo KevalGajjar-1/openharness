@@ -572,7 +572,11 @@ int main(void) {
         CHECK(!text_run("SUMMARY") && text_run("Done") && text_run("TOKENS") && text_run("DURATION") && text_run("TESTS") && text_run("COMMITS"));
         CHECK(!text_run("STEPS"));
         CHECK(text_run("54 \xe2\x9c\x93") && text_run("talk") && text_run("4:12"));
-        CHECK(text_run("61.4k") && text_prefix("in 42.9k") && text_prefix("in 42.9k")->pro_font == &cs_mono_15);   // in/out is cut with "..." when the row is full
+        CHECK(text_run("61.4k") && text_prefix("in 42.9k") && text_prefix("in 42.9k")->pro_font == &cs_mono_15);
+        {   // the sub-line, when drawn, starts "in " and is never cut inside a number: "in 42.9k" or "in 42.9k \xc2\xb7 out 18.5k", whole (Linux fonts are wider than macOS)
+            const ht_run_t *sub = text_prefix("in ");
+            CHECK(sub && (!strcmp(sub->text, "in 42.9k") || !strcmp(sub->text, "in 42.9k \xc2\xb7 out 18.5k")));
+        }
         {   // one line per tile: the label (small, muted) then the value on the same baseline; the TOKENS tile also holds in/out (muted, small)
             const ht_run_t *r = text_run("61.4k"), *sub = text_prefix("in 42.9k"), *lab = text_run("TOKENS");
             CHECK(r && sub && lab);

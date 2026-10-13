@@ -47,7 +47,8 @@ static int natural(const tile_t *t)
     return w;
 }
 
-// One line: the label small and muted, the value after it on the same baseline; TOKENS ends with in/out (cut with an ellipsis).
+// One line: the label small and muted, the value after it on the same baseline; TOKENS ends with in/out. When the whole "in x · out y" does not fit, "in x" alone is shown; when even that does not
+// fit, the sub-line is left out. It is never cut inside a number.
 static void tile(ht_scene_t *s, int x, const tile_t *t)
 {
     const int cy = TILE_Y + TILE_H / 2, w = t->w;
@@ -57,7 +58,16 @@ static void tile(ht_scene_t *s, int x, const tile_t *t)
     cx += lw + TGAP;
     cs_text(s, cx, cy, vw + 2, &cs_mono_22, t->col, t->value);
     cx += vw + SUBGAP;
-    if (t->sub[0] && x + w - TPAD - cx > 20) cs_text(s, cx, cy, x + w - TPAD - cx, &cs_mono_15, CS_MUTED, t->sub);
+    const int room = x + w - TPAD - cx;
+    if (t->sub[0] && room > 0) {
+        char sub[sizeof t->sub];
+        snprintf(sub, sizeof sub, "%s", t->sub);
+        if (ht_pro_width(&cs_mono_15, sub) > room) {   // drop the "· out y" part
+            char *dot = strstr(sub, " \xc2\xb7 ");
+            if (dot) *dot = 0;
+        }
+        if (ht_pro_width(&cs_mono_15, sub) <= room) cs_text(s, cx, cy, room, &cs_mono_15, CS_MUTED, sub);
+    }
 }
 
 void cs_view_recap(pod_out_frame_t *f, const pod_nav_t *nav, pod_model_t *m, uint32_t now_ms)

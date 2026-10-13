@@ -116,7 +116,7 @@ static void console_fixture(const char *screen)
                                          "Read a/very/deeply/nested/path/to/some/source/file/that/has/a/long/name/and_an_even_longer_basename_in_the_end.tsx", "Short"};
         static const uint16_t at[] = {41, 0xFFFF, 130};
         a = (pod_agent_t *)pod_model_find(&M, "fw");
-        snprintf(a->name, sizeof a->name, "marketing-site-redesign-with-a-really-long-name");
+        snprintf(a->name, sizeof a->name, "%s", "marketing-site-redesign-with-a-really-long-name");
         snprintf(a->machine, sizeof a->machine, "A Very Long Machine Name On The Network");
         snprintf(a->activity, sizeof a->activity, "src/components/pricing/PricingCardWithAnimatedGradientBackground.tsx and then some");
         set_steps("fw", 3, lg, at);
