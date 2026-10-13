@@ -366,8 +366,15 @@ class VM:
         self.form_shows(name + '-required', 'Sign in to Harness')
         output, status = self.command('harness login --json --ticket=' + shlex.quote(account_ticket()),
                                       timeout=120, check=False)
-        results = [json.loads(line) for line in output.splitlines() if line.startswith('{"type":"result"')]
-        if status or not results or results[-1].get('status') != 'success':
+        # The result line shares the serial stream with shell-integration escapes and with the banner
+        # of the daemon the sign-in restarts: find it anywhere, and let the daemon have the last word.
+        results = []
+        for found in re.finditer(r'\{"type":"result"[^\r\n]*\}', output):
+            try:
+                results.append(json.loads(found.group(0)))
+            except json.JSONDecodeError:
+                pass
+        if status or any(result.get('status') == 'error' for result in results):
             raise RuntimeError('The test account sign-in failed: ' + json.dumps(results[-1:] or output[-300:]))
         # Required sign-in clears as soon as the daemon reports the account.
         self.command('for n in $(seq 1 60); do curl -s http://127.0.0.1:18473/api/status | '
