@@ -5,11 +5,15 @@ import { createNativeGenerations, type NativeGeneration, type NativeGenerationOw
   type NativeGenerationSource, type NativeGenerationView } from './nativeGenerations.js'
 import { EMPTY_NATIVE_CONTENT, nativeGenerationContent, type NativeGenerationContent } from './nativeGenerationContent.js'
 import { MAX_RETAINED_GENERATION_FACTS } from '../../engines/kit/nativeGenerationCancellation.js'
+import { nativeTasks, type NativeTaskProjection } from './nativeTasks.js'
 
 export interface NativeTurn {
   readonly owner: NativeGenerationOwner
   readonly generation: NativeGeneration
   readonly content: NativeGenerationContent
+  /** Generation-scoped presentation; never forwarded as ordinary session tool
+   * events, whose existing consumers can alter a successor's live activity. */
+  readonly tasks: NativeTaskProjection
   /** Native facts retained before this core first admitted a delivery. A late
    * response cannot turn a recovered Stop into another live completion. */
   readonly recovery: { readonly started: boolean; readonly ended: boolean }
@@ -114,7 +118,9 @@ export function createNativeTurnControl({ owner, recoveredFactIds, current, read
       if (view.selection === 'cancelled' && !cancelled) { cancelled = true; revokeEffects() }
       const turns = Object.freeze(view.generations.map(generation => {
         const prior = baseline.filter(fact => fact.generationId === generation.id)
-        const fields = { owner: original, generation, content: content.get(generation.id) ?? EMPTY_NATIVE_CONTENT,
+        const generationContent = content.get(generation.id) ?? EMPTY_NATIVE_CONTENT
+        const fields = { owner: original, generation, content: generationContent,
+          tasks: nativeTasks(original, generation, generationContent.tools, cancelled),
           recovery: Object.freeze({ started: prior.some(fact => fact.kind === 'activity' || fact.kind === 'stopped'),
             ended: prior.some(fact => fact.kind === 'stopped' || fact.kind === 'cancelled') }) }
         return Object.freeze({ ...fields, version: createHash('sha256').update(JSON.stringify(fields)).digest('hex') })

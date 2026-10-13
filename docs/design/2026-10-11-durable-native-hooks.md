@@ -1,5 +1,37 @@
 # Durable native hook delivery
 
+October 13 task checkpoint: native turns now carry bounded, immutable task
+observations keyed by agent, conversation, process incarnation, generation and
+tool ID. Duplicate observations coalesce; conflicting inputs stay ambiguous.
+A pre-tool hook observes a request that another hook can still deny. A parent
+Stop, including one received before the task, retires only that generation's
+observation. It does not claim that the child executed or succeeded. Unconfirmed
+results retain an explicit reason without keeping the parent turn open.
+
+The installed Cursor source allows a child session to be resumed while preserving
+its original creation metadata. The old child reader combines an earlier terminal
+marker with latest text, so neither a separate manager instance nor a fresh parent
+permit makes that text the original task's result. Native snapshots therefore do
+not use that reader, its timeout-success path or its delayed session-wide close.
+They also do not emit ordinary tool frames: current clients can clear a successor's
+activity by tool name. Optional exact-result enrichment can be added only with
+native task-result correlation; it is not required for parent turn closure.
+
+Receipt `20261013T072509.087715Z-23955` passes 211 focused cases in eight files,
+including unchanged legacy task-queue cases and architecture, with 100% per-file
+coverage in the three covered core modules. Its aggregate remains failed because
+of test-owner type annotations; the follow-up type-only attempt also remains
+failed. Corrected immutable fixtures pass types in
+`20261013T072824.711021Z-36079`. All nine deliberate identity, retirement, conflict
+and controller-wiring faults fail by assertion in
+`20261013T072949.847197Z-40398` (6.8 seconds), after passing both full focused
+baselines. Runtime source and goldens were unchanged by the fixture corrections.
+Independent review approved this scope over `ff26758e5`, conditional on those
+completed gates. Implementation and review ran approximately 07:18–07:31 UTC,
+with validation overlapping. Merge and publication remain zero. This projection
+is not activation: recap isolation, durable Cancel/rearm, atomic composition and
+final installed-client acceptance remain required.
+
 October 13 pinned-control checkpoint: model and question control reserve their
 original conversation before optional preparation and retain one native proof
 through every later capture, literal, paste, key and cleanup. Revocation settles

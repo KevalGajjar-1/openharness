@@ -20,6 +20,37 @@ function setup(inputs: Array<Record<string, unknown>> = [{}], overrides: Partial
     expire: () => { proof = false }, repair: () => { proof = true }, gone: () => { alive = false } }
 }
 
+it('publishes late Task observations only in their retired generation without changing a successor task', async () => {
+  const inputs = [{ hookEvent: 'stop', status: 'completed' },
+    { generationId: 'generation-two', hookEvent: 'preToolUse', toolUseId: 'same-tool', toolName: 'Task', input: { prompt: 'Second task' } }]
+  const t = setup(inputs)
+  t.observe(); await t.control.refresh()
+  const before = t.publish.mock.calls.at(-1)![0], second = before.turns[1]
+  expect(before.selection).toBe('one')
+  expect(second.tasks.tasks[0]).toMatchObject({ state: 'observed', result: 'unconfirmed' })
+  t.update([...inputs, { hookEvent: 'preToolUse', toolUseId: 'same-tool', toolName: 'Task', input: { prompt: 'First task' } }])
+  t.observe(); await t.control.refresh()
+  const after = t.publish.mock.calls.at(-1)![0]
+  expect(after.selection).toBe('one')
+  expect(after.turns[0].tasks.tasks[0]).toMatchObject({ state: 'retired', result: 'unconfirmed' })
+  expect(after.turns[0].tasks.tasks[0].id).not.toBe(second.tasks.tasks[0].id)
+  expect(after.turns[1]).toEqual(second)
+  await expect(t.control.permit('generation-two', 'running')).resolves.toHaveProperty('turn.tasks', second.tasks)
+  await expect(t.control.permit('generation-one', 'running')).rejects.toThrow('requested state')
+})
+
+it('keeps task results unconfirmed after local Cancel and cannot reacquire their former running authority', async () => {
+  const t = setup([{ hookEvent: 'preToolUse', toolName: 'Task', toolUseId: 'original-tool', input: {} }])
+  t.observe(); await t.control.refresh()
+  const permit = await t.control.permit('generation-one', 'running')
+  t.control.cancel()
+  expect(() => permit.verify()).toThrow('control revision changed')
+  await t.control.refresh()
+  expect(t.publish.mock.calls.at(-1)![0]).toMatchObject({ selection: 'cancelled', cancelRequested: true,
+    turns: [{ tasks: { tasks: [{ state: 'retired', result: 'unconfirmed' }] } }] })
+  await expect(t.control.permit('generation-one', 'running')).rejects.toThrow('Cancel holds')
+})
+
 it('admits physical input for submitted-only or stopped generations without inventing execution', async () => {
   const t = setup([{ hookEvent: 'beforeSubmitPrompt', prompt: 'may be rejected by another hook' }])
   await expect(t.control.admit('input')).rejects.toThrow('admission or Cancel')
