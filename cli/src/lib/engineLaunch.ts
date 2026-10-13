@@ -23,6 +23,7 @@ import { managedNodePath } from './nodeRuntime.js'
 import { RAISE_OPEN_FILES_SH } from './openFiles.js'
 import { ENGINE_EXIT_PANE_OPTION } from './engineExitOption.js'
 import { shellSingleQuote } from './shellQuote.js'
+import { browserPrelude } from './browserShim.js'
 import { currentUserShell } from './userShell.js'
 import { harnessPaneOwner } from './harnessSessionLabel.js'
 
@@ -561,7 +562,7 @@ export function buildEngineLaunchArgv(
   // Then the grid's PATH entry at the FRONT (its dir holds only `grid`), and — for a DSH agent — Harness's
   // Node at the END, only when the shell found none. The two never meet: one prepends, one appends.
   const nativeEnv = Object.entries(opts.native?.environment ?? {}).map(([key, value]) => `export ${key}=${shellSingleQuote(value)}\n`).join('')
-  const prelude = enginePrelude + clearEnvPrelude(opts.clearEnv) + clearEnvPrelude(opts.native?.clearEnvironment) + nativeEnv + gridPanePrelude(gridBinary) + noDevtoolsPrelude() + (opts.harnessNode ? harnessNodePrelude(runtimeNode) : '')
+  const prelude = enginePrelude + clearEnvPrelude(opts.clearEnv) + clearEnvPrelude(opts.native?.clearEnvironment) + nativeEnv + gridPanePrelude(gridBinary) + browserPrelude() + noDevtoolsPrelude() + (opts.harnessNode ? harnessNodePrelude(runtimeNode) : '')
   // rc files (notably nvm) call getcwd() before running this command. Start the shell in a safe
   // directory and enter the selected workspace only after those files have loaded: an IDE can replace
   // a workspace inode between the desktop picker resolving it and tmux spawning the pane.
@@ -868,7 +869,7 @@ export function buildTerminalLaunchArgv(
   // The prelude is a POSIX script. For a shell that is not POSIX, /bin/sh runs it and then execs the
   // person's shell, which loads its own startup files as it always does.
   const interpreter = isPosixShell(path) ? path : '/bin/sh'
-  return [interpreter, '-c', RAISE_OPEN_FILES_SH + clearEnvPrelude(opts.clearEnv) + cwdPrelude + hintPrelude + 'shift\nexec "$@"', 'harness-terminal', opts.cwd ?? '', path, ...loginArgs]
+  return [interpreter, '-c', RAISE_OPEN_FILES_SH + clearEnvPrelude(opts.clearEnv) + browserPrelude() + cwdPrelude + hintPrelude + 'shift\nexec "$@"', 'harness-terminal', opts.cwd ?? '', path, ...loginArgs]
 }
 
 /**

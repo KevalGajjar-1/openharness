@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../core/models.dart';
 import '../shortcuts/app_keymap.dart';
 import '../state/app_state.dart';
 import '../shared/theme/app_theme.dart' as grid;
@@ -49,6 +50,14 @@ class _StopAgentPrompt extends StatefulWidget {
 }
 
 class _StopAgentPromptState extends State<_StopAgentPrompt> {
+  Agent? get _agent => widget.notifier
+      .stateOf(widget.machineId)
+      ?.agents
+      .where((agent) => agent.id == widget.agentId)
+      .firstOrNull;
+  AgentCloud? get _cloud => _agent?.cloud;
+  String? get _engine => _agent?.engine;
+
   final _cancel = FocusNode(debugLabel: 'Cancel stop');
   final _promptFocus = FocusNode(debugLabel: 'Pending stop');
   final _body = ScrollController();
@@ -160,7 +169,11 @@ class _StopAgentPromptState extends State<_StopAgentPrompt> {
                 widget.name,
                 style: DesktopChrome.text(size: 14, medium: true),
               ),
-              if (widget.notifier.stateOf(widget.machineId)?.machine.displayName
+              if (_cloud?.place ??
+                      widget.notifier
+                          .stateOf(widget.machineId)
+                          ?.machine
+                          .displayName
                   case final machine?) ...[
                 const SizedBox(height: 4),
                 Text(machine, style: DesktopChrome.metadata()),
@@ -169,6 +182,12 @@ class _StopAgentPromptState extends State<_StopAgentPrompt> {
               Text(
                 widget.terminal
                     ? 'End this shell and anything running in it? Files are kept.'
+                    // A cloud agent stops where its maker lets it: Devin Cloud
+                    // and Cursor Cloud sleep; Fo keeps working on its own.
+                    : _cloud != null
+                    ? (_engine == 'fo'
+                          ? 'Stop following this harness here? Fo keeps working on its own, and its conversation is kept.'
+                          : 'Stop this harness? Its session goes to sleep and stops spending; its conversation is kept, and a message wakes it.')
                     : 'Stop this harness? Project files and saved conversation history are kept.',
                 style: DesktopChrome.text(size: 13),
               ),

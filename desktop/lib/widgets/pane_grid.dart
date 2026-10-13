@@ -30,6 +30,7 @@ import '../terminal/terminal_text.dart';
 import '../terminal/terminal_session.dart';
 import '../theme/app_theme.dart';
 import 'agent_drag.dart';
+import 'cloud_chat_pane.dart';
 import 'harness_join_guide_screen.dart';
 import 'link_machine_screen.dart';
 import 'new_agent_dialog.dart';
@@ -1620,6 +1621,19 @@ class _PaneContent extends StatelessWidget {
         .where((agent) => agent.id == wantedAgentId)
         .firstOrNull;
     final agentName = agent?.displayName;
+    // A cloud harness has no terminal to attach: its pane is a conversation
+    // (widgets/cloud_chat_pane.dart), and every other pane stays a terminal.
+    if (agent != null && agent.isCloud) {
+      return CloudChatPane(
+        key: ValueKey('cloud-pane-${pane.id}'),
+        notifier: notifier,
+        machineId: pane.machineId,
+        agent: agent,
+        visible: visible,
+        compactHeader: swarmMode,
+        onClose: close,
+      );
+    }
     final needsLink =
         machine != null &&
         machine.isRemote &&

@@ -2465,6 +2465,7 @@ async function logsExportCommand(json: boolean): Promise<void> {
 import { orchestratorCommand } from './orchestrator/command.js'
 import { paneOwner, sendCommand } from './messages/command.js'
 import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
+import { openUrlCommand } from './agentClient/openUrl.js'
 import { harnessRunner, mcpCommand } from './agentClient/mcp.js'
 import { settingsCommand } from './agentClient/settings.js'
 
@@ -2497,6 +2498,10 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') { console.log(VERS
 switch (cmd) {
   case 'send':
     sendCommand(rest).then(code => { process.exitCode = code }).catch(onError)
+    break
+  // A pane's BROWSER script asking whether a phone takes the page (agentClient/openUrl.ts). Not for people.
+  case 'open-url':
+    openUrlCommand(rest).then(code => { process.exitCode = code }).catch(() => { process.exitCode = 1 })
     break
   case 'ps':
     psCommand(rest).then(code => { process.exitCode = code }).catch(onError)

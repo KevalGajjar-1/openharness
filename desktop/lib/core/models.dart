@@ -289,6 +289,75 @@ class AgentOutputStats {
       Object.hash(linesAdded, linesRemoved, pullRequestsCreated, updatedAt);
 }
 
+/// What a cloud agent's frame says beyond an agent's usual one (CLI
+/// lib/cloudAgents.ts `CloudFrameBlock`): where it runs, where it is, what it
+/// is doing, its links at its maker (the session, a pull request) and how many
+/// messages its conversation holds, which the chat pane reads again when it moves.
+class AgentCloud {
+  final String place;
+
+  /// `starting`, `working`, `needs_input`, `idle`, `failed` or `stopped`.
+  final String state;
+  final String? activity;
+  final List<({String label, String url})> links;
+  final int messages;
+
+  const AgentCloud({
+    required this.place,
+    required this.state,
+    this.activity,
+    this.links = const [],
+    this.messages = 0,
+  });
+
+  bool get working => state == 'working' || state == 'starting';
+
+  /// The pull request among its links, for the footer; null with none.
+  ({String label, String url})? get pullRequest {
+    for (final link in links) {
+      if (RegExp(r'^https://github\.com/[^/]+/[^/]+/pull/\d+$')
+          .hasMatch(link.url))
+        return link;
+    }
+    return null;
+  }
+
+  static AgentCloud fromJson(Object? raw) {
+    final j = raw is Map ? raw : const {};
+    String? text(Object? value, int max) =>
+        value is String && value.trim().isNotEmpty
+        ? (value.length > max ? value.substring(0, max) : value)
+        : null;
+    final links = <({String label, String url})>[];
+    if (j['links'] is List) {
+      for (final link in j['links'] as List) {
+        if (link is! Map) continue;
+        final label = text(link['label'], 80), url = text(link['url'], 2048);
+        if (label != null && url != null && url.startsWith('https://')) {
+          links.add((label: label, url: url));
+        }
+      }
+    }
+    const states = {
+      'starting',
+      'working',
+      'needs_input',
+      'idle',
+      'failed',
+      'stopped',
+    };
+    final state = j['state'];
+    final messages = j['messages'];
+    return AgentCloud(
+      place: text(j['place'], 80) ?? 'The cloud',
+      state: state is String && states.contains(state) ? state : 'idle',
+      activity: text(j['activity'], 200),
+      links: links,
+      messages: messages is int && messages >= 0 ? messages : 0,
+    );
+  }
+}
+
 class Agent {
   final AgentActivity? activity;
   final String id;
@@ -421,6 +490,13 @@ class Agent {
   /// or null for a general session.
   final String? namedAgent;
 
+  /// A cloud agent's harness (`location: 'cloud'`): it runs on its maker's
+  /// servers and has no terminal, so its pane is a chat pane. Null for every
+  /// agent that runs on a computer (docs/design/2026-10-11-cloud-agents.md).
+  final AgentCloud? cloud;
+
+  bool get isCloud => cloud != null;
+
   const Agent({
     this.activity,
     required this.id,
@@ -468,6 +544,7 @@ class Agent {
     this.permissionMode,
     this.bypassPermission,
     this.namedAgent,
+    this.cloud,
   });
 
   bool get isStopped => status == 'stopped';
@@ -654,6 +731,7 @@ class Agent {
           ? j['bypassPermission'] as bool
           : null,
       namedAgent: _safeNamedAgent(j['namedAgent']),
+      cloud: j['location'] == 'cloud' ? AgentCloud.fromJson(j['cloud']) : null,
     );
   }
 
@@ -711,6 +789,7 @@ class Agent {
     permissionMode: permissionMode,
     bypassPermission: bypassPermission,
     namedAgent: namedAgent,
+    cloud: cloud,
   );
 
   /// A mode id as `PERMISSION_MODES` spells them (`acceptEdits`, `readOnly`):

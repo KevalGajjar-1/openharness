@@ -52,32 +52,46 @@ export interface OAuthMeta {
 }
 export type Probe = { kind: 'open' } | OAuthMeta
 
-/** What signing in to this MCP server takes: nothing (`open`) or its OAuth metadata. */
-export async function probe(server: string): Promise<Probe> {
-  const url = cleanUrl(server)
-  const initialize = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
-    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'Harness', version: '1' } } })
-  const first = await http(url, { body: initialize, headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' } })
-  if (first.status >= 200 && first.status < 300) return { kind: 'open' }
-  if (first.status !== 401 && first.status !== 403) throw new SignInError(`The server answered ${first.status}. Check the address.`)
-  const challenge = first.headers.get('www-authenticate') ?? ''
-  const pointed = /resource_metadata="([^"]+)"/.exec(challenge)?.[1]
+/** The protected-resource metadata a server publishes (RFC 9728): its authorization server, the resource it names, its scopes. */
+async function protectedResource(url: string, pointed?: string): Promise<{ issuer: string; resource: string; scopes: string[] } | null> {
   const path = new URL(url).pathname
-  let issuer: string | undefined
-  let resource = url
-  let scopes: string[] = []
   for (const candidate of [pointed, wellKnown(url, 'oauth-protected-resource', path), wellKnown(url, 'oauth-protected-resource')]) {
     if (!candidate) continue
     const answer = await http(candidate)
     const meta = answer.status === 200 ? jsonOf(answer.body) : null
     const servers = meta?.authorization_servers
     if (Array.isArray(servers) && typeof servers[0] === 'string') {
-      issuer = servers[0]
-      resource = typeof meta!.resource === 'string' ? meta!.resource : url
-      scopes = Array.isArray(meta!.scopes_supported) ? meta!.scopes_supported.filter((s): s is string => typeof s === 'string') : []
-      break
+      return {
+        issuer: servers[0],
+        resource: typeof meta!.resource === 'string' ? meta!.resource : url,
+        scopes: Array.isArray(meta!.scopes_supported) ? meta!.scopes_supported.filter((s): s is string => typeof s === 'string') : [],
+      }
     }
   }
+  return null
+}
+
+/** What signing in to this MCP server takes: nothing (`open`) or its OAuth metadata. */
+export async function probe(server: string): Promise<Probe> {
+  const url = cleanUrl(server)
+  const initialize = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'Harness', version: '1' } } })
+  const first = await http(url, { body: initialize, headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' } })
+  let found: { issuer: string; resource: string; scopes: string[] } | null
+  if (first.status >= 200 && first.status < 300) {
+    // A server may answer `initialize` (and list its tools) to anyone and refuse only a tool's call: Wajo's Fo
+    // did (2026-10-11), and was saved with no sign-in, every call then refused. It still says it is protected
+    // in its resource metadata: that, and only that, makes an open answer a sign-in.
+    found = await protectedResource(url)
+    if (!found) return { kind: 'open' }
+  } else {
+    if (first.status !== 401 && first.status !== 403) throw new SignInError(`The server answered ${first.status}. Check the address.`)
+    const challenge = first.headers.get('www-authenticate') ?? ''
+    found = await protectedResource(url, /resource_metadata="([^"]+)"/.exec(challenge)?.[1])
+  }
+  let issuer = found?.issuer
+  const resource = found?.resource ?? url
+  const scopes = found?.scopes ?? []
   const base = new URL(url)
   issuer ??= `${base.protocol}//${base.host}`
   const issuerPath = new URL(issuer).pathname

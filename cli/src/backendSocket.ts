@@ -277,6 +277,12 @@ export class BackendSocket {
   /** Answers `theme_set` with the whole reply: the desktop's pane colours, to become this machine's tmux
    *  `window-style` (cli.ts binds core/terminals/requests.ts). Null answers UNSUPPORTED. */
   themeProvider: ((payload: Record<string, unknown>) => Record<string, unknown>) | null = null
+  /** A page a program in a harness's pane opens, and the sign-in a phone brings back from it
+   *  (core/terminals/browser.ts, bound by core/main.ts). Null answers UNSUPPORTED. */
+  browserProvider: {
+    open: (payload: Record<string, unknown>) => Record<string, unknown>
+    callback: (payload: Record<string, unknown>, connId: string) => Promise<Record<string, unknown>>
+  } | null = null
   tokenUsageProvider: ((session: RegisteredSession) => AgentTokenUsage | null) | null = null
   runtimeProfileProvider: ((session: RegisteredSession) => string | null) | null = null
   /** Backend-resolved machine id, persisted by the SSO login preflight. */
@@ -750,7 +756,7 @@ export class BackendSocket {
   private emitReply(connId: string, type: string, requestId: unknown, payload: Record<string, unknown>): void {
     const resultType = rpcResultType(type)
     // Before the E2EE wrap: an RPC reply is only readable here.
-    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('viewer_') && type !== 'phone_pair' && type !== 'api_connections' && type !== 'connectors' && type !== 'orchestrator' && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) logFrame('→', connId ? `conn:${sid(connId)}` : 'backend', { type: resultType, payload: { requestId, ...payload } })
+    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('viewer_') && type !== 'phone_pair' && type !== 'api_connections' && type !== 'connectors' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'orchestrator' && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) logFrame('→', connId ? `conn:${sid(connId)}` : 'backend', { type: resultType, payload: { requestId, ...payload } })
     if (this.localClients.has(connId)) {
       this.sendTo(connId, { type: resultType, payload: { requestId, ...payload } })
       return
@@ -809,7 +815,7 @@ export class BackendSocket {
     // actually asked for rather than as an opaque __e2e envelope.
     // Terminal frames contain raw keystrokes, paste text and screen bytes after
     // unwrap. Never pass them to the frame logger, even in diagnostic mode.
-    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('terminal_') && !type.startsWith('viewer_') && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && type !== 'orchestrator' && type !== 'api_connections' && type !== 'connectors' && type !== 'phone_pair' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) {
+    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('terminal_') && !type.startsWith('viewer_') && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && type !== 'orchestrator' && type !== 'api_connections' && type !== 'connectors' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'phone_pair' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) {
       logFrame('←', connId ? `conn:${sid(connId)}` : 'backend', frame)
     }
     const reply = (t: string, rid: unknown, p: Record<string, unknown>): void => this.emitReply(connId, t, rid, p)
@@ -1118,6 +1124,20 @@ export class BackendSocket {
           return
 
         // What a harness's pane runs and where (core/terminals/requests.ts, bound by cli.ts).
+        // The `BROWSER` shim in a harness's pane, asking whether a phone takes the page. A process on this
+        // computer only: from anywhere else it would be a way to put a page on someone's phone.
+        case 'browser_open':
+          if (!local) { answer({ error: 'LOCAL_ONLY' }); return }
+          answer(this.browserProvider ? this.browserProvider.open(payload) : { handled: false })
+          return
+
+        // The redirect a phone caught for that page, replayed to the program waiting on this computer.
+        case 'browser_callback':
+          if (!owner) { answer({ error: 'OWNER_REQUIRED' }); return }
+          if (!this.browserProvider) { answer({ error: 'UNSUPPORTED' }); return }
+          answer(await this.browserProvider.callback(payload, connId))
+          return
+
         case 'terminal_info':
           if (this.terminalInfoProvider) this.terminalInfoProvider(payload, answer)
           else reply(type, requestId, { error: 'UNSUPPORTED' })

@@ -111,6 +111,17 @@ describe('the core API a light service runs on in its own process', () => {
     expect(listeners).toHaveLength(1)
   })
 
+  it('gives the cloud agents their doors only with a core to ask, and never waits on or throws from them', async () => {
+    expect(processCoreApi('/data', 'cloud').cloud).toBeUndefined()
+    const ask = vi.fn(async (_query: string): Promise<Record<string, unknown>> => { throw new Error('gone') })
+    const doors = processCoreApi('/data', 'cloud', { ask }).cloud!
+    doors.publish([])
+    doors.ask('cloud_1', 'cloud_q_1', { text: 'Which?', choices: [] })
+    doors.unask('cloud_1', 'cloud_q_1')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(ask.mock.calls.map(([query]) => query)).toEqual(['cloud_publish', 'cloud_ask', 'cloud_unask'])
+  })
+
   it('acts on the core for an experiment: agents made, turns stopped and delivered, windows told, each asked', async () => {
     const answers: Record<string, Record<string, unknown> | Error> = {
       create: { ok: true, agentId: 'made' }, stop_turn: {}, windows: {}, deliver: {}, cancel_delivery: { cancelled: true },
