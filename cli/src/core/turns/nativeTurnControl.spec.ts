@@ -20,6 +20,45 @@ function setup(inputs: Array<Record<string, unknown>> = [{}], overrides: Partial
     expire: () => { proof = false }, repair: () => { proof = true }, gone: () => { alive = false } }
 }
 
+it('admits physical input for submitted-only or stopped generations without inventing execution', async () => {
+  const t = setup([{ hookEvent: 'beforeSubmitPrompt', prompt: 'may be rejected by another hook' }])
+  await expect(t.control.admit('input')).rejects.toThrow('admission or Cancel')
+  t.observe(); await t.control.refresh()
+  for (const purpose of ['input', 'control', 'answer'] as const) {
+    const permit = await t.control.admit(purpose)
+    expect(permit.owner).toEqual(owner)
+    expect(permit.generationId).toBeUndefined()
+    expect(() => permit.verify()).not.toThrow()
+  }
+  expect(t.publish.mock.calls[0][0].turns[0].generation).toMatchObject({ executed: false, running: false })
+  t.update([{ hookEvent: 'stop', status: 'completed' }]); t.observe(); await t.control.refresh()
+  await expect(t.control.admit('input')).resolves.toHaveProperty('generationId', undefined)
+})
+
+it('admits an answer to one running native turn and revokes it before a successor or ambiguity can take its key', async () => {
+  const t = setup()
+  t.observe(); await t.control.refresh()
+  await expect(t.control.admit('input')).rejects.toThrow('still running')
+  await expect(t.control.admit('control')).rejects.toThrow('still running')
+  const answer = await t.control.admit('answer')
+  expect(answer.generationId).toBe('generation-one')
+  t.update([{}, { generationId: 'generation-two', hookEvent: 'preToolUse', toolUseId: 'second-tool' }]); t.observe()
+  expect(() => answer.verify()).toThrow('control revision changed')
+  await t.control.refresh()
+  await expect(t.control.admit('answer')).rejects.toThrow('selection is ambiguous')
+})
+
+it('revokes an input proof on Cancel, including a cancellation recovered by a later fresh inspection', async () => {
+  const t = setup([])
+  t.observe(); await t.control.refresh()
+  const input = await t.control.admit('input')
+  Object.assign(t.source(), { cancellations: [{ requestId: 'fixture-cancel-request', nonce: 'fixture-cancel-nonce',
+    agentId: owner.agentId, conversationId: owner.sessionId, frontier: { index: 0, digest: '0'.repeat(64) } }] })
+  await expect(t.control.admit('answer')).rejects.toThrow('admission or Cancel')
+  expect(() => input.verify()).toThrow('admission or Cancel')
+  await expect(t.control.admit('input')).rejects.toThrow('admission or Cancel')
+})
+
 it('recovers a completed generation quietly without waiting for text, then fills only its late response', async () => {
   const t = setup([{ hookEvent: 'stop', status: 'completed' }])
   t.observe(); await t.control.refresh()

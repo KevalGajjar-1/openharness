@@ -170,6 +170,30 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+it.each([true, false])('keeps native transcript history out of device delivery, resumption and recap with an open turn: %s', async open => {
+  const run = setup({ historyOnly: () => true, settled: vi.fn() })
+  run.service.needsTranscript.mockReturnValue(true)
+  const row = session('cursor', transcript([{ events: [started('an old native generation')], open: true },
+    ...(open ? [] : [{ events: [{ type: 'turn_ended', payload: {} }], close: true }])]))
+  expect(await run.attach.attachSession(row)).toBe(true)
+  expect(run.normalizers.cursorNormalizers.get(row.sessionId)?.turnOpen).toBe(open)
+  expect(run.service.needsTranscript).not.toHaveBeenCalled()
+  expect(run.service.observeTranscript).not.toHaveBeenCalled()
+  expect(run.deps.emit).not.toHaveBeenCalled()
+  expect(run.deps.settled).not.toHaveBeenCalled()
+})
+
+it('keeps the first native transcript available for display without treating its raw bytes as delivery proof', async () => {
+  const run = setup({ historyOnly: () => true, settled: vi.fn() })
+  run.service.needsTranscript.mockReturnValue(true)
+  const event = started('first transcript')
+  const row = session('cursor', transcript([{ events: [event], open: true }]))
+  expect(await run.attach.attachSession(row, false, true)).toBe(true)
+  expect(run.deps.emit).toHaveBeenCalledExactlyOnceWith(row.sessionId, [event])
+  expect(run.service.observeTranscript).not.toHaveBeenCalled()
+  expect(run.deps.settled).not.toHaveBeenCalled()
+})
+
 it.each(['same', 'repaired'] as const)('composes discovery, retry and inline attachment after %s binding recovery', async outcome => {
   const run = setup({ settled: vi.fn() })
   const savedPath = transcript([{ events: [started('unconfirmed')], open: true }])

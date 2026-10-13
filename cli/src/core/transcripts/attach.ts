@@ -38,6 +38,8 @@ export interface AttachDeps {
   resolve: (agentId: string) => RegisteredSession | undefined
   /** Core restores accepted prompt times and unresolved hook effects before interpretation. */
   nativeRecoveryReady?: (session: RegisteredSession) => boolean
+  /** Native generations, not this history fold, own turn resumption and recap. */
+  historyOnly?: (session: RegisteredSession) => boolean
   remoteLive?: Pick<LiveSessions, 'handles' | 'current' | 'prepare' | 'install' | 'discard' | 'retry'>
   /** Whether the session's terminal is known to be gone (core/terminals/control.ts `terminalGone`). */
   terminalGone: (session: RegisteredSession) => Promise<boolean>
@@ -79,7 +81,7 @@ export function createAttach({
   liveFor, resolve, remoteLive, terminalGone, normalizers, watcher, cursorDiscovery, device, runtimeProfiles, captureTerminal, emit,
   announceTurnAborted, questionWatcher, terminalLabel, dbs, devinHome, hermesDb, concurrency, relaunchMarks,
   wholeReadCapBytes = WHOLE_READ_CAP_BYTES, settled, readerLoadWaitMs, setInterpretationHold, announceSession,
-  nativeRecoveryReady = () => true,
+  nativeRecoveryReady = () => true, historyOnly,
 }: AttachDeps) {
   const {
     liveParsers, cursorNormalizers, opencodeReaders, kiloReaders, museNormalizers, ampNormalizers,
@@ -264,7 +266,7 @@ export function createAttach({
     let historySuperseded = false
     let historyCurrent: (() => boolean) | undefined
     let observed = false
-    sideRead('device', session.sessionId, () => { observed = !!device()?.needsTranscript(session.agentId, session.sessionId, session.engine) })
+    if (!historyOnly?.(session)) sideRead('device', session.sessionId, () => { observed = !!device()?.needsTranscript(session.agentId, session.sessionId, session.engine) })
     const observe = observed && !session.interpretationHold
       ? (line: string): void => { if (current()) sideRead('device', session.sessionId, () => device()?.observeTranscript(session.agentId, session.sessionId, session.engine, line)) }
       : undefined
@@ -645,7 +647,7 @@ export function createAttach({
     // Nor for a turn left open before a new engine was started on the conversation (a resume, or a restore
     // that rebuilt the pane): that turn died with the engine before, and announcing it showed the
     // interrupted message starting anew (core/transcripts/relaunch.ts).
-    if (!session.interpretationHold && !historySuperseded && historyTurnOpen && !handover.hold && !abandonedHistory) {
+    if (!historyOnly?.(session) && !session.interpretationHold && !historySuperseded && historyTurnOpen && !handover.hold && !abandonedHistory) {
       const opened = historyEvents.findLast((event) => event.type === 'turn_started')
       if (opened) {
         console.log(`[agent] ${sid(session.agentId)} resumed the turn already open at attach`)
@@ -668,7 +670,7 @@ export function createAttach({
     // A fold from the end keeps only the last turn's start as history (lib/normalize.ts TranscriptFold), so a turn
     // that is no longer open is one that ended; a fold from the start keeps its end too, and says if it was killed.
     const last = historyEvents.findLast((event) => event.type === 'turn_started' || event.type === 'turn_ended')
-    if (!historyExplicitlyClosed && !historySuperseded && !historyTurnOpen && last && !(last.type === 'turn_ended' && last.payload.aborted)) settled?.(session.sessionId)
+    if (!historyOnly?.(session) && !historyExplicitlyClosed && !historySuperseded && !historyTurnOpen && last && !(last.type === 'turn_ended' && last.payload.aborted)) settled?.(session.sessionId)
     return true
   }
 

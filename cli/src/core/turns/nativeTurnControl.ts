@@ -181,8 +181,25 @@ export function createNativeTurnControl({ owner, recoveredFactIds, current, read
     verify()
     return Object.freeze({ turn, verify })
   }
+  /** Physical input is distinct from native execution. Submitted-only facts can
+   * be rejected by another native hook and never receive Stop; they must not
+   * block the next explicit input forever. Answers may enter a running turn,
+   * but no control interaction can choose between unordered running turns. */
+  const admit = async (purpose: 'input' | 'control' | 'answer') => {
+    if (pending || cancelled) unavailable('admission or Cancel holds this incarnation')
+    const state = await inspect(revision)
+    const verify = () => {
+      state.verify()
+      if (pending || cancelled) unavailable('admission or Cancel holds this incarnation')
+    }
+    verify()
+    if (state.view.selection === 'ambiguous' || purpose !== 'answer' && state.view.selection !== 'idle') {
+      unavailable('a native turn is still running or its selection is ambiguous')
+    }
+    return Object.freeze({ owner: original, generationId: state.view.running[0]?.id, verify })
+  }
   return {
-    observe, refresh, permit,
+    observe, refresh, permit, admit,
     /** This is immediate local revocation, not confirmation that Cancel was
      * saved or dispatched. Only the durable Cancel port can supply that proof. */
     cancel: () => { if (live()) { cancelled = true; invalidate(); hold('Waiting for the saved native cancellation result.'); } },

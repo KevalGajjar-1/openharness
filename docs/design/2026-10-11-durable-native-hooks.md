@@ -1,5 +1,35 @@
 # Durable native hook delivery
 
+October 13 history/admission checkpoint: native input and answer admission now
+requires a fresh confirmed generation frontier. Running work holds new input and
+ordinary control; an answer can target one running generation, with its original
+proof checked again at dispatch. Ambiguous generations and recovered cancellation
+hold all admission. A submitted prompt alone is not execution: another native
+hook can reject it without ever producing Stop.
+
+The inactive history-only boundary excludes transcript replay from input,
+device delivery, resumption, recap and client lifecycle. Independent review found
+that existing clients still interpret replayed ends and text/tool frames as live
+activity. The corrected path sends no such frames, including the first attach
+queued before the funnel is armed. Native JSONL remains available through the
+existing history and search read ports; native facts must supply live projection
+when the pieces are activated together.
+
+Receipt `20261013T064038.964786Z-61671` passes types and 390 focused cases with
+100% per-file statements, branches, functions and lines for the four changed
+core modules. All ten deliberate admission/history faults fail by assertion in
+`20261013T064202.082358Z-66233` (19.4 seconds). Earlier receipts
+`20261013T063515.651578Z-45432` and `20261013T063653.036521Z-50533` passed their
+narrow assertions but predate the client-fanout review correction; they do not
+validate that final boundary. Goldens remain unchanged.
+
+Independent review approved this checkpoint over `6ee935a3d`, after inspection of
+the corrected client boundary. It is scoped approval, not approval to activate or
+land the PR. Implementation and review ran approximately 06:25–06:43 UTC with
+validation overlapping. Merge and publication remain zero. Atomic native turn,
+task and recap activation, durable physical Cancel/rearm and final acceptance
+remain required.
+
 October 13 input checkpoint: the inactive native input path now separates physical
 delivery from generation execution. It never acknowledges a request by prompt
 text, clears a composer from a hook, or retries a possibly dispatched paste/Enter.
