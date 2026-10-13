@@ -3696,11 +3696,11 @@
    "types": "done,|,done,|,|"
   },
   "commandcode live: engines/commandcode/normalizer.spec.ts#7b77773a0ceb @0/7": {
-   "sha": "d75483e30d3f6ffbc9e9",
+   "sha": "9f11783fd2ce8db01430",
    "types": "turn_started,thinking_delta,thinking_title,text_delta,turn_ended,turn_started,thinking_delta,thinking_title,tool_start,tool_end,thinking_delta,thinking_title,text_delta,turn_ended"
   },
   "commandcode live: engines/commandcode/normalizer.spec.ts#7b77773a0ceb @4/7": {
-   "sha": "807e9cece56194266d55",
+   "sha": "f1c78447f7f18bb6d9ee",
    "types": "turn_started,thinking_delta,thinking_title,tool_start,tool_end,thinking_delta,thinking_title,text_delta,turn_ended"
   },
   "commandcode live: engines/commandcode/normalizer.spec.ts#7b77773a0ceb @7/7": {
@@ -3708,7 +3708,7 @@
    "types": ""
   },
   "commandcode lines alone: engines/commandcode/normalizer.spec.ts#7b77773a0ceb": {
-   "sha": "9f988d4977bb586ee3ba",
+   "sha": "912c8a313995d8250837",
    "types": "turn_started,thinking_delta,thinking_title,text_delta,turn_ended,turn_started,thinking_delta,thinking_title,tool_start,tool_end,thinking_delta,thinking_title,text_delta,turn_ended"
   },
   "commandcode history: engines/commandcode/normalizer.spec.ts#7b77773a0ceb": {

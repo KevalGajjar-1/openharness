@@ -120,6 +120,9 @@ export const USAGE_FALLBACKS: PortFallbacks<UsagePort> = { read: later(FAIL), st
 export interface CoreApi {
   /** Last aggregate observation, never a transcript read. Optional for services that do not ask. */
   usage?: (target: AgentUsageTarget) => Promise<AgentTokenUsage | null>
+  /** An agent's token totals read from its transcript now, not the cached snapshot (the devices' turn tokens);
+   *  null for an agent that is not here or whose engine has no usage. */
+  usageFresh?: (agentId: string) => Promise<AgentTokenUsage | null>
   /** The daemon's data folder; a service keeps its own files in it. */
   dataDir: string
   terminals: TerminalsPort

@@ -13,7 +13,7 @@ export type SessionEvent =
   | { type: 'thinking_title'; payload: { thinkingId?: string; title: string } }
   | { type: 'text_delta'; payload: { content: string } }
   | { type: 'tool_start'; payload: { id: string; tool: string; input: unknown; parentToolUseId?: string } }
-  | { type: 'tool_end'; payload: { id: string; tool: string; output: string; isError: boolean; summary: string; parentToolUseId?: string; subagent?: SubagentSummary; durationSeconds?: number } }
+  | { type: 'tool_end'; payload: { id: string; tool: string; output: string; /** Last 600 raw chars, before `output` is cut to its head. */ outputTail?: string; isError: boolean; summary: string; parentToolUseId?: string; subagent?: SubagentSummary; durationSeconds?: number } }
   | { type: 'context_compact'; payload: { message: string; trigger?: string } }
   | { type: 'done'; payload: { result: string } }
 

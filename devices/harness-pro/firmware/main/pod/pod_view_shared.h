@@ -35,3 +35,7 @@ bool pod_activity_verb(const char *text, char *out, size_t cap, int room);
 static inline int pod_lcd_verb_room(int width) { return width - 16 - 33 - 12 - 16 - 62; }
 // The verb the round dial shows for a working turn of `secs` seconds ("Working", "Brewing", "Cooking", ...: one per 6 s).
 const char *pod_working_verb(uint32_t secs);
+// The recap text both skins show: the agent's sentences joined with spaces (the bytes written), then cut to the first 50 words
+// with "..." when it has more. pod_recap_cut may work in place; cap must leave room for the dots (4 bytes). Returns the length.
+int pod_recap_join(const pod_agent_t *, char *out, size_t cap);
+int pod_recap_cut(const char *recap, char *out, size_t cap);

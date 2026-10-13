@@ -18,7 +18,9 @@ typedef struct { int16_t x, y, w, h; pod_action_t action; int16_t arg; char id[I
 // drawn on the Inbox or while talking) and the bell's left edge. banner: set by the glue before pod_render when it will add
 // the notification banner after it, so the views leave POD_BANNER_RUNS (and the bell's POD_BELL_RUNS) spare.
 typedef struct { ht_scene_t *scene; pod_hit_t hits[32]; uint8_t hit_count; bool tabs_moving; int tabs_off;
-                 uint8_t unread; int16_t bell_x; bool banner; } pod_out_frame_t;
+                 uint8_t unread; int16_t bell_x; bool banner;
+                 int mic_level;   // 0..4, pro_rec_level(): set by the app layer before rendering; the Console voice wave reads it
+               } pod_out_frame_t;
 enum { POD_BELL_RUNS = 6, POD_BANNER_RUNS = 16 };
 static inline int pod_spare_runs(const pod_out_frame_t *f) { return (f->unread ? POD_BELL_RUNS : 0) + (f->banner ? POD_BANNER_RUNS : 0); }
 
@@ -92,6 +94,8 @@ bool pod_hit_add_id(pod_out_frame_t *, int x, int y, int w, int h, pod_action_t 
 // scroll is the page's first row (even), so max_row is the last page's. pitch is a page's height in px.
 int pod_tabs_pitch(void);
 int pod_tabs_pages(const pod_model_t *);
+// The grid's pages for the skin: the Console's Overview holds four cards a page (2 x 2), the Classic grid six.
+int pod_tabs_pages_of(const pod_nav_t *, const pod_model_t *);
 // The Playing ribbon's bars step through three heights every POD_TABS_BAR_MS; pod_tabs_ribbon: does a ribbon show on this resting page?
 enum { POD_TABS_BAR_MS = 300 };
 bool pod_tabs_ribbon(const pod_model_t *, int page);

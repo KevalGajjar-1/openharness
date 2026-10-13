@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "pod/console/cs.h"
 #include "pod/pod_view.h"
 #include "pro_canvas.h"
 
@@ -81,6 +82,78 @@ static void demo(void)
     pod_nav_init(&N);
 }
 
+// Console fixtures (--skin console only, so the Classic screens keep their model): the agent's verb, steps and stats the Console
+// screens read. screen's tokens pick edge cases: long (long names, a long question, long steps), offline, extreme (999 passes, 12 failures, 1:23:45, huge tokens), testfail (desk's turn
+// stats fail), scroll (desk's recap is long and scrolled), and inbox (reading-list's last turn failed).
+static void set_steps(const char *id, int n, const char *const text[], const uint16_t at[])
+{
+    pod_agent_t *a = (pod_agent_t *)pod_model_find(&M, id);
+    for (int i = 0; i < n; i++) { snprintf(a->steps[i], sizeof a->steps[i], "%s", text[i]); a->step_at_s[i] = at[i]; }
+    a->step_count = (uint8_t)n;
+}
+static void console_fixture(const char *screen)
+{
+    static const char *const fw[] = {"npm test \xc2\xb7 44 passed", "The hero now uses the new gradient; pricing is next.", "Read src/pricing.tsx", "Read src/hero.tsx", "Read src/tokens.css", "Listed src/"};
+    static const uint16_t fw_at[] = {41, 72, 130, 151, 160, 170};
+    static const char *const cli[] = {"Ran the migration on a copy \xc2\xb7 ok", "Read migrations/0042_retry_queue.sql"};
+    static const uint16_t cli_at[] = {12, 30};
+    pod_agent_t *a;
+    set_steps("fw", 6, fw, fw_at);
+    snprintf(((pod_agent_t *)pod_model_find(&M, "fw"))->verb, POD_VERB_BYTES, "Edit");
+    set_steps("cli", 2, cli, cli_at);
+    set_steps("desk", 6, fw, fw_at);
+    ((pod_agent_t *)pod_model_find(&M, "desk"))->step_total = 14;   // the recap's STEPS tile: the turn's total (the list holds 6); the other recaps' turn starts were never seen
+    pod_model_turn_stats(&M, "desk", 54, 0, 0, 42900, 18500);   // the TOKENS tile: 61.4k
+    if (strstr(screen, "testfail")) { pod_model_turn_stats(&M, "desk", 52, 2, 1, -1, -1); }
+    if (strstr(screen, "extreme")) {   // recap tiles at their widest: 3 digits of passes, failures, a 1:23:45 duration, a huge token count and commit count
+        pod_model_turn_stats(&M, "desk", 999, 12, 99999, 99999999, 99999999);
+        ((pod_agent_t *)pod_model_find(&M, "desk"))->elapsed_s = 5025;
+    }
+    if (!strncmp(screen, "inbox", 5)) ((pod_agent_t *)pod_model_find(&M, "notes2"))->failed = true;
+    if (strstr(screen, "offline")) ((pod_agent_t *)pod_model_find(&M, "be"))->state = POD_OFFLINE;
+    if (strstr(screen, "long")) {
+        static const char *const lg[] = {"A very long tool line that goes on and on and certainly cannot fit in the row of the timeline at all, not even close",
+                                         "Read a/very/deeply/nested/path/to/some/source/file/that/has/a/long/name/and_an_even_longer_basename_in_the_end.tsx", "Short"};
+        static const uint16_t at[] = {41, 0xFFFF, 130};
+        a = (pod_agent_t *)pod_model_find(&M, "fw");
+        snprintf(a->name, sizeof a->name, "marketing-site-redesign-with-a-really-long-name");
+        snprintf(a->machine, sizeof a->machine, "A Very Long Machine Name On The Network");
+        snprintf(a->activity, sizeof a->activity, "src/components/pricing/PricingCardWithAnimatedGradientBackground.tsx and then some");
+        set_steps("fw", 3, lg, at);
+        pod_model_question(&M, "cli", "Run the migration on the dev database now, or do you want me to wait until the retry queue drains and the nightly backup has finished, "
+                           "because the migration locks the jobs table for about a minute and every worker will stall meanwhile and then retry?");
+    }
+    if (strstr(screen, "scroll")) {
+        char text[2048] = "";
+        for (int i = 0; strlen(text) < 1900; i++) { char t[80]; snprintf(t, sizeof t, "Sentence %d of the recap says the Relaxing chip follows Rest. ", i + 1); strcat(text, t); }
+        pod_model_recap(&M, "desk", text, false);
+    }
+}
+
+// Classic fixtures through the public model feeds only, so the same tool renders them from the tree before the Console skin existed:
+// steps6 (fw gets eight distinct activity sentences: Classic shows the last three) and qresume (cli works, asks, the question
+// closes, then one more sentence: Classic shows nothing from before the question).
+static void classic_fixture(const char *screen)
+{
+    if (strstr(screen, "steps6"))
+        for (int i = 0; i < 8; i++) {
+            char t[40];
+            snprintf(t, sizeof t, "Reading file number %d of the tree", i);
+            pod_model_turn(&M, "fw", "activity", t, 140 + i, T0 + 1000u + (uint32_t)i * 1000u);
+        }
+    if (strstr(screen, "qresume")) {
+        pod_model_turn(&M, "cli", "started", NULL, 0, T0 + 1000u);
+        for (int i = 0; i < 4; i++) {
+            char t[40];
+            snprintf(t, sizeof t, "Checking migration step %d", i);
+            pod_model_turn(&M, "cli", "activity", t, 5 + i, T0 + 2000u + (uint32_t)i * 1000u);
+        }
+        pod_model_question(&M, "cli", "Run the migration now?");
+        pod_model_question_close(&M, "cli");
+        pod_model_turn(&M, "cli", "activity", "Running the migration", 12, T0 + 9000u);
+    }
+}
+
 // The mockup's Option B: Recent, then five tabs with the second selected, the last one empty.
 static void mock_tabs(void)
 {
@@ -130,19 +203,108 @@ static bool open_agent(const char *id)
     return false;
 }
 
+// --spec <out.json>: every run of the finished scene and every hit rect, for the design-spec export (dev only).
+// Run kinds 1..5 are pro_canvas.c's private PRO_TEXT / PRO_RECT / PRO_IMAGE / PRO_RECT_AA / PRO_RECT_AA_STROKE; 16..19 are pod_draw.h's. Colours are RGB565
+// (the scene's own) expanded to 8 bits per channel; build.py recovers the original hex from the C(0x...) sources.
+static void json_str(FILE *f, const char *t)
+{
+    fputc('"', f);
+    for (const unsigned char *p = (const unsigned char *)t; *p; p++) {
+        if (*p == '"' || *p == '\\') fprintf(f, "\\%c", *p);
+        else if (*p < 0x20) fprintf(f, "\\u%04x", *p);
+        else fputc(*p, f);
+    }
+    fputc('"', f);
+}
+static void json_col(FILE *f, const char *key, unsigned v)
+{
+    fprintf(f, ",\"%s\":\"#%02x%02x%02x\",\"%s565\":%u", key, (v >> 11) * 255 / 31, ((v >> 5) & 63) * 255 / 63, (v & 31) * 255 / 31, key, v);
+}
+static void write_spec(const char *path, const char *screen)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); exit(1); }
+    fprintf(f, "{\"screen\":"); json_str(f, screen);
+    fprintf(f, ",\"width\":720,\"height\":720,\"runs\":[");
+    for (int i = 0; i < S.count; i++) {
+        const ht_run_t *r = &S.runs[i];
+        ht_rect_t b = ht_run_bounds(r);
+        const char *kind = "unknown";
+        switch (r->pro_kind) {
+        case 1: kind = "text"; break; case 2: kind = "rect"; break; case 3: kind = "image"; break;
+        case 4: kind = "rect-aa"; break; case 5: kind = "rect-aa-stroke"; break;
+        case 16: kind = "pet-cell"; break; case 17: kind = "arc"; break; case 18: kind = "gradient"; break; case 19: kind = "triangle"; break;
+        }
+        fprintf(f, "%s{\"i\":%d,\"kind\":\"%s\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d", i ? "," : "", i, kind, b.x, b.y, b.w, b.h);
+        if (r->pro_kind == 1) {
+            const ht_pro_font_t *ft = r->pro_font;
+            int size = ft == &ht_pro_24 ? 24 : ft == &ht_pro_32 ? 32 : ft == &ht_pro_42 ? 42 : ft == &ht_pro_56 ? 56 : 0;
+            fprintf(f, ",\"text\":"); json_str(f, r->text);
+            fprintf(f, ",\"size\":%d,\"line_height\":%d,\"clip_w\":%d,\"measured_w\":%d,\"align\":\"left\"", size, ft ? ft->height : 0, r->w, ht_pro_width(ft, r->text));
+            json_col(f, "color", r->fg);
+        } else if (r->pro_kind == 2) {
+            fprintf(f, ",\"radius\":%d", r->radius); json_col(f, "color", r->fg);
+        } else if (r->pro_kind == 4) {   // anti-aliased rounded rect: radius and colour
+            fprintf(f, ",\"radius\":%d", r->radius); json_col(f, "color", r->fg);
+        } else if (r->pro_kind == 5) {   // anti-aliased rect with a border: radius, border colour (color), fill colour in text[0..1]
+            uint16_t fill; memcpy(&fill, r->text, sizeof fill);
+            fprintf(f, ",\"radius\":%d", r->radius); json_col(f, "color", r->fg); json_col(f, "fill", fill);
+        } else if (r->pro_kind == 3) {
+            fprintf(f, ",\"opacity\":%d", r->radius ? r->radius : 255);
+        } else if (r->pro_kind == 16) {
+            const ht_cell_frame_t *cf = r->bitmap.asset;
+            fprintf(f, ",\"zoom8\":%d,\"cols\":%d,\"rows\":%d,\"cell\":%d", r->radius, cf->cols, cf->rows, cf->cell);
+        } else if (r->pro_kind == 17) {
+            int16_t a[2]; uint16_t u[2];   // arc_params_t: cx16 cy16 r16 w16 ...
+            memcpy(a, r->text, 4); memcpy(u, r->text + 4, 4);
+            fprintf(f, ",\"cx\":%.4f,\"cy\":%.4f,\"r\":%.4f,\"band\":%.4f", a[0] / 16.0, a[1] / 16.0, u[0] / 16.0, u[1] / 16.0);
+            json_col(f, "color", r->fg);
+        } else if (r->pro_kind == 18) {
+            uint16_t g[2]; memcpy(g, r->text, 4);
+            fprintf(f, ",\"radius\":%d", r->radius); json_col(f, "color", g[0]); json_col(f, "color2", g[1]);
+        } else if (r->pro_kind == 19) {
+            int16_t v[6]; memcpy(v, r->text, 12);
+            fprintf(f, ",\"points\":[[%.4f,%.4f],[%.4f,%.4f],[%.4f,%.4f]]", v[0] / 16.0, v[1] / 16.0, v[2] / 16.0, v[3] / 16.0, v[4] / 16.0, v[5] / 16.0);
+            json_col(f, "color", r->fg);
+        }
+        fputc('}', f);
+    }
+    static const char *const act[] = {"NONE", "BACK", "BANNER", "OPEN_TAB", "OPEN_AGENT", "PREV", "NEXT", "TALK", "RECAP", "PANES", "TABS", "INBOX", "OPEN_NOTIF", "ATTENTION", "FOLLOW", "SCROLL"};
+    fprintf(f, "],\"hits\":[");
+    for (int i = 0; i < F.hit_count; i++) {
+        const pod_hit_t *h = &F.hits[i];
+        fprintf(f, "%s{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"action\":\"%s\",\"arg\":%d,\"id\":", i ? "," : "", h->x, h->y, h->w, h->h,
+                (unsigned)h->action < sizeof act / sizeof act[0] ? act[h->action] : "?", h->arg);
+        json_str(f, h->id);
+        fputc('}', f);
+    }
+    fprintf(f, "]}\n");
+    fclose(f);
+}
+
 int main(int argc, char **argv)
 {
+    const char *spec = NULL;
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--spec")) { spec = argv[i + 1]; memmove(argv + i, argv + i + 2, (size_t)(argc - i - 2) * sizeof *argv); argc -= 2; break; }
+    pod_skin_t skin = POD_SKIN_CLASSIC;   // --skin console|classic
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--skin")) { skin = !strcmp(argv[i + 1], "console") ? POD_SKIN_CONSOLE : POD_SKIN_CLASSIC; memmove(argv + i, argv + i + 2, (size_t)(argc - i - 2) * sizeof *argv); argc -= 2; break; }
     bool notice = false, notice_bad = false;
     const char *notice_text = "Didn't catch that";
     int ota_pct = -1;   // ota:<pct> | ota:restart (the update screen, the mockup's 0.1.2 -> 0.1.3); restart is -2
-    if (argc < 3) { fprintf(stderr, "usage: pod_render <screen> <out.ppm> [now_ms]\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: pod_render [--spec out.json] [--skin console|classic] <screen> <out.ppm> [now_ms]\n"); return 2; }
     const char *screen = argv[1];
     bool timing = !strncmp(screen, "time:", 5);   // time:<screen>: rasterise the screen 50 times, print the mean us per full frame
     if (timing) screen += 5;
     uint32_t now = argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : T0;
     demo();
-    bool banner = strstr(screen, "banner") != NULL, bell = banner || strstr(screen, "bell") != NULL, inbox = !strcmp(screen, "inbox");
-    if (bell || inbox) {   // unread entries, oldest first (the newest ends on top); "be" is the one the banner shows
+    classic_fixture(screen);
+    N.skin = skin;
+    bool banner = strstr(screen, "banner") != NULL, bell = banner || strstr(screen, "bell") != NULL, inbox = !strncmp(screen, "inbox", 5);
+    if (skin == POD_SKIN_CONSOLE && (!strncmp(screen, "agent:", 6) || !strncmp(screen, "recap:", 6) || !strncmp(screen, "talk:", 5) || !strncmp(screen, "inbox", 5)))
+        console_fixture(screen);   // only the screens that read it: the older Console goldens keep their model
+    if ((bell || inbox) && !strstr(screen, "quiet")) {   // unread entries, oldest first (the newest ends on top); "be" is the one the banner shows
         pod_model_unread_add(&M, "cur", "api-client", "Bumped the SDK and regenerated the client. Nothing else changed.", 41, T0 - 3600000u);
         pod_model_unread_add(&M, "vault", "obsidian-vault", "Added two more poems to Poems and Themes.md", 12, T0 - 720000u);
         pod_model_unread_add(&M, "ota", "dial-ota", "Built and flashed the dial with the new face. The OTA channel is untouched.", 301, T0 - 180000u);
@@ -176,6 +338,27 @@ int main(int argc, char **argv)
         if (strstr(screen, "talk")) { pod_nav_act(&N, &M, POD_A_OPEN_TAB, 1, T0); pod_nav_act(&N, &M, POD_A_OPEN_AGENT, 0, T0); }
     } else if (!strcmp(screen, "recent")) {
         pod_nav_act(&N, &M, POD_A_OPEN_TAB, POD_TAB_RECENT, T0);
+    } else if (!strncmp(screen, "tabp:", 5)) {   // tabp:<n>: one tab of n panes with its real rects (Console Tab): 3 = the mockup's, 1 = full, 8 = a 3 x 3 grid with two spare
+        static const char *const P3[] = {"cli", "web", "docs"}, *const P1[] = {"be"}, *const P8[] = {"fw", "ota", "be", "cli", "web", "desk", "docs", "vault"};
+        int n = atoi(screen + 5);
+        const char *const *ids = n == 3 ? P3 : n == 1 ? P1 : P8;
+        cable_swarm_t sw[1];
+        cable_tile_t tl[8];
+        memset(sw, 0, sizeof sw);
+        memset(tl, 0, sizeof tl);
+        snprintf(sw[0].id, SWARM_ID_MAX, "p");
+        snprintf(sw[0].name, CABLE_NAME_MAX, "Backend");
+        sw[0].panes = sw[0].agents = (uint8_t)n;
+        for (int k = 0; k < n; k++) {
+            int c = n == 3 ? (k == 0 ? 0 : 1) : n == 1 ? 0 : k % 3, cols = n == 3 ? 2 : n == 1 ? 1 : 3;
+            int r = n == 3 ? (k == 0 ? 0 : k - 1) : n == 1 ? 0 : k / 3, rows = n == 3 ? (k == 0 ? 1 : 2) : n == 1 ? 1 : 3;
+            tl[k].x1 = (int16_t)(c * 1000 / cols); tl[k].x2 = (int16_t)((c + 1) * 1000 / cols);
+            tl[k].y1 = (int16_t)(r * 1000 / rows); tl[k].y2 = (int16_t)((r + 1) * 1000 / rows);
+            snprintf(tl[k].agent_id, sizeof tl[k].agent_id, "%s", ids[k]);
+        }
+        uint8_t cnt[1] = {(uint8_t)n};
+        pod_model_swarms(&M, sw, &ids, cnt, 1, "p", tl, n);
+        pod_nav_act(&N, &M, POD_A_OPEN_TAB, 0, T0);
     } else if (!strncmp(screen, "tab:", 4)) {
         pod_nav_act(&N, &M, POD_A_OPEN_TAB, atoi(screen + 4), T0);
     } else if (!strncmp(screen, "agent:", 6) || !strncmp(screen, "recap:", 6) || !strncmp(screen, "talk:", 5)) {
@@ -189,6 +372,7 @@ int main(int argc, char **argv)
         if (screen[0] == 'r' && N.stack[N.depth - 1].view != POD_V_RECAP) pod_nav_act(&N, &M, POD_A_RECAP, 0, T0);
         if (screen[0] == 't') pod_nav_act(&N, &M, POD_A_TALK, 0, T0);
         if (screen[0] == 't' && suffix && !strcmp(suffix, "send")) pod_nav_act(&N, &M, POD_A_TALK, 0, T0 + 1000);
+        if (suffix && !strcmp(suffix, "scroll")) N.stack[N.depth - 1].scroll = 3;
         if (suffix && !strcmp(suffix, "notice")) notice = true;
         if (suffix && (!strcmp(suffix, "updated") || !strcmp(suffix, "failed"))) {   // agent:<id>:updated|failed, the OTA pills
             notice = true;
@@ -209,21 +393,47 @@ int main(int argc, char **argv)
     ht_scene_clear(&S, ht_rgb(0xffffff));
     F.scene = &S;
     F.banner = banner;
+    F.mic_level = strstr(screen, "quiet") ? 0 : 3;
     if (ota_pct != -1) {
-        pod_view_ota(&F, "0.1.2", "0.1.3", ota_pct < 0 ? 100 : ota_pct, ota_pct == -2);
+        if (skin == POD_SKIN_CONSOLE) cs_view_ota(&F, "0.1.1", "0.1.2", ota_pct < 0 ? 100 : ota_pct, ota_pct == -2);
+        else pod_view_ota(&F, "0.1.2", "0.1.3", ota_pct < 0 ? 100 : ota_pct, ota_pct == -2);
+    } else if (skin == POD_SKIN_CONSOLE && !strncmp(screen, "chrome", 6)) {   // the Console chrome: bar, marks, hint strip (chrome:talk: the input bar)
+        pod_agent_t a;
+        memset(&a, 0, sizeof a);
+        static const char *const st[] = {"npm test \xc2\xb7 44 passed", "The hero now uses the new gradient; pricing is next.", "Read src/pricing.tsx", "Read src/hero.tsx"};
+        static const uint16_t at[] = {41, 72, 130, 151};
+        for (int i = 0; i < 4; i++) { snprintf(a.steps[i], sizeof a.steps[i], "%s", st[i]); a.step_at_s[i] = at[i]; }
+        a.step_count = 4;
+        ht_pro_rect(&S, 0, 0, POD_W, POD_W, 0, ht_rgb(CS_GROUND));
+        const char *const crumbs[] = {"Desktop", "landing"};
+        bool talk = strstr(screen, "talk") != NULL;
+        cs_bar(&F, crumbs, 2, 6, 1, talk ? 0 : 3, talk ? "make the hero gradient subtler" : NULL, now);
+        cs_dot(&S, 36, 110, 'g', now); cs_dot(&S, 66, 110, 'q', now); cs_dot(&S, 96, 110, 'd', now);
+        cs_dot(&S, 126, 110, 'r', now); cs_dot(&S, 156, 110, 'i', now);
+        cs_badge(&S, 400, 96, "claude"); cs_badge(&S, 440, 96, "codex"); cs_badge(&S, 480, 96, "muse");
+        cs_badge(&S, 520, 96, "cursor"); cs_badge(&S, 560, 96, "kilo");
+        cs_working_mark(&S, 28, 140, now);
+        cs_logo(&S, 100, 130, 36, "claude"); cs_logo(&S, 150, 130, 44, "codex");
+        const char *const keys[] = {"hold", "\xe2\x86\x90 \xe2\x86\x92", "\xe2\x86\x91"}, *const labels[] = {"talk", "panes", "back"};
+        cs_hints(&F, keys, labels, 3);
     } else if (!strncmp(screen, "chrome", 6)) {   // the status bar and the transport alone: chrome or chrome:talk
         pod_status(&F, "Firmware", true, 0);
         pod_transport(&F, strstr(screen, "talk") != NULL);
     } else {
         pod_render(&F, &N, &M, now);
     }
-    if (banner) pod_banner(&F, &M, pod_model_unread_find(&M, "be"), now);   // the glue draws it after pod_render
+    if (banner) {   // the glue draws it after pod_render, and only while the entry is unread (pod_glue.c)
+        const pod_unread_t *ban = pod_model_unread_find(&M, "be");
+        if (ban && skin == POD_SKIN_CONSOLE) cs_toast(&F, &M, ban, now);
+        else if (ban) pod_banner(&F, &M, ban, now);
+    }
     if (notice) {   // the glue's pill (pod_glue.c pod_ui_render), repeated here: this tool does not link the glue
         const char *text = notice_text;
         int w = ht_pro_width(&ht_pro_24, text), pw = w + 40, ny = POD_TRANSPORT_Y - 8 - 40;
         ht_pro_rect(&S, (POD_W - pw) / 2, ny, pw, 40, 20, ht_rgb(notice_bad ? 0xb3261e : 0x111111));
         ht_pro_text(&S, (POD_W - w) / 2, ny + 7, w, &ht_pro_24, ht_rgb(0xffffff), text);
     }
+    if (spec) write_spec(spec, screen);
     static uint16_t px[720 * 720];
     ht_rect_t all = {0, 0, 720, 720};
     if (timing) {
@@ -234,6 +444,11 @@ int main(int argc, char **argv)
             clock_gettime(CLOCK_MONOTONIC, &a);
             ht_scene_clear(&S, ht_rgb(0xffffff));
             pod_render(&F, &N, &M, now);
+            if (banner) {   // the glue draws the toast after pod_render (and only while the entry is unread): time it too
+                const pod_unread_t *bn = pod_model_unread_find(&M, "be");
+                if (bn && skin == POD_SKIN_CONSOLE) cs_toast(&F, &M, bn, now);
+                else if (bn) pod_banner(&F, &M, bn, now);
+            }
             clock_gettime(CLOCK_MONOTONIC, &b);
             build += (double)(b.tv_sec - a.tv_sec) * 1e6 + (double)(b.tv_nsec - a.tv_nsec) / 1e3;
             clock_gettime(CLOCK_MONOTONIC, &a);
@@ -241,8 +456,17 @@ int main(int argc, char **argv)
             clock_gettime(CLOCK_MONOTONIC, &b);
             raster += (double)(b.tv_sec - a.tv_sec) * 1e6 + (double)(b.tv_nsec - a.tv_nsec) / 1e3;
         }
-        printf("%s: %d runs; mean per full frame over %d: %.0f us rasterise, %.0f us build the scene\n", screen, S.count, REPS,
-               raster / REPS, build / REPS);
+        // The device rasterises in 24-row strips (pro_frame.c): the number the Console perf check (test_cs_perf.sh) compares.
+        double strips = 1e30;
+        for (int rep = 0; rep < REPS; rep++) {
+            clock_gettime(CLOCK_MONOTONIC, &a);
+            for (int y = 0; y < 720; y += 24) { ht_rect_t st = {0, (int16_t)y, 720, 24}; ht_raster(&S, st, px); }
+            clock_gettime(CLOCK_MONOTONIC, &b);
+            double us = (double)(b.tv_sec - a.tv_sec) * 1e6 + (double)(b.tv_nsec - a.tv_nsec) / 1e3;
+            if (us < strips) strips = us;
+        }
+        printf("%s: %d runs; mean per full frame over %d: %.0f us rasterise, %.0f us build the scene; strips24 best %.0f us\n", screen, S.count, REPS,
+               raster / REPS, build / REPS, strips);
         return 0;
     }
     ht_raster(&S, all, px);

@@ -41,6 +41,15 @@ function setup(engine = 'claude', over: Partial<FunnelDeps> = {}) {
 describe('the event funnel', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('sends the clients a shell result without its outputTail, and still feeds the commander mirror with it', () => {
+    const sent: Array<{ payload: object }> = []
+    const { funnel, deps } = setup('claude', { clients: { send: vi.fn((f: { payload: object }) => { sent.push(f) }) } as never })
+    const end = { type: 'tool_end', payload: { id: 't1', tool: 'Bash', output: 'x', outputTail: 'tail', isError: false, summary: '' } } as Event
+    funnel('s1', [end])
+    expect(sent[0].payload).not.toHaveProperty('outputTail')
+    expect((deps.mirror.ingest as ReturnType<typeof vi.fn>).mock.calls[0][0][0].payload.outputTail).toBe('tail')
+  })
+
   it('carries on past a device service that throws: every consumer after it still gets the event', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})

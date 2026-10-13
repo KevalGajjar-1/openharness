@@ -42,6 +42,9 @@ describe('owner device management', () => {
     await harnessDevicesRequest(service, 'harness_device_settings', { id: 'usb-b', patch: { screenTurned: true } })
     expect(set).toHaveBeenCalledExactlyOnceWith('usb-b', { screenTurned: true })
     expect(deviceSettingsPatchSchema.safeParse({ screenTurned: 'yes' }).success).toBe(false)
+    expect(deviceSettingsPatchSchema.safeParse({ uiSkin: 'classic' }).success).toBe(true)
+    expect(deviceSettingsPatchSchema.safeParse({ uiSkin: 1 }).success).toBe(false)
+    expect(deviceSettingsPatchSchema.safeParse({ uiSkin: 'x' }).success).toBe(false)
   })
   it('refuses missing, disconnected, updating and invalid targets without a write', async () => {
     const { service, set } = fixture()
