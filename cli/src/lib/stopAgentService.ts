@@ -173,15 +173,21 @@ export function createStopAgentService(deps: StopAgentServiceDeps) {
         }
         const panes = await Promise.allSettled(tmuxBackend
           ? s.runtimes.filter((runtime): runtime is TmuxRuntimeRef => runtime.backend === 'tmux')
-            .map(runtime => tmuxBackend.kill(runtime)) : [])
+            .map(runtime => tmuxBackend.kill(runtime, () => {
+              // tmux's notification gate can wait after the preceding check.
+              // Carry the original Close permission to the actual kill command.
+              verifyTranscript()
+              return sameTarget() && options.current?.() !== false
+            })) : [])
+        if (nativeIdentityError) throw nativeIdentityError
         if (panes.some(result => result.status !== 'fulfilled' || result.value.state !== 'succeeded')
           || (isTerminalEngine(s.engine) && !panes.length)) {
           throw new AgentStopError('Could not confirm that the harness stopped. Its saved conversation is safe. Try stopping again.')
         }
-        if (!sameTarget()) {
+        verifyTranscript()
+        if (!sameTarget() || options.current?.() === false) {
           throw new AgentStopError('The harness changed while pausing. Check its current state before trying again.')
         }
-        verifyTranscript()
         stoppedAgents.finishResume(sessionId)
         if (s.processIdentity) agentReconciler.suppress(s)
         // This publishes agent_deleted. It must follow confirmed termination, or a

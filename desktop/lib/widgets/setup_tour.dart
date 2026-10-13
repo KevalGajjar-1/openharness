@@ -9,15 +9,12 @@ import '../bootstrap/setup_progress.dart';
 import '../shared/theme/app_icons.dart';
 import '../shared/theme/app_theme.dart' as grid;
 import '../shared/widgets/app_icon_button.dart';
-import '../shortcuts/app_shortcuts.dart';
-import '../shortcuts/keymap.dart';
-import '../shortcuts/keymap_commands.dart';
 import '../state/app_state.dart';
 import 'environment_setup_screen.dart';
 import 'setup_tour_art.dart';
 import 'window_chrome.dart';
 
-/// The welcome tour: seven slides on what Harness does.
+/// The welcome tour: five slides on what Harness does.
 ///
 /// A fresh computer sees it while setup installs with nobody at the keyboard
 /// ([SetupTourScreen]), with the install as one line under it, like an OS
@@ -68,34 +65,8 @@ const setupTourOpeningLine = 'Harness is ready. Opening…';
 /// The same, when the sign-in step comes next instead of Harness itself.
 const setupTourReadyLine = 'Harness is ready.';
 
-/// The keycaps for the Cmd-P search, from the live default keymap, so Linux
-/// (Alt, where the Mac takes ⌘) reads its own chord.
-List<String> get tourSearchKeys {
-  final command = harnessCommands.firstWhere(
-    (command) => command.id == 'harnesses.list',
-  );
-  final keys = command.keys;
-  return keys.isEmpty
-      ? const ['⌘', 'P']
-      : describeKeyStrokeKeys(KeyStroke.parse(keys.first));
-}
-
-/// The keycaps for New Harness (Cmd-N), the same way.
-List<String> get tourNewHarnessKeys {
-  for (final shortcut in appShortcuts()) {
-    if (shortcut.action == ShortcutAction.newAgent) {
-      return describeShortcutKeys(shortcut.activator);
-    }
-  }
-  return const ['⌘', 'N'];
-}
-
-/// The seven slides, in order of importance. Copy is the approved render's.
+/// The five slides, in order of importance. Copy is the approved render's.
 List<TourSlide> tourSlides() {
-  final search = tourSearchKeys;
-  final create = tourNewHarnessKeys;
-  final searchChord = search.join(chordKeySeparator);
-  final createChord = create.join(chordKeySeparator);
   final computer = tourComputerNoun;
   return [
     TourSlide(
@@ -115,24 +86,6 @@ List<TourSlide> tourSlides() {
           'each job to the agent that is best at it.',
       artLabel: 'Four agents working in a two by two grid',
       art: (_) => const TourAgentsArt(),
-    ),
-    TourSlide(
-      kicker: 'Keyboard first',
-      title: '$searchChord finds\nany harness.',
-      copy:
-          'One search over every harness on all your machines, with all your '
-          "agents. A few letters, Return, you're in it.",
-      artLabel: 'Search results from three machines and three agents',
-      art: (_) => TourSearchArt(keys: search),
-    ),
-    TourSlide(
-      kicker: 'Keyboard first',
-      title: '$createChord starts\na new harness.',
-      copy:
-          'Any agent, on any of your machines, in any project. Pick them by '
-          'keys, type what you want, press Return.',
-      artLabel: 'The New Harness box with an agent, a machine and a project',
-      art: (_) => TourNewHarnessArt(keys: create),
     ),
     TourSlide(
       kicker: 'Always there',

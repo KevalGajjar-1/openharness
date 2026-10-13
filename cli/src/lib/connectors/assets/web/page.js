@@ -9,6 +9,13 @@ const search = $("#search");
 let items = [];
 let view = "browse";
 const pending = new Map();  // connector -> flow id
+let noticeTimer = 0;
+// A notice goes away on its own, so a disconnect from earlier does not stand there for good.
+function say(text) {
+  notice.textContent = text;
+  clearTimeout(noticeTimer);
+  if (text) noticeTimer = setTimeout(() => {notice.textContent = "";}, 20000);
+}
 
 async function request(path, body) {
   const response = await fetch(path, {
@@ -106,12 +113,12 @@ async function follow(item, flow) {
     for (;;) {
       await new Promise((done) => setTimeout(done, 1000));
       const status = await request("/api/flows/" + flow);
-      if (status.state === "connected") {notice.textContent = item.name + " connected. Your agents can use it now."; break;}
-      if (status.state === "failed") {notice.textContent = item.name + ": " + status.error; break;}
+      if (status.state === "connected") {say(item.name + " connected. Your agents can use it now."); break;}
+      if (status.state === "failed") {say(item.name + ": " + status.error); break;}
     }
-  } catch (e) {notice.textContent = e.message;}
+  } catch (e) {say(e.message);}
   pending.delete(item.connector);
-  await refresh().catch((e) => {notice.textContent = e.message;});
+  await refresh().catch((e) => {say(e.message);});
 }
 function blankTab() {
   const tab = window.open("about:blank", "_blank");
@@ -120,18 +127,18 @@ function blankTab() {
   return tab;
 }
 async function connect(item) {
-  notice.textContent = "";
+  say("");
   // Open the tab inside the click, so the browser allows it; the address follows.
   const tab = blankTab();
   try {
     const result = await request("/api/connect", {connector: item.connector});
     if (result.authorize_url && tab) tab.location.href = result.authorize_url;
     else if (tab) tab.close();
-    if (result.authorize_url && !tab) notice.textContent = "Allow pop-ups for this page to sign in to " + item.name + ".";
+    if (result.authorize_url && !tab) say("Allow pop-ups for this page to sign in to " + item.name + ".");
     await follow(item, result.flow);
   } catch (e) {
     if (tab) tab.close();
-    notice.textContent = item.name + ": " + e.message;
+    say(item.name + ": " + e.message);
   }
 }
 let disconnecting = null;
@@ -147,9 +154,9 @@ $("#confirm-form").addEventListener("submit", async (event) => {
   const item = disconnecting;
   try {
     await request("/api/disconnect", {connector: item.connector});
-    notice.textContent = item.name + " disconnected on this computer.";
+    say(item.name + " disconnected.");
     await refresh();
-  } catch (e) {notice.textContent = e.message;}
+  } catch (e) {say(e.message);}
 });
 function headers(text) {
   const result = {};
@@ -184,7 +191,7 @@ $("#custom-form").addEventListener("submit", async (event) => {
       await follow({connector: "custom:" + name, name}, result.flow);
     } else {
       if (tab) tab.close();
-      notice.textContent = name + " added. Your agents can use it now.";
+      say(name + " added. Your agents can use it now.");
       await refresh();
     }
   } catch (e) {
@@ -202,7 +209,7 @@ function show(next) {
 }
 $("#browse").addEventListener("click", () => show("browse"));
 $("#connected").addEventListener("click", () => show("connected"));
-$("#reload").addEventListener("click", () => refresh().catch((e) => {notice.textContent = e.message;}));
+$("#reload").addEventListener("click", () => refresh().catch((e) => {say(e.message);}));
 search.addEventListener("input", render);
-if (!key) notice.textContent = "Open “harness connections” from the terminal to manage your accounts.";
-else refresh().catch((e) => {notice.textContent = e.message;});
+if (!key) say("Open “harness connections” from the terminal to manage your accounts.");
+else refresh().catch((e) => {say(e.message);});

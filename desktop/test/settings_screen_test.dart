@@ -98,7 +98,6 @@ void main() {
         'Appearance',
         'Notifications',
         'Keyboard shortcuts',
-        'Agents',
         'Connectors',
         'Usage',
         'Experimental',
@@ -117,7 +116,12 @@ void main() {
               .dy,
       ];
       expect(tops, [...tops]..sort(), reason: 'in this order');
-      // What moved out: robots to the Devices tab, devices and profiles to Machines.
+      // What moved out: robots to the Devices tab, devices and profiles to Machines, and what
+      // agents may do to Experimental (the account's, owner 2026-10-12).
+      expect(
+        find.descendant(of: find.byType(SettingsNav), matching: find.text('Agents')),
+        findsNothing,
+      );
       for (final gone in [
         'Customize',
         'Your devices',

@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../shared/theme/app_theme.dart' as grid;
 
-/// A way on that is words, not a box: Skip and Continue with email on the
-/// sign-in step, and Continue with email on the sign-in screen, where the
+/// A way on that is words, not a box: Continue with email on the
+/// sign-in step and the sign-in screen, where the
 /// buttons above it are the ones the screen is asking for.
 ///
 /// Not a [TextButton]: the theme gives those a rim and a fill of their own,

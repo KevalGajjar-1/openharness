@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/core/models.dart';
+import 'package:harness/models/local_model.dart';
 import 'package:harness/models/model_search_catalog.dart';
 import 'package:harness/models/api_connections_controller.dart';
 import 'package:harness/state/swarm_navigation.dart';
@@ -164,7 +165,7 @@ void main() {
       await app.modelManager.refresh();
       expect(
         grouped.catalogHeading,
-        'Get for ${thisComputerName()} · 22 GB VRAM free',
+        'Get for ${thisComputerName()} · 22 GB VRAM for models',
       );
     } finally {
       grouped.dispose();
@@ -421,6 +422,90 @@ void main() {
       expect(search.rows.map((row) => row.title), ['qwen3.8-27b']);
       expect(app.actions, isEmpty);
       expect(app.downloads, isEmpty);
+    },
+  );
+
+  test(
+    'a catalog model running here is one row, matched to the name grid serves it under',
+    () async {
+      Map<String, Object?> running() => {
+        'models': [
+          {
+            'id': 'unsloth/Qwen3.8-27B-GGUF',
+            'name': 'Qwen3.8-27B',
+            'state': 'running',
+            'canStop': true,
+            'app': 'Grid',
+            'servedAs': ['Qwen3.8-27B-UD-Q4_K_M'],
+          },
+        ],
+      };
+      app.localInventory = running();
+      app.inventory = const GridModels(
+        gridName: 'home',
+        models: [],
+        grids: [
+          GridSection(
+            name: 'home',
+            own: true,
+            models: [GridModel(id: 'Qwen3.8-27B-UD-Q4_K_M', node: 'This Mac')],
+          ),
+        ],
+      );
+      await app.modelManager.refresh();
+      final served = catalog.entries.values.where(
+        (entry) => entry.local?.id == 'unsloth/Qwen3.8-27B-GGUF',
+      );
+      expect(catalog.entries, hasLength(1));
+      expect(served.single.gridModel?.id, 'Qwen3.8-27B-UD-Q4_K_M');
+    },
+  );
+
+  test('a name is shown without the quant its file ends in, as hn shows it', () {
+    const cases = {
+      'Qwen3.8-27B-UD-Q4_K_M': 'Qwen3.8-27B',
+      'Qwen3-4B-Instruct-2507-Q4_K_M': 'Qwen3-4B-Instruct-2507',
+      'qwen3:4b-instruct-2507-q4_k_m': 'qwen3:4b-instruct-2507',
+      'Kev-0.8B-Q8_0': 'Kev-0.8B',
+      'gpt-oss-20b-MXFP4': 'gpt-oss-20b',
+      'Mistral-7B-v0.1.IQ4_XS': 'Mistral-7B-v0.1',
+      'gemma-4-E4B-it-BF16': 'gemma-4-E4B-it',
+      'Qwen3.6-35B-A3B-UD_Q5_K_XL': 'Qwen3.6-35B-A3B',
+      'Qwen3.6-35B-A3B': 'Qwen3.6-35B-A3B',
+      'llama3.2:3b': 'llama3.2:3b',
+      'Qwen-Q3-Coder': 'Qwen-Q3-Coder',
+      'Q4_K_M': 'Q4_K_M',
+      '-Q4': '-Q4',
+      'Qwen/Qwen3.8-27B': 'Qwen/Qwen3.8-27B',
+    };
+    for (final MapEntry(:key, :value) in cases.entries) {
+      expect(withoutQuant(key), value, reason: key);
+    }
+  });
+
+  test(
+    'a model shared from another machine reads as it does there, without its quant',
+    () async {
+      app.localInventory = {'models': <Object>[]};
+      app.inventory = const GridModels(
+        gridName: 'home',
+        models: [],
+        grids: [
+          GridSection(
+            name: 'scholes-f8d388e6',
+            own: false,
+            models: [GridModel(id: 'Qwen3.8-27B-UD-Q4_K_M', node: 'harness')],
+          ),
+        ],
+      );
+      await app.modelManager.refresh();
+      expect(catalog.rows.single.title, 'Qwen3.8-27B · harness');
+      final entry = catalog.entries.values.single;
+      expect(entry.gridModel?.id, 'Qwen3.8-27B-UD-Q4_K_M');
+      final search = SwarmSearchController(app, const [], models: catalog)
+        ..setQuery(':Q4_K_M');
+      addTearDown(search.dispose);
+      expect(search.rows.map((row) => row.title), ['Qwen3.8-27B · harness']);
     },
   );
 

@@ -1262,6 +1262,7 @@ impl App {
                 app.follow_account(status.get("signedIn").and_then(Value::as_bool).unwrap_or(false));
                 app.connect(&id);
                 app.refresh_machines();
+                crate::account::daemon_status(app, &status);
             }
             Err(_) => {
                 app.daemon_down = true;
@@ -5732,6 +5733,7 @@ impl App {
     /// started in — once, when the desk has answered and this computer's daemon is connected.
     /// Until then (or if it never connects: not signed in) the window shows what it can.
     pub fn maybe_start_shell(&mut self) {
+        if crate::account::entry_required(self) { return }
         if self.shell_asked || !self.desk_answered || self.capture.is_some() { return }
         // A headless client makes only the sessions it is asked for.
         if self.headless { self.shell_asked = true; return }

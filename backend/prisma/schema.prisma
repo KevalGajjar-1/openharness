@@ -786,6 +786,11 @@ model ExperimentalSettings {
   focusBarCreature Boolean @default(false)
   shareButton      Boolean @default(false)
   devicesTab       Boolean @default(false)
+  /// What agents may do with Harness, per account (owner, 2026-10-12): each computer's daemon keeps a copy
+  /// it reads at every launch (cli/src/lib/agentSettings.ts). Off until the person turns one on.
+  agentsStartAgents    Boolean @default(false)
+  agentPullRequestLine Boolean @default(false)
+  agentMessages        Boolean @default(false)
   revision         Int     @default(0)
 
   @@index([userId])

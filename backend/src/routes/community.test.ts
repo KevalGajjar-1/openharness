@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Fastify, { type FastifyInstance, type InjectOptions } from 'fastify'
 
@@ -102,6 +103,16 @@ describe('publications and access', () => {
     expect((await call('POST', `harnesses/${starter}/comments`, 'alice', payload, 'stag')).statusCode).toBe(404)
     await call('DELETE', `harnesses/${id}/comments/${comment.id}`, 'bob')
     expect((await call('POST', `harnesses/${id}/comments`, 'alice', payload)).statusCode).toBe(404)
+  })
+  it('reads a gzipped publication as the JSON it carries, and refuses one that is not', async () => {
+    const game = { ...sample, files: [{ path: 'index.html', content: '<canvas></canvas><script>document.body.innerHTML = "go"</script>' }] }
+    const send = (body: Buffer) => app.inject({ method: 'POST', url: '/api/community/harnesses', payload: body, headers: { authorization: 'Bearer alice', 'x-autonomous-env': 'prod', 'content-type': 'application/gzip' } })
+    const response = await send(gzipSync(JSON.stringify(game)))
+    expect(response.statusCode).toBe(201)
+    expect(db.communityHarness.rows[0].files).toEqual(game.files)
+    expect((await send(Buffer.from('not gzip'))).statusCode).toBe(400)
+    // Bounded: a small body that would inflate past the snapshot is refused, not unpacked.
+    expect((await send(gzipSync(Buffer.alloc(7_000_000, 32)))).statusCode).toBe(400)
   })
   it('returns the same publication after a lost-response retry', async () => {
     const payload = { ...sample, clientId: crypto.randomUUID() }

@@ -472,6 +472,24 @@ class Agent {
 
   bool get isStopped => status == 'stopped';
 
+  /// Whether this is still the session a close reviewed as [reviewed]: the
+  /// same registration in the same conversation, or one that had no
+  /// conversation when it was reviewed and has bound its first since.
+  ///
+  /// Codex binds none for its first seconds, so a pane closed just after it
+  /// started was reviewed unbound and had bound one by the time the person
+  /// pressed Stop. Read as a change, that Stop was answered "The session
+  /// changed. Check it before closing." and the harness kept running (clean
+  /// macOS VM, Desktop 1.2.65, Codex 0.162.1, 2026-10-12). The close still
+  /// names the identity it reviewed, no conversation, and the daemon accepts
+  /// that only from a harness still starting — not one resumed, typed into a
+  /// terminal or older than a minute (cli `closeAgentService.ts` `matches`).
+  /// A different conversation once one was bound is always a change.
+  bool continuesSession(Agent reviewed) =>
+      createdAt == reviewed.createdAt &&
+      (sessionId == reviewed.sessionId ||
+          (reviewed.sessionId?.isEmpty ?? true));
+
   /// Exact saved-conversation resume is currently implemented for these engines.
   bool get canResumeConversation =>
       (engine == 'claude' || engine == 'codex') &&

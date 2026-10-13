@@ -75,30 +75,116 @@ void main() {
     );
     expect((draft['files'] as List).map((f) => f['path']), ['preview.html']);
   }, skip: Platform.isWindows);
-  test(
-    'asks for a preview.html, never assuming an app page is the output',
-    () async {
-      await file('code.py', 'print(1)');
-      await file('index.html', '<script src="app.js"></script>');
-      Future<Map<String, dynamic>> build() => buildPublicationDraft(
-        folder: root.path,
-        title: 'Test',
-        engine: 'codex',
-      );
-      await expectLater(
-        build(),
-        throwsA(
-          isA<FormatException>().having(
-            (e) => e.message,
-            'message',
+  test('asks for a preview.html, naming what an app page loads that the Hub cannot', () async {
+    await file('code.py', 'print(1)');
+    await file(
+      'index.html',
+      '<link rel="stylesheet" href="style.css"><script src="app.js"></script>',
+    );
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Test',
+      engine: 'codex',
+    );
+    await expectLater(
+      build(),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('index.html loads app.js, style.css'),
             contains('preview.html'),
           ),
         ),
+      ),
+    );
+    await file('preview.html', 'x' * 3000001);
+    await expectLater(build(), throwsFormatException);
+  });
+  test('asks for a preview.html when the project has no page at all', () async {
+    await file('code.py', 'print(1)');
+    await expectLater(
+      buildPublicationDraft(folder: root.path, title: 'Test', engine: 'codex'),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          contains('The Hub shows what a session made'),
+        ),
+      ),
+    );
+  });
+  test('a one-file game is the output under any top-level name', () async {
+    const game =
+        '<canvas id="c"></canvas><style>body{background:url(data:image/png;base64,AA==)}</style>'
+        '<script>requestAnimationFrame(function loop(){requestAnimationFrame(loop)})</script>';
+    await file('src/nested.html', '<p>Not at the top</p>');
+    await file('game.html', '<script src="engine.js"></script>');
+    await file('snake.html', game);
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Snake',
+      engine: 'claude',
+    );
+    expect((await build())['viewerPath'], 'snake.html');
+    await file('index.html', game);
+    expect((await build())['viewerPath'], 'index.html');
+    await file('preview.html', '<h1>Made for the Hub</h1>');
+    expect((await build())['viewerPath'], 'preview.html');
+  });
+  test('a game in a folder of its own is the output', () async {
+    const game = '<canvas></canvas><script>start()</script>';
+    await file('docs/guide.html', '<p>Not an output</p>');
+    await file('tank-1987/index.html', game);
+    await file('tank-1987/levels/index.html', game);
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Tank',
+      engine: 'codex',
+    );
+    expect((await build())['viewerPath'], 'tank-1987/index.html');
+    await file('notes.html', game);
+    expect((await build())['viewerPath'], 'notes.html');
+  });
+  test(
+    'a folder\'s index.html that needs other files is never assumed',
+    () async {
+      await file('app/index.html', '<script src="main.js"></script>');
+      await expectLater(
+        buildPublicationDraft(folder: root.path, title: 'App', engine: 'codex'),
+        throwsA(
+          isA<NeedsOutput>().having(
+            (e) => e.message,
+            'message',
+            contains('app/index.html loads main.js'),
+          ),
+        ),
       );
-      await file('preview.html', 'x' * 3000001);
-      await expectLater(build(), throwsFormatException);
     },
   );
+  test('passes over a fork\'s unchanged top-level page', () async {
+    const original = '<h1>Original game</h1>';
+    await file('index.html', original);
+    await file(
+      'OPEN-HARNESS.json',
+      jsonEncode({
+        'files': [
+          {'path': 'index.html', 'content': original},
+        ],
+      }),
+    );
+    await expectLater(
+      buildPublicationDraft(folder: root.path, title: 'Fork', engine: 'codex'),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          contains('index.html is still the original'),
+        ),
+      ),
+    );
+  });
   test('a fork keeps the page it was published with', () async {
     await file('index.html', '<h1>Moonlight</h1>');
     await file(
@@ -308,9 +394,15 @@ void main() {
         'action="${const HtmlEscape().convert('https://harness.autonomous.ai/hub/import')}"',
       ),
     );
-    expect(html, contains(const HtmlEscape().convert('</textarea>')));
     expect(html, isNot(contains('<script>bad()')));
     expect(html, isNot(contains('/api/community/harnesses')));
+    // The draft goes as a gzipped file, never as text the edge could read.
+    expect(html, contains('<input type="file" name="draft" hidden>'));
+    final packed = RegExp(r'atob\("([A-Za-z0-9+/=]+)"\)').firstMatch(html)![1]!;
+    expect(
+      jsonDecode(utf8.decode(gzip.decode(base64Decode(packed)))),
+      draft,
+    );
     await handoff.close();
   });
   test('login return accepts only local Hub pages', () {

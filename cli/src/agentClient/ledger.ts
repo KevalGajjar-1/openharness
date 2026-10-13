@@ -4,8 +4,7 @@
  * pane. A harness with no line was started by the person.
  *
  * Read by `harness ps` (who started each), and by `new` and `close` (limits, depth, and which harnesses an agent
- * may close). It never lets two harnesses message each other: only a tab with Agent Messages on does (owner,
- * 2026-10-11). It is a collaboration scope, not a sandbox: any process of this user can write the file.
+ * may close). It never lets two harnesses message each other: only sharing a tab does (owner, 2026-10-11). It is a collaboration scope, not a sandbox: any process of this user can write the file.
  *
  * A harness asked for and not started yet (its engine still installing) has a line of its own, `Pending`, with the
  * machine's creation id: it starts by itself later, after `harness new` has answered, and is then recorded as started

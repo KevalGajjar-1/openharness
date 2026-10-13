@@ -73,8 +73,8 @@ for workloads, slow tails, connection failures and raw data.
 In the workspace, a **harness** is one running session of an agent such as Codex
 or Claude Code, with its own conversation and working context. A **tab** groups
 harnesses. Use **New Harness** to start one and **New Tab** to group work.
-Turn on **Agent Messages** for a tab (its chat icon, or right-click the tab) to let its
-agents message each other with `harness send`; it is off by default.
+Harnesses in the same tab can message each other with `harness send`: **Agent Messages**,
+an experiment of your account, off by default and turned on in Settings ▸ Experimental.
 
 The Store offers **harnesses** with instructions, tools, and optional viewers for
 specific crafts. Install a harness, then start it in your workspace. See the

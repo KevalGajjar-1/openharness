@@ -10,6 +10,9 @@
  *    unconfirmed after a minute.
  *  - A Codex that is not there at all is installed by Harness for a new project (2026-10-12): `harness new` waits for
  *    the install and then starts it, or says why it could not be installed, and leaves no folder behind either way.
+ *
+ * An agent starts harnesses only once the account lets it (Settings ▸ Experimental, off by default): the MCP case signs
+ * in to the fake backend, whose account has that on.
  */
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
@@ -19,10 +22,30 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, onTestFailed } from 'vitest'
 import { LocalClient } from './harness/client.js'
 import { CLI_ROOT, IsolatedDaemon, until } from './harness/daemon.js'
+import { FakeBackend, type FakeMachine } from './harness/fakeBackend.js'
 import { resolveBinaryOnPath } from '../src/lib/binaryOnPath.js'
 
 let daemon: IsolatedDaemon | undefined
-afterEach(async () => { await daemon?.close(); daemon = undefined })
+let backend: FakeBackend | undefined
+afterEach(async () => {
+  await daemon?.close(); daemon = undefined
+  await backend?.close(); backend = undefined
+})
+
+/** Signed in to the fake backend, whose account lets agents start harnesses. */
+const ME: FakeMachine = { machineId: 'c9'.repeat(16), computerId: 'e2e-computer-0000-0000-0000000000c9', name: 'studio', token: 'e2e-token-fresh-machine' }
+async function agentsMayStart(): Promise<{ env: Record<string, string>; signIn: (d: IsolatedDaemon) => void }> {
+  const relay = backend = await FakeBackend.start()
+  relay.addMachine(ME)
+  relay.experiments.agents_start_agents = true
+  return {
+    env: { BACKEND_WS_URL: relay.wsUrl, WEB_URL: relay.httpUrl, ADAPTER_COMPUTER_ID: ME.computerId },
+    signIn: (d) => writeFileSync(join(d.root, 'auth', 'session.json'), JSON.stringify({
+      version: 1, accessToken: ME.token, autonomousEnv: 'prod', computerId: ME.computerId,
+      machineId: ME.machineId, expiresAt: Date.now() + 30 * 24 * 3600_000, updatedAt: Date.now(), signInEpoch: 'e2e',
+    }), { mode: 0o600 }),
+  }
+}
 
 /** `harness <args>` from a terminal, not a pane. */
 function harness(d: IsolatedDaemon, args: string[]): Promise<{ code: number; out: string; err: string; ms: number }> {
@@ -38,8 +61,8 @@ function harness(d: IsolatedDaemon, args: string[]): Promise<{ code: number; out
   })
 }
 
-async function boot(prepare: (d: IsolatedDaemon) => void = () => {}): Promise<IsolatedDaemon> {
-  const d = daemon = await IsolatedDaemon.create()
+async function boot(prepare: (d: IsolatedDaemon) => void = () => {}, env: Record<string, string> = {}): Promise<IsolatedDaemon> {
+  const d = daemon = await IsolatedDaemon.create({ env })
   onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-150).join('\n')}`) })
   prepare(d)
   await d.start()
@@ -239,7 +262,11 @@ function mcp(d: IsolatedDaemon) {
 
 it('answers an MCP agent within Codex\'s tool timeout while Codex installs, starts that harness by itself, and never a second', async (context) => {
   if (notBare()) context.skip()
-  const d = await boot((d) => { withoutCodex(d); writeFileSync(join(d.root, 'npm-seconds'), '55') })
+  const account = await agentsMayStart()
+  const d = await boot((d) => { withoutCodex(d); writeFileSync(join(d.root, 'npm-seconds'), '55'); account.signIn(d) }, account.env)
+  await until('the account\'s experiments to be kept', () => {
+    try { return JSON.parse(readFileSync(join(d.dataDir, 'agent-settings.json'), 'utf8')).agentsStartAgents === true || null } catch { return null }
+  }, 30_000, 200)
   const server = mcp(d)
   try {
     await server.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'codex-mcp-client' }, capabilities: {} })
@@ -260,7 +287,7 @@ it('answers an MCP agent within Codex\'s tool timeout while Codex installs, star
     for (let i = 0; i < 4 && !/^cx: idle/.test(waited.text); i++) waited = await server.call('harness_wait', { names: ['cx'] })
     expect(waited.text).toBe('cx: idle · read it: harness_read (name: "cx")')
   } finally { server.close() }
-  const client = await LocalClient.connect(d)
+  const client = await LocalClient.connect(d, { machineId: ME.machineId })
   try {
     const rows = (await client.request<{ agents: Array<Record<string, any>> }>('agents_list', { includeStopped: true }, 30_000)).agents
     expect(rows.map((row) => row.name)).toEqual(['cx'])

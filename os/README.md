@@ -11,11 +11,16 @@ audience, not its name.
 
 Product names and interface copy follow the [Naming System](../docs/naming-system.md).
 
-**Harness 0.1.2:** the USB opens the installer directly. Installation works offline.
+**Harness 0.1.4:** the USB opens the installer directly. Installation works offline.
 After shutdown, remove the USB and boot the installed disk. If disconnected,
 the Wi-Fi page opens first and advances automatically when connected; Ethernet
 skips that step. OpenCode starts on the left with two real terminals on the right.
 There is no trial choice or installation dock.
+
+**Next build:** the OS finishes Wi-Fi or Ethernet setup before launching hn.
+hn then requires a Harness account before opening the workspace. The USB
+installer remains available offline. An already signed-in account can reopen
+local work during a temporary network outage.
 
 Later launches restore existing work. The installed system keeps hn’s standard
 status bar. Ctrl+b, then c opens a terminal in a new tab. Projects live under
@@ -204,10 +209,12 @@ and, when enabled, the disk. There is no first-boot account wizard.
 `--config` file, set `username`, `hostname` and `encrypt` in that file instead.
 Ordinary hn on macOS or another Linux distribution does not expose OS installation.
 
-On the installed system's first boot, the existing Wi-Fi page opens when there
-is no connection. Connecting advances automatically to OpenCode on the left and
-two terminal panes on the right. Working Ethernet skips Wi-Fi setup. Later boots
-reconnect to saved Wi-Fi and restore existing work. Super+n starts New Harness,
+On the installed system's first boot, the OS opens Wi-Fi setup when there is no
+connection. Working Ethernet skips that screen. Once connected, the OS launches
+hn, which asks for a Harness account. Signing in opens OpenCode on the left and
+two terminal panes on the right. Later boots reconnect to saved Wi-Fi and restore
+existing work; a temporary outage does not sign out an existing account.
+Super+n starts New Harness,
 Super+t opens a shell directly, Super+m connects a computer, Super+w opens Wi-Fi
 and Super+l locks the session behind the same wordmark and "Enter your password"
 as disk unlock. Super+e opens the file manager in its own window, a folder

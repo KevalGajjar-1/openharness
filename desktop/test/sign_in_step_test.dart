@@ -12,10 +12,9 @@ import 'package:harness/widgets/sign_in_step.dart';
 import 'support/capture.dart';
 
 /// The sign-in step as a computer new to Harness sees it after setup: one
-/// headline, four lines, two buttons, and Skip and Continue with email under
+/// headline, four lines, two buttons, and Continue with email under
 /// them. The page takes callbacks and flags, so no app, CLI or browser is
 /// involved. `HARNESS_SIGN_IN_CAPTURE_DIR` writes what it draws.
-final _skip = find.byKey(const Key('sign-in-step-skip'));
 final _email = find.byKey(const Key('sign-in-step-email'));
 final _google = find.byKey(const Key('login-continue-google'));
 final _apple = find.byKey(const Key('login-continue-apple'));
@@ -24,7 +23,6 @@ final _boundary = GlobalKey();
 Future<void> _mount(
   WidgetTester tester, {
   ValueChanged<SignInProvider?>? onSignIn,
-  VoidCallback? onSkip,
   bool starting = false,
   SignInProvider? startingProvider,
   bool finishing = false,
@@ -33,6 +31,9 @@ Future<void> _mount(
   Brightness brightness = Brightness.dark,
   double textScale = 1,
 }) async {
+  final previousBrightness = grid.AppTheme.brightness.value;
+  grid.AppTheme.brightness.value = brightness;
+  addTearDown(() => grid.AppTheme.brightness.value = previousBrightness);
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
   addTearDown(tester.view.reset);
@@ -49,7 +50,6 @@ Future<void> _mount(
         key: _boundary,
         child: SignInStep(
           onSignIn: onSignIn ?? (_) {},
-          onSkip: onSkip ?? () {},
           starting: starting,
           startingProvider: startingProvider,
           finishing: finishing,
@@ -73,7 +73,7 @@ void main() {
     () => loadCaptureFonts(Platform.environment['HARNESS_SIGN_IN_CAPTURE_DIR']),
   );
 
-  testWidgets('one headline, four lines, two buttons, Skip and email', (
+  testWidgets('one headline, four lines, two buttons and email; no Skip', (
     tester,
   ) async {
     await _mount(tester);
@@ -88,11 +88,11 @@ void main() {
     }
     expect(find.text('Continue with Google'), findsOneWidget);
     expect(find.text('Continue with Apple'), findsOneWidget);
-    expect(find.text('Skip'), findsOneWidget);
+    expect(find.text('Skip'), findsNothing);
     expect(find.text('Continue with email'), findsOneWidget);
     // It follows the tour: the same tagline, and the install line finished.
     expect(find.text(tourTagline), findsOneWidget);
-    expect(find.text('Harness is ready.'), findsOneWidget);
+    expect(find.text('Sign in to continue.'), findsOneWidget);
     // Nothing the sign-in sheet carries beside its buttons is on this page.
     for (final absent in const [
       'Scan with your phone',
@@ -111,8 +111,7 @@ void main() {
     tester,
   ) async {
     final pressed = <SignInProvider?>[];
-    var skipped = 0;
-    await _mount(tester, onSignIn: pressed.add, onSkip: () => skipped++);
+    await _mount(tester, onSignIn: pressed.add);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
@@ -128,37 +127,30 @@ void main() {
       SignInProvider.google,
       null,
     ]);
-    expect(skipped, 0);
-    await tester.tap(_skip);
-    expect(skipped, 1);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.byType(SignInStep), findsOneWidget);
   });
 
-  testWidgets(
-    'Skip starts where the buttons start, email ends where they end',
-    (tester) async {
-      for (final size in const [Size(1280, 800), Size(880, 560)]) {
-        await _mount(tester, size: size);
-        final button = tester.getRect(_google);
-        expect(tester.getRect(_apple).left, button.left);
-        expect(tester.getRect(_apple).right, button.right);
-        expect(
-          tester.getRect(find.text('Skip')).left,
-          moreOrLessEquals(button.left, epsilon: 0.5),
-          reason: '$size',
-        );
-        expect(
-          tester.getRect(find.text('Continue with email')).right,
-          moreOrLessEquals(button.right, epsilon: 0.5),
-          reason: '$size',
-        );
-        // Under the card, not in it.
-        expect(
-          tester.getRect(find.text('Skip')).top,
-          greaterThan(tester.getRect(_apple).bottom + 20),
-        );
-      }
-    },
-  );
+  testWidgets('email is centered beneath the two provider buttons', (
+    tester,
+  ) async {
+    for (final size in const [Size(1280, 800), Size(880, 560)]) {
+      await _mount(tester, size: size);
+      final button = tester.getRect(_google);
+      expect(tester.getRect(_apple).left, button.left);
+      expect(tester.getRect(_apple).right, button.right);
+      expect(
+        tester.getRect(find.text('Continue with email')).center.dx,
+        moreOrLessEquals(button.center.dx, epsilon: 0.5),
+        reason: '$size',
+      );
+      expect(
+        tester.getRect(_email).top,
+        greaterThan(tester.getRect(_apple).bottom),
+      );
+    }
+  });
 
   testWidgets('nothing changes while the browser is open, and every way in '
       'stays live', (tester) async {
@@ -197,11 +189,11 @@ void main() {
       'a sign-in failed', (tester) async {
     await _mount(tester, finishing: true);
     expect(find.text('Signing in…'), findsOneWidget);
-    expect(find.text('Harness is ready.'), findsNothing);
+    expect(find.text('Sign in to continue.'), findsNothing);
 
     await _mount(tester, error: 'The sign-in page could not be reached.');
     expect(find.text('The sign-in page could not be reached.'), findsOneWidget);
-    expect(find.text('Harness is ready.'), findsOneWidget);
+    expect(find.text('Sign in to continue.'), findsOneWidget);
   });
 
   for (final brightness in Brightness.values) {
@@ -224,13 +216,13 @@ void main() {
           error: 'The sign-in page could not be reached.',
         );
         expect(tester.takeException(), isNull);
-        expect(find.text('Skip'), findsOneWidget);
-        if (scale == 1.0) {
-          await _capture(
-            tester,
-            'sign-in-step-${brightness.name}-${size.width.round()}',
-          );
-        }
+        expect(find.text('Skip'), findsNothing);
+        expect(_email, findsOneWidget);
+        await _capture(
+          tester,
+          'sign-in-step-${brightness.name}-${size.width.round()}'
+          '${scale == 1.0 ? '' : '-text-${(scale * 100).round()}'}',
+        );
       });
     }
   }

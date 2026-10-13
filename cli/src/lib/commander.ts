@@ -109,6 +109,8 @@ interface SessionState {
   summarizing: boolean
   lastTool: Record<string, unknown> | null
   lastTodos: Array<{ c: string; s: string }> | null
+  /** Top-level shell commands awaiting their result, by tool id: the turn stats' input (kind 'tool_end'). */
+  commands: Map<string, { tool: string; command: string }>
   /** Sub-agents this turn spawned, in the order they started — the device's list above "Working…". */
   agents: Array<{ id: string; desc: string; startedAt: number; doneMs: number | null; carried?: true }>
   /** A turn_ended is being HELD because sub-agents this turn spawned are still running (see below). */
@@ -339,7 +341,7 @@ export class CommanderMirror {
   private stateFor(sessionId: string): SessionState {
     let st = this.states.get(sessionId)
     if (!st) {
-      st = { lastAssistantText: '', playerUpdate: '', playerTextContinues: false, lastUserMessage: '', turnOpen: false, everOpened: false, summarizing: false, lastTool: null, lastTodos: null, agents: [], endPending: false, abandoned: false, endSettle: null, endDeadline: null, abort: null }
+      st = { lastAssistantText: '', playerUpdate: '', playerTextContinues: false, lastUserMessage: '', turnOpen: false, everOpened: false, summarizing: false, lastTool: null, lastTodos: null, commands: new Map(), agents: [], endPending: false, abandoned: false, endSettle: null, endDeadline: null, abort: null }
       this.states.set(sessionId, st)
     }
     return st
@@ -356,7 +358,7 @@ export class CommanderMirror {
     // background machine gets just its summary, not the live stream. Single-machine firmware defaults active to
     // hasDevice, so attached == active and everything streams exactly like before.
     // The latest paragraph rides on the processing card; only a Pro asks for it (cableSession `activity: steps-v1`).
-    const update = payload.kind === 'processing' ? this.latestUpdate(sessionId) : ''
+    const update = payload.kind === 'processing' ? this.latestUpdate(sessionId) : payload.kind === 'reply_text' ? this.replyTail(sessionId) : ''
     if (update) payload = { ...payload, update }
     const terminal = payload.kind === 'summary'
     const active = this.opts.active ? this.opts.active() : this.opts.hasDevice()
@@ -412,6 +414,8 @@ export class CommanderMirror {
           st.abandoned = false
           st.lastTool = null
           st.lastTodos = null
+          st.commands.clear()
+          this.emit(sessionId, { kind: 'turn_started' }) // local-only: the devices drop the last turn's stats
           // Drop the previous turn's finished rows, KEEP the ones still running. Two reasons, both
           // measured: cursor's tool-start HOOK beats its transcript-derived turn_started by ~60ms, so a
           // blanket reset deleted the sub-agent that had just been announced (two Tasks collapsed into
@@ -428,7 +432,8 @@ export class CommanderMirror {
           if (hadAgents) this.emit(sessionId, { kind: 'agents', agents: agentRows(st.agents) })
           break
 
-        case 'text_delta':
+        case 'text_delta': {
+          const shown = this.replyTail(sessionId)
           if (!st.playerTextContinues) st.playerUpdate = ''
           st.playerTextContinues = true
           st.playerUpdate = (st.playerUpdate + e.payload.content).slice(-4096)
@@ -436,7 +441,11 @@ export class CommanderMirror {
           // The wrap-up text landed while the turn-end was held: this IS what the hold was waiting for,
           // so drop to a short debounce (more blocks of the same message may still follow).
           if (st.endSettle) this.armSettle(sessionId, st, SUBAGENT_TEXT_SETTLE_MS)
+          // The Pro's working screen shows the reply as it streams: a local-only card, sent when the paragraph
+          // changed (the device path throttles it), instead of waiting for the next 5 s heartbeat.
+          if (!options?.replay && st.turnOpen && this.replyTail(sessionId) !== shown) this.emit(sessionId, { kind: 'reply_text' })
           break
+        }
 
         case 'tool_start': {
           st.playerTextContinues = false
@@ -453,6 +462,8 @@ export class CommanderMirror {
             detail: compactArgs(e.payload.input),
           }
           st.lastTool = toolPayload
+          const command = (e.payload.input as { command?: unknown } | undefined)?.command
+          if (!e.payload.parentToolUseId && typeof command === 'string') st.commands.set(String(e.payload.id), { tool, command })
           this.emit(sessionId, toolPayload)
           // A sub-agent is not just a card: the device keeps a live LIST of them above "Working…", which
           // nothing ever fed — the firmware has been able to render it since it shipped, and never got data.
@@ -493,7 +504,13 @@ export class CommanderMirror {
           break
 
         case 'tool_end': {
-          // Only sub-agents are tracked here; every other tool_end stays web-only.
+          // A top-level shell result goes to the devices alone, for the turn stats (isLocalOnly keeps it off
+          // the Wi-Fi relay). Every other tool_end except a sub-agent's stays web-only.
+          const ran = st.commands.get(String(e.payload.id))
+          if (ran) {
+            st.commands.delete(String(e.payload.id))
+            this.emit(sessionId, { kind: 'tool_end', id: String(e.payload.id), ...ran, isError: e.payload.isError, ...(e.payload.outputTail !== undefined ? { outputTail: e.payload.outputTail } : {}) })
+          }
           const done = st.agents.find((a) => a.id === String(e.payload.id))
           if (!done || done.doneMs !== null) break
           // An async launch ack is not a finish — that one arrives later as `subagent_finished`.
@@ -878,6 +895,21 @@ export class CommanderMirror {
     const text = this.states.get(sessionId)?.playerUpdate.trim() ?? ''
     const paragraph = text.split(/\n\s*\n/).filter(Boolean).at(-1) ?? ''
     return clipBytes(paragraph.replace(/[\r\n\t]+/g, ' '), 188)
+  }
+
+  /**
+   * What the device shows while the reply streams: the END of the current paragraph. `latestUpdate` keeps the
+   * head, which stops changing once a paragraph passes the clip; the tail keeps moving. At most 188 bytes
+   * including the leading "\u2026" that marks the cut, cut on a codepoint boundary.
+   */
+  private replyTail(sessionId: string): string {
+    const text = this.states.get(sessionId)?.playerUpdate.trim() ?? ''
+    const paragraph = (text.split(/\n\s*\n/).filter(Boolean).at(-1) ?? '').replace(/[\r\n\t]+/g, ' ')
+    const bytes = Buffer.from(paragraph, 'utf8')
+    if (bytes.length <= 188) return paragraph
+    let start = bytes.length - (188 - 3)
+    while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++
+    return `\u2026${bytes.subarray(start).toString('utf8')}`
   }
 
   heartbeat(sessionId: string): boolean {

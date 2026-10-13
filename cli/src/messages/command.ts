@@ -1,6 +1,6 @@
 /**
- * `harness send`: an agent messages its teammates in a tab with Agent Messages on
- * (docs/design/2026-10-10-agent-messages.md). Run in the agent's own pane: the pane says who is sending.
+ * `harness send`: an agent messages its teammates, the harnesses in its tab, while Agent Messages are on
+ * (Settings ▸ Experimental, off by default; docs/design/2026-10-10-agent-messages.md). Run in the agent's own pane: the pane says who is sending.
  *
  *   harness send                       who is in this tab, and the rules
  *   harness send <name>[,<name>] text  message them (or --text-file PATH, in the temporary folder)
@@ -26,8 +26,8 @@ export const SEND_USAGE = `harness send — message your teammates in this tab
   harness send <name> --fyi "text"      news no one must act on now: it arrives at their next tool call
                                         and never starts a turn of theirs
 
-Run it in your own harness pane. Agent Messages must be on in the tab (the chat icon on the tab), even
-to message a harness you started.
+Run it in your own harness pane. It reaches the harnesses in your tab while Agent Messages are on
+(off by default: the person turns them on in Settings ▸ Experimental); a harness you started only if it is in your tab.
 Use --json for structured output.`
 
 export interface SendArgs { names: string[]; text: string; json: boolean; fyi?: boolean }

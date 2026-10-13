@@ -21,7 +21,9 @@ import { LEAN_CORE_ENTRY, readLeanBundle } from '../src/harnessd/leanBundle.js'
 
 type Engine = 'claude' | 'codex'
 /** The processes the master runs the services in, and the services, each on its own link to the core. The
- *  experiments' start only once they are on (e2e/experiments.e2e.ts, from the run's bundle). */
+ *  experiments' start only once they are on (e2e/experiments.e2e.ts, from the run's bundle). The viewers' starts
+ *  only once something needs it: in each test's new home, a bundle's own harnesses, which its Store puts in place,
+ *  ask for it as the core starts (core/viewersWake.ts, e2e/viewersOnDemand.e2e.ts). */
 const PROCESSES = ['search', 'viewers', 'edge', 'models']
 const SERVICES = ['search', 'viewers', 'store', 'workspaces', 'usage', 'monitor', 'projects', 'handoff', 'recaps', 'models']
 

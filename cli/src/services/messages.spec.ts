@@ -16,6 +16,7 @@ vi.mock('../messages/service.js', () => ({
     return {
       requests: { agent_messages: async () => ({ ok: true }) },
       canWrite: (id: string) => id === 'team:msg:yes',
+      settingsChanged: () => made.calls.push('settings'),
       start: () => made.calls.push('start'),
       stop: () => made.calls.push('stop'),
     }
@@ -42,8 +43,9 @@ describe('Agent Messages in the core\'s process', () => {
     expect(await requests.agent_messages!({ action: 'history' }, { local: true, owner: true })).toEqual({ ok: true })
     expect(ports.messages!.canWrite('team:msg:yes')).toBe(true)
     expect(ports.messages!.canWrite('team:msg:no')).toBe(false)
+    ports.messages!.settingsChanged()
     ;(ports.messages as unknown as { stop(): void }).stop()
-    expect(made.calls).toEqual(['start', 'stop'])
+    expect(made.calls).toEqual(['start', 'settings', 'stop'])
     startMessagesInCore(fakeCore({ dataDir: dir }), emptyPorts(), { dataDir: dir })
     expect(made.options.at(-1)).toEqual({ dataDir: dir })
   })

@@ -9,8 +9,9 @@ Writes main/pod/engine_logos.{c,h}: per engine and size an RGB565 array in nativ
 ht_pro_image wants) and an alpha8 array. `light` per engine: the alpha-weighted mean luminance of its art is
 above LIGHT_LUMA, so the logo would vanish on white glass and sits on the dark chip / cover instead.
 
-SIZES are the only two sizes Pod draws a logo at (keep in step with pod_chrome.c / pod_pet.c; test_pod_assets.c checks):
+SIZES are the only sizes drawn (keep in step with pod_chrome.c / pod_pet.c / console/cs_chrome.c; test_pod_assets.c checks):
   28   the logo inside the 36 px chip: Tabs-grid pane cards and cover cards, the Recent face, tab rows, the Talking line
+  36   Console: Overview rows, Inbox rows, (cs_logo); 44 Console: Recent / Tab rows. Classic never draws them
   72   every pet-less cover (omitted for engines with a pet: parsed from ht_pets in main/pod/pets.c) (Recap 132, Agent 270 / 230, Talking 260), centred and never scaled further
 """
 import re
@@ -18,7 +19,7 @@ from pathlib import Path
 from PIL import Image
 
 ENGINES = "agy amp claude codex commandcode copilot cursor devin grok hermes kilo muse opencode pi".split()
-SIZES = [28, 72]
+SIZES = [28, 36, 44, 72]
 CHIP = 28
 COVER = 72
 LIGHT_LUMA = 0.75

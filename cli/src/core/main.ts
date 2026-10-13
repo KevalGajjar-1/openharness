@@ -40,7 +40,7 @@ import { createServer, type Server } from 'http'
 import { homedir, hostname } from 'os'
 import { env } from '../config/env.js'
 import { VERSION } from '../version.js'
-import { withoutUpdate } from '../lib/cardUpdate.js'
+import { isLocalOnly, withoutUpdate } from '../lib/cardUpdate.js'
 import { elapsedSecondsOf } from '../lib/footerTimer.js'
 import { sqlitePreflightMessage } from '../lib/sqliteAvailability.js'
 import { warmLoginShellEnvironment } from '../lib/loginShellEnv.js'
@@ -73,7 +73,6 @@ import { processSessionOf } from '../engines/sessionStores.js'
 import { createHandoffDependencies } from './handoffDependencies.js'
 import { TmuxBackend } from '../lib/tmuxBackend.js'
 import { DEFAULT_HOST_THEME, loadHostTheme, saveHostTheme, type HostTheme } from '../lib/hostTheme.js'
-import { agentSettingsRoutes } from '../lib/agentSettings.js'
 import { restoreAgents, tmuxSurvey, type RestoreAgentsDeps, type RestoreSummary } from '../lib/restoreAgents.js'
 import { createRetainExitedSession } from '../lib/retainExitedSession.js'
 import { createKeepAbandonedConversation } from '../lib/keepAbandonedConversation.js'
@@ -125,6 +124,7 @@ import { createLiveTransport } from './engines/liveTransport.js'
 import { createLiveWatcher } from './engines/liveWatcher.js'
 import { readerEngine, READER_SERVICES } from '../engines/worker/protocol.js'
 import { createRecaps } from './turns/recaps.js'
+import { stopDeadline } from './stopDeadline.js'
 import { createUpdateHandoff, handOverOnceReleased, probeStagedMaster, type TeardownStep } from './updateHandoff.js'
 import { needsUpdaterBeside, startUpdaterBeside } from './updaterBeside.js'
 import { createHeartbeats } from './turns/heartbeats.js'
@@ -163,7 +163,7 @@ import { createEngineHooks, installEngineHooks, installOpencodePluginBeforeSpawn
 import { createCursorDiscovery } from './engines/cursorDiscovery.js'
 import { createCursorTaskHooks, loadPendingCursorTasks } from './engines/cursorTasks.js'
 import { databaseHistory, hermesDb } from './transcripts/databaseHistory.js'
-import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
+import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, TURN_DELIVERERS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
 import { createServiceHost, testFaults } from './serviceHost.js'
 import { startStalls } from './stall.js'
 import { createServiceLinks, type ServiceLinks } from './serviceLinks.js'
@@ -180,13 +180,13 @@ import { answerAgentQuery } from './agentQueries.js'
 import { createDeliveries } from './deliveries.js'
 import { createTerminalWatch } from './terminalWatch.js'
 import { createSharingLink } from './sharingLink.js'
-import { createExperimentHooks, wakeExperiments, writeAgentMessagesTab } from './experiments.js'
+import { createAgentSettingsSync, createExperimentHooks, wakeExperiments } from './experiments.js'
 import { answerExperimentQuery, createForExperiment } from './experimentQueries.js'
 import { answerConnectorsQuery } from './connectorsQueries.js'
 import { createOrchestratorLink } from './orchestratorLink.js'
 import { daemonCommand } from '../lib/daemonCommand.js'
 import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, servicesTheMasterRuns } from '../harnessd/services.js'
-import { createMessagesLink } from './messagesLink.js'
+import { askForMessages, createMessagesLink } from './messagesLink.js'
 import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
 import { localSocketPath, refuseServedDataFolder, type LocalSocketServer } from '../lib/localSocket.js'
@@ -198,6 +198,7 @@ import { createWifiCore, WIFI_START_MS } from './wifi.js'
 import { createDevicesWake, DEVICES_ON_DEMAND } from './devicesWake.js'
 import { wakeModels } from './modelsWake.js'
 import { wakeGateway } from './gatewayWake.js'
+import { createViewersWake, VIEWERS_ON_DEMAND, wakeViewers } from './viewersWake.js'
 import { createWifiLink } from './wifiLink.js'
 import { wifiDoors } from './wifiAgents.js'
 import { autonomousDeviceLocalRequest } from '../lib/deviceManagementHttp.js'
@@ -215,7 +216,7 @@ import { transcriptActivityAt } from '../lib/transcriptActivity.js'
 import { forgetAgentProject } from '../lib/agentProject.js'
 import { createUsageLink } from './usageLink.js'
 import type { UsageSnapshots } from './usageLink.js'
-import type { AgentUsageTarget } from '../lib/agentUsageWire.js'
+import { usageTarget, validUsage, validUsageTarget, type AgentUsageTarget } from '../lib/agentUsageWire.js'
 import { RuntimeProfileState, type RuntimeModelOption } from '../lib/runtimeProfileState.js'
 import { createRuntimeProfiles } from './engines/runtimeProfiles.js'
 import { createRuntimeTransport } from './engines/runtimeTransport.js'
@@ -611,6 +612,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ports.devices?.engines(registry.active().map((session) => session.engine))
   }
   const outOfProcess = servicesTheMasterRuns(harnessd, KNOWN_SERVICES)
+  // The viewers' process (the viewers and the Store) runs once something needs it (core/viewersWake.ts).
+  const viewersWake = createViewersWake({ want: (service) => coreLink.want(service), outOfProcess })
   const liveHosted = masterRunsLiveEngines(harnessd, process.ppid)
   const runtimeHosted = liveHosted && masterRunsEngineRuntime(harnessd, process.ppid)
   // An older master's explicit capability report selects compatibility. A failed worker never does.
@@ -715,8 +718,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     submit: (agentId, text, deliveryId) => backendRef?.onMessage?.(agentId, text, deliveryId),
     cancel: (deliveryId) => backendRef?.onCancelOrchestratorMessage?.(deliveryId) ?? false,
     tell: (service, event) => { serviceLinksRef?.notify(service, { type: 'service_event', payload: { kind: 'delivery', event } }, { untilDelivered: true }) },
-    // The experiments: the orchestrator's turns, and those of the experiments after it.
-    deliverers: new Set(Object.keys(EXPERIMENTS)),
+    // The experiments' turns (the orchestrator's first), and Agent Messages' typed messages (core/api.ts).
+    deliverers: new Set(TURN_DELIVERERS),
   })
   const ports = emptyPorts()
   // The Wi-Fi device's service runs with the dials (services/wifi.ts); what the core reads in line of it
@@ -758,7 +761,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     gridModelsChanged: () => { void backendRef?.pushGridModels() },
     privateGridName: async () => backendRef?.gridName() ?? null,
     machineName: () => backendRef?.machineName() ?? null,
-    // An experiment's account-wide settings (Agent Messages' tabs), signed in by this core.
+    // An experiment's account-wide settings, and Agent Messages' tabs, signed in by this core.
     backend: (method, path, body) => proxyBackend(method, path, body),
     onNotice: (listener) => experimentHooks.onNotice(listener),
     dshInstallStatus: (status) => backendRef?.send({ type: 'dsh_install_status', payload: status }),
@@ -1251,7 +1254,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // The requests each service that can run in its own process answers, as core/api.ts declares them.
   const requestsOf: Record<string, readonly string[]> = {
     search: SEARCH_REQUESTS, store: STORE_REQUESTS, usage: USAGE_REQUESTS, monitor: MONITOR_REQUESTS, projects: PROJECTS_REQUESTS, models: MODELS_REQUESTS, handoff: HANDOFF_REQUESTS, connectors: CONNECTORS_REQUESTS,
-    devices: DEVICES_REQUESTS, windowNames: WINDOW_NAMES_REQUESTS, shell: SHELL_REQUESTS,
+    devices: DEVICES_REQUESTS, windowNames: WINDOW_NAMES_REQUESTS, shell: SHELL_REQUESTS, messages: MESSAGES_REQUESTS,
     ...Object.fromEntries(Object.entries(EXPERIMENTS).map(([name, experiment]) => [name, experiment.requests])),
   }
   // The experiments (core/api.ts `EXPERIMENTS`): each may act on the core through the hooks an experiment has.
@@ -1261,16 +1264,21 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const orchestratorLink = createOrchestratorLink((frame) => serviceLinks.notify('orchestrator', frame))
   // What the core keeps of the viewers in their own process, for the frames it builds (core/viewersLink.ts).
   const viewersLink = createViewersLink(coreApi, (frame, opts) => serviceLinks.notify('viewers', frame, opts),
-    { call: (type, payload, waitMs) => serviceLinks.call('viewers', type, payload, waitMs), buffered: () => serviceLinks.buffered('viewers') })
+    { call: (type, payload, waitMs) => serviceLinks.call('viewers', type, payload, waitMs), buffered: () => serviceLinks.buffered('viewers') },
+    { wake: (why) => viewersWake.ask('viewers', why) })
   // How the core tells workspaces in their own process what to do, and answers them (core/workspacesLink.ts).
   const workspacesLink = createWorkspacesLink(coreApi, (frame) => serviceLinks.notify('workspaces', frame), forgetAgentProject)
-  // Agent Messages in its own process: which of its deliveries may be written, as it last said (core/messagesLink.ts).
-  const messagesLink = createMessagesLink()
+  // Agent Messages in its own process: which of its deliveries may be written, as it last said, and what it may ask
+  // and hear of the core (core/messagesLink.ts).
+  const messagesLink = createMessagesLink({ core: coreApi, notify: (frame) => serviceLinks.notify('messages', frame) })
   // An experiment asked for, and the account's notices for those that hear them (core/experiments.ts).
   const experimentHooks = createExperimentHooks({ want: (service) => coreLink.want(service), notify: (service, frame) => serviceLinks.notify(service, frame),
     outOfProcess, experiments })
   backend.onAccountNotice = (notice) => {
     experimentHooks.notice(notice)
+    // Agent Messages reads its tabs again at `desk_changed`: told here in its own process, heard through
+    // `account.onNotice` in this one.
+    messagesLink.notice(notice)
     // The connectors service merges the account's sealed connections again (services/connectors.ts); in
     // the core's process it hears this through `account.onNotice` like any listener.
     // A device key added or confirmed (`device_keys_changed`) may be a machine to seal them for as well.
@@ -1312,13 +1320,16 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     token: serviceToken,
     owned: Object.fromEntries([...outOfProcess].map((name) => [name, requestsOf[name] ?? []])),
     waits: LONG_ANSWERS,
-    // An experiment's process runs once on, the devices' once there is one, models' and the gateway's once needed: a request asks.
-    // Shell is in the always-running edge host, but its first request can beat that host's connection.
-    // Hold it through the same bounded startup gate; after any disconnect, fail promptly as before.
-    onDemand: new Set([...experiments, ...DEVICES_ON_DEMAND, ...Object.values(READER_SERVICES), 'models', 'gateway', 'shell']),
+    // An experiment's process runs once on, the devices' once there is one, models', the gateway's and the viewers'
+    // once needed: a request asks. Shell and Agent Messages are in the always-running edge host, but a first request
+    // can beat that host's connection. Hold it through the same bounded startup gate; after any disconnect, fail
+    // promptly as before. Under a master from before, Agent Messages' own process starts at its first request this way.
+    onDemand: new Set([...experiments, ...DEVICES_ON_DEMAND, ...VIEWERS_ON_DEMAND, ...Object.values(READER_SERVICES), 'models', 'gateway', 'shell', 'messages']),
     want: (service) => experimentHooks.want(service),
     // The gateway's first: its `backend` reads (the device key log) were refused below as NOT_AN_EXPERIMENT.
     answer: async (service, query, payload, authority) => await questionControls.answer(service, query, payload) ?? await modelControls.answer(service, query, payload) ?? await nativeControls.answer(service, query, payload) ?? engineReaders.answer(service) ?? (service === 'gateway' && gatewayLink ? gatewayLink.answer(query, payload) : null) ?? deliveries.answer(service, query, payload)
+      // Agent Messages is answered what it uses and nothing more, never what an experiment may ask (core/messagesLink.ts).
+      ?? (service === 'messages' ? await messagesLink.answer(query, payload) : null)
       ?? await answerConnectorsQuery(coreApi, service, query, payload)
       ?? await answerExperimentQuery(coreApi, experiments, service, query, payload)
       ?? await terminalWatch.answer(service, query, payload)
@@ -1327,7 +1338,6 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       : service === 'workspaces' ? workspacesLink.answer(query, payload)
       : service === 'store' ? storeLink.answer(query, payload)
       : service === 'models' ? modelsLink.answer(query, payload)
-      : service === 'messages' ? messagesLink.answer(query, payload)
       : service === 'devices' ? devicesLink.answer(query, payload)
       : service === 'wifi' ? wifiLink.answer(query, payload)
       : service === 'handoff' ? answerConversationQuery(coreApi, query, payload, authority)
@@ -1353,7 +1363,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       if (service === 'gateway') gatewayLink?.connected()
       if (service === 'devices') devicesLink.connected()
       if (service === 'wifi') wifiCore.started(appVoiceFocus ?? null)
+      if (service === 'viewers') viewersLink.connected()
       devicesWake.connected(service)
+      viewersWake.connected(service)
       // A service up again (or up at last): the agents held for it are launched (core/agents/heldLaunches.ts).
       void heldLaunches.restoreHeld(service)
     },
@@ -1412,8 +1424,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (outOfProcess.has('sharing')) ports.sharing = createSharingLink({ call: (type, payload) => serviceLinks.call('sharing', type, payload), notify: (frame) => serviceLinks.notify('sharing', frame) })
   else serviceHost.start('sharing', inline!.startSharing, coreApi, SHARING_FALLBACKS, SHARE_REQUESTS)
   backend.observers = { receive: (connId, type, payload) => ports.sharing?.observer(connId, type, payload), closeAll: () => ports.sharing?.linkDown() }
-  // Agent Messages (services/messages.ts): in its own process once it is on, or in this one behind the service
-  // host's guard (a fault there costs no message its write).
+  // Agent Messages (services/messages.ts): in the edge host, or in this process behind the service host's guard (a
+  // fault there costs no message its write).
   if (outOfProcess.has('messages')) ports.messages = messagesLink.port
   else serviceHost.start('messages', inline!.startMessagesInCore, coreApi, MESSAGES_FALLBACKS, MESSAGES_REQUESTS)
   // The harnesses installed here, and installing, updating and removing one (services/store.ts): in this
@@ -1427,6 +1439,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   usagePortRef = usageLink.port
   backend.tokenUsageProvider = target => usageLink.port.get(target)
   coreApi.usage = target => usageLink.readSnapshot(target, coreApi.agents.all())
+  coreApi.usageFresh = async (agentId) => {
+    const row = registry.byAgent(agentId)
+    const target = row && usageTarget(row)
+    if (!target || !validUsageTarget(target)) return null
+    const answer = await ports.usage?.read(target)
+    return answer && validUsage(answer.value) ? answer.value : null
+  }
 
   // This machine's and each agent's resources, for the Monitor and the list's readings (services/monitor.ts):
   // in this process, or in the edge host (services/monitorProcess.ts), asked through its port (core/monitorLink.ts).
@@ -1749,8 +1768,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   // Which agent a hook belongs to, and what a SessionEnd means (core/engines/hooks.ts).
   const engineHooks = createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending: restorePanes.pending, syncSession })
-  // Settings ▸ Agents, kept in this daemon's data folder (lib/agentSettings.ts).
-  const agentSettings = agentSettingsRoutes(env.ADAPTER_DATA_DIR)
+  // What agents may do: the account's experiments, kept in this daemon's data folder for its launches
+  // (lib/agentSettings.ts, core/experiments.ts). Started once bound, below.
+  const agentSettings = createAgentSettingsSync({ dataDir: env.ADAPTER_DATA_DIR, backend: proxyBackend, session: readAuthSession,
+    // Agent Messages is told when its switch changes, wherever it runs: off, it reads it again only when told or its
+    // file changes (messages/service.ts).
+    onNotice: (listener) => experimentHooks.onNotice(listener), messagesChanged: () => ports.messages?.settingsChanged() })
   const nativeHookOwners = createNativeHookOwnerReader()
   const { server: hookServer, port: hookPort, localSocket, startRecovery: recoverNativeHooks,
     stopRecovery: stopNativeHooks, recoveryReady } = await startHookServer(daemonPort(), {
@@ -1830,14 +1853,14 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // route and hears about everyone else's edits as `desk_changed` (backendSocket.ts).
     onDeskRead: () => proxyBackend('GET', '/api/desk'),
     onDeskOps: (body) => proxyBackend('POST', '/api/desk/ops', body),
-    // Which tabs have Agent Messages on, for the window's tabs (backend routes/agentMessages.ts).
+    // The account's tabs for Agent Messages (backend routes/agentMessages.ts). A tab's flag is an older window's only:
+    // the account's experiment decides, so its switch is passed on and wakes nothing.
     onAgentMessagesRead: () => proxyBackend('GET', '/api/agent-messages'),
-    onAgentMessagesWrite: (tabId, body) => writeAgentMessagesTab(() => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body), body,
-      () => experimentHooks.want('messages')),
-    onExperimentalRead: () => proxyBackend('GET', '/api/experimental-settings'),
-    onExperimentalWrite: (body) => proxyBackend('PATCH', '/api/experimental-settings', body),
-    onAgentSettingsRead: agentSettings.read,
-    onAgentSettingsWrite: agentSettings.write,
+    onAgentMessagesWrite: (tabId, body) => proxyBackend('PATCH', `/api/agent-messages/tabs/${tabId}`, body),
+    onExperimentalRead: () => agentSettings.experimentalRead(),
+    onExperimentalWrite: (body) => agentSettings.experimentalWrite(body),
+    onAgentSettingsRead: () => agentSettings.settingsRead(),
+    onAgentSettingsWrite: (body) => agentSettings.settingsWrite(body),
     onStore: (method, path, body) => proxyBackend(method, path, body),
   }, { socketPath: localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true, deferNativeRecovery: true })
   nativeRecoveryReady = recoveryReady
@@ -1857,14 +1880,19 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (coreLink.supervised) {
     coreLink.bound(hookPort)
     coreLink.startHeartbeat()
-    // The experiments with saved state are on: their processes are asked for now, the master heeding a
-    // bound core alone (core/experiments.ts). The others wait for their first request.
+    // The experiments with saved state are on: their processes are asked for now, the master heeding a bound core
+    // alone (core/experiments.ts). The others wait for their first request. Agent Messages is asked for too, which
+    // starts a process only under a master from before it joined the edge host (core/messagesLink.ts).
     wakeExperiments({ dataDir: env.ADAPTER_DATA_DIR, experiments: EXPERIMENTS, outOfProcess, want: (service) => experimentHooks.want(service) })
+    askForMessages(outOfProcess, (service) => coreLink.want(service))
     devicesWake.start(outOfProcess)
     wakeModels({ outOfProcess, dataDir: env.ADAPTER_DATA_DIR, runtimeDir: env.ADAPTER_RUNTIME_DIR, want: (service) => coreLink.want(service) })
+    wakeViewers({ wake: viewersWake, agents: () => registry.list(), dataDir: env.ADAPTER_DATA_DIR })
   } else {
     try { writeFileSync(PID_FILE, String(process.pid) + '\n') } catch { /* best effort */ }
   }
+  // The account's agent experiments, read now and as they change, once the experiments above may be asked for.
+  agentSettings.start()
   // The one thing a handoff that happens before start-up finishes has to release: the port has no
   // fallback, so a successor that cannot bind it is a daemon that does not come up (see bootHandoff).
   daemonBoot.hookServer = hookServer
@@ -2403,13 +2431,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Moving a running agent onto a grid, or back to its own login (core/agents/retarget.ts).
   backend.onRetargetAgent = createAgentRetargeter({
-    readScreen: screens.read,
+    sessionTurnOpen,
     purgeBusy: (agentId) => restorePanes.busy(agentId) || backend.purgeAgentService?.busy(agentId),
     tmuxBackend,
     registry,
     runtimeProfiles,
     launchOverridesDeps,
-    captureTerminal,
     acquireTerminalControl,
     relaunchOverrides,
     downgradedPermission,
@@ -2593,6 +2620,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     console.log(`\n[cli] ${signal} — shutting down`)
     // A slow teardown may exhaust the master's grace. Persist already acknowledged bindings first.
     registry.flush({ exiting: true })
+    const leave = (): never => {
+      try { if (readPid() === process.pid) rmSync(PID_FILE, { force: true }) } catch { /* ignore */ }
+      process.exit(coreLink.supervised && forGood(signal) ? CORE_EXIT_STOP : 0)
+    }
+    // A core with no master keeps the master's grace on itself (core/stopDeadline.ts).
+    const deadline = stopDeadline({ supervised: coreLink.supervised, exit: leave, log: (line) => console.log(line) })
     // Mid-handoff everything below is already being torn down, and nothing has been started yet: leave
     // — a second teardown of closed servers is noise.
     if (updateHandoff.restarting()) {
@@ -2612,23 +2645,30 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     heartbeats.clear()
     cursorSubagents.stop()
     normalizers.stopPollers()
+    deadline.at('Cursor discovery')
     await cursorDiscovery.stop()
+    deadline.at('the transcript watcher')
     await watcher.stop()
     runtimeProfiles.stop()
+    deadline.at('Share')
     await ports.sharing?.stop()
     // The data folder's socket first: a successor waiting for this core to leave (lib/localSocket.ts) can
     // start as soon as it is gone, whatever the clients below take to close.
+    deadline.at('the local socket')
     await localSocket?.close()
+    deadline.at('the local websocket')
     await localWsServer.close()
     hookServer.close()
     nativeControls.close()
     externalResumes?.stop()
     usageLink.port.stop(); ports.usage?.stop()
+    deadline.at('the viewers')
     await ports.viewers?.stop()
+    deadline.at('the gateway')
     await gateway.stop()
+    deadline.at('the backend')
     await backend.stop()
-    try { if (readPid() === process.pid) rmSync(PID_FILE, { force: true }) } catch { /* ignore */ }
-    process.exit(coreLink.supervised && forGood(signal) ? CORE_EXIT_STOP : 0)
+    leave()
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
@@ -2705,7 +2745,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     const card = frame as Record<string, unknown>
     // The Pro's extras ride to the devices alone: the Wi-Fi device gets the card as it always did, and a
     // summary reaches the dial with the turn's whole answer, as it does the Wi-Fi device.
-    wifiCore.card(withoutUpdate(card))
+    if (!isLocalOnly(card)) wifiCore.card(withoutUpdate(card))
     const payload = card.payload as Record<string, unknown> | undefined
     const full = card.type === 'commander_event' && payload?.kind === 'summary' && typeof card.agentId === 'string'
       ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) : undefined

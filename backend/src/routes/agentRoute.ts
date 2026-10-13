@@ -20,10 +20,11 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { env } from '../config/env.js'
 import { validateBody } from '../middlewares/validation.js'
 import { sendSuccess, sendError } from '../utils/response.js'
 import { logger } from '../utils/logger.js'
+import { callHarnessLlm, harnessLlmConfigured, replyJson } from '../lib/harnessLlm.js'
+import { createWindowLimiter } from '../lib/windowLimiter.js'
 
 export const AGENT_ROUTE_PATH = '/api/route/agents'
 
@@ -52,23 +53,12 @@ const BUDGET_MS_RANGE = { min: 3_000, max: 20_000, fallback: 10_000 } as const
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX = 60
 
-const rateBuckets = new Map<string, { count: number; resetAt: number }>()
+const rateLimiter = createWindowLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX)
 
-export function routeRateLimitAllows(userId: string, now = Date.now()): boolean {
-  const bucket = rateBuckets.get(userId)
-  if (!bucket || now >= bucket.resetAt) {
-    rateBuckets.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
-    return true
-  }
-  if (bucket.count >= RATE_LIMIT_MAX) return false
-  bucket.count++
-  return true
-}
+export const routeRateLimitAllows = (userId: string, now = Date.now()): boolean => rateLimiter.allows(userId, now)
 
 /** Test seam: process-local by design, like the analytics limiter it copies. */
-export function resetRouteRateLimits(): void {
-  rateBuckets.clear()
-}
+export const resetRouteRateLimits = (): void => rateLimiter.reset()
 
 const agentSchema = z.object({
   id: z.string().min(1).max(128),
@@ -170,29 +160,6 @@ export function buildRankPrompt(body: RouteBody): string {
   )
 }
 
-/**
- * The LLM, over an OpenAI-compatible endpoint with plain `fetch`.
- *
- * A second copy of what `routes/cursor.ts` does, and knowingly so: that file documents its own
- * self-containment as a decision, and importing across two products' routing to save a `fetch` would
- * couple a Harness deploy to the Cursor app's behaviour.
- */
-async function callLlm(prompt: string, timeoutMs: number): Promise<{ text: string; model: string }> {
-  const model = env.CURSOR_LLM_MODEL
-  const res = await fetch(`${env.CURSOR_LLM_BASE_URL!.replace(/\/+$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env.CURSOR_LLM_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
-    signal: AbortSignal.timeout(timeoutMs),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`LLM HTTP ${res.status}: ${detail.slice(0, 200)}`)
-  }
-  const data = (await res.json()) as { model?: string; choices?: Array<{ message?: { content?: string } }> }
-  return { text: (data.choices?.[0]?.message?.content ?? '').trim(), model: data.model || model }
-}
-
 export interface RankedRow { agentId: string; score: number; reason: string }
 
 /**
@@ -207,18 +174,7 @@ export interface RankedRow { agentId: string; score: number; reason: string }
  * than as an empty ranking — the two need opposite handling on the machine.
  */
 export function parseRanking(raw: string, offered: Set<string>): RankedRow[] | null {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const body = (fenced ? fenced[1] : raw).trim()
-  const start = body.indexOf('{')
-  const end = body.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(body.slice(start, end + 1))
-  } catch {
-    return null
-  }
-  const rows = (parsed as { ranking?: unknown })?.ranking
+  const rows = (replyJson(raw) as { ranking?: unknown } | null)?.ranking
   if (!Array.isArray(rows)) return null
 
   const seen = new Set<string>()
@@ -260,7 +216,7 @@ export async function agentRouteRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       // Fail CLOSED on an unconfigured model, like the Cursor routes: an absent credential must never
       // read as "answer some other way" on a path that spends credit.
-      if (!env.CURSOR_LLM_BASE_URL || !env.CURSOR_LLM_API_KEY) {
+      if (!harnessLlmConfigured()) {
         logger.error('agent-route: CURSOR_LLM_BASE_URL/CURSOR_LLM_API_KEY not configured — refusing')
         sendError(reply, 'Routing is not configured', 'LLM_NOT_CONFIGURED', 503)
         return
@@ -285,7 +241,7 @@ export async function agentRouteRoutes(app: FastifyInstance): Promise<void> {
       const started = Date.now()
 
       try {
-        const { text, model } = await callLlm(buildRankPrompt(body), budgetMs)
+        const { text, model } = await callHarnessLlm(buildRankPrompt(body), budgetMs)
         const ranking = parseRanking(text, offered)
         if (!ranking) {
           logger.error('agent-route: unusable answer', { model, userId, sample: text.slice(0, 200) })

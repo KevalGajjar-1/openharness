@@ -72,11 +72,15 @@ describe('a failing service never takes the core down', () => {
     mkdirSync(join(d.dataDir, 'local-models'), { recursive: true })
     writeFileSync(join(d.dataDir, 'local-models', 'operations.json'), '[]')
     await d.start()
+    // The viewers' process runs once something needs it (core/viewersWake.ts): the Store's list asks for it, and
+    // waits for it no longer than a start (core/serviceLinks.ts `ON_DEMAND_START_MS`).
+    const client = await LocalClient.connect(d)
+    const listing = client.request('dsh_list', {}, 60_000)
     // Each process fails as it starts, again and again, until the master parks it; the core never waits for one.
     for (const service of SERVICE_PROCESSES) {
       await until(`the master to park ${service}`, () => d.log().includes(`[harnessd] service ${service} ended 3 times`) || null, 60_000, 250)
     }
-    const client = await LocalClient.connect(d)
+    expect(await listing).toMatchObject({ error: 'SERVICE_UNAVAILABLE', service: 'store', retryable: true })
     const agentId = await boundAgent(d, client, 'no-service-processes')
     await turn(client, agentId, 'first, with every service down')
     expect(await client.request('session_search', { query: 'first' })).toMatchObject({ error: 'SERVICE_UNAVAILABLE', service: 'search' })
@@ -258,10 +262,11 @@ describe('a failing service never takes the core down', () => {
     const d = daemon
     onTestFailed(() => { console.log(`---- daemon log\n${d.log().split('\n').slice(-80).join('\n')}`) })
     await d.start()
-    // In the viewers' process: asked before it has connected, it is answered SERVICE_UNAVAILABLE, retryable.
-    await until('the store to connect', () => d.log().includes('[services] store connected') || null, 30_000, 200)
+    // In the viewers' process, which runs once something needs it: the first request starts it, waits for it and
+    // is answered by it (core/viewersWake.ts).
     const client = await LocalClient.connect(daemon)
-    expect(await client.request('dsh_list', {})).toMatchObject({ error: 'SERVICE_FAILED', service: 'store' })
+    expect(await client.request('dsh_list', {}, 60_000)).toMatchObject({ error: 'SERVICE_FAILED', service: 'store' })
+    expect(d.log()).toContain('[services] store connected')
     // Its other requests are still the store's own answers, refusals included.
     expect(await client.request('dsh_remove', { id: '../../etc' })).toMatchObject({ error: 'INVALID_DSH', detail: 'dsh_remove needs an id' })
     expect(await client.request('dsh_install', { url: 'https://example.com/\n' })).toMatchObject({ error: 'INVALID_DSH' })
@@ -416,11 +421,12 @@ describe('a failing service never takes the core down', () => {
     daemon = await IsolatedDaemon.create()
     const d = daemon
     await d.start()
-    await until('the store to connect', () => d.log().includes('[services] store connected') || null, 30_000, 200)
+    // Its process runs once something needs it (core/viewersWake.ts): the list starts it and waits for it.
     const client = await LocalClient.connect(daemon)
     const listed = await client.request('dsh_list', {}, 60_000)
     expect(listed.error, JSON.stringify(listed).slice(0, 400)).toBeUndefined()
     expect(Array.isArray(listed.dsh)).toBe(true)
+    expect(d.log()).toContain('[services] store connected')
     client.close()
   })
 })

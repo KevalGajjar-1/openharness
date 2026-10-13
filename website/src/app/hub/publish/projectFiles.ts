@@ -1,5 +1,6 @@
 import { validateDraft, type HubDraft } from '@/lib/community/drafts';
 import { communityLimits } from '@/lib/community/contract';
+import { outsideResources } from '@/lib/community/outputCheck';
 import type { SourceFile } from '@/lib/community/types';
 
 const skippedFolders = ['node_modules', 'build', 'dist', 'target', 'vendor', '__pycache__'];
@@ -18,6 +19,13 @@ function base64(bytes: Uint8Array): string {
   for (let at = 0; at < bytes.length; at += 0x8000) raw += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   return btoa(raw);
 }
+
+const depth = (path: string) => path.split('/').length - 1;
+/** A page that may be the session's output: any at the top level, or a folder's index.html (an agent often puts a game in `<name>/`). */
+const madePage = (f: SourceFile) => f.path.endsWith('.html') && !f.encoding && (!depth(f.path) || f.path.endsWith('/index.html'));
+/** The top level's pages (index.html first, then by name), then each folder's index.html, shallowest first. */
+const madeRank = (path: string) => depth(path) ? 1 + depth(path) : path === 'index.html' ? 0 : 1;
+const madePageOrder = (a: SourceFile, b: SourceFile) => madeRank(a.path) - madeRank(b.path) || a.path.localeCompare(b.path);
 
 /** A file's size as sent, known before reading it: base64 for binary, at least its characters for text. */
 const sentSize = (file: File, encoded: boolean) => encoded ? Math.ceil(file.size / 3) * 4 : file.size;
@@ -47,9 +55,11 @@ export async function readProjectFolder(selected: Iterable<File>, preferredViewe
     if (size > communityLimits.projectBytes) throw new Error(`Keep the project under 6 MB as sent. ${sentNote}`);
     files.push({ path, content, ...(encoded ? { encoding: 'base64' as const } : {}) });
   }
-  // The page already chosen, or else preview.html. Any other page is offered, never assumed: an app's
-  // index.html usually needs files the Hub's sandbox cannot load.
-  const viewer = [preferredViewer, 'preview.html'].map(name => files.find(f => f.path === name && f.path.endsWith('.html') && !f.encoding)).find(Boolean);
+  // The page already chosen, or else preview.html, or else a page the session made that runs on its own.
+  // Any other page is offered, never assumed: an app's index.html usually needs files the Hub's sandbox
+  // cannot load, while a one-file game shows as it is.
+  const viewer = [preferredViewer, 'preview.html'].map(name => files.find(f => f.path === name && f.path.endsWith('.html') && !f.encoding)).find(Boolean)
+    ?? files.filter(madePage).sort(madePageOrder).find(f => !outsideResources(f.content).length);
   if (!files.length) throw new Error('This folder has no portable project files.');
   return { files, viewerPath: viewer?.path ?? preferredViewer, origin };
 }

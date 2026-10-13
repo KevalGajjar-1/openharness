@@ -2,8 +2,12 @@
 // this computer's code, and a signed-in computer that has no machine record), then PHONES & APPS.
 // These moved here from Settings ▸ Your devices and Settings ▸ Profiles. The device list and every
 // write are canned (support/devices_app.dart), so nothing reaches a daemon.
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:harness/api/api_client.dart';
+import 'package:harness/auth/auth_session.dart';
+import 'package:harness/core/config.dart';
 import 'package:harness/core/models.dart';
 import 'package:harness/screens/swarm_screen.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
@@ -14,12 +18,14 @@ import 'package:harness/state/machine_devices.dart';
 import 'package:harness/state/swarm_search.dart' show MachineSearchSection;
 import 'package:harness/viewer/device_history.dart';
 import 'package:harness/widgets/desktop_chrome.dart';
+import 'package:harness/widgets/add_phone_dialog.dart' show AddPhoneDialog;
 import 'package:harness/widgets/machine_picker_extras.dart';
 import 'package:harness/widgets/new_device_notice.dart' show openMachines;
 
 import 'support/devices_app.dart';
 import 'support/resource_picker.dart';
 import 'support/workspace_tools.dart';
+import 'swarm_screen_test.dart' show terminal;
 
 const _localId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _remoteId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -54,6 +60,25 @@ class _App extends FakeDevicesApp {
     machines = machineStates.values.map((s) => s.machine).toList();
     notifyListeners();
   }
+}
+
+/// Add Phone's daemon and backend, canned so nothing reaches a network: no
+/// phone waiting to pair, a sign-in code for the QR, and no pending list.
+class _AddPhoneApi extends ApiClient {
+  _AddPhoneApi() : super(config: AppConfig.dev, session: AuthSession());
+
+  @override
+  Future<({int status, Map<String, dynamic> body})> pair(
+    String code, {
+    CancelToken? cancelToken,
+  }) async => (status: 409, body: <String, dynamic>{'error': 'NO_INTENT'});
+
+  @override
+  Future<({String code, Duration ttl})?> phoneSignInCode() async =>
+      (code: 'h1', ttl: const Duration(seconds: 90));
+
+  @override
+  Future<Map<String, dynamic>?> daemonDevices() async => null;
 }
 
 AccountDevice _device(
@@ -467,6 +492,60 @@ void main() {
     app.requestMachines(phones: true);
     await tester.pumpAndSettle();
     expect(resourceSearch(tester).selected?.devicePub, 'phone');
+  });
+
+  testWidgets('See your phones, once Add Phone has its phone, opens Machines '
+      'at its phones', (tester) async {
+    app
+      ..api = _AddPhoneApi()
+      ..signedIn = true
+      ..currentUser = const CurrentUserProfile(email: 'dee@example.test');
+    // A terminal open, as on a desk in use: closing the dialog hands focus
+    // back to it, and only then did the link fail.
+    app.add('m', 'Test host');
+    app.machineStates['m']!.agents = [
+      const Agent(
+        id: 'a0',
+        name: 'Agent 0',
+        engine: 'codex',
+        terminalAvailable: true,
+      ),
+    ];
+    app.adoptSessionForTest(terminal('a0', []));
+    await mount(tester);
+    expect(app.panes, isNotEmpty);
+    // In by Machines' own Add phone: the account has a phone already, so the
+    // tab row has no Add Phone of its own.
+    await openPicker(tester);
+    await tester.tap(find.byKey(const Key('machine-picker-add-phone')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AddPhoneDialog), findsOneWidget);
+    expect(resourceScope('@'), findsNothing);
+
+    app.ownDaemonMachineIdForTest(_localId);
+    await tester.runAsync(
+      () => app.handleEventForTest(_localId, {
+        'type': 'device_key_added',
+        'payload': {
+          'pub': 'new-phone',
+          'label': 'Phat’s S23',
+          'kind': 'viewer',
+        },
+      }),
+    );
+    await tester.pump();
+    expect(find.text('Phat’s S23 is ready.'), findsOneWidget);
+
+    // Right after the dialog's pop the workspace's route is not current yet:
+    // opening Machines then was refused, and the link did nothing.
+    await tester.tap(find.byKey(const ValueKey('add-phone-see-phones')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AddPhoneDialog), findsNothing);
+    expect(resourceScope('@'), findsOneWidget);
+    expect(
+      resourceSearch(tester).selected?.devicePub,
+      isIn(['phone', 'new-phone']),
+    );
   });
 
   test('a picker that opened on its own marks nothing seen', () async {

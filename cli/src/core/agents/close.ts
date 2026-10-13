@@ -9,11 +9,12 @@ import { IdentityReadUnavailable } from '../../engines/kit/identityScan.js'
 import { CloseAgentService, inspectCloseActivity, type CloseAgentServiceDeps, type CloseMode } from '../../lib/closeAgentService.js'
 import type { OpenTabProtection } from '../../lib/openTabProtection.js'
 import { sid } from '../../lib/log.js'
-import { projectDisplayName, type registry } from '../../lib/registry.js'
+import { projectDisplayName, type RegisteredSession, type registry } from '../../lib/registry.js'
 import type { SessionCheckpointStore } from '../../lib/sessionCheckpoint.js'
 import type { StoppedAgentStore } from '../../lib/stoppedAgents.js'
 import type { TerminalBackendCoordinator } from '../../lib/terminalBackendCoordinator.js'
 import type { Watcher } from '../../watcher/watcher.js'
+import { paneReadIdentity } from '../transcripts/readIdentity.js'
 
 export interface ClosingDeps {
   readScreen: ScreenReader
@@ -22,6 +23,8 @@ export interface ClosingDeps {
   watcher: Pick<Watcher, 'pollSession'>
   captureTerminal: (target: string, historyLines?: number) => Promise<string | null>
   sessionTurnState: (sessionId: string) => boolean | undefined
+  /** Synchronous core recovery authority, never a transcript or service answer. */
+  nativeRecoveryReady?: (session: RegisteredSession) => boolean
   /** What is still being asked, by session. */
   openQuestions: { has(sessionId: string): boolean }
   terminals: Pick<TerminalBackendCoordinator, 'captureRetained'>
@@ -39,8 +42,10 @@ export const CLOSE_READ_RECONNECT_MS = 10_000
 
 export function createAgentClosing({
   readScreen, registry, cleanupTabs, watcher, captureTerminal, sessionTurnState, openQuestions, terminals, sessionCheckpoints,
-  stopAgent, announceSession, engineReady, stoppedAgents,
+  stopAgent, announceSession, engineReady, stoppedAgents, nativeRecoveryReady = () => true,
 }: ClosingDeps) {
+  const ready = (s: RegisteredSession): boolean =>
+    !s.identityHold && !s.admissionHold && !s.interpretationHold && nativeRecoveryReady(s)
   /**
    * Read what the transcript has that the tail has not delivered yet. A close sent just as the engine's worker
    * restarted found its live read refused as stale (seen end to end: ENGINE_STALE_REPLY, the close failed).
@@ -67,10 +72,24 @@ export function createAgentClosing({
     registry,
     openTabs: cleanupTabs,
     activity: async s => {
+      // Automatic cleanup can see an old idle parser while native admission or
+      // recovery deliberately holds its reader. Keep that work through every
+      // await; a fresh empty composer alone does not make it safe to close.
+      const identity = paneReadIdentity(s)
+      const current = () => {
+        const latest = registry.byAgent(s.agentId)
+        return !!latest && paneReadIdentity(latest) === identity && ready(latest)
+      }
+      if (!current()) return 'unknown'
       if (s.sessionId) await drain(s)
+      if (!current()) return 'unknown'
       const screen = await captureTerminal(s.agentId, 80)
-      return inspectCloseActivity(s, await readScreen(s, screen), sessionTurnState(s.sessionId), openQuestions.has(s.sessionId))
+      if (!current()) return 'unknown'
+      const reading = await readScreen(s, screen)
+      if (!current()) return 'unknown'
+      return inspectCloseActivity(s, reading, sessionTurnState(s.sessionId), openQuestions.has(s.sessionId))
     },
+    idleCurrent: s => ready(s) && (!s.sessionId || sessionTurnState(s.sessionId) === false) && !openQuestions.has(s.sessionId),
     checkpoint: async (s, phase) => {
       const captured = phase === 'before' ? await terminals.captureRetained(s, { historyLines: 2000 }) : null
       await sessionCheckpoints.save(s, { screen: captured?.state === 'succeeded' ? captured.value : null })

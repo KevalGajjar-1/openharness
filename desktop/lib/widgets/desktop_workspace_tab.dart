@@ -1,27 +1,30 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 
-import '../agent_messages/agent_messages.dart';
 import '../shared/theme/app_icons.dart';
 import '../shared/theme/app_theme.dart' as grid;
 import 'box_chrome.dart';
 import 'desktop_chrome.dart';
 
 /// The Flutter counterpart of the AppKit tab: a centered name/status group
-/// and, at its trailing edge, Agent Messages' 💬 and the close action.
+/// and, at its trailing edge, the close action.
 ///
-/// At rest the name and status have the whole tab. Hovering reveals 💬 — grey
-/// while Agent Messages is off, [messagesColor] while on — and ×. Traffic
-/// between its agents shows nothing on the tab: messages arrive when they
-/// arrive.
+/// At rest the name and status have the whole tab; hovering reveals ×.
+/// Holding Command replaces the status with the tab's shortcut, as before.
+/// Agent Messages has nothing on a tab: traffic between its agents shows nothing,
+/// since messages arrive when they arrive, and its on/off is Settings ▸
+/// Experimental's. The 💬 that sat beside × was easy to hit by mistake and turned
+/// the tab off, failing a message that was waiting (owner, 2026-10-12).
 class DesktopWorkspaceTab extends StatefulWidget {
   const DesktopWorkspaceTab({
     super.key,
     required this.id,
     required this.label,
     required this.selected,
+    required this.showShortcuts,
     required this.onSelect,
     required this.onClose,
     this.tooltip,
@@ -29,24 +32,15 @@ class DesktopWorkspaceTab extends StatefulWidget {
     this.activityLabel,
     this.highlighted = false,
     this.onRename,
-    this.agentMessages,
-    this.messagesColor,
-    this.onToggleAgentMessages,
+    this.shortcutHint,
   });
 
   final String id, label;
   final bool selected, highlighted;
+  final ValueListenable<bool> showShortcuts;
   final VoidCallback? onSelect, onClose;
   final VoidCallback? onRename;
-
-  /// This tab's Agent Messages, or null where a tab has none (the Store).
-  final TabMessagesState? agentMessages;
-
-  /// Agent Messages' color, for the 💬 while on: the accent blue
-  /// (`AppPalette.accentOnSurface`), the design system's color for "on".
-  final Color? messagesColor;
-  final VoidCallback? onToggleAgentMessages;
-  final String? tooltip, activityLabel;
+  final String? shortcutHint, tooltip, activityLabel;
 
   /// The status cell: an [ActivityMark].
   final Widget? activity;
@@ -63,47 +57,62 @@ class DesktopWorkspaceTab extends StatefulWidget {
     return width;
   }
 
-  // × and, left of it, 💬, inside the tab's curved body, with a dead gap
-  // between them so a click just off × never toggles 💬. They show only on
-  // hover; at rest the name and status have the whole tab. 20pt targets 8pt
-  // apart: 16pt ones 3pt apart were easy to click by mistake (owner, 2026-10-12).
-  static const closeWidth = 20.0, messagesWidth = 20.0, accessoryGap = 8.0;
+  // × inside the tab's curved body, shown only on hover; at rest the name and
+  // status have the whole tab. A 20pt target: 16pt was easy to click by
+  // mistake (owner, 2026-10-12).
+  static const closeWidth = 20.0;
   static const _restingInset = grid.AppDesktop.tabShoulder + 6;
-  static const _revealedInset =
-      closeWidth + accessoryGap + messagesWidth + grid.AppDesktop.tabCloseInset;
+  static const _revealedInset = closeWidth + grid.AppDesktop.tabCloseInset;
   static const _statusWidth = 16.0, _indicatorGap = 6.0;
 
-  /// What the 💬 says it does, in each state.
-  static String agentMessagesTooltip(TabMessagesState state) => switch (state) {
-    TabMessagesState.off => 'Agent messages off · click to turn on',
-    TabMessagesState.on => 'Agent messages on · click to turn off',
-  };
+  static TextStyle _hintStyle({Color? color}) =>
+      DesktopChrome.metadata(color: color).copyWith(
+        fontFamilyFallback: [...grid.AppType.sansFallback, 'Apple Symbols'],
+      );
+
+  static double indicatorWidth(
+    BuildContext context,
+    String? hint, {
+    required bool hasActivity,
+  }) => math
+      .max(
+        hasActivity ? _statusWidth : 0.0,
+        hint == null || hint.isEmpty
+            ? 0.0
+            : _measure(context, hint, _hintStyle()),
+      )
+      .clamp(0.0, 72.0);
 
   static double labelWidth(BuildContext context, String label) =>
       _measure(context, label, DesktopChrome.control());
 
-  /// The width that shows [label] whole while hovered, when 💬 and × take
-  /// their room — where a tooltip appears.
+  /// The width that shows [label] whole while hovered, when × takes its room
+  /// — where a tooltip appears.
   static double naturalWidth(
     BuildContext context,
     String label, {
     bool hasActivity = false,
+    String? shortcutHint,
   }) =>
       labelWidth(context, label) +
       _restingInset +
       _revealedInset +
-      (hasActivity ? _statusWidth + _indicatorGap : 0);
+      ((hasActivity || (shortcutHint?.isNotEmpty ?? false))
+          ? indicatorWidth(context, shortcutHint, hasActivity: hasActivity) +
+                _indicatorGap
+          : 0);
 
   /// The name's left edge and width: centered with its status, and when
-  /// revealed moved left only as far as 💬 and × need, then shortened. A name
-  /// with room never moves.
+  /// revealed moved left only as far as × needs, then shortened. A name with
+  /// room never moves.
   static (double, double) titleLayout({
     required double tabWidth,
     required double labelWidth,
     required bool hasActivity,
     required bool revealed,
+    double indicatorWidth = _statusWidth,
   }) {
-    final status = hasActivity ? _statusWidth + _indicatorGap : 0.0;
+    final status = hasActivity ? indicatorWidth + _indicatorGap : 0.0;
     final right = revealed ? _revealedInset : _restingInset;
     final width = math.min(
       labelWidth,
@@ -135,8 +144,8 @@ class DesktopWorkspaceTab extends StatefulWidget {
 class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
   bool _hovered = false, _focused = false;
 
-  /// One of the tab's trailing controls: shown, it takes the pointer, focus
-  /// and semantics; hidden, it keeps its place and none of them.
+  /// The tab's trailing control: shown, it takes the pointer, focus and
+  /// semantics; hidden, it keeps its place and none of them.
   Widget _accessory({
     required bool visible,
     required double width,
@@ -201,8 +210,6 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
               ? foreground
               : muted
         : foreground.withValues(alpha: .38);
-    final messages = widget.agentMessages;
-    final messagesOn = messages != null && messages != TabMessagesState.off;
     Widget tab = Padding(
       padding: const EdgeInsets.only(top: grid.AppDesktop.tabTopInset),
       child: DecoratedBox(
@@ -219,149 +226,141 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
           explicitChildNodes: true,
           selected: widget.selected,
           child: LayoutBuilder(
-            builder: (context, constraints) {
-              final revealed = enabled && _hovered;
-              final hasActivity = widget.activity != null;
-              final (groupLeft, labelWidth) = DesktopWorkspaceTab.titleLayout(
-                tabWidth: constraints.maxWidth,
-                labelWidth: DesktopWorkspaceTab.labelWidth(
+            builder: (context, constraints) => ValueListenableBuilder(
+              valueListenable: widget.showShortcuts,
+              builder: (context, showHints, _) {
+                final revealed = enabled && _hovered;
+                final showHint =
+                    enabled &&
+                    showHints &&
+                    (widget.shortcutHint?.isNotEmpty ?? false);
+                final hasActivity = widget.activity != null || showHint;
+                final indicator = DesktopWorkspaceTab.indicatorWidth(
                   context,
-                  widget.label,
-                ),
-                hasActivity: hasActivity,
-                revealed: revealed,
-              );
-              return Stack(
-                children: [
-                  Positioned.fill(
-                    child: Semantics(
-                      button: true,
-                      enabled: enabled,
-                      label: [widget.label, ?widget.activityLabel].join(', '),
-                      onTap: widget.onSelect,
-                      customSemanticsActions: {
-                        if (widget.onClose != null)
-                          const CustomSemanticsAction(label: 'Close tab'):
-                              widget.onClose!,
-                        if (messages != null &&
-                            widget.onToggleAgentMessages != null)
-                          CustomSemanticsAction(
-                            label: messagesOn
-                                ? 'Turn Agent Messages off'
-                                : 'Turn Agent Messages on',
-                          ): widget.onToggleAgentMessages!,
-                      },
-                      child: FocusableActionDetector(
+                  showHint ? widget.shortcutHint : null,
+                  hasActivity: widget.activity != null,
+                );
+                final (groupLeft, labelWidth) = DesktopWorkspaceTab.titleLayout(
+                  tabWidth: constraints.maxWidth,
+                  labelWidth: DesktopWorkspaceTab.labelWidth(
+                    context,
+                    widget.label,
+                  ),
+                  hasActivity: hasActivity,
+                  revealed: revealed,
+                  indicatorWidth: indicator,
+                );
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Semantics(
+                        button: true,
                         enabled: enabled,
-                        onShowFocusHighlight: (value) =>
-                            setState(() => _focused = value),
-                        actions: {
-                          ActivateIntent: CallbackAction<ActivateIntent>(
-                            onInvoke: (_) {
-                              widget.onSelect?.call();
-                              return null;
-                            },
-                          ),
+                        label: [widget.label, ?widget.activityLabel].join(', '),
+                        onTap: widget.onSelect,
+                        customSemanticsActions: {
+                          if (widget.onClose != null)
+                            const CustomSemanticsAction(label: 'Close tab'):
+                                widget.onClose!,
                         },
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: widget.onSelect,
-                          onDoubleTap: widget.onRename,
-                          child: ExcludeSemantics(
-                            child: Stack(
-                              children: [
-                                Positioned(
-                                  left: groupLeft,
-                                  width: labelWidth,
-                                  top: 0,
-                                  bottom: 0,
-                                  child: Center(
-                                    child: Text(
-                                      widget.label,
-                                      key: ValueKey('tab-label:${widget.id}'),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: DesktopChrome.control(color: ink),
-                                    ),
-                                  ),
-                                ),
-                                if (widget.activity case final activity?)
+                        child: FocusableActionDetector(
+                          enabled: enabled,
+                          onShowFocusHighlight: (value) =>
+                              setState(() => _focused = value),
+                          actions: {
+                            ActivateIntent: CallbackAction<ActivateIntent>(
+                              onInvoke: (_) {
+                                widget.onSelect?.call();
+                                return null;
+                              },
+                            ),
+                          },
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: widget.onSelect,
+                            onDoubleTap: widget.onRename,
+                            child: ExcludeSemantics(
+                              child: Stack(
+                                children: [
                                   Positioned(
-                                    left:
-                                        groupLeft +
-                                        labelWidth +
-                                        DesktopWorkspaceTab._indicatorGap,
-                                    width: DesktopWorkspaceTab._statusWidth,
+                                    left: groupLeft,
+                                    width: labelWidth,
                                     top: 0,
                                     bottom: 0,
-                                    child: Center(child: activity),
+                                    child: Center(
+                                      child: Text(
+                                        widget.label,
+                                        key: ValueKey('tab-label:${widget.id}'),
+                                        textAlign: TextAlign.center,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: DesktopChrome.control(
+                                          color: ink,
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                              ],
+                                  if (hasActivity)
+                                    Positioned(
+                                      left:
+                                          groupLeft +
+                                          labelWidth +
+                                          DesktopWorkspaceTab._indicatorGap,
+                                      width: indicator,
+                                      top: 0,
+                                      bottom: 0,
+                                      child: Center(
+                                        child: showHint
+                                            ? Text(
+                                                widget.shortcutHint!,
+                                                key: ValueKey(
+                                                  'tab-shortcut:${widget.id}',
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style:
+                                                    DesktopWorkspaceTab._hintStyle(
+                                                      color: ink,
+                                                    ),
+                                              )
+                                            : widget.activity,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    right: grid.AppDesktop.tabCloseInset,
-                    top: 0,
-                    bottom: 0,
-                    child: Row(
-                      children: [
-                        _accessory(
-                          visible: messages != null && revealed,
-                          width: DesktopWorkspaceTab.messagesWidth,
-                          child: messages == null
-                              ? const SizedBox.shrink()
-                              : _AgentMessagesButton(
-                                  key: ValueKey(
-                                    'tab-agent-messages:${widget.id}',
-                                  ),
-                                  state: messages,
-                                  onPressed: widget.onToggleAgentMessages,
-                                  // Filled at full strength while on, a quieter
-                                  // outline while off (AppKit's SwarmTitlebar too).
-                                  style: messagesOn
-                                      ? _accessoryStyle(
-                                          widget.messagesColor ?? foreground,
-                                          1,
-                                        )
-                                      : _accessoryStyle(
-                                          foreground,
-                                          MediaQuery.highContrastOf(context)
-                                              ? .7
-                                              : .35,
-                                        ),
-                                ),
-                        ),
-                        const SizedBox(width: DesktopWorkspaceTab.accessoryGap),
-                        _accessory(
-                          visible: revealed,
-                          width: DesktopWorkspaceTab.closeWidth,
-                          child: IconButton(
-                            key: ValueKey('tab-close:${widget.id}'),
-                            tooltip: 'Close tab',
-                            onPressed: widget.onClose,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints.tightFor(
-                              width: DesktopWorkspaceTab.closeWidth,
-                              height: 32,
-                            ),
-                            style: _accessoryStyle(foreground, quietOpacity),
-                            icon: const Icon(
-                              AppIcons.close,
-                              size: AppIcons.closeSize,
-                            ),
+                    Positioned(
+                      right: grid.AppDesktop.tabCloseInset,
+                      top: 0,
+                      bottom: 0,
+                      child: _accessory(
+                        visible: revealed,
+                        width: DesktopWorkspaceTab.closeWidth,
+                        child: IconButton(
+                          key: ValueKey('tab-close:${widget.id}'),
+                          tooltip: 'Close tab',
+                          onPressed: widget.onClose,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: DesktopWorkspaceTab.closeWidth,
+                            height: 32,
+                          ),
+                          style: _accessoryStyle(foreground, quietOpacity),
+                          icon: const Icon(
+                            AppIcons.close,
+                            size: AppIcons.closeSize,
                           ),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -378,56 +377,6 @@ class _DesktopWorkspaceTabState extends State<DesktopWorkspaceTab> {
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
         child: tab,
-      ),
-    );
-  }
-}
-
-/// Agent Messages' 💬: grey while off, in its color while on. Its tooltip says
-/// what a click does.
-class _AgentMessagesButton extends StatelessWidget {
-  const _AgentMessagesButton({
-    super.key,
-    required this.state,
-    required this.onPressed,
-    required this.style,
-  });
-
-  final TabMessagesState state;
-  final VoidCallback? onPressed;
-  final ButtonStyle style;
-
-  @override
-  Widget build(BuildContext context) {
-    final tooltip = DesktopWorkspaceTab.agentMessagesTooltip(state);
-    // One node that says what it is and whether it is on; the tooltip's
-    // sentence is its hint, not a second label.
-    return Semantics(
-      container: true,
-      button: true,
-      toggled: state != TabMessagesState.off,
-      label: 'Agent Messages',
-      hint: tooltip,
-      onTap: onPressed,
-      excludeSemantics: true,
-      child: Tooltip(
-        message: tooltip,
-        excludeFromSemantics: true,
-        child: IconButton(
-          onPressed: onPressed,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(
-            width: DesktopWorkspaceTab.messagesWidth,
-            height: 32,
-          ),
-          style: style,
-          icon: Icon(
-            state == TabMessagesState.off
-                ? AppIcons.agentMessagesOff
-                : AppIcons.agentMessagesOn,
-            size: 14,
-          ),
-        ),
       ),
     );
   }

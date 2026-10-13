@@ -103,7 +103,8 @@ top-level processes automatically; it does not launch them or change their permi
 ${PROCESS_ENGINES.map((engine) => `  ${ENGINE_CLI_COMMANDS[engine]}`).join('\n')}
 A launcher that hands the pane to one of these works the same — "ori claude" is a Claude Code agent.
 An agent can start, wait for, read and close other agents here: harness new, wait, show and close below, or
-harness mcp. How: https://harness.autonomous.ai/agents
+harness mcp. Starting is off until the person turns it on: Settings ▸ Experimental, or harness settings
+agents-start-agents on. How: https://harness.autonomous.ai/agents
 
 Machine:
   harness login                sign in (asks: Google or Apple in your browser, or scan a QR with your phone)
@@ -139,14 +140,14 @@ Machine:
   harness machines             list the machines on this account (this computer's is marked)
   harness search <words>       find the conversation on this computer that said them: every turn of
                                every harness, live or stopped (--limit=N, --json)
-  harness send <name> "text"   from an agent's pane: message a teammate in this tab, when Agent Messages
-                               are on there (the tab's chat icon); \`harness send\` alone lists who is here
+  harness send <name> "text"   from an agent's pane: message a teammate in this tab (Agent Messages,
+                               Settings ▸ Experimental); \`harness send\` alone lists who is here
   harness ps [--all]           the harnesses here: state, who started each, what each is about
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
   harness close <name> [--now] save a harness's screen and stop it; an agent closes only what it started
   harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
-  harness settings [<name> on|off]  what agents may do here (agents-start-agents, pull-request-line), as Settings ▸ Agents
+  harness settings [<name> on|off]  what agents may do (agents-start-agents, pull-request-line, agent-messages): your account's experiments in Settings ▸ Experimental, each off by default
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
   harness version              print the installed version (v${VERSION})
@@ -2501,7 +2502,7 @@ switch (cmd) {
     psCommand(rest).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'settings':
-    process.exitCode = settingsCommand(rest, env.ADAPTER_DATA_DIR)
+    settingsCommand(rest, { port: daemonPort() }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'mcp': {
     const pane = process.env.TMUX_PANE

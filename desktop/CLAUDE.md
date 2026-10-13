@@ -193,19 +193,23 @@ The native desktop target uses the CLI for cloud access and SSO tokens:
   client it was issued to, so the session keeps the client the backend's exchange REPORTS — never
   the one it asked for, since an older backend exchanges as its configured client and names none
   — and every refresh names it again (`AuthSession.ssoClientId`, the CLI's `session.json`).
-  **A computer new to Harness is asked once to sign in, between setup and its first workspace**
+  **Desktop requires sign-in after setup and before opening the workspace**
   (`widgets/sign_in_step.dart`, `AppNotifier.signInStepShowing`; design
-  `../docs/research/2026-10-08-onboarding-redesign/index.html` 1b, owner 2026-10-11): what an
-  account adds in four lines, Continue with Google and Continue with Apple, and under them Skip
-  and Continue with email (no provider: the sign-in page's own chooser). It follows the setup
-  tour — or the setup screen, where there was no tour — only when setup installed the CLI on a
-  computer that never had it and nobody is signed in; the first workspace keeps building behind
-  it. ⚠️ The page does not change while the browser is open, so its controls stay live
-  (`signInFromStep`): the same one again reopens its page, another one cancels and switches.
-  Afterwards the same sign-in is the tab row's last control: **Sign in** as a guest, the account's
-  initial once signed in, whose menu is `widgets/account_menu.dart`
-  (`design/workspace-status-bar.md`). The sign-in sheet carries Continue with email too, except
-  in a short window, where one more row pushes the expired-session line off screen.
+  `../docs/research/2026-10-08-onboarding-redesign/index.html` 1b, owner 2026-10-12).
+  The tour has five slides: machines, agents, persistent sessions, phone and device;
+  the ⌘P and ⌘N slides are removed. The sign-in page keeps its four benefits and
+  standalone Google and Apple buttons, with Continue with email centered underneath;
+  there is no surrounding card or Skip. It applies to existing signed-out installations and relaunches after
+  setup too. A successful explicit sign-out brings it back. A signed-in offline launch
+  opens normally. A server-rejected session requires sign-in again; saved local work
+  and running harnesses survive behind the page. A temporary network outage keeps
+  an already signed-in workspace available.
+  Agent downloads still run during setup; first-arrival agents wait for an account.
+  The page does not change while the browser is open: the same option reopens its page,
+  and another option cancels and switches. Failures and cancellation keep the required
+  page visible. The workspace account menu is `widgets/account_menu.dart`
+  (`design/workspace-status-bar.md`). Every native sign-in entry uses this same
+  page; the old fleet-map card and desktop phone-scanning choice are removed.
   Sign-out owns its CLI process, checks its exit, and terminates it on timeout. `AppNotifier` joins
   repeated sign-out requests and blocks another sign-in until credential and connection cleanup
   finish; failure offers keyboard-focused Retry sign out. Development fixture disconnects never
@@ -317,13 +321,20 @@ Experimental switches are account state. `AppNotifier.experimentalFeatures` bind
 identifies the account, clears on sign-out/account change, and rejects stale responses. It uses
 `/api/experimental-settings`, refreshes on account invalidations and a 30-second fallback poll, and
 shows changes only after server acknowledgement. Do not restore the old unscoped local keys at startup.
-Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collaboration: its
-flag is per tab, not an Experimental switch — `GET /api/agent-messages` and
-`PATCH /api/agent-messages/tabs/:tabId` through the CLI like the desk, read after sign-in, after a
-toggle, on `desk_changed`, the desk safety-net poll and the backend coming back; a 404 (an older CLI
-or backend) offers no 💬 at all, and the 💬 waits for the first answer (`agentMessagesOffered`, which
-also needs a desk tab). Traffic arrives as `messages_changed` — but a daemon sends that only to its
-own computer's windows, so `AgentMessagesRemoteWatch` reads the last messages of each tab that is on
+Agent Messages (docs/design/2026-10-10-agent-messages.md) replaced Swarm collaboration. Whether
+agents may message is the account's Experimental switch (`agent_messages`, off by default; each
+daemon keeps a copy for its agents), not a tab's: the tab's own 💬 beside its × was easy to hit by
+mistake and turned the tab off, failing a waiting message (owner, 2026-10-12), so the tab, its
+menu, File and ⇧⌘P have no on/off. So are the other two things agents may do with Harness,
+starting agents (`agents_start_agents`) and the pull request line (`agent_pull_request_line`):
+they were each computer's Settings ▸ Agents until the owner made all three account experiments,
+off for all (2026-10-12). The app reads `GET /api/agent-messages` through
+the CLI like the desk only to learn that the daemon and backend have Agent Messages — once the desk
+is joined, from the desk safety-net poll until one has answered, and when the backend comes back;
+each tab's `enabled` in the answer is not read. A 404 (an older CLI or backend) offers no Show
+Agent Messages (`agentMessagesOffered`, which also needs a desk tab). Traffic arrives as
+`messages_changed` — but a daemon sends that only to its own computer's windows, so
+`AgentMessagesRemoteWatch` reads the last messages of each desk tab with two or more harnesses
 from its other machines every 15 s while the window is in front. A tab's log is the
 `agent_messages` `history` request to every daemon with a pane in it, merged by message id. The creature switch opens the account's
 `ZooController` collection; disabling it hides the creature without deleting eggs, individuals or progress.
@@ -346,8 +357,11 @@ closes. Idle-only closes retain the daemon's activity guard; newly active work g
 of the remaining sessions. Failures identify confirmed stops separately from uncertain ones
 and default to Keep open. Close pane / Close Tab dismisses the captured views through the
 normal recently-closed history path without another stop request; unconfirmed sessions may
-still be running, and their views in other tabs remain open. Previously queued daemon close
-plans remain compatible. Layout cleanup, moving panes, switching tabs, and sign-out retain
+still be running, and their views in other tabs remain open. A session reviewed before its
+engine bound a conversation (Codex's first seconds) that has bound one since is the same session
+(`Agent.continuesSession`): its Stop names the reviewed identity, no conversation, and the daemon
+decides (CLI `closeAgentService.ts` `matches`); another conversation once one was bound is a
+change. Previously queued daemon close plans remain compatible. Layout cleanup, moving panes, switching tabs, and sign-out retain
 their view-only behavior. Older daemons retain their existing behavior until updated.
 
 `HarnessMonitor` supplies the global running-harness count without process sampling
@@ -445,14 +459,15 @@ add a kind there, not at the call site.
   repaint on a theme flip.
 - The [workspace status bar](design/workspace-status-bar.md) places system-font tabs and global actions at the top,
   with harness, machine and installed local model counts plus subscription allowance remaining at the bottom left and focused machine/repo/branch/PR at the bottom right.
-  Tabs center their name/status group and show no shortcut hint (Command changes nothing on
-  them). Hovering a tab shows Agent Messages' 💬 — grey off, accent blue on — just
-  left of ×; traffic between its agents shows nothing on the tab, whose status slot keeps its
-  own status (owner, 2026-10-12: messages arrive when they arrive)
-  (`lib/agent_messages/`, `AgentMessagesController` on `AppNotifier.agentMessages`, its own
-  notifier so traffic never rebuilds the workspace; `SwarmTabButton` mirrors it natively).
-  At rest the name has the whole tab; hovered, it moves left only as far as 💬
-  and × need. Tab and pane close
+  Tabs center their name/status group. Holding Command shows their current shortcut in the status
+  slot using the original small labels; release or window deactivation restores the status.
+  Hovering a tab shows only its ×. Agent Messages has nothing on a tab: no 💬 (it was
+  easy to hit by mistake and turned the tab off, owner 2026-10-12; Settings ▸ Experimental holds
+  the account's switch) and no traffic, so its status slot keeps its own status (messages arrive when they
+  arrive). A tab's log is its menu's and File's Show Agent Messages (`lib/agent_messages/`,
+  `AgentMessagesController` on `AppNotifier.agentMessages`, its own notifier so traffic never
+  rebuilds the workspace; `SwarmTabButton` mirrors the tab natively).
+  At rest the name has the whole tab; hovered, it moves left only as far as × needs. Tab and pane close
   marks are small and quiet, with larger click targets. Terminal panes end with matching
   plain-text agent/model selectors and close at every width. Hovering the right
   or bottom edge reveals its split icon; zoom stays in commands, menus and keyboard
@@ -667,18 +682,17 @@ add a kind there, not at the call site.
   `DropdownButton`/`IconButton` do not match anything else in the app.
   **Settings holds settings only** (owner, 2026-10-11): Account alone at the top, then General
   (Appearance — the `customize` row, which opens the Appearance panel over the workspace —
-  Notifications, Keyboard shortcuts), Agents (Agents, Connectors, Usage), Labs (Experimental) and
+  Notifications, Keyboard shortcuts), Agents (Connectors, Usage), Labs (Experimental) and
   Help (About, Debug in dev builds). A thing is managed where it lives: the Autonomous robots —
   Wi-Fi code pairing, Revoke, Still companion — in the Devices tab (`devices/wifi_robots.dart`);
   the account's computers, phones and apps, each device's code, Remove (a computer: sign out AND
   delete its machine record), History… and Show in this window in the Machines picker
   (`state/machine_devices.dart`, `widgets/machine_picker_extras.dart`). A way in from outside the
   workspace asks for Machines with `AppNotifier.requestMachines` (`openMachines` in
-  `widgets/new_device_notice.dart`). Settings ▸ Agents reads and writes this computer's daemon
-  (`/api/agent-settings`, bare JSON, not `{success, data}`); a setting the daemon's answer does
-  not name is not shown. `harness settings` changes the same file and the daemon sends no event,
-  so the open page reads again every 5 s while the window can be seen and once when it comes back
-  to the front (`AgentSettingsStore.recheck`): quiet, and never across a change being saved.
+  `widgets/new_device_notice.dart`). What agents may do with Harness is in Experimental, the
+  account's (owner, 2026-10-12): Settings ▸ Agents, which read and wrote this computer's daemon,
+  is gone. An experiment an older backend does not name is shown off and unavailable, never a
+  failed read (`ExperimentalFeaturesStore._apply`).
 - **The log is written to files, and Settings ▸ Debug reads them back** (`lib/logging/`,
   `settings/sections/debug_*.dart`). `appLog` (`app-YYYYMMDD.log`) is the narrative — `app`, `ws`,
   `api`, `flutter` — and `cliLog` (`cli-YYYYMMDD.log`) is a transcript of every child process, both

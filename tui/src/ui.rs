@@ -209,6 +209,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.size = (area.width, area.height);
         app.fit_panes();
     }
+    crate::account::enforce_entry(app);
+    if crate::account::entry_required(app) {
+        app.overlay_drawn = Some(area);
+        if let Some(pane) = crate::os_welcome::entry_wifi(app).and_then(|id| app.panes.get_mut(&id)) {
+            if let Some(cursor) = pane_body(frame.buffer_mut(), pane, area, true, (None, None)) {
+                frame.set_cursor_position(cursor);
+            }
+        } else if let Some(Modal::Picker { kind: PickerKind::Account, mut picker }) = app.modal.take() {
+            crate::account::draw(frame.buffer_mut(), app, area, &mut picker);
+            app.modal = Some(Modal::Picker { kind: PickerKind::Account, picker });
+        }
+        return;
+    }
     // The status lines (tmux's status: off, on, 2 … 5), at the bottom or (status-position) the top.
     let lines = app.status_lines().max(1).min(area.height);
     let status = Rect::new(0, if app.status_top { 0 } else { area.height.saturating_sub(lines) }, area.width, lines);

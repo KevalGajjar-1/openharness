@@ -4,8 +4,11 @@
  * again as it starts, so an agent installed since a service was connected gets it too.
  *
  * `connectors` takes `{action}`: `list`, `connect` {connector}, `flow` {flow}, `disconnect` {connector},
- * `custom` {name, url, headers}. The app opens a returned `authorize_url` in the browser and follows the
- * flow. Never a token in a reply. Owner only, and end-to-end encrypted like `api_connections`.
+ * `custom` {name, url, headers}, `callback` {flow, url}. The app opens a returned `authorize_url` in the
+ * browser and follows the flow. A phone signing in for this computer opens it in its own browser and,
+ * for a service this computer signs in to itself, sends back the redirect to 127.0.0.1 it caught as
+ * `callback`: the code alone is useless without the PKCE verifier kept here. Never a token in a reply.
+ * Owner only, and end-to-end encrypted like `api_connections`.
  *
  * The connections are the account's: kept the same on every computer through the backend, sealed for the
  * account's machines (lib/connectors/vaultSync.ts).
@@ -79,7 +82,9 @@ export function startConnectors(core: CoreApi, overrides: Partial<ConnectorsDeps
 
   const answer = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
     switch (payload.action) {
-      case 'list': return { ...cards(vault, await gatewayOffers()) }
+      // `shared`: a connection made here reaches the account's other computers. The phone signs in
+      // through one that says so before one that keeps it to itself (an older CLI says nothing).
+      case 'list': return { ...cards(vault, await gatewayOffers()), shared: deps.vaultPort !== null }
       case 'connect': {
         const code = validateCode(payload.connector)
         return { ...(await flows.start(code, signInFor(vault, code, services(await gatewayOffers())))) }
@@ -96,6 +101,7 @@ export function startConnectors(core: CoreApi, overrides: Partial<ConnectorsDeps
         return { connector: code, state: 'not_connected' }
       }
       case 'custom': return addCustom(vault, flows, payload, env)
+      case 'callback': return { ...flows.deliver(String(payload.flow ?? ''), String(payload.url ?? '')) }
       default: return { error: 'CONNECTORS_FAILED', detail: 'Unknown action.' }
     }
   }

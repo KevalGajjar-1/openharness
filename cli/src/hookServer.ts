@@ -192,17 +192,20 @@ export interface HookServerHandlers {
   /** POST /api/desk/ops — the window's tab edits, applied on the backend (its routes/desk.ts); a
    *  local write, so CSRF-guarded like a rename. */
   onDeskOps?: (body: unknown) => Promise<PairOutcome>
-  /** GET /api/agent-messages — which tabs have Agent Messages on (docs/design/2026-10-10-agent-messages.md),
-   *  proxied like the desk: the window draws each tab's chat icon from it without starting the experiment's process. */
+  /** GET /api/agent-messages — the account's tabs and who is in each (docs/design/2026-10-10-agent-messages.md),
+   *  proxied like the desk without starting the experiment's process. An older window draws each tab's chat icon
+   *  from its flag, which no daemon reads now: the account's experiment decides (lib/agentSettings.ts). */
   onAgentMessagesRead?: () => Promise<PairOutcome>
-  /** PATCH /api/agent-messages/tabs/:tabId — turn Agent Messages on or off for one tab; a local write, so
-   *  CSRF-guarded like the desk's ops. */
+  /** PATCH /api/agent-messages/tabs/:tabId — an older window's tab switch, passed to the backend so it gets the
+   *  answer it expects, and deciding nothing; a local write, so CSRF-guarded like the desk's ops. */
   onAgentMessagesWrite?: (tabId: string, body: unknown) => Promise<PairOutcome>
-  /** GET/PATCH /api/agent-settings — what the person lets agents do on this computer (lib/agentSettings.ts), kept by
-   *  this daemon rather than the account: Settings ▸ Agents. The write is CSRF-guarded like the others. */
+  /** GET/PATCH /api/agent-settings — what the person lets agents do (lib/agentSettings.ts): the account's experiments
+   *  as this computer keeps them, and a change written through to the account (`harness settings`, and an older
+   *  window's Settings ▸ Agents). The write is CSRF-guarded like the others. */
   onAgentSettingsRead?: () => Promise<PairOutcome>
   onAgentSettingsWrite?: (body: unknown) => Promise<PairOutcome>
-  /** The account's Experimental switches, proxied with the daemon's own identity. */
+  /** The account's Experimental switches, proxied with the daemon's own identity; what they say of agents is kept
+   *  here too (core/experiments.ts `createAgentSettingsSync`). */
   onExperimentalRead?: () => Promise<PairOutcome>
   onExperimentalWrite?: (body: unknown) => Promise<PairOutcome>
   /** /api/store/* — proxy the Harness Store's ratings and reviews to backend the same way: reads

@@ -1,4 +1,4 @@
-import { withoutUpdate } from './lib/cardUpdate.js'
+import { isLocalOnly, withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
 import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport } from './core/api.js'
 import { ServiceUnavailableError } from './core/serviceHost.js'
@@ -601,6 +601,7 @@ export class BackendSocket {
    *  the group key, so the backend relays only ciphertext; system/presence frames pass through. */
   sendCommander(frame: Frame): void {
     this.onOutboundCommander?.(frame)
+    if (isLocalOnly(frame)) return
     if (env.LOG_FRAMES) logFrame('→', 'device', frame)
     // The sentence a processing card carries for the Pro's cable stays on this computer (onOutboundCommander).
     this.toGateway('device', (gateway) => gateway.commander(withoutUpdate(frame)))
