@@ -1,6 +1,7 @@
 import { LAUNCH_LOCATION_VARIABLES } from '../engines/kit/nativeLocations.js'
 import type { NativeLaunch } from '../engines/nativeLaunch.js'
 import { nativeLaunchGuard } from '../engines/kit/nativeLaunchGuard.js'
+import { nativeRearmExecCommand } from '../engines/kit/nativeRearmWitness.js'
 import { nativePaneHold, NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -583,7 +584,9 @@ export function buildEngineLaunchArgv(
   // same server-side predicate as every other held launch. No engine has run.
   const waiting = nativePaneHold(opts.native?.token ?? '', tmuxBinary, heldCommand, runtimeNode, harnessPaneOwner(env.ADAPTER_DATA_DIR))
   const guard = opts.native ? nativeLaunchGuard(opts.native, runtimeNode, waiting) : ''
-  const body = `${JOB_CONTROL}${SIGNAL_GUARD}${engineFound}shift\n${guard}${engineRunScript(engine, tmuxBinary)}`
+  const witness = opts.native?.rearmWitness
+  if (witness && (engine !== 'cursor' || witness.token !== opts.native!.token)) throw Error('The original native relaunch command changed.')
+  const body = `${JOB_CONTROL}${SIGNAL_GUARD}${engineFound}shift\n${guard}${engineRunScript(engine, tmuxBinary, witness && nativeRearmExecCommand(witness))}`
   // The open-files raise goes ahead of everything, the installer included: a pane inherits the tmux
   // SERVER's soft limit, which is launchd's 256 whenever the desktop app started the daemon that
   // started the server, and an engine (Claude Code refuses outright) or an npm install under 256 is
@@ -796,8 +799,8 @@ const STOP_PROOF_FUNCTIONS = [
  * An engine's declared startup decides how it is run: Codex's with its probed flag, and once more after a
  * startup that never opened its conversation (engines/kit/launchStartup.ts).
  */
-function engineRunScript(engine: AgentEngine, tmuxBinary: string | null): string {
-  return startupRuns(engine, launchContract(engine), tmuxBinary)
+function engineRunScript(engine: AgentEngine, tmuxBinary: string | null, command?: string): string {
+  return startupRuns(engine, launchContract(engine), tmuxBinary, command)
 }
 
 /**

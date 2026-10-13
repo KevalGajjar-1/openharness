@@ -13,7 +13,7 @@ import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
 const version = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.uid}:${info.mode}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
 const held = (reason: string): never => { throw new HookPreparationHeld(`the native hook artifact ${reason}`) }
 
-export function prepareNativeHookArtifact(moduleUrl: string, entryPath = process.argv[1], platform = process.platform): {
+export function prepareNativeHookArtifact(moduleUrl: string, entryPath = process.argv[1], platform = process.platform, rearmWitness = false): {
   path: string; verify(): void; proof: HookPreparationProof
 } {
   const directory = dirname(fileURLToPath(moduleUrl))
@@ -47,6 +47,9 @@ export function prepareNativeHookArtifact(moduleUrl: string, entryPath = process
       const declaration = /^#![^\n]+\n\/\/ harness-native-hook-protocol:1\n\/\/ harness-native-hook-darwin:([01])\n$/.exec(header)
       if (!declaration) {
         return held('does not support the required delivery protocol; rebuild or update the CLI')
+      }
+      if (rearmWitness && !prefix.subarray(end).toString('utf8').startsWith('// harness-native-rearm-witness:1\n')) {
+        return held('does not support the required relaunch witness; rebuild or update the CLI')
       }
       if (platform === 'darwin' && declaration[1] !== '1') {
         return held('has no pinned macOS process helper; rebuild with the process-image artifact')

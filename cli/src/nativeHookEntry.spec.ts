@@ -83,6 +83,7 @@ it('emits only builtins and no daemon configuration or lazy session control', ()
   expect(readFileSync(artifact, 'utf8')).not.toMatch(/\bimport\s*\(/)
   const entry = pathToFileURL(join(root, 'package/cli.js')).href
   expect(prepareNativeHookArtifact(entry, '', 'linux').path).toBe(artifact)
+  expect(prepareNativeHookArtifact(entry, '', 'linux', true).path).toBe(artifact)
   if (nativeArtifact) expect(prepareNativeHookArtifact(entry, '', 'darwin').path).toBe(artifact)
   else expect(() => prepareNativeHookArtifact(entry, '', 'darwin')).toThrow(/pinned macOS process helper/)
 })

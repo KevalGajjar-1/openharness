@@ -1,0 +1,174 @@
+/** Real shell/standalone writer checks use only owned child processes, a private
+ * tmux socket and disposable homes. No daemon or installed engine is contacted. */
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
+import { buildNativeHook } from '../../../scripts/lib/nativeHookBundle.mjs'
+import { AgentCreationReceipts, creationFingerprint } from '../../lib/agentCreationReceipt.js'
+import { buildEngineLaunchArgv } from '../../lib/engineLaunch.js'
+import { nativeTurnTarget, type NativeTurnIntent } from '../../lib/nativeTurnIntent.js'
+import { prepareProcessImageHelper, type ProcessImageArtifact } from '../../lib/nativeProcessImageArtifact.js'
+import { probeNativeProcessControl, type NativeControlHelpers } from '../../lib/nativeProcessControlProbe.js'
+import type { RegisteredSession } from '../../lib/registry.js'
+import { isolatedTmux, type IsolatedTmux } from '../../testing/isolatedTmux.js'
+import type { NativeLaunch } from '../nativeLaunch.js'
+import { NativeEvidenceBudget } from './nativeEvidence.js'
+import { kernelBootId } from './nativeHookBoot.js'
+import type { HookPreparationProof } from './nativeHookFiles.js'
+import { nativeRearmExecCommand, prepareNativeRearmWitness, type NativeRearmWitnessCommand } from './nativeRearmWitness.js'
+import { executableSnapshot, nativeVersionProbe } from './nativeVersion.js'
+import { shellSingleQuote } from '../../lib/shellQuote.js'
+
+const artifactPath = process.env.HARNESS_PROCESS_IMAGES_ARTIFACT
+const supported = process.platform === 'linux' || process.platform === 'darwin' && !!artifactPath
+let root: string, artifact: string, images: ProcessImageArtifact | undefined, tmux: IsolatedTmux | undefined
+const children: Array<{ child: ReturnType<typeof spawn>; closed: Promise<void> }> = []
+let sequence = 0
+beforeAll(async () => {
+  if (process.platform === 'darwin' && process.env.HARNESS_REQUIRE_PROCESS_IMAGES === '1' && !artifactPath) throw Error('Pinned process image artifact required')
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'native-rearm-process-')))
+  mkdirSync(join(root, 'package'), { mode: 0o700 }); mkdirSync(join(root, 'home'), { mode: 0o700 }); mkdirSync(join(root, 'tmux'), { mode: 0o700 })
+  const source = artifactPath ? readFileSync(artifactPath, 'utf8') : undefined
+  images = source ? JSON.parse(source) : undefined
+  await buildNativeHook({ outDir: join(root, 'package'), version: 'fixture', processImages: source })
+  artifact = join(root, 'package', 'notify.mjs')
+})
+afterEach(async () => {
+  await tmux?.close(); tmux = undefined
+  for (const { child, closed } of children.splice(0)) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      try { process.kill(-child.pid, 'SIGKILL') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+    }
+    await closed
+  }
+  vi.unstubAllEnvs()
+})
+afterAll(() => rmSync(root, { recursive: true, force: true }))
+function environment(directory: string) {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(root, 'home'), ZDOTDIR: join(root, 'home'), ADAPTER_DATA_DIR: directory,
+    ADAPTER_RUNTIME_DIR: join(root, 'runtime'), HARNESS_HOOK_ROUTES_DIR: join(root, 'routes'), TMUX_TMPDIR: join(root, 'tmux'),
+    PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TZ: 'UTC', TMPDIR: '/tmp' }
+  delete env.TMUX; delete env.TMUX_PANE; delete env.NODE_OPTIONS; delete env.BASH_ENV; delete env.ENV
+  return env
+}
+function start(script: string, directory: string, args: string[] = []) {
+  const child = spawn('/bin/sh', ['-c', script, 'fixture', ...args], { env: environment(directory), cwd: directory,
+    detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stderr = '', stdout = '', code: number | null | undefined, signal: NodeJS.Signals | null | undefined
+  child.stderr!.on('data', bytes => { stderr += bytes }); child.stdout!.on('data', bytes => { stdout += bytes })
+  const closed = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (value, stopped) => { code = value; signal = stopped; resolve() })
+  })
+  children.push({ child, closed })
+  return { child, closed, output: () => ({ stdout, stderr, code, signal }) }
+}
+async function fixture() {
+  const directory = join(root, `case-${++sequence}`); mkdirSync(directory, { mode: 0o700 })
+  const id = `private-rearm-request-${sequence}`, agentId = `fixture-agent-${sequence}`, token = `private-launch-token-${sequence}`
+  const saved = { schemaVersion: 3, agentId, registeredAt: 1, engine: 'cursor', sessionId: 'fixture-session', boundAt: 2, active: true,
+    processIdentity: { pid: 41, executable: '/fixture/cursor', startMarker: 'fixture-birth' }, runtimes: [{ backend: 'tmux', paneId: '%1' }],
+    primaryRuntimeKey: 'tmux:%1', tmuxPane: '%1', cwd: directory, transcriptPath: null } as RegisteredSession
+  const target = nativeTurnTarget(saved)
+  const control: NativeTurnIntent = { version: 1, cancel: { processKey: null, target, request: {
+    requestId: 'original-cancel-request', nonce: 'original-cancel-nonce', agentId, conversationId: saved.sessionId, frontier: { index: -1, digest: null },
+  } }, rearm: { requestId: id, agentId, operation: 'restart', launchToken: token, target } }
+  writeFileSync(join(directory, 'registry.json'), JSON.stringify([{ ...saved, nativeControl: control }]), { mode: 0o600 })
+  const request = { kind: 'native-rearm', creationId: id, operation: 'restart', agentId, launchToken: token, target }, fingerprint = creationFingerprint(request)
+  const receipts = new AgentCreationReceipts(join(directory, 'agent-creations'))
+  await receipts.runIntent(id, fingerprint, request, { service: 'native', detail: 'fixture' }, async () => async () => ({ state: 'unconfirmed' }))
+  const marker = join(directory, 'engine.json'), resumed = join(directory, 'continued'), engine = join(directory, 'cursor-agent')
+  writeFileSync(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,args:process.argv.slice(2)}));process.on('SIGCONT',()=>fs.writeFileSync(${JSON.stringify(resumed)},'continued'));setInterval(()=>{},1000);\n`, { mode: 0o700 })
+  const executable = executableSnapshot(nativeVersionProbe({ args: [], output: /^$/, timeoutMs: 100 }, () => engine))!
+  const proofs: HookPreparationProof[] = []
+  const launch: NativeLaunch = { token, executable, opencodeMajor: null, environment: {}, proofs, current: () => executable.current() && proofs.every(p => p.current()),
+    ready: () => true, retain: proof => { proofs.push(proof); return true }, prepareHooks: async () => true, permission: async () => 'supported' }
+  const input = { version: 1 as const, dataDir: directory, source: 'live' as const, id, fingerprint, request, control }
+  const command = prepareNativeRearmWitness(launch, input, process.execPath, pathToFileURL(join(root, 'package', 'cli.js')).href)
+  const run = (text = nativeRearmExecCommand(command)) => start(`harness_engine_bin=${shellSingleQuote(engine)}\n${text}`, directory, ['literal one', "quote' two"])
+  const helpers: NativeControlHelpers = { prepare: async () => {
+    if (!images) return null
+    const path = await prepareProcessImageHelper(images, join(directory, 'probe-runtime'))
+    return path ? { path, key: images.sha256 } : null
+  }, invalidate: () => {} }
+  return { directory, input, receipts, marker, engine, launch, command, run, helpers, resumed }
+}
+
+it.skipIf(!supported)('the shipped writer preserves boot/PID/precise birth through exec and refuses replay', async () => {
+  const p = await fixture(), first = p.run()
+  await vi.waitFor(() => expect(existsSync(p.marker), first.output().stderr).toBe(true), { timeout: 8000 })
+  const engine = JSON.parse(readFileSync(p.marker, 'utf8'))
+  expect(engine.args).toEqual(['literal one', "quote' two"])
+  const witness = p.receipts.readNativeRelaunchProcess(p.input.id, p.input).process
+  expect(witness.boot).toBe(await kernelBootId(new NativeEvidenceBudget()))
+  expect(witness.pid).toBe(engine.pid)
+  const row = (await probeNativeProcessControl([engine.pid], 0, new NativeEvidenceBudget(), false, p.helpers)).rows.get(engine.pid)!
+  expect(row.birth).toBe(witness.birth)
+  const replay = p.run()
+  await vi.waitFor(() => expect(replay.output().stderr).toContain('Waiting for the original native relaunch record'), { timeout: 8000 })
+  expect(JSON.parse(readFileSync(p.marker, 'utf8')).pid).toBe(engine.pid)
+  expect(p.receipts.status(p.input.id)).toEqual({ state: 'unconfirmed' })
+}, 20000)
+
+it.skipIf(!supported)('the existing top-level wrapper resumes the witnessed engine after a real Stop', async () => {
+  const p = await fixture()
+  tmux = await isolatedTmux(environment(p.directory))
+  tmux.env.HOME = join(root, 'home'); tmux.env.ZDOTDIR = join(root, 'home')
+  vi.stubEnv('TMUX', undefined); vi.stubEnv('TMUX_PANE', undefined); vi.stubEnv('TMUX_TMPDIR', tmux.root)
+  vi.stubEnv('HOME', join(root, 'home')); vi.stubEnv('ZDOTDIR', join(root, 'home'))
+  const argv = buildEngineLaunchArgv('cursor', { native: p.launch }, '/bin/sh', process.execPath, '/fixture/grid', null)
+  await tmux.run('new-session', '-d', '-s', 'fixture-rearm', ...argv)
+  try { await vi.waitFor(() => expect(existsSync(p.marker)).toBe(true), { timeout: 8000 }) }
+  catch (error) { console.log(await tmux.run('capture-pane', '-p', '-t', 'fixture-rearm')); throw error }
+  const pid = JSON.parse(readFileSync(p.marker, 'utf8')).pid
+  expect(existsSync(join(p.directory, 'agent-creations', `${p.input.id}.json.process`))).toBe(true)
+  expect(p.receipts.readNativeRelaunchProcess(p.input.id, p.input).process.pid).toBe(pid)
+  process.kill(pid, 'SIGSTOP')
+  await vi.waitFor(() => expect(existsSync(p.resumed)).toBe(true), { timeout: 8000 })
+  expect(JSON.parse(readFileSync(p.marker, 'utf8')).pid).toBe(pid)
+}, 20000)
+
+it.skipIf(!supported)('the fixed handoff ignores inherited startup files and exported functions', async () => {
+  const p = await fixture(), startup = join(p.directory, 'startup.sh'), marker = join(p.directory, 'inherited-code')
+  writeFileSync(startup, `/usr/bin/touch ${shellSingleQuote(marker)}\nexit 0\n`)
+  const inherited = `BASH_FUNC_exec%%=() { /usr/bin/touch ${shellSingleQuote(marker)}; }`
+  const child = p.run(`BASH_ENV=${shellSingleQuote(startup)}; ENV=${shellSingleQuote(startup)}; export BASH_ENV ENV\n`
+    + `env ${shellSingleQuote(inherited)} ${nativeRearmExecCommand(p.command)}`)
+  await vi.waitFor(() => expect(existsSync(p.marker), child.output().stderr).toBe(true), { timeout: 8000 })
+  expect(existsSync(marker)).toBe(false)
+  expect(p.receipts.readNativeRelaunchProcess(p.input.id, p.input).process.pid).toBe(JSON.parse(readFileSync(p.marker, 'utf8')).pid)
+}, 15000)
+
+it.skipIf(!supported)('launch wiring refuses a different engine or reservation token', async () => {
+  const p = await fixture()
+  expect(() => buildEngineLaunchArgv('codex', { native: p.launch }, '/bin/sh', process.execPath, '/fixture/grid', null)).toThrow()
+  p.launch.rearmWitness = { ...p.command, token: 'another-reservation-token' }
+  expect(() => buildEngineLaunchArgv('cursor', { native: p.launch }, '/bin/sh', process.execPath, '/fixture/grid', null)).toThrow()
+})
+
+it.each(['failure', 'killed', 'before-reset', 'after-reset'] as const)('a %s writer cannot pass the exec handoff', async failure => {
+  const directory = join(root, `shell-${++sequence}`); mkdirSync(directory, { mode: 0o700 })
+  const writer = join(directory, 'writer.js'), marker = join(directory, 'executed')
+  writeFileSync(writer, failure === 'killed' ? "process.kill(process.pid,'SIGKILL')" : failure === 'failure' ? 'process.exitCode=75' : '')
+  const command: NativeRearmWitnessCommand = { token: 'private-launch-token', node: process.execPath, artifact: writer, request: '{}' }
+  let text = nativeRearmExecCommand(command)
+  // Inject a signal at the exact handoff edge; an old check-before-reset would
+  // observe zero, catch the signal afterwards, then incorrectly execute.
+  if (failure === 'before-reset') text = text.replace('trap - INT QUIT HUP TERM\n', () => 'kill -INT $$\ntrap - INT QUIT HUP TERM\n')
+  if (failure === 'after-reset') text = text.replace('trap - INT QUIT HUP TERM\n', () => 'trap - INT QUIT HUP TERM\nkill -TERM $$\n')
+  const child = start(`harness_engine_bin=/usr/bin/touch\n${text}`, directory, [marker])
+  await vi.waitFor(() => {
+    if (failure === 'after-reset') expect(child.output().code ?? child.output().signal).toBeTruthy()
+    else expect(child.output().stderr).toContain('Waiting for the original native relaunch record')
+  }, { timeout: 5000 })
+  expect(existsSync(marker)).toBe(false)
+}, 10000)
+
+it('an invalid writer invocation is held and cannot inherit ordinary hook no-op success', async () => {
+  const child = start(`${shellSingleQuote(process.execPath)} ${shellSingleQuote(artifact)} --native-rearm-witness '{}' 1`, root)
+  await child.closed
+  expect(child.output()).toMatchObject({ stdout: '', code: 75 })
+})

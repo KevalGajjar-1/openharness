@@ -11,6 +11,7 @@ import { engineHooks } from './hooks.js'
 import * as hooks from './nativeHooks.js'
 import { captureLaunchExecutable, LAUNCH_LOCATION_VARIABLES } from './kit/launchExecutable.js'
 import type { HookPreparationProof } from './kit/nativeHookFiles.js'
+import type { NativeRearmWitnessCommand } from './kit/nativeRearmWitness.js'
 import { nativeHookLocations, nativeProcessEnvironment, type NativeHookOptions } from './kit/nativeLocations.js'
 import { parseMajor, type NativeExecutableSnapshot } from './kit/nativeVersion.js'
 import { OPENCODE_VERSION } from './opencode/contract.js'
@@ -23,6 +24,7 @@ export interface NativeLaunchSource extends PermissionLaunchChoice {
 }
 export interface NativeLaunch {
   token?: string
+  rearmWitness?: NativeRearmWitnessCommand
   executable?: NativeExecutableSnapshot
   opencodeMajor: number | null
   /** Set again after the pane's rc files, before the exact prepared executable. */

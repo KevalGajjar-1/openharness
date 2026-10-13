@@ -230,14 +230,14 @@ it('preserves the original receipt route when an ancestor is replaced during pub
 
 it('only the original witness publisher may continue to exec, while recovery gets read-only process proof', async () => {
   const { receipts, directory, file } = await uncertain(), expected = { fingerprint, request }
-  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(true)
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).not.toBeNull()
   const bytes = readFileSync(file('process'), 'utf8')
   for (const recovered of [receipts, new AgentCreationReceipts(directory)]) {
     const proof = recovered.readNativeRelaunchProcess(id, expected)
     expect(proof.process).toEqual(processOwner); proof.verify()
     expect(recovered.status(id)).toEqual({ state: 'unconfirmed' })
-    expect(recovered.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
-    expect(recovered.recordNativeRelaunchProcess(id, expected, { ...processOwner, pid: 235 }, fence())).toBe(false)
+    expect(recovered.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBeNull()
+    expect(recovered.recordNativeRelaunchProcess(id, expected, { ...processOwner, pid: 235 }, fence())).toBeNull()
   }
   expect(readFileSync(file('process'), 'utf8')).toBe(bytes)
   expect(() => receipts.readNativeRelaunchProcess(id, { fingerprint: 'b'.repeat(64), request })).toThrow('CREATION_CONFLICT')
@@ -248,11 +248,11 @@ it('a failed witness sync cannot become execution authority even for the exact o
   faults.failDirectory = true
   expect(() => receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toThrow('CREATION_STORAGE_FAILED')
   const bytes = readFileSync(file('process'), 'utf8')
-  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBeNull()
   expect(() => receipts.readNativeRelaunchProcess(id, expected)).toThrow()
   faults.failDirectory = false
   expect(receipts.readNativeRelaunchProcess(id, expected).process).toEqual(processOwner)
-  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBeNull()
   expect(readFileSync(file('process'), 'utf8')).toBe(bytes)
 })
 
@@ -318,7 +318,17 @@ it('never adopts a replacement of its own process witness during publication syn
   }
   expect(() => receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toThrow()
   expect(readFileSync(file('process'), 'utf8')).toBe(readFileSync(file('previous'), 'utf8'))
-  expect(receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toBe(false)
+  expect(receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toBeNull()
+})
+
+it('keeps the original publication proof when the writer reproves its parent after durability', async () => {
+  const { receipts, file } = await uncertain()
+  const permit = receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())!
+  permit.verify()
+  const bytes = readFileSync(file('process'))
+  renameSync(file('process'), file('previous')); writeFileSync(file('process'), bytes, { mode: 0o600 })
+  expect(permit.verify).toThrow()
+  expect(receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toBeNull()
 })
 
 it.each(['remove', 'replace', 'corrupt'] as const)('holds a %s process witness during confirmation sync', async kind => {

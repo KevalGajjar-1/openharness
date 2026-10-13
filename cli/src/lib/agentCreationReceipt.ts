@@ -388,21 +388,23 @@ export class AgentCreationReceipts {
    * execution permit. The shell keeps this exact incarnation when it execs. */
   recordNativeRelaunchProcess(id: string, input: NativeRelaunchRequest, process: NativeRelaunchProcess,
     authority: CreationConfirmationFence,
-  ): boolean {
+  ): { verify(): void } | null {
     const owner = structuredClone(process), source = this.nativeRelaunchDispatch(id, input)
     if (!validRelaunchProcess(owner) || source.status.state !== 'unconfirmed') throw new AgentCreationReceiptError('CREATION_CONFLICT')
     const value = { fingerprint: source.receipt.fingerprint, token: source.claim.token, process: owner }
     const completed: IntentProcess = { ...value, checksum: creationFingerprint(value) }
     const file = this.intentFile(id, 'process'), before = inspectHookFile(file, 0o600)
-    if (before.content !== null) return false
+    if (before.content !== null) return null
     const fence = () => { authority.verify(); source.verify(); before.verify(); authority.current() }
     let published: ReturnType<typeof inspectHookFile> | undefined
-    if (!this.publish(file, completed, true, fence, proof => { published = proof })) return false
+    if (!this.publish(file, completed, true, fence, proof => { published = proof })) return null
     if (!published) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     const proof = this.readNativeRelaunchProcess(id, input)
     if (creationFingerprint(proof.process) !== creationFingerprint(owner)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
-    authority.verify(); source.verify(); proof.verify(); published.verify(); authority.current()
-    return true
+    const original = published
+    const verify = () => { authority.verify(); source.verify(); proof.verify(); original.verify(); authority.current() }
+    verify()
+    return { verify }
   }
 
   /** A witness proves which process was handed the command, not that exec or

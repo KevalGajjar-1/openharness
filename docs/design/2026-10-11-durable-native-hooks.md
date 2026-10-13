@@ -105,8 +105,35 @@ boot ID, PID and precise birth, and must separately prove the current engine
 image. Confirmation binds the witness checksum or explicit absence, so removing,
 inserting or changing a witness cannot silently preserve a successful result.
 The reserved launch token also survives asynchronous executable installation.
-The storage and token slice is independently reviewed; the launch-owned writer,
-replacement proof and live controller integration are still pending.
+The storage and token slice is independently reviewed. The launch-owned writer
+now uses the shipped standalone hook artifact, with an explicit capability
+header. Its fixed foreground shell publishes its kernel boot ID, PID and precise
+birth before exec. A repeated witness, failed publication, interrupted writer or
+changed original control/dependency proof holds without executing. A final paired
+process probe retains both the original writer and shell through publication.
+The shell resets interruption handlers before its final decision and suppresses
+inherited startup files and functions. macOS uses the concrete Bash image because
+its `/bin/sh` shim execs that image. Exec preserves the witnessed incarnation;
+the existing outer wrapper continues to own Stop/Continue and final exit.
+
+The writer checkpoint passes types and 323 tests across ten files, with one
+unavailable row skipped (`20261013T115339.055975Z-40272`, 111.7 seconds). This
+includes the unchanged launch golden, architecture, standalone hook behavior and
+private real-shell/tmux acceptance. All 13 writer faults and 18 receipt faults
+fail assertions after passing baselines
+(`20261013T115747.862855Z-54457`, 47.5 and 36.2 seconds). The earlier failing
+process runs remain failed: they exposed the macOS shim mismatch and a fixture
+replacement-string error that changed literal shell PID syntax. The corrected
+fixture also avoids signaling already-reaped process groups. Independent review
+approved the writer-only delta over `7f0af2d58`, conditional on those completed
+checks. Implementation and review ran approximately 11:20–12:00 UTC on October
+13, with validation overlapping; merge and publication remain zero.
+
+This is still inactive machinery. Replacement proof must reject pre-exec/held
+shells and engines no longer occupying the original pane. Exact receipt/control,
+current Registry binding and pane ownership must all remain valid before rearm
+enables input. Replacement proof, live controller composition and final installed
+client acceptance remain required before the PR can land.
 
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input
