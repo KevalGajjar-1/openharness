@@ -119,8 +119,8 @@ transferred. Nothing becomes public until the creator reviews the output, source
 and clicks Publish. A draft survives the existing sign-in flow; repeated submission uses one
 publication ID. Remote projects and older apps can use the project-folder picker or import
 `OPEN-HARNESS.json`. The output is the project's `preview.html` (or the page a fork arrived with,
-once changed), or else a top-level page (`index.html` first) that loads nothing the sandbox cannot
-reach, such as a one-file game. Without one, as for a native result such as a Typst PDF or a Blender model, the
+once changed), or else a page the session made that loads nothing the sandbox cannot reach, such as
+a one-file game: a top-level page (`index.html` first), then a folder's `index.html`. Without one, as for a native result such as a Typst PDF or a Blender model, the
 desktop asks the machine's daemon for a picture of the harness's viewer (`viewer_surface`, headless
 Chrome) and publishes it as `preview.html` and the cover; a fork still opens the real viewer. The first version requires a self-contained HTML preview, up to 30 files/6 MB;
 hidden configuration, symlinks and installed dependencies are excluded. Conversation tails may be

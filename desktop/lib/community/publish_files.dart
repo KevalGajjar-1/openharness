@@ -95,10 +95,11 @@ class NeedsOutput extends FormatException {
 ///
 /// The output is [viewer] (the page a fork was published with), or else `preview.html`, skipping a
 /// page still as it is in [original] (the fork's files as they arrived), which shows the original.
-/// Failing both, a page at the top of the project (`index.html` first) is the output only when it
-/// runs on its own: an app's `index.html` usually needs files the Hub's sandbox cannot load, while a
-/// one-file game or page shows as it is. Without a page of its own, the output is [picture], a page
-/// showing the viewer.
+/// Failing both, a page the session made is the output only when it runs on its own: one at the top
+/// of the project (`index.html` first), or else an `index.html` in a folder of its own (an agent often
+/// puts a game in `<name>/`), shallowest first. An app's `index.html` usually needs files the Hub's
+/// sandbox cannot load, while a one-file game or page shows as it is. Without a page of its own, the
+/// output is [picture], a page showing the viewer.
 Future<ProjectSelection> selectProjectFiles(
   String folder, {
   String? marker,
@@ -189,7 +190,7 @@ Future<_Output> _output(
     }
     return (page: page, stale: stale, needsFiles: null);
   }
-  for (final page in _topPages(candidates, skip: named)) {
+  for (final page in _madePages(candidates, skip: named)) {
     if (await _isOriginal(page, original)) {
       stale ??= page;
       continue;
@@ -205,26 +206,28 @@ Future<_Output> _output(
   return (page: null, stale: stale, needsFiles: needsFiles);
 }
 
-/// Pages at the top of the project other than [skip], `index.html` first, then by name.
-List<_Candidate> _topPages(
+/// Pages that may be the session's output, other than [skip]: the top level's (`index.html` first,
+/// then by name), then each folder's `index.html`, shallowest first, then by path.
+List<_Candidate> _madePages(
   List<_Candidate> candidates, {
   required Set<String> skip,
-}) =>
-    candidates
-        .where(
-          (c) =>
-              c.depth == 0 &&
-              !skip.contains(c.path) &&
-              p.extension(c.path).toLowerCase() == '.html',
-        )
-        .toList()
-      ..sort(
-        (a, b) => a.path == 'index.html'
-            ? -1
-            : b.path == 'index.html'
-            ? 1
-            : a.path.compareTo(b.path),
-      );
+}) {
+  int rank(_Candidate c) =>
+      c.depth == 0 ? (c.path == 'index.html' ? 0 : 1) : 1 + c.depth;
+  return candidates
+      .where(
+        (c) =>
+            !skip.contains(c.path) &&
+            (c.depth == 0
+                ? p.extension(c.path).toLowerCase() == '.html'
+                : p.basename(c.path) == 'index.html'),
+      )
+      .toList()
+    ..sort(
+      (a, b) =>
+          rank(a) != rank(b) ? rank(a) - rank(b) : a.path.compareTo(b.path),
+    );
+}
 
 /// A fork's page still as it arrived, which shows the original rather than this session's result.
 Future<bool> _isOriginal(_Candidate page, Map<String, String> original) async =>

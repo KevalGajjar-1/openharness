@@ -133,6 +133,36 @@ void main() {
     await file('preview.html', '<h1>Made for the Hub</h1>');
     expect((await build())['viewerPath'], 'preview.html');
   });
+  test('a game in a folder of its own is the output', () async {
+    const game = '<canvas></canvas><script>start()</script>';
+    await file('docs/guide.html', '<p>Not an output</p>');
+    await file('tank-1987/index.html', game);
+    await file('tank-1987/levels/index.html', game);
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Tank',
+      engine: 'codex',
+    );
+    expect((await build())['viewerPath'], 'tank-1987/index.html');
+    await file('notes.html', game);
+    expect((await build())['viewerPath'], 'notes.html');
+  });
+  test(
+    'a folder\'s index.html that needs other files is never assumed',
+    () async {
+      await file('app/index.html', '<script src="main.js"></script>');
+      await expectLater(
+        buildPublicationDraft(folder: root.path, title: 'App', engine: 'codex'),
+        throwsA(
+          isA<NeedsOutput>().having(
+            (e) => e.message,
+            'message',
+            contains('app/index.html loads main.js'),
+          ),
+        ),
+      );
+    },
+  );
   test('passes over a fork\'s unchanged top-level page', () async {
     const original = '<h1>Original game</h1>';
     await file('index.html', original);
