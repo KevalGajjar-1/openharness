@@ -13,6 +13,7 @@ import { harnessShareRoutes } from './routes/harnessShares.js'
 import { harnessLinkRoutes } from './routes/harnessLinks.js'
 import { communityRoutes } from './routes/community.js'
 import { communityTranslateRoutes } from './routes/communityTranslate.js'
+import { communityEditRoutes } from './routes/communityEdit.js'
 import { deviceKeyRoutes } from './routes/deviceKeys.js'
 import { qrSignInRoutes } from './routes/qrSignIn.js'
 import { deskRoutes } from './routes/desk.js'
@@ -178,6 +179,7 @@ async function start(): Promise<void> {
   await app.register(harnessShareRoutes)
   await app.register(harnessLinkRoutes)
   await app.register(communityRoutes)
+  await app.register(communityEditRoutes)      // an author edits their publication in place
   await app.register(communityTranslateRoutes) // a Hub draft's words in English, for its author to review
   await app.register(qrSignInRoutes)       // sign a computer in by scanning its QR with a signed-in phone
   await app.register(deviceKeyRoutes)     // the account's device key log: signing in is what trusts a device

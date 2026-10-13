@@ -136,7 +136,11 @@ off the draft as a `draft.json.gz` file, `communityRequest` sends every body as 
 the proxy forwards those bytes unchanged, and the backend unpacks them (bounded) before validating
 (`backend/src/lib/gzipJson.ts`). Plain JSON bodies and an older Desktop's text field still work.
 
-Backend reads are public; likes, comments, following, publication, and unpublication require SSO.
+Backend reads are public; likes, comments, following, publication, editing, and unpublication require SSO.
+An author edits a publication in place (`PUT /api/community/harnesses/:id`): **Edit this harness** on
+its page opens `/hub/publish?edit=<id>`, and a draft arriving from Desktop can choose **Publish as →
+Update "…"**. The address, likes, comments and forks stay; forks keep the version they copied; where it
+came from (`forkedFrom`, credits) and its cover (unless a new one is chosen) stay as published.
 Counts are persisted, like/follow writes are idempotent, comment retries have per-user request IDs,
 replies retain their parent and display a Creator badge,
 and authors can remove their publication and moderate its comments. Reads and writes are isolated

@@ -1,7 +1,6 @@
 'use client';
 import { useMemo, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { communityRequest } from '@/lib/community/client';
 import { communityLimits, missingMarker } from '@/lib/community/contract';
 import { validateDraft } from '@/lib/community/drafts';
 import { previewDocument } from '@/lib/community/preview';
@@ -15,8 +14,10 @@ import { DetailsFields } from './components/DetailsFields';
 import { FilesReview } from './components/FilesReview';
 import { OutputInputs, SourceInputs } from './components/ProjectInputs';
 import { PublishChecks } from './components/PublishChecks';
+import { PublishTarget } from './components/PublishTarget';
 import { originalOutput, readCover, readProjectFolder } from './projectFiles';
-import { toSnapshot, usePublishDraft, type PublishDraft } from './usePublishDraft';
+import { submitPublication } from './publication';
+import { usePublishDraft, type PublishDraft } from './usePublishDraft';
 import { useEnglishDraft } from './useEnglishDraft';
 import styles from '../community.module.css';
 
@@ -24,7 +25,7 @@ const reviewInputs = ['confirmation', 'secrets'];
 
 export default function PublishPage() {
   const router = useRouter(), signedIn = useSignedIn();
-  const { draft, update, applyBundle, saveError, publishOnce } = usePublishDraft();
+  const { draft, update, applyBundle, saveError, loadError, publishOnce } = usePublishDraft();
   const english = useEnglishDraft(draft, update, signedIn);
   const [confirmed, setConfirmed] = useState(false), [checkedSecrets, setCheckedSecrets] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const findings = useMemo(() => findSecrets(draft.files, draft.conversation), [draft.files, draft.conversation]);
@@ -62,19 +63,21 @@ export default function PublishPage() {
     event.preventDefault();
     if (!ready || busy) return;
     setBusy(true); setError('');
-    void publishOnce(async clientId => {
-      const result = await communityRequest<{ id: string }>('harnesses', { method: 'POST', body: { ...toSnapshot(draft), confirmed, license: 'MIT', clientId } });
-      router.push(`/hub/${result.id}`);
-    }).catch(e => setError(e instanceof Error ? e.message : 'Publication failed. Your draft is still here.')).finally(() => setBusy(false));
+    void publishOnce(async clientId => { router.push(`/hub/${await submitPublication(draft, clientId)}`); })
+      .catch(e => setError(e instanceof Error ? e.message : 'Publication failed. Your draft is still here.')).finally(() => setBusy(false));
   }
+  const updating = !!draft.updateId;
 
   return <><Header /><main className={`${styles.wrap} ${styles.publish}`}>
-    <h1>Give someone a place to begin.</h1><p className={styles.forkIntro}>Publish one session: the working output, its source, and the conversation that got you there. People can inspect it and make their own version.</p>
+    {updating
+      ? <><h1>Update your harness.</h1><p className={styles.forkIntro}>Save new output, source or conversation over your publication. Its address, likes and comments stay; forks keep the version they copied.</p></>
+      : <><h1>Give someone a place to begin.</h1><p className={styles.forkIntro}>Publish one session: the working output, its source, and the conversation that got you there. People can inspect it and make their own version.</p></>}
     {signedIn === false && <SignIn action="publish your harness" />}
     <form onChange={event => { if (!(event.target instanceof HTMLInputElement && reviewInputs.includes(event.target.name))) setConfirmed(false); }} onSubmit={publish}>
       <div className={styles.importActions}><strong>Bring your harness here.</strong><p>In the desktop app, open Share → Publish to Hub. Your current files and conversation arrive here for review.</p><p>You can also choose a project folder below. Include a self-contained HTML preview so everyone can see the result.</p></div>
       <EnglishNotice english={draft.english} signedIn={signedIn} {...english} />
       <div className={styles.publishForm}>
+        <PublishTarget signedIn={signedIn} updateId={draft.updateId} onChange={updateId => update({ updateId })} />
         <SourceInputs onFolder={files => void importFolder(files)} onBundle={file => void importBundle(file)} />
         <DetailsFields draft={draft} update={update} />
         <OutputInputs onOutput={file => void importOutput(file)} onCover={file => void importCover(file)} />
@@ -86,8 +89,8 @@ export default function PublishPage() {
       {draft.forkedFrom && <p className={styles.notice}>The original harness will stay credited on your publication.</p>}
       <PublishChecks noOutput={!!draft.files.length && html === undefined} unchanged={unchanged ? draft.viewerPath : null} outside={outside} missingMarker={marker} findings={findings} acknowledged={secretsChecked} onAcknowledge={value => setCheckedSecrets(value ? findingsKey : '')} />
       <label className={styles.check}><input required type="checkbox" name="confirmation" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>I have permission to publish these files and this conversation under the MIT license. I have reviewed them for private information.</span></label>
-      {(error || saveError) && <p className={styles.error} role="alert">{error || saveError}</p>}
-      <button className={styles.primary} disabled={busy || !ready}>{busy ? 'Publishing…' : 'Publish harness'}</button>
+      {(error || loadError || saveError) && <p className={styles.error} role="alert">{error || loadError || saveError}</p>}
+      <button className={styles.primary} disabled={busy || !ready}>{updating ? (busy ? 'Saving…' : 'Save changes') : (busy ? 'Publishing…' : 'Publish harness')}</button>
     </form>
   </main></>;
 }

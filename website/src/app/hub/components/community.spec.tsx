@@ -108,6 +108,18 @@ describe('community navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat log' }));
     expect(screen.getByText('Make an orbit.')).toBeInTheDocument();
   });
+  it('offers its author Edit beside Unpublish, and a reader neither', async () => {
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    request.mockResolvedValueOnce({ harness: { ...sample, id }, social: { ...emptySocial, signedIn: true, mine: true } });
+    const { unmount } = render(<Detail id={id} initial={null} />);
+    expect(await screen.findByRole('link', { name: 'Edit this harness' })).toHaveAttribute('href', `/hub/publish?edit=${id}`);
+    expect(screen.getByRole('button', { name: 'Unpublish this harness' })).toBeInTheDocument();
+    unmount();
+    request.mockResolvedValueOnce({ harness: { ...sample, id }, social: { ...emptySocial, signedIn: true } });
+    render(<Detail id={id} initial={null} />);
+    await screen.findByTitle('Orbit output');
+    expect(screen.queryByRole('link', { name: 'Edit this harness' })).not.toBeInTheDocument();
+  });
   it('reads a publication once, then refreshes only its social state', async () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
     request.mockResolvedValueOnce({ harness: { ...sample, id }, social: emptySocial }).mockResolvedValue({ social: { ...emptySocial, likes: 3 } });
