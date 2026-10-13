@@ -75,30 +75,86 @@ void main() {
     );
     expect((draft['files'] as List).map((f) => f['path']), ['preview.html']);
   }, skip: Platform.isWindows);
-  test(
-    'asks for a preview.html, never assuming an app page is the output',
-    () async {
-      await file('code.py', 'print(1)');
-      await file('index.html', '<script src="app.js"></script>');
-      Future<Map<String, dynamic>> build() => buildPublicationDraft(
-        folder: root.path,
-        title: 'Test',
-        engine: 'codex',
-      );
-      await expectLater(
-        build(),
-        throwsA(
-          isA<FormatException>().having(
-            (e) => e.message,
-            'message',
+  test('asks for a preview.html, naming what an app page loads that the Hub cannot', () async {
+    await file('code.py', 'print(1)');
+    await file(
+      'index.html',
+      '<link rel="stylesheet" href="style.css"><script src="app.js"></script>',
+    );
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Test',
+      engine: 'codex',
+    );
+    await expectLater(
+      build(),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('index.html loads app.js, style.css'),
             contains('preview.html'),
           ),
         ),
-      );
-      await file('preview.html', 'x' * 3000001);
-      await expectLater(build(), throwsFormatException);
-    },
-  );
+      ),
+    );
+    await file('preview.html', 'x' * 3000001);
+    await expectLater(build(), throwsFormatException);
+  });
+  test('asks for a preview.html when the project has no page at all', () async {
+    await file('code.py', 'print(1)');
+    await expectLater(
+      buildPublicationDraft(folder: root.path, title: 'Test', engine: 'codex'),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          contains('The Hub shows what a session made'),
+        ),
+      ),
+    );
+  });
+  test('a one-file game is the output under any top-level name', () async {
+    const game =
+        '<canvas id="c"></canvas><style>body{background:url(data:image/png;base64,AA==)}</style>'
+        '<script>requestAnimationFrame(function loop(){requestAnimationFrame(loop)})</script>';
+    await file('src/nested.html', '<p>Not at the top</p>');
+    await file('game.html', '<script src="engine.js"></script>');
+    await file('snake.html', game);
+    Future<Map<String, dynamic>> build() => buildPublicationDraft(
+      folder: root.path,
+      title: 'Snake',
+      engine: 'claude',
+    );
+    expect((await build())['viewerPath'], 'snake.html');
+    await file('index.html', game);
+    expect((await build())['viewerPath'], 'index.html');
+    await file('preview.html', '<h1>Made for the Hub</h1>');
+    expect((await build())['viewerPath'], 'preview.html');
+  });
+  test('passes over a fork\'s unchanged top-level page', () async {
+    const original = '<h1>Original game</h1>';
+    await file('index.html', original);
+    await file(
+      'OPEN-HARNESS.json',
+      jsonEncode({
+        'files': [
+          {'path': 'index.html', 'content': original},
+        ],
+      }),
+    );
+    await expectLater(
+      buildPublicationDraft(folder: root.path, title: 'Fork', engine: 'codex'),
+      throwsA(
+        isA<NeedsOutput>().having(
+          (e) => e.message,
+          'message',
+          contains('index.html is still the original'),
+        ),
+      ),
+    );
+  });
   test('a fork keeps the page it was published with', () async {
     await file('index.html', '<h1>Moonlight</h1>');
     await file(
