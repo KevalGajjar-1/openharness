@@ -38,6 +38,7 @@ describe('Agent Messages in its own process', () => {
             agent_messages: async (payload) => ({ action: payload.action, agents: core.agents.live().map((a) => a.agentId), command: core.daemon.command }),
           },
           canWrite: (id) => writable.has(id),
+          settingsChanged: () => calls.push('settings'),
           start: () => calls.push('start'),
           stop: () => calls.push('stop'),
         } satisfies AgentMessages
@@ -94,6 +95,32 @@ describe('Agent Messages in its own process', () => {
     expect(calls).toEqual([])
     expect(await options.requests.agent_messages!({ action: 'history' }, OWNER)).toMatchObject({ action: 'history' })
     expect(calls).toEqual([])
+  })
+
+  it('says whether this daemon is signed in as each core says it; a core from before says nothing, and the last word stands', async () => {
+    // Signed out, the service runs nothing (messages/service.ts); a core from before 2026-10-12 never said, and the
+    // service ran then as it does signed in.
+    const { options, api } = setup()
+    expect(api().account.signedIn()).toBe(true)
+    options.onConnected!(core({ daemon: { command: 'x', port: 1, machineId: 'm', signedIn: false } }).connection)
+    await flush()
+    expect(api().account.signedIn()).toBe(false)
+    options.onConnected!(core({ daemon: { command: 'x', port: 1, machineId: 'm', signedIn: true } }).connection)
+    await flush()
+    expect(api().account.signedIn()).toBe(true)
+    options.onConnected!(core({ daemon: { command: 'x', port: 1, machineId: 'm' } }).connection)
+    await flush()
+    expect(api().account.signedIn()).toBe(true)
+  })
+
+  it('passes on a change to its switch once its service runs, and before then has nothing to tell', async () => {
+    const { options, calls } = setup()
+    options.onEvent!({ kind: 'settings' })
+    expect(calls).toEqual([])
+    options.onConnected!(core({ daemon: { command: 'x', port: 1, machineId: 'm' } }).connection)
+    await flush()
+    options.onEvent!({ kind: 'settings' })
+    expect(calls).toEqual(['start', 'settings'])
   })
 
   it('gives the service its data folder, and hears from it when what may be written changed', async () => {
@@ -219,7 +246,7 @@ describe('Agent Messages in its own process', () => {
         dataDir: '/data', socketPath: '/s', machineId: 'm', token: 't',
         start: (given) => {
           api = given
-          return { requests: { agent_messages: async () => ({}) }, canWrite: (id) => writable.has(id), start: () => {}, stop: () => {} }
+          return { requests: { agent_messages: async () => ({}) }, canWrite: (id) => writable.has(id), settingsChanged: () => {}, start: () => {}, stop: () => {} }
         },
       })
       const options = vi.mocked(runServiceProcess).mock.calls.at(-1)![0]

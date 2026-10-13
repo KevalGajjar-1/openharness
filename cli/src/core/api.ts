@@ -250,7 +250,7 @@ export interface CoreApi {
      *  until the first one lands. */
     machineName(): string | null
     /** A read or write of the account's backend, signed in by the core (`proxyBackend`): an experiment's
-     *  account-wide settings (Agent Messages' tabs). A failure is an answer: 502, 504, 401. */
+     *  account-wide settings, and Agent Messages' tabs. A failure is an answer: 502, 504, 401. */
     backend(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>
     /** Hear the account's changes the backend announces (`desk_changed`, …). Returns how to stop hearing. */
     onNotice(listener: (notice: BackendNotice) => void): () => void
@@ -567,8 +567,22 @@ export const SHARE_REQUESTS = [
 ] as const
 
 /** Agent Messages (services/messages.ts, messages/service.ts): from `harness send` in an agent's pane, from the
- *  owner's other machines and from the windows. */
+ *  owner's other machines and from the windows. A service in the edge host since 2026-10-12, no longer an
+ *  experiment: its own process cost every computer it was on 62 MiB at idle for a few MiB of messaging. */
 export const MESSAGES_REQUESTS = ['agent_messages'] as const
+
+/**
+ * What Agent Messages in a process of its own may do through the core, and nothing more (core/messagesLink.ts
+ * answers it, and checks each): the agents as the apps are shown them (`shown`) and how an agent's shell reaches
+ * this daemon (`daemon`), which its roster and its `harness send` read; the account's tabs, the one backend read it
+ * makes (`backend`, GET of `MESSAGES_BACKEND_PATH`); its log's change notice for the windows (`windows`, only
+ * `MESSAGES_WINDOW_FRAME`); and which of its typed deliveries may be written (`writable`). It writes turns into
+ * agents (core/deliveries.ts, `TURN_DELIVERERS`) and hears the account's `desk_changed`. The same questions the
+ * experiment asked, so a core of either version answers the process of the other (harnessd/services.ts).
+ */
+export const MESSAGES_QUERIES = ['writable', 'shown', 'daemon', 'backend', 'windows'] as const
+export const MESSAGES_BACKEND_PATH = '/api/agent-messages'
+export const MESSAGES_WINDOW_FRAME = 'messages_changed'
 
 /**
  * The experiments: services that cost nothing until they are on (docs/design/2026-10-06-core-boundary-next.md,
@@ -585,8 +599,6 @@ export const MESSAGES_REQUESTS = ['agent_messages'] as const
  */
 export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[]; state: readonly string[] }>> = {
   orchestrator: { requests: ORCHESTRATOR_REQUESTS, state: ['orchestrator/*.json'] },
-  // Agent Messages. Its history and waiting deliveries: a message was sent from here or delivered to an agent here.
-  messages: { requests: MESSAGES_REQUESTS, state: ['agent-messages'] },
   // Its invitations and links: a harness was shared from here.
   sharing: { requests: SHARE_REQUESTS, state: ['harness-shares.json', 'harness-collaboration.json'] },
   // Request-only, on from its first request until the daemon stops: another machine's Memories pane asks, and
@@ -595,6 +607,11 @@ export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[];
   // Request-only too: it keeps nothing, and asks Jev only when a client asks it.
   router: { requests: ROUTER_REQUESTS, state: [] },
 }
+
+/** The services that may write turns into agents from a process of their own (core/deliveries.ts): the experiments,
+ *  and Agent Messages, which left them for the edge host and still types a message into an idle agent. No other
+ *  process may: writing into a pane is no other service's to ask. */
+export const TURN_DELIVERERS: readonly string[] = [...Object.keys(EXPERIMENTS), 'messages']
 
 /** The core's calls into Share: an observer's frame as the relay handed it over, the relay gone (every observer
  *  with it), and stopping it. */
@@ -746,7 +763,8 @@ export const VIEWERS_UNAVAILABLE = { error: 'SERVICE_UNAVAILABLE', service: 'vie
 
 /** What the core gets when the viewers fail: agents' frames carry no DSH context and the windows
  *  no viewer, a client's viewer stream is refused at once (core/viewerStreams.ts) and its surface
- *  answered unavailable, and a restart or shutdown goes on. */
+ *  answered unavailable, and a restart or shutdown goes on. Their process on demand, before it has
+ *  first connected, holds a stream and a surface while it starts instead (core/viewersLink.ts). */
 export const VIEWERS_FALLBACKS: PortFallbacks<ViewersPort> = {
   attach: undefined, detach: undefined, frameContext: null, forwardingUrl: null, stop: later(undefined),
   stream: false, surface: later(VIEWERS_UNAVAILABLE), closed: undefined,
@@ -856,14 +874,18 @@ export interface WorkspacesPort {
 /** What the core gets when workspaces fails: branches keep their names and nothing is swept. */
 export const WORKSPACES_FALLBACKS: PortFallbacks<WorkspacesPort> = { nameBranches: undefined, sweepUnused: undefined }
 
-/** The core's call into Agent Messages: whether one of its typed deliveries (a `team:` id) may still be written,
- *  asked in line as it is written (core/input.ts). */
+/** The core's calls into Agent Messages: whether one of its typed deliveries (a `team:` id) may still be written,
+ *  asked in line as it is written (core/input.ts); and that the core's copy of the account's switch changed
+ *  (core/experiments.ts `createAgentSettingsSync`), which wakes it when it is turned on: off, it runs no timer that
+ *  would read the file again, and a file never written has nothing to watch (messages/settingWatch.ts). */
 export interface MessagesPort {
   canWrite(deliveryId: string): boolean
+  settingsChanged(): void
 }
 
-/** What the core gets when Agent Messages fails: none of its deliveries may be written (each waits, unwritten). */
-export const MESSAGES_FALLBACKS: PortFallbacks<MessagesPort> = { canWrite: false }
+/** What the core gets when Agent Messages fails: none of its deliveries may be written (each waits, unwritten), and
+ *  a settings write tells it nothing. */
+export const MESSAGES_FALLBACKS: PortFallbacks<MessagesPort> = { canWrite: false, settingsChanged: undefined }
 
 /** What a delivered turn answers: delivered, or refused with the machine's name and a reason a person can read. */
 export type SendResult = { ok: true } | { ok: false; machine: string; reason: string }

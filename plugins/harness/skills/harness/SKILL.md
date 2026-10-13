@@ -7,7 +7,9 @@ description: Harness runs coding agents (Claude Code, Codex and others) as harne
 
 Harness runs coding agents in sessions of their own, called harnesses, and shows each one to the person in its
 desktop, web and phone apps. With the `harness` command (or Harness's MCP tools) you can start harnesses, read
-them, wait for them and close them, and message teammates in a tab where the person turned Agent Messages on.
+them, wait for them and close them, and message your teammates: the harnesses in your tab, while Agent Messages are
+on. Both are experiments of the person's Harness account, in Settings ▸ Experimental, off until the person turns
+them on.
 
 ## Is it here?
 
@@ -19,11 +21,14 @@ curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start
 ```
 
-`harness start` starts Harness on this computer. Harnesses on this computer need no sign-in; `harness login` is
-only for the person's other machines and their phone. If `harness ps` is an unknown command, the CLI is older than
-these verbs: `harness update`. The agent you start must be installed as well (`claude` for Claude Code, `codex`
-for Codex) and signed in to its own provider. On Linux the installer installs tmux and curl with apt-get, which
-asks for the person's password; without one, ask the person to run `sudo apt-get install -y tmux curl` first.
+`harness start` starts Harness on this computer. Harnesses the person starts here need no sign-in; `harness login`
+is for their other machines and their phone, and for what they let agents do. You start harnesses only once the
+person turns on "Agents can start other agents" (Settings ▸ Experimental, or `harness settings agents-start-agents
+on`, signed in). Until then `harness new` refuses and says how: tell the person, and do the work yourself. If
+`harness ps` is an unknown command, the CLI is older than these verbs: `harness update`. The agent you start must
+be installed as well (`claude` for Claude Code, `codex` for Codex) and signed in to its own provider. On Linux the
+installer installs tmux and curl with apt-get, which asks for the person's password; without one, ask the person to
+run `sudo apt-get install -y tmux curl` first.
 
 Once Harness runs on this computer, Claude Code and Codex run its commands (`ps`, `new`, `wait`, `show`, `send`,
 `close`) and its MCP tools without asking: Harness adds them to their permission rules, and Codex runs them outside
@@ -51,12 +56,12 @@ the person can watch and step in.
 
 1. List first: `harness ps`. It shows the harnesses here: state, who started each (`you` for yours), and what each
    is about.
-2. You may give work only to a harness **you started**, or to a teammate in a tab with Agent Messages on
+2. You may give work only to a harness **you started**, or to a teammate in your tab while Agent Messages are on
    (`harness send` alone lists them). Never give work to, or close, a harness you did not start: those are the
    person's. You may `show` and `wait` on them.
 3. Put everything in the task when you start a harness: starting it does not let you message it. A follow-up
-   for the same work goes to it with `harness send` only if it is your teammate in a tab where the person turned
-   Agent Messages on (the tab's chat icon); otherwise start a new harness with the fuller task. Start a new one
+   for the same work goes to it with `harness send` only if it is your teammate in your tab while Agent Messages are
+   on (Settings ▸ Experimental, off by default); otherwise start a new harness with the fuller task. Start a new one
    too for unrelated work, for work to run in parallel, or for another agent or machine.
 
 ## The verbs
@@ -66,7 +71,7 @@ harness ps [--all]                                  # the harnesses here
 harness new [agent] [@machine] [folder | project] --name <name> -- <task>
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
 harness show <name> [--chars N]                     # its state, the last ask and its answer
-harness send <name> "text"                          # a teammate in this tab, when Agent Messages are on there
+harness send <name> "text"                          # a teammate in this tab, while Agent Messages are on
 harness close <name> [--now]                        # when you are done with one you started
 ```
 
@@ -90,9 +95,10 @@ harness close <name> [--now]                        # when you are done with one
 
 ## Inside a harness, or outside
 
-- **In a harness** (Harness made your terminal pane): `harness send` works only to teammates in a tab where the
-  person turned Agent Messages on. A harness you started, or the one that started you, is no exception: with
-  Agent Messages off, put everything in the task and read the answer with `show`.
+- **In a harness** (Harness made your terminal pane): `harness send` works only to teammates in your tab, while
+  Agent Messages are on (Settings ▸ Experimental, off by default). A harness you started, or the one that started
+  you, is no exception: outside your tab, or with Agent Messages off, put everything in the task and read the answer
+  with `show`.
 - **Outside Harness** (Claude Code or Codex in a terminal app, an editor or the person's own tmux): Harness tells
   you by your session. `harness ps` says "You are Claude Code, outside Harness." and marks what this session
   started as `you`; the limits below apply; and you may close only what this session started. Nothing can

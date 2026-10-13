@@ -392,6 +392,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
   // editor mounted so its text-input connection and composition survive.
   late GlobalKey _searchInputKey;
   final _tabScroll = ScrollController();
+  final _tabShortcutHints = ValueNotifier(false);
   ({String activeId, List<String> order, double viewport, List<double> widths})?
   _tabGeometry;
   bool _tabRevealScheduled = false;
@@ -608,6 +609,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       },
       onHide: app.announceWindowForeground,
       onInactive: () {
+        _tabShortcutHints.value = false;
         app.announceWindowForeground();
       },
       // Whether the app is in front of anyone decides whether the model surfaces refresh at all
@@ -894,6 +896,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     _searchDialogScope.dispose();
     _searchText.dispose();
     _tabScroll.dispose();
+    _tabShortcutHints.dispose();
     _canvasFocus.dispose();
     _shellFocus.dispose();
     _startSearchFocus.dispose();
@@ -1819,6 +1822,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'reduceMotion': _reduceMotion,
       'activeId': app.activeSwarmId,
       'searchTooltip': _commandTooltip('Open Harness', 'harnesses.list'),
+      'addPhoneTooltip': _addPhoneTooltip,
       'storeTooltip': _commandTooltip('Explore Harness Store', 'app.store'),
       'devicesVisible': app.devicesEnabled,
       // The row's last control: Sign in, or whose account this is.
@@ -2042,20 +2046,15 @@ class _SwarmScreenState extends State<SwarmScreen> {
                 activity,
                 color: activityInk(activity),
               ),
-            // Agent Messages' 💬; absent where a tab has none
-            // (AppNotifier.agentMessagesOffered). The flag only: a tab
-            // never shows traffic.
+            // The tab menu's Show Agent Messages; absent where a tab has no
+            // log (AppNotifier.agentMessagesOffered). Nothing of Agent
+            // Messages shows on the tab itself.
             if (app.agentMessagesOffered(swarm.id))
-              'agentMessages': app.agentMessages.isOn(swarm.id),
+              'canShowAgentMessages': true,
           },
       ],
-      // Agent Messages' color: the 💬 while on. The design system's one
-      // accent, blue, as a mark.
-      'agentMessagesInk': grid.AppPalette.accentOnSurface.toARGB32(),
-      // The File menu's Agent Messages checkmark, for the active tab.
-      'activeAgentMessages': app.agentMessagesOffered(app.activeSwarmId)
-          ? app.agentMessages.isOn(app.activeSwarmId)
-          : null,
+      // File's Show Agent Messages, for the active tab.
+      'canShowAgentMessages': app.agentMessagesOffered(app.activeSwarmId),
     };
     final encoded = jsonEncode(payload);
     if (encoded == _nativeState) return;
@@ -2380,15 +2379,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
         if (args['id'] is String) unawaited(_rename(args['id']));
       case 'renameActive':
         unawaited(_rename(app.activeSwarmId));
-      case 'toggleAgentMessages':
-        // From a tab's 💬 or its menu (with its id), or the File menu (the
-        // active tab).
-        unawaited(
-          _toggleAgentMessages(
-            args['id'] is String ? args['id'] as String : app.activeSwarmId,
-          ),
-        );
       case 'showAgentMessages':
+        // From a tab's menu (with its id), or the File menu (the active tab).
         unawaited(
           _showAgentMessages(
             args['id'] is String ? args['id'] as String : app.activeSwarmId,
@@ -2542,7 +2534,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
           'new',
           'rename',
           'renameActive',
-          'toggleAgentMessages',
           'showAgentMessages',
           'commands',
           'notifications',
@@ -2653,16 +2644,15 @@ class _SwarmScreenState extends State<SwarmScreen> {
       if (await choose(error: error) != 'close_view' || !mounted) return false;
       // This only dismisses the captured views. It neither retries Stop nor
       // treats a lost reply as proof that the session stopped. A replaced
-      // session must not inherit a choice made for the old one.
+      // session must not inherit a choice made for the old one; one that
+      // only bound its first conversation since the review is not replaced.
       return targets.every((target) {
         final current = app
             .stateOf(target.$1)
             ?.agents
             .where((agent) => agent.id == target.$2.id)
             .firstOrNull;
-        return current == null ||
-            (current.createdAt == target.$2.createdAt &&
-                current.sessionId == target.$2.sessionId);
+        return current == null || current.continuesSession(target.$2);
       });
     }
 
@@ -2740,19 +2730,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
     );
     if (name != null) app.renameSwarm(id, name);
   });
-
-  /// Turn Agent Messages on or off for [id]. The 💬 follows at once and goes
-  /// back if the backend does not take it — and then says so where the click
-  /// was, since a 💬 that quietly flips back reads as a click that missed.
-  Future<void> _toggleAgentMessages(String id) async {
-    if (!app.agentMessagesOffered(id)) return;
-    if (await app.agentMessages.toggle(id) || !mounted) return;
-    final failure = app.agentMessages.failureFor(id);
-    if (failure == null) return;
-    ScaffoldMessenger.maybeOf(context)
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(failure)));
-  }
 
   /// [id]'s Agent Messages log.
   Future<void> _showAgentMessages(String id) => _dialog(() async {
@@ -4286,6 +4263,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
   }
 
   bool _noteKey(KeyEvent event) {
+    // Paint hints only; the keymap still owns every shortcut and input event.
+    _tabShortcutHints.value = HardwareKeyboard.instance.isMetaPressed;
     // Off, this is not here at all: every key goes where it went before.
     if (event is! KeyDownEvent || _zoo.daemons == DaemonsSwitch.off) {
       return false;
@@ -6808,8 +6787,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'pane.focus_$i': () => app.focusPaneByIndex(i - 1),
     'navigation.commands': _showSearchCommands,
     'agent_messages.show': () => _showAgentMessages(app.activeSwarmId),
-    'agent_messages.toggle': () =>
-        unawaited(_toggleAgentMessages(app.activeSwarmId)),
     'app.customize': () => unawaited(_customize()),
     'pane.toggle_shading': () => unawaited(
       appearancePrefsStore.setShadeInactivePanes(
@@ -7072,10 +7049,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
               : command.id == 'agent.restart' &&
                     isTerminalEngine(_focusedAgent?.engine)
               ? 'Restart Terminal'
-              : command.id == 'agent_messages.toggle'
-              ? app.agentMessages.isOn(app.activeSwarmId)
-                    ? 'Agent Messages: turn off for this tab'
-                    : 'Agent Messages: turn on for this tab'
               : command.label,
           detail: command.group.label,
           swarmId: null,
@@ -7128,6 +7101,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       children: [
         _searchButton(theme),
         _notificationsButton(theme),
+        _addPhoneButton(theme),
         if (app.devicesEnabled) _devicesButton(context),
         WorkspaceStoreButton(
           key: const ValueKey('swarm-store-button'),
@@ -7953,8 +7927,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ];
       final toolHeight = workspaceBarControlHeight(context);
       final prefs = appearancePrefsStore.value.prompt;
-      // Agent Messages' color: the design system's accent blue, as a mark.
-      final messagesColor = grid.AppPalette.accentOnSurface;
       final storeWidth = math.min(
         WorkspaceStoreButton.widthOf(context),
         math.max(0.0, constraints.maxWidth - cell.width * 22),
@@ -7964,16 +7936,24 @@ class _SwarmScreenState extends State<SwarmScreen> {
       // Devices only where Store keeps its full width beside it. A narrow
       // window drops it from the bar first; Harness Store still opens it.
       final devicesWidth = WorkspaceStoreButton.widthOf(context, devices: true);
-      final showDevices =
-          app.devicesEnabled &&
-          constraints.maxWidth - cell.width * 22 - accountWidth >=
-              WorkspaceStoreButton.widthOf(context) + devicesWidth;
-      // Search, notifications, Devices, Store and the account — none of it
-      // here when the title bar holds them.
+      final room =
+          constraints.maxWidth -
+          cell.width * 22 -
+          accountWidth -
+          WorkspaceStoreButton.widthOf(context);
+      final showDevices = app.devicesEnabled && room >= devicesWidth;
+      // Add Phone likewise, and it goes before Devices: a phone is added once,
+      // and the account menu, the Harness menu and `> add phone` still open it.
+      final addPhoneWidth = cell.width * 4;
+      final showAddPhone =
+          room >= addPhoneWidth + (showDevices ? devicesWidth : 0);
+      // Search, notifications, Add Phone, Devices, Store and the account —
+      // none of it here when the title bar holds them.
       final actionsWidth = _titleBarActions
           ? 0.0
           : storeWidth +
                 cell.width * 8 +
+                (showAddPhone ? addPhoneWidth : 0) +
                 (showDevices ? devicesWidth : 0) +
                 accountWidth;
       final leadingWidth = chrome?.leadingWidth(context) ?? 0.0;
@@ -8066,11 +8046,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
                               unawaited(app.requestCloseSwarm(swarm.id));
                             }
                           },
-                          // Only the tab listens to Agent Messages: its traffic
-                          // must not rebuild the workspace.
-                          child: ListenableBuilder(
-                            listenable: app.agentMessages,
-                            builder: (context, _) {
+                          child: Builder(
+                            builder: (context) {
                               final nameHint = workspaceTabTooltip(
                                 labels[index],
                                 swarm.name,
@@ -8078,6 +8055,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                     DesktopWorkspaceTab.naturalWidth(
                                       context,
                                       labels[index],
+                                      shortcutHint: _keymap.hint(
+                                        'swarm.select_${index + 1}',
+                                      ),
                                       hasActivity: activity != null,
                                     ) >
                                     _tabWidths[index],
@@ -8088,6 +8068,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
                               ].join('\n');
                               return DesktopWorkspaceTab(
                                 id: swarm.id,
+                                showShortcuts: _tabShortcutHints,
+                                shortcutHint: _keymap.hint(
+                                  'swarm.select_${index + 1}',
+                                ),
                                 onRename: () => _rename(swarm.id),
                                 label: labels[index],
                                 selected: selected,
@@ -8101,16 +8085,6 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                         app.requestCloseSwarm(swarm.id),
                                       )
                                     : null,
-                                agentMessages:
-                                    app.agentMessagesOffered(swarm.id)
-                                    ? app.agentMessages.stateOf(swarm.id)
-                                    : null,
-                                onToggleAgentMessages: _shortcutsEnabled
-                                    ? () => unawaited(
-                                        _toggleAgentMessages(swarm.id),
-                                      )
-                                    : null,
-                                messagesColor: messagesColor,
                                 activity:
                                     activity == null || activity.mark.isEmpty
                                     ? null
@@ -8152,6 +8126,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
               if (!_titleBarActions) ...[
                 _searchButton(theme),
                 _notificationsButton(theme),
+                if (showAddPhone) _addPhoneButton(theme),
                 if (showDevices) _devicesButton(context),
                 WorkspaceStoreButton(
                   key: const ValueKey('swarm-store-button'),
@@ -8200,6 +8175,31 @@ class _SwarmScreenState extends State<SwarmScreen> {
       height: workspaceBarControlHeight(context),
       child: Icon(
         AppIcons.search,
+        size: 16,
+        color: theme.foreground.withValues(
+          alpha: !_shortcutsEnabled
+              ? .28
+              : emphasized
+              ? 1
+              : .75,
+        ),
+      ),
+    ),
+  );
+
+  String get _addPhoneTooltip => _commandTooltip('Add Phone', 'app.add_phone');
+
+  /// Harness ▸ Add Phone…, as a glyph just before Devices ([_addPhone]).
+  Widget _addPhoneButton(TerminalTheme theme) => WorkspaceBarControl(
+    key: const ValueKey('swarm-add-phone-button'),
+    label: 'Add Phone',
+    tooltip: _addPhoneTooltip,
+    onPressed: _shortcutsEnabled ? () => unawaited(_addPhone()) : null,
+    builder: (context, emphasized) => SizedBox(
+      width: workspaceBarCellSizeOf(context).width * 4,
+      height: workspaceBarControlHeight(context),
+      child: Icon(
+        AppIcons.smartphoneNfc,
         size: 16,
         color: theme.foreground.withValues(
           alpha: !_shortcutsEnabled

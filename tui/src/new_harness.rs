@@ -2149,6 +2149,29 @@ mod tests {
         } } }
     }
 
+    /// `@` in the task (or the Machine field) lists the machines; ↑ ↓ move through them and stay
+    /// where they were moved to through the refreshes that follow.
+    #[tokio::test]
+    async fn arrows_move_through_the_machines_at_lists() {
+        let mut app = app();
+        for (id, name) in [("lap", "laptop"), ("box", "gpu-box")] {
+            app.fleet.machines.push(crate::fleet::Machine { shared: false, id: id.into(), name: name.into(), local: false,
+                status: "online".into(), reach: crate::fleet::Reach::Ready });
+        }
+        open(&mut app, None, Some("/home/dev/project".into()));
+        press(&mut app, KeyCode::Char('@'));
+        fn current(app: &App) -> Option<String> { form_of(app).child.as_ref().and_then(|c| c.picker.current_id()) }
+        let first = current(&app);
+        press(&mut app, KeyCode::Down);
+        let second = current(&app);
+        assert_ne!(second, first, "↓ moves");
+        crate::new_harness::refresh(&mut app);
+        assert_eq!(current(&app), second, "a refresh keeps the row ↓ moved to");
+        press(&mut app, KeyCode::Up);
+        crate::new_harness::refresh(&mut app);
+        assert_eq!(current(&app), first, "↑ moves back");
+    }
+
     #[tokio::test]
     async fn at_colon_percent_in_the_task_open_their_choosers() {
         let mut app = app();

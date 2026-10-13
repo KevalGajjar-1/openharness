@@ -36,6 +36,7 @@ import {
 import { gridModelsPayload } from '../lib/gridModelsPayload.js'
 import { resolveGridTarget } from '../lib/gridTarget.js'
 import { LocalModels } from '../lib/localModels.js'
+import { nvidiaComputeApps } from '../lib/gpuProcesses.js'
 import type { NewAgentModel } from '../lib/newAgentModel.js'
 import type { RuntimeModelOption } from '../lib/runtimeProfile.js'
 import { parseRuntimeProfile } from '../lib/runtimeProfileWire.js'
@@ -247,6 +248,7 @@ function modelsRequests(core: CoreApi, grid: GridSetUp, privateGridName: () => P
     // bundled harness), so the picker and that harness agree on what is here and what starts it.
     appModels: () => scanAppModels({ node: baseNode(process.execPath), packageDir: installedDsh(MODEL_MANAGER_ID)?.realDir ?? null, env: process.env }),
     appEngines: appEngineOps(process.env),
+    gpuProcesses: nvidiaComputeApps,
   })
   /** The grid listing currently out, shared by every `grid_models_list` for the same own grid that lands
    *  meanwhile. */

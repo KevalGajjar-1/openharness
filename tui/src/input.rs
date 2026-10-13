@@ -18,7 +18,25 @@ use crate::pane::{encode_key, encode_mouse, Phase};
 use crate::picker::Picker;
 use crate::theme;
 
+/// A trusted OS form while sign-in is required. It receives text, never hn's
+/// root/prefix shortcuts. Resize and focus events still reach the client.
+pub fn system_form_input(app: &mut App, pane: u64, event: &CEvent) -> bool {
+    let bytes = match event {
+        CEvent::Key(key) if key.kind != KeyEventKind::Release =>
+            app.panes.get(&pane).and_then(|p| encode_key(key, p.mode())),
+        CEvent::Paste(text) => Some(text.as_bytes().to_vec()),
+        CEvent::Key(_) | CEvent::Mouse(_) => None,
+        _ => return false,
+    };
+    if let Some(bytes) = bytes {
+        if app.panes.get(&pane).is_some_and(|p| p.stream.is_some()) { app.send_input(pane, &bytes); }
+        else if let Some(p) = app.panes.get_mut(&pane) { p.queued.push(bytes); }
+    }
+    true
+}
+
 pub fn handle(app: &mut App, event: CEvent) {
+    if crate::account::entry_input(app, &event) { return }
     app.sync_copy_modal();
     match event {
         // A key is the session's activity (session_update_activity): a script's command with no -t

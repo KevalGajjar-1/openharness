@@ -35,7 +35,6 @@ enum SettingsSection {
   ),
   notifications(AppIcons.bell, 'Notifications'),
   shortcuts(AppIcons.keyboard, 'Keyboard shortcuts'),
-  agents(AppIcons.bot, 'Agents'),
   connectors(AppIcons.plug, 'Connectors'),
   usage(AppIcons.chartNoAxesColumn, 'Usage'),
   experimental(AppIcons.flaskConical, 'Experimental'),
@@ -121,8 +120,8 @@ const _kSettingsGroups = [
     SettingsSection.notifications,
     SettingsSection.shortcuts,
   ]),
+  // What agents may do with Harness is the account's: Labs ▸ Experimental (owner, 2026-10-12).
   SettingsGroup('Agents', [
-    SettingsSection.agents,
     // The services this computer's agents use (Linear, Notion, GitHub…), connected once for all of them.
     SettingsSection.connectors,
     // What the agents on this machine have spent. It carries the switches that decide which logs

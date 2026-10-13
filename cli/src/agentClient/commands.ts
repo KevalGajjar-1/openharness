@@ -90,7 +90,10 @@ const STARTING_MS = 2 * 60_000
 
 class UsageError extends Error {}
 
-export const AGENTS_START_AGENTS_OFF = 'The person has turned off agents starting harnesses on this computer (Harness Settings ▸ Agents). Do the work yourself.'
+/** What an agent's `harness new` (and MCP's `harness_start`) says while the person has not let agents start agents: an
+ *  account experiment, off by default (lib/agentSettings.ts), so it says where the person turns it on, as `harness send`
+ *  does. */
+export const AGENTS_START_AGENTS_OFF = 'Agents may not start harnesses: the person turns on "Agents can start other agents" in Harness Settings ▸ Experimental, or runs `harness settings agents-start-agents on`. Until then, do the work yourself.'
 
 const ORPHAN = 'This pane\'s harness is no longer running, so nothing here may close or start harnesses. Only the person can.'
 
@@ -808,7 +811,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
   if (o.orphan) return refusing('NOT_YOURS', ORPHAN)
   const caller = o.caller
   if (!caller) return null
-  // The person's say, on the machine the agent runs on (Settings ▸ Agents, `harness settings`).
+  // The person's say: the account's experiment, as the machine the agent runs on keeps it (Settings ▸ Experimental,
+  // `harness settings`).
   if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF)
   return {
     // A harness in a pane here: the new one is opened beside it in the windows. An agent outside Harness has no pane.
@@ -857,8 +861,8 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
       // Said once, at the top: the task is from an agent, not the person (a teammate's tmux paste read as the
       // owner's). It reads the answer itself (`show`): an invitation to reply had the first eval's agent send its
       // whole report back as a message as well, which would land in the middle of the starter's own turn. Nor is the
-      // new harness told to message it: being started by it gives no way to, only a tab with Agent Messages on does
-      // (owner, 2026-10-11: "Agent Messages off means off").
+      // new harness told to message it: being started by it gives no way to, only sharing a tab does (owner,
+      // 2026-10-11: "Agent Messages off means off").
       const here = machineId === o.where.machineId
       const header = caller.outside
         ? `[from ${caller.name} outside Harness · ${o.machine}, the agent that started you. It reads your answer itself.]\n\n`

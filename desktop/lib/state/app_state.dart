@@ -1119,8 +1119,8 @@ class AppNotifier extends ChangeNotifier {
       readiness.needsTerminal ||
       readiness.plan.any((item) => item.requiresTerminal);
 
-  /// A computer new to Harness builds its first workspace behind the welcome tour, as soon as the app
-  /// is ready, so the agents have started and OpenCode's task is typed by the time the tour hands
+  /// A computer new to Harness builds its first workspace behind the welcome tour, once signed in
+  /// and ready, so the agents have started and OpenCode's task is typed by the time the tour hands
   /// over: OpenCode's own first start took about 12 s after the tour had ended (fresh macOS VM,
   /// 2026-10-09). The workspace joins this run when it appears ([FirstArrival.run]).
   ///
@@ -1132,6 +1132,7 @@ class AppNotifier extends ChangeNotifier {
   void _firstArrivalBehindTour() {
     if (!firstArrivalBehindTour ||
         viewer != null ||
+        !signedIn ||
         // Behind the sign-in step as well: it stands where the tour stood.
         !(_setupTour || _signInStep) ||
         status != AppStatus.authenticated ||
@@ -1149,22 +1150,21 @@ class AppNotifier extends ChangeNotifier {
   }
 
   // --- Sign-in step (2026-10-11) ------------------------------------------
-  // A computer new to Harness is asked once, after setup and before its first
-  // workspace, whether to sign in (`widgets/sign_in_step.dart`): what an
-  // account adds, Google or Apple, and Skip. Everything on this computer works
-  // without one, so the page never blocks; afterwards the same sign-in is the
-  // button at the right end of the tab row. Design:
+  // Desktop requires an account before opening the workspace, including on
+  // computers that already have the CLI. The page stays until sign-in succeeds;
+  // cancelling or restarting the app cannot bypass it. Explicit sign-out brings
+  // it back, as does a session the server can no longer renew. A signed-in
+  // offline launch needs no new sign-in. Design:
   // `docs/research/2026-10-08-onboarding-redesign/index.html`, section 1b.
   bool _signInStep = false;
 
-  /// Whether the sign-in step comes after setup: this computer is new to
-  /// Harness and holds no account. Only meaningful once [status] has left
+  /// Whether the sign-in step comes after setup: this computer holds no
+  /// account. Only meaningful once [status] has left
   /// setup — [signedIn] is presumed true until the CLI has been asked.
   bool get signInStepNext => _signInStep && viewer == null && !signedIn;
 
   /// Whether RootShell shows the sign-in step in place of the workspace: from
-  /// the moment setup (and its tour) hands over, until an account arrives or
-  /// the person skips.
+  /// the moment setup (and its tour) hands over, until an account arrives.
   bool get signInStepShowing {
     if (!_signInStep || viewer != null || setupTourShowing) return false;
     final signingInHere = status == AppStatus.bootstrapping && signingIn;
@@ -1177,19 +1177,6 @@ class AppNotifier extends ChangeNotifier {
       return false;
     }
     return true;
-  }
-
-  /// Skip on the sign-in step: on to the workspace without an account.
-  void skipSignInStep() {
-    if (!_signInStep) return;
-    _signInStep = false;
-    appLog.info('onboarding', 'sign-in step: skipped');
-    // A sign-in left waiting on the browser ends with the page that began it.
-    if (canCancelLogin) {
-      cancelLogin();
-    } else {
-      notifyListeners();
-    }
   }
 
   /// The sign-in step's buttons. Unlike the sign-in sheet, the page does not
@@ -1476,12 +1463,13 @@ class AppNotifier extends ChangeNotifier {
   Iterable<TerminalPane> get allPanes => swarms.expand((s) => s.panes).toSet();
   String get activeSwarmId => activeSwarm.id;
 
-  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): each tab's
-  /// flag, the traffic the daemons push as `messages_changed`, and the marks it
-  /// leaves on panes. Its own notifier, so traffic never rebuilds the workspace.
+  /// Agent Messages (docs/design/2026-10-10-agent-messages.md): whether the
+  /// account has them, the traffic the daemons push as `messages_changed`, and
+  /// the marks it leaves on panes. Its own notifier, so traffic never rebuilds
+  /// the workspace. Whether agents may message is the account's experiment
+  /// (Settings ▸ Experimental), not a tab's.
   late final agentMessages = AgentMessagesController(
     read: () => api.readAgentMessageTabs(),
-    write: (tabId, enabled) => api.setAgentMessages(tabId, enabled),
     request: (machineId, payload) => _conn(machineId).request(
       'agent_messages',
       payload: payload,
@@ -1494,11 +1482,11 @@ class AppNotifier extends ChangeNotifier {
             ?.displayName,
   );
 
-  /// Whether [tabId] has Agent Messages to offer: a tab the desk holds, since
-  /// the backend keeps the flag per desk tab, once the daemon and backend have
-  /// answered for it. The Store, Devices and Companions, an orchestrator or a
-  /// draft tab, a window before it joins the desk, and an older CLI or backend
-  /// get no 💬, menu row or command.
+  /// Whether [tabId] has an Agent Messages log to show: a tab the desk holds,
+  /// since the daemons know a tab by its desk id, once the daemon and backend
+  /// have answered for Agent Messages. The Store, Devices and Companions, an
+  /// orchestrator or a draft tab, a window before it joins the desk, and an
+  /// older CLI or backend get no Show Agent Messages row or command.
   bool agentMessagesOffered(String tabId) {
     final swarm = swarms.where((s) => s.id == tabId).firstOrNull;
     return swarm != null &&
@@ -1541,15 +1529,18 @@ class AppNotifier extends ChangeNotifier {
         expected: _agentMessageMembers(tabId),
       );
 
-  /// The tabs with Agent Messages on, each with its connected machines other
+  /// The desk tabs with two or more of the owner's harnesses — the fewest
+  /// that can message each other — each with its connected machines other
   /// than this computer: their daemons' `messages_changed` reaches only their
   /// own computer's windows, so [agentMessagesRemote] asks them instead. In a
-  /// browser every machine is another computer.
+  /// browser every machine is another computer. No tab has a switch to wait
+  /// for: a computer whose account has messaging off just answers with nothing
+  /// new.
   List<AgentMessagesRemoteTab> agentMessagesRemoteTabs() {
     final local = localMachineState?.machine.machineId;
     return [
       for (final swarm in swarms)
-        if (agentMessagesOffered(swarm.id) && agentMessages.isOn(swarm.id))
+        if (agentMessagesOffered(swarm.id) && _messagingHarnesses(swarm) >= 2)
           if ([
                 for (final id in agentMessageMachines(swarm.id))
                   if (id != local) id,
@@ -1558,6 +1549,14 @@ class AppNotifier extends ChangeNotifier {
             (tabId: swarm.id, machineIds: remote),
     ];
   }
+
+  /// How many of the owner's harnesses [swarm] holds, each once.
+  int _messagingHarnesses(Swarm swarm) => {
+    for (final pane in swarm.panes)
+      if (pane.agentId case final agentId?
+          when machineStates[pane.machineId]?.machine.isShared != true)
+        agentMessageKey(pane.machineId, agentId),
+  }.length;
 
   /// Polls [agentMessagesRemoteTabs] while the window is in front; the
   /// workspace starts it.
@@ -2567,10 +2566,12 @@ class AppNotifier extends ChangeNotifier {
     final revision = _authRevision;
     final removal = machine?._agentRemovals[agent.id];
     return (mode) async {
+      // A harness reviewed before it bound its first conversation is the
+      // same one once it has (`Agent.continuesSession`); the request below
+      // still names the reviewed identity, so the daemon decides whether a
+      // harness that bound since may close.
       bool sameAgent(Agent? current) =>
-          current != null &&
-          current.createdAt == agent.createdAt &&
-          current.sessionId == agent.sessionId;
+          current != null && current.continuesSession(agent);
       final current = machine?.agents
           .where((a) => a.id == agent.id)
           .firstOrNull;
@@ -2639,7 +2640,9 @@ class AppNotifier extends ChangeNotifier {
           (observed == null || !observed.isStopped)) {
         _upsertAgent(
           machine,
-          agent.copyWith(
+          // The latest row seen, so a conversation bound since the review is
+          // kept on the stopped harness for reopening.
+          (observed ?? current!).copyWith(
             status: 'stopped',
             terminalAvailable: false,
             clearClosePlan: true,
@@ -2926,12 +2929,10 @@ class AppNotifier extends ChangeNotifier {
 
   /// Whether this computer holds an account.
   ///
-  /// Guest is the ABSENCE of one, not a mode of its own: everything on this
-  /// computer works without it — agents, terminals, tabs, DSH, the cabled dial
-  /// — and what an account adds is the OTHER machines, the shared desk, voice
-  /// on the dial and the profile. The window opens either way; see [isGuest]
-  /// for what a guest is asked to sign in for, and `showSignInSheet` for how
-  /// it is asked.
+  /// Local services can run without an account, but desktop launch requires
+  /// one before the workspace opens ([signInStepShowing]). After runtime
+  /// expiry, local recovery keeps agents, terminals, tabs and DSH available;
+  /// remote machines, the shared desk and the profile require sign-in again.
   ///
   /// Presumed true until the CLI says otherwise (`bootstrap` asks, and every
   /// change after that goes through [_rebindAuth]): nothing gated on it is on
@@ -4532,7 +4533,7 @@ class AppNotifier extends ChangeNotifier {
       if (firstHarness) {
         agentPrefetch?.setupRunning = true;
         agentPrefetch?.start();
-        // Asked once, after setup: see [signInStepShowing].
+        // The tour's final line announces sign-in: see [signInStepShowing].
         _signInStep = true;
       }
       if (!result.isReady && _canInstallUnattended(result, mode: null)) {
@@ -4670,16 +4671,16 @@ class AppNotifier extends ChangeNotifier {
       signedIn = authStatus.loggedIn;
       if (!authStatus.loggedIn) {
         currentUser = null;
-        // A VIEWER has nothing to show without an account — no daemon, no
-        // machine of its own — so it keeps its login screen. A desktop window
-        // has this computer, and opens on it: the sign-in becomes a sheet it
-        // raises when the person reaches for another machine, not a wall in
-        // front of agents that are already running.
+        // Viewers keep their own login screen. Desktop can prepare the saved
+        // workspace locally, but the required sign-in page stays in front of
+        // it. Arm it on every signed-out launch, including existing installs
+        // and a relaunch after leaving setup before signing in.
         if (viewer != null) {
           status = AppStatus.unauthenticated;
           notifyListeners();
           return;
         }
+        _signInStep = true;
       }
       status = AppStatus.bootstrapping;
       notifyListeners();
@@ -5106,11 +5107,13 @@ class AppNotifier extends ChangeNotifier {
   }) async {
     _guestDeskRestorePending = true;
     signedIn = false;
+    _signInStep = true;
     currentUser = null;
     if (banner != null) {
       _lastError = banner;
       _lastErrorRetryable = true;
     }
+    notifyListeners();
     // Account teardown already removed private remote content. Finish closing
     // its transports before restoring this computer from the saved desk.
     await _workspaceCleanup;
@@ -5613,14 +5616,14 @@ class AppNotifier extends ChangeNotifier {
 
   static const _signedOutMessage =
       'You were signed out on this computer. This computer\'s agents keep '
-      'running; sign in again to reach your other machines.';
+      'running; sign in again to continue.';
 
   /// Inject the same account-expiry event the connection pool reports, without a real daemon.
   @visibleForTesting
   void expireSessionForTest(String message) => _signedOutAtRuntime(message);
 
-  /// A running session lost its account. Viewers return to login; desktop windows
-  /// keep this computer available as guests and explain how to reconnect remotely.
+  /// A running session lost its account. Return to required sign-in while
+  /// preserving this computer's saved workspace and running harnesses.
   void _signedOutAtRuntime(String message) {
     if (status == AppStatus.unauthenticated || isGuest) {
       return; // idempotent: several sources can race here
@@ -5642,10 +5645,8 @@ class AppNotifier extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // A desktop window becomes a GUEST instead: the daemon comes back signed out
-    // and goes on serving this computer, so the agents that were running are
-    // still running. This computer's tiles stay (under the id it serves now),
-    // the other machines' leave, and the banner says why the list got shorter.
+    // Restore local panes behind required sign-in. The daemon keeps serving
+    // this computer so running agents survive; old account transports close.
     //
     // The work was invalidated above, so the guest transition runs under THIS
     // revision: invalidating again would clear [sessionExpired], and the banner
@@ -6354,10 +6355,9 @@ class AppNotifier extends ChangeNotifier {
     _monitorHarnesses.clear();
     // What was said about the account's devices was about this account's.
     _clearDeviceNoticeState();
-    // A VIEWER goes back to its login screen; a desktop window stays on the desk
-    // and becomes a guest — the daemon comes back signed out and keeps serving
-    // this computer, so signing out of the account is not a reason to take the
-    // agents off the screen. The rebind at the end sits the desk back down.
+    // A viewer goes back to its login screen; desktop returns to its required
+    // sign-in page once credentials are cleared. Its local daemon and agents
+    // keep running, and the rebind preserves the desk for the next sign-in.
     // The local-manual dev fixture goes back to the login screen too: it has
     // no daemon of its own, and a guest desk would be served by the REAL CLI.
     final becomesGuest = viewer == null && localManualFixture == null;
@@ -6380,6 +6380,12 @@ class AppNotifier extends ChangeNotifier {
     signOutError = didClear
         ? null
         : 'Your saved sign-in could not be cleared. Try signing out again.';
+    if (becomesGuest && didClear) {
+      // Explicit sign-out returns to the required page. Set both together so
+      // its getter cannot consume the gate under the account that just left.
+      signedIn = false;
+      _signInStep = true;
+    }
     notifyListeners();
     // The CLI restarts its daemon signed out (`harness logout` does it itself),
     // so this window waits for that one and sits its desk back down on the id it
@@ -7175,8 +7181,12 @@ class AppNotifier extends ChangeNotifier {
           _desk.pending.isEmpty) {
         unawaited(_deskFetch());
       }
-      // So are Agent Messages' flags (desk_changed); this catches a missed one.
-      if (!_disposed && status == AppStatus.authenticated && _desk.enabled) {
+      // Agent Messages' first answer, when the read beside the desk failed
+      // (a backend away at sign-in) and no backend-online flip followed.
+      if (!_disposed &&
+          status == AppStatus.authenticated &&
+          _desk.enabled &&
+          !agentMessages.loaded) {
         unawaited(agentMessages.refresh());
       }
       unawaited(_rereadMachinesInBackground(pushed: false));
@@ -7673,6 +7683,14 @@ class AppNotifier extends ChangeNotifier {
   /// Devices that joined the account and this end had never trusted, not yet dismissed.
   final List<NewDeviceNotice> newDevices = [];
 
+  /// Each device [_announceDevice] says joined the account, as it is said — never the pending list
+  /// rebuilt from the log ([_syncPendingDevices]), which is old news by then. Add Phone listens here
+  /// for the phone it is adding (`widgets/add_phone_dialog.dart`). Broadcast: with nobody listening,
+  /// a join is dropped, like [spokenTasks].
+  final StreamController<NewDeviceNotice> _deviceJoins =
+      StreamController<NewDeviceNotice>.broadcast();
+  Stream<NewDeviceNotice> get deviceJoins => _deviceJoins.stream;
+
   /// Devices taken out of the account by another device, not yet dismissed. Not persisted: the
   /// history is the durable record.
   final List<DeviceRemovalNotice> deviceRemovals = [];
@@ -7893,7 +7911,10 @@ class AppNotifier extends ChangeNotifier {
     final shown = newDevices.any((d) => d.pub == notice.pub);
     // A daemon's frame can repeat; the viewer's log says each key once ([always]).
     if (shown && !always) return;
-    if (!shown) newDevices.add(notice);
+    if (!shown) {
+      newDevices.add(notice);
+      if (!_disposed) _deviceJoins.add(notice);
+    }
     devicesRevision++;
     systemNotifications.postNotice(
       id: 'harness-device:${notice.pub}',
@@ -15669,7 +15690,8 @@ class AppNotifier extends ChangeNotifier {
       return;
     }
     _desk.enabled = true;
-    // Each tab's Agent Messages flag lives beside the desk, read once it is.
+    // Whether the daemon and backend have Agent Messages, which Show Agent
+    // Messages waits for, is read once the desk is.
     unawaited(agentMessages.refresh());
     // Tabs from before the desk carry per-window ids (`swarm-N`) two computers
     // would both mint. Give them desk ids once; the layout store keys by the
@@ -17257,11 +17279,6 @@ class AppNotifier extends ChangeNotifier {
         break;
       case 'desk_changed':
         unawaited(experimentalFeatures.refresh());
-        // Turning Agent Messages on or off for a tab says `desk_changed` too,
-        // with the desk itself unchanged (backend routes/agentMessages.ts).
-        if (status == AppStatus.authenticated) {
-          unawaited(agentMessages.refresh());
-        }
         // Another window — on another computer, or this one — changed the
         // tabs. The payload is only the revision; the document is fetched.
         final deskRevision = payload['revision'];
@@ -17827,6 +17844,7 @@ class AppNotifier extends ChangeNotifier {
     }
     unawaited(_spokenTasks.close());
     unawaited(_deviceWindowRequests.close());
+    unawaited(_deviceJoins.close());
     unawaited(_zooPushes.close());
     unawaited(_daemonFrames.close());
     unawaited(_modelsRequests.close());

@@ -31,7 +31,7 @@ void main() {
       SettingsSection.customize,
       SettingsSection.notifications,
       SettingsSection.shortcuts,
-      SettingsSection.agents,
+      // What agents may do is the account's, under Experimental (owner, 2026-10-12).
       if (!kIsWeb) SettingsSection.connectors,
       // Usage carries no gate of its own: it reads only this machine's own
       // files, and it reads nothing at all until a provider is switched on, so
@@ -58,11 +58,7 @@ void main() {
         SettingsSection.notifications,
         SettingsSection.shortcuts,
       ],
-      [
-        SettingsSection.agents,
-        if (!kIsWeb) SettingsSection.connectors,
-        SettingsSection.usage,
-      ],
+      [if (!kIsWeb) SettingsSection.connectors, SettingsSection.usage],
       [SettingsSection.experimental],
       [SettingsSection.about, SettingsSection.debug],
     ]);

@@ -12,15 +12,16 @@ import 'package:harness/state/app_state.dart';
 import 'swarm_state_test.dart' show MemoryStore;
 
 /// When the sign-in step shows, and what its controls do to the app: a
-/// computer new to Harness that holds no account is asked once, between setup
-/// and its first workspace (`widgets/sign_in_step.dart`). Nothing here draws;
+/// desktop without an account must sign in between setup and its workspace
+/// (`widgets/sign_in_step.dart`). Nothing here draws;
 /// `sign_in_step_test.dart` has the page and `boot_flow_widget_test.dart` the
 /// window it stands in.
 class _Login extends CliLogin {
-  _Login({this.loggedIn = false});
+  _Login({this.loggedIn = false, this.offline = false});
 
   /// What `harness auth status` says.
   bool loggedIn;
+  final bool offline;
   final started = <SignInProvider?>[];
   var cancels = 0;
   Completer<void>? pending;
@@ -28,10 +29,10 @@ class _Login extends CliLogin {
 
   @override
   Future<CliAuthStatus> checkStatus() async =>
-      CliAuthStatus(loggedIn: loggedIn);
+      CliAuthStatus(loggedIn: loggedIn, offline: offline);
 
   @override
-  Future<void> logout() async {}
+  Future<void> logout() async => loggedIn = false;
 
   @override
   void cancel() => cancels++;
@@ -61,6 +62,9 @@ class _Api extends ApiClient {
 
   @override
   Future<Map<String, dynamic>?> desk() async => null;
+
+  @override
+  Future<Map<String, dynamic>?> daemonDevices() async => null;
 }
 
 final _missing = EnvironmentReadiness(
@@ -130,8 +134,7 @@ Future<void> _settle() async {
 }
 
 void main() {
-  test('a computer new to Harness, not signed in, is asked after the tour and '
-      'Skip opens Harness', () async {
+  test('a computer new to Harness must sign in after the tour', () async {
     final app = _Desktop(_Login());
     addTearDown(app.dispose);
     await app.bootstrap();
@@ -146,12 +149,9 @@ void main() {
     app.finishSetupTour();
     expect(app.signInStepShowing, isTrue);
 
-    var notified = 0;
-    app.addListener(() => notified++);
-    app.skipSignInStep();
-    expect(notified, greaterThan(0));
-    expect(app.signInStepShowing, isFalse);
-    expect(app.signInStepNext, isFalse);
+    await _settle();
+    expect(app.signInStepShowing, isTrue);
+    expect(app.signInStepNext, isTrue);
     expect(app.status, AppStatus.authenticated);
     expect(app.isGuest, isTrue);
     expect(app.cli.started, isEmpty);
@@ -176,7 +176,7 @@ void main() {
     expect(app.signedIn, isTrue);
     expect(app.status, AppStatus.authenticated);
     expect(app.signInStepShowing, isFalse);
-    // Spent: a sign-out later in the same launch does not bring it back.
+    // Complete for this account; explicit sign-out requires it again.
     expect(app.signInStepNext, isFalse);
   });
 
@@ -208,11 +208,11 @@ void main() {
     expect(app.cli.cancels, 2);
     expect(app.signInStepShowing, isTrue);
 
-    // Skip leaves, and takes the sign-in still waiting with it.
-    app.skipSignInStep();
+    // Cancelling the browser flow keeps the required page in place.
+    app.cancelLogin();
     expect(app.cli.cancels, 3);
     expect(app.signingIn, isFalse);
-    expect(app.signInStepShowing, isFalse);
+    expect(app.signInStepShowing, isTrue);
     expect(app.status, AppStatus.authenticated);
     expect(app.isGuest, isTrue);
   });
@@ -248,9 +248,7 @@ void main() {
     expect(app.signInStepShowing, isFalse);
   });
 
-  test('a computer that already has Harness is never asked', () async {
-    // Setup has nothing to install here: someone who has used Harness without
-    // an account keeps the desk they open on, and finds Sign in in the tab row.
+  test('an existing signed-out installation must sign in too', () async {
     final app = _Desktop(_Login(), installed: true);
     addTearDown(app.dispose);
     await app.bootstrap();
@@ -258,19 +256,103 @@ void main() {
     expect(app.status, AppStatus.authenticated);
     expect(app.isGuest, isTrue);
     expect(app.setupTourShowing, isFalse);
-    expect(app.signInStepNext, isFalse);
-    expect(app.signInStepShowing, isFalse);
+    expect(app.signInStepNext, isTrue);
+    expect(app.signInStepShowing, isTrue);
   });
 
-  test('a CLI that is only being repaired is not a new computer', () async {
+  test('a repaired CLI skips the tour but still requires sign-in', () async {
     final app = _Desktop(_Login())..harnessInstalledBefore = () => true;
     addTearDown(app.dispose);
     await app.bootstrap();
 
     expect(app.status, AppStatus.authenticated);
     expect(app.setupTourShowing, isFalse);
-    expect(app.signInStepShowing, isFalse);
+    expect(app.signInStepShowing, isTrue);
   });
+
+  test('relaunching after setup cannot bypass sign-in', () async {
+    final cli = _Login();
+    final first = _Desktop(cli);
+    await first.bootstrap();
+    first.finishSetupTour();
+    expect(first.signInStepShowing, isTrue);
+    first.dispose();
+
+    final reopened = _Desktop(cli, installed: true);
+    addTearDown(reopened.dispose);
+    await reopened.bootstrap();
+    expect(reopened.setupTourShowing, isFalse);
+    expect(reopened.signInStepShowing, isTrue);
+  });
+
+  test('first arrival waits for an account before starting agents', () async {
+    final app = _Desktop(_Login())..firstArrivalBehindTour = true;
+    addTearDown(app.dispose);
+    await app.bootstrap();
+    await _settle();
+    expect(app.firstArrival.pending, isTrue);
+    expect(app.firstArrival.running, isFalse);
+    app.finishSetupTour();
+    await _settle();
+    expect(app.signInStepShowing, isTrue);
+    expect(app.firstArrival.pending, isTrue);
+    expect(app.firstArrival.running, isFalse);
+  });
+
+  test(
+    'a cancelled sign-in cannot open the workspace with a late reply',
+    () async {
+      final app = _Desktop(_Login(), installed: true);
+      addTearDown(app.dispose);
+      await app.bootstrap();
+      final signIn = app.signInFromStep(SignInProvider.google);
+      await _settle();
+      app.cancelLogin();
+      app.cli.pending!.complete();
+      await signIn;
+      expect(app.signedIn, isFalse);
+      expect(app.signInStepShowing, isTrue);
+    },
+  );
+
+  test('explicit sign-out requires sign-in again', () async {
+    final app = _Desktop(_Login(loggedIn: true), installed: true);
+    addTearDown(app.dispose);
+    await app.bootstrap();
+    expect(app.signInStepShowing, isFalse);
+    await app.logout();
+    await _settle();
+    expect(app.signedIn, isFalse);
+    expect(app.signInStepShowing, isTrue);
+  });
+
+  test('a signed-in offline launch opens the workspace', () async {
+    final app = _Desktop(
+      _Login(loggedIn: true, offline: true),
+      installed: true,
+    );
+    addTearDown(app.dispose);
+    await app.bootstrap();
+    expect(app.signedIn, isTrue);
+    expect(app.status, AppStatus.authenticated);
+    expect(app.signInStepShowing, isFalse);
+    expect(app.cli.started, isEmpty);
+  });
+
+  test(
+    'runtime expiry requires sign-in again while restoring saved local work',
+    () async {
+      final app = _Desktop(_Login(loggedIn: true), installed: true);
+      addTearDown(app.dispose);
+      await app.bootstrap();
+      app.expireSessionForTest('Sign in again to reach your other machines.');
+      await _settle();
+      expect(app.signedIn, isFalse);
+      expect(app.sessionExpired, isTrue);
+      expect(app.status, AppStatus.authenticated);
+      expect(app.signInStepShowing, isTrue);
+    },
+  );
 
   test('without a tour — setup that needed the person — the step follows '
       'setup', () async {

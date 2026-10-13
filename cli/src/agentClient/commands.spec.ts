@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
-import { writeAgentSettings } from '../lib/agentSettings.js'
+import { agentSettingsPath } from '../lib/agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 import type { Frame } from './model.js'
 
 const NOW = Date.parse('2026-10-11T12:00:00Z')
@@ -55,9 +56,12 @@ let where: Where
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-client-'))
   writeFileSync(join(dir, 'machine-name'), 'studio\n')
+  // The account lets agents start agents: off by default (lib/agentSettings.ts), and these are about what an agent's
+  // `harness new` does once it may.
+  setAgentSettingsForTest(dir, { agentsStartAgents: true })
   where = { port: 1, dataDir: dir, machineId: 'm' }
 })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => { rmSync(dir, { recursive: true, force: true }); signedOutForTest() })
 
 function harness(daemon: FakeDaemon, over: Partial<ClientDeps> & { others?: Record<string, FakeDaemon> } = {}) {
   const out: string[] = [], err: string[] = []
@@ -697,17 +701,25 @@ describe('harness new, run by an agent', () => {
     }
   })
 
-  it('refuses every agent when the person has turned agents starting agents off, and never the person', async () => {
+  it('refuses every agent until the account turns agents starting agents on, says where, and never refuses the person', async () => {
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' })]
-    writeAgentSettings(dir, { agentsStartAgents: false })
+    // An account that never said: off by default.
+    rmSync(agentSettingsPath(dir))
     const inPane = (await agentOrigin(harness(d).deps))!
-    await expect(inPane.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    await expect(inPane.check()).rejects.toMatchObject({ code: 'TURNED_OFF', message: AGENTS_START_AGENTS_OFF })
+    expect(AGENTS_START_AGENTS_OFF).toBe('Agents may not start harnesses: the person turns on "Agents can start other agents" in Harness Settings ▸ Experimental, or runs `harness settings agents-start-agents on`. Until then, do the work yourself.')
     const outside = (await agentOrigin(harness(d, { pane: undefined, env: { CODEX_THREAD_ID: 't' } }).deps))!
     await expect(outside.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
     expect(await agentOrigin(harness(d, { pane: undefined }).deps)).toBeNull()
-    writeAgentSettings(dir, { agentsStartAgents: true })
+    setAgentSettingsForTest(dir, { agentsStartAgents: true })
     await expect((await agentOrigin(harness(d).deps))!.check()).resolves.toBeUndefined()
+    // Turned off again; and on, but for an account no one is signed in to here.
+    setAgentSettingsForTest(dir, { agentsStartAgents: false })
+    await expect((await agentOrigin(harness(d).deps))!.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
+    setAgentSettingsForTest(dir, { agentsStartAgents: true })
+    signedOutForTest()
+    await expect((await agentOrigin(harness(d).deps))!.check()).rejects.toThrow(AGENTS_START_AGENTS_OFF)
   })
 
   it('names its own harness as the one that started the new one; an agent outside Harness names none', async () => {

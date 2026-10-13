@@ -84,10 +84,9 @@ const PROBES: Record<string, { type: string; payload: Record<string, unknown> }>
   models: { type: 'models_list', payload: {} },
   devices: { type: 'harness_devices_list', payload: {} },
   orchestrator: { type: 'orchestrator', payload: { action: 'list' } },
-  messages: { type: 'agent_messages', payload: { action: 'history' } },
 }
 /** The service names a process's comings and goings are logged under (`[services] <name> connected`). */
-const LINKS: Record<string, string> = { 'engine-claude': 'engine-claude', 'engine-codex': 'engine-codex', search: 'search', viewers: 'viewers', edge: 'monitor', gateway: 'gateway', models: 'models', devices: 'devices', orchestrator: 'orchestrator', messages: 'messages', sharing: 'sharing' }
+const LINKS: Record<string, string> = { 'engine-claude': 'engine-claude', 'engine-codex': 'engine-codex', search: 'search', viewers: 'viewers', edge: 'monitor', gateway: 'gateway', models: 'models', devices: 'devices', orchestrator: 'orchestrator', sharing: 'sharing' }
 const down = (answer: Record<string, unknown>) => answer.error === 'SERVICE_UNAVAILABLE' || answer.error === 'SERVICE_FAILED' || answer.error === 'GATEWAY_UNAVAILABLE' || answer.error === 'ENGINE_UNAVAILABLE' || answer.error === 'ENGINE_STALE_REPLY' || answer.error === 'ENGINE_BUSY'
 
 const acceptable = (name: string, answer: Record<string, unknown>): boolean => answer.error === undefined
@@ -242,7 +241,7 @@ async function deskLoop(d: IsolatedDaemon, agentIds: string[], deadline: () => b
           if (drawn.length) window.send('terminal_ack', { streamId, lastSeq: drawn[drawn.length - 1].seq })
         }
         const service = Object.keys(PROBES)[Math.floor(rand() * Object.keys(PROBES).length)]
-        if (rand() < 0.4 && !['orchestrator', 'messages'].includes(service)) await ask(window, service)
+        if (rand() < 0.4 && service !== 'orchestrator') await ask(window, service)
         forget(window)
         await sleep(2_000)
       }

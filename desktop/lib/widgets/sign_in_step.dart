@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../auth/sign_in_provider.dart';
 import '../logging/app_log.dart';
@@ -12,12 +13,13 @@ import 'setup_tour.dart';
 import 'sign_in_provider_button.dart';
 import 'window_chrome.dart';
 
-/// The sign-in step: the welcome's last page on a computer new to Harness that
-/// holds no account ([AppNotifier.signInStepShowing]).
+/// Required sign-in after setup on a computer that holds no account
+/// ([AppNotifier.signInStepShowing]).
 ///
 /// It stands where the tour stood and looks like its last slide: what an
 /// account adds on the left, one line each, and Continue with Google and
-/// Continue with Apple on the right. Under them, Skip and Continue with email.
+/// Continue with Apple on the right. The buttons stand alone, with Continue
+/// with email centered under them (owner, 2026-10-12).
 /// Nothing else is on the page, and nothing on it changes while the browser is
 /// open — every way in stays live instead (owner, 2026-10-11).
 /// Design: `docs/research/2026-10-08-onboarding-redesign/index.html`, 1b.
@@ -33,22 +35,25 @@ const signInStepBenefits = [
   (icon: AppIcons.panelsTopLeft, line: 'Same tabs on every computer'),
 ];
 
-/// The page itself, apart from the app: what it says and its five controls.
+/// The page itself, apart from the app: what it says and its three controls.
 class SignInStep extends StatelessWidget {
   const SignInStep({
     super.key,
     required this.onSignIn,
-    required this.onSkip,
     this.starting = false,
     this.startingProvider,
     this.finishing = false,
     this.error,
+    this.sessionExpired = false,
+    this.signingOut = false,
+    this.signOutError,
+    this.onRetrySignOut,
+    this.recovery,
   });
 
   /// Continue with Google, Continue with Apple, or — with no provider —
   /// Continue with email, which is the sign-in page's own chooser.
   final ValueChanged<SignInProvider?> onSignIn;
-  final VoidCallback onSkip;
 
   /// A sign-in was pressed and its browser has not opened yet. The control
   /// that began it ([startingProvider]; none is email) steps back for that
@@ -61,10 +66,11 @@ class SignInStep extends StatelessWidget {
 
   /// Why the last sign-in did not finish.
   final String? error;
-
-  /// The card's padding: the row under it starts and ends where the buttons
-  /// inside it do.
-  static const _cardPadding = 24.0;
+  final bool sessionExpired;
+  final bool signingOut;
+  final String? signOutError;
+  final VoidCallback? onRetrySignOut;
+  final Widget? recovery;
 
   @override
   Widget build(BuildContext context) {
@@ -82,7 +88,13 @@ class SignInStep extends StatelessWidget {
               Expanded(child: _stage(context, gutter)),
               _ReadyBar(
                 gutter: gutter,
-                line: finishing ? 'Signing in…' : 'Harness is ready.',
+                line: signingOut
+                    ? 'Signing out…'
+                    : finishing
+                    ? 'Signing in…'
+                    : sessionExpired
+                    ? 'Your session ended. Sign in again to continue.'
+                    : 'Sign in to continue.',
               ),
             ],
           );
@@ -174,70 +186,52 @@ class SignInStep extends StatelessWidget {
 
   Widget _waysIn(BuildContext context) => ConstrainedBox(
     constraints: const BoxConstraints(maxWidth: 440),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          // The app's raised-block recipe, as the sign-in card: fill plus a
-          // soft lift, no rim.
-          decoration: BoxDecoration(
-            color: grid.AppGlass.surfaceFill,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: grid.AppCard.shadow,
-          ),
-          padding: const EdgeInsets.all(_cardPadding),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            spacing: 12,
-            children: [
-              for (final provider in SignInProvider.values)
-                _stepsBack(
-                  starting && startingProvider == provider,
-                  SignInProviderButton(
-                    provider: provider,
-                    prominent: true,
-                    // Return signs in with the first.
-                    autofocus: provider == SignInProvider.values.first,
-                    onPressed: () => onSignIn(provider),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: _cardPadding),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              QuietLink(
-                key: const Key('sign-in-step-skip'),
-                label: 'Skip',
-                onPressed: onSkip,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        spacing: 12,
+        children: [
+          if (signingOut)
+            const Center(
+              child: SizedBox.square(
+                dimension: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              const SizedBox(width: 16),
-              // The longer of the two gives way first, at a large text size in
-              // a small window.
-              Flexible(
-                child: _stepsBack(
-                  starting && startingProvider == null,
-                  QuietLink(
-                    key: const Key('sign-in-step-email'),
-                    label: 'Continue with email',
-                    onPressed: () => onSignIn(null),
-                  ),
+            )
+          else if (signOutError != null)
+            FilledButton(
+              autofocus: true,
+              onPressed: onRetrySignOut,
+              child: const Text('Retry sign out'),
+            )
+          else ...[
+            for (final provider in SignInProvider.values)
+              _stepsBack(
+                starting && startingProvider == provider,
+                SignInProviderButton(
+                  provider: provider,
+                  prominent: true,
+                  // Return signs in with the first.
+                  autofocus: provider == SignInProvider.values.first,
+                  onPressed: () => onSignIn(provider),
                 ),
               ),
-            ],
-          ),
-        ),
-        if (error case final error?) ...[
-          const SizedBox(height: 10),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: _cardPadding),
-            child: Semantics(
+            Align(
+              alignment: Alignment.center,
+              child: _stepsBack(
+                starting && startingProvider == null,
+                QuietLink(
+                  key: const Key('sign-in-step-email'),
+                  label: 'Continue with email',
+                  onPressed: () => onSignIn(null),
+                ),
+              ),
+            ),
+          ],
+          if ((signOutError ?? error) case final error?)
+            Semantics(
               liveRegion: true,
               child: Text(
                 error,
@@ -247,9 +241,9 @@ class SignInStep extends StatelessWidget {
                 ),
               ),
             ),
-          ),
+          if (recovery case final recovery?) recovery,
         ],
-      ],
+      ),
     ),
   );
 
@@ -372,11 +366,64 @@ class _SignInStepScreenState extends State<SignInStepScreen> {
   /// [AppNotifier.lastError] as it stands: that also carries what the desk
   /// behind this page has to say, which is not this page's to show.
   String? _error;
+  String? _copiedUrl;
+  String? _copyFailureUrl;
+  bool _copying = false;
 
   @override
   void initState() {
     super.initState();
+    widget.app.addListener(_observeLogin);
+    _observeLogin();
     appLog.info('onboarding', 'sign-in step: shown');
+  }
+
+  @override
+  void didUpdateWidget(SignInStepScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.app != widget.app) {
+      oldWidget.app.removeListener(_observeLogin);
+      widget.app.addListener(_observeLogin);
+      _wasSigningIn = false;
+      _error = null;
+      _observeLogin();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.app.removeListener(_observeLogin);
+    super.dispose();
+  }
+
+  // Capture both notifications when a sign-in fails before the next frame.
+  void _observeLogin() {
+    final app = widget.app;
+    if (app.signingIn) {
+      _error = null;
+    } else if (_wasSigningIn) {
+      _error = app.signedIn ? null : app.lastError;
+    }
+    _wasSigningIn = app.signingIn;
+  }
+
+  Future<void> _copyLink() async {
+    final url = widget.app.pendingAuthorizeUrl;
+    if (url == null || _copying) return;
+    setState(() => _copying = true);
+    var copied = false;
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      copied = true;
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _copying = false;
+      if (widget.app.pendingAuthorizeUrl == url) {
+        _copiedUrl = copied ? url : null;
+        _copyFailureUrl = copied ? null : url;
+      }
+    });
   }
 
   @override
@@ -385,22 +432,39 @@ class _SignInStepScreenState extends State<SignInStepScreen> {
     return ListenableBuilder(
       listenable: app,
       builder: (context, _) {
-        if (app.signingIn) {
-          _error = null;
-        } else if (_wasSigningIn) {
-          // A cancelled sign-in leaves no error; a failed one leaves its own.
-          _error = app.signedIn ? null : app.lastError;
-        }
-        _wasSigningIn = app.signingIn;
-        return SignInStep(
-          onSignIn: (provider) => unawaited(app.signInFromStep(provider)),
-          onSkip: app.skipSignInStep,
-          // Its browser is not open yet: the CLI has to start before it can
-          // name the page.
-          starting: app.canCancelLogin && app.pendingAuthorizeUrl == null,
-          startingProvider: app.signInProvider,
-          finishing: app.signingIn && !app.canCancelLogin,
-          error: _error,
+        return CallbackShortcuts(
+          bindings: {
+            if (app.canCancelLogin)
+              const SingleActivator(
+                LogicalKeyboardKey.escape,
+                includeRepeats: false,
+              ): app.cancelLogin,
+          },
+          child: SignInStep(
+            onSignIn: (provider) => unawaited(app.signInFromStep(provider)),
+            // Its browser is not open yet: the CLI has to start before it can
+            // name the page.
+            starting: app.canCancelLogin && app.pendingAuthorizeUrl == null,
+            startingProvider: app.signInProvider,
+            finishing: app.signingIn && !app.canCancelLogin,
+            error: app.loginBrowserError ?? _error,
+            sessionExpired: app.sessionExpired,
+            signingOut: app.signingOut,
+            signOutError: app.signOutError,
+            onRetrySignOut: () => unawaited(app.logout()),
+            recovery:
+                app.loginBrowserError != null && app.pendingAuthorizeUrl != null
+                ? QuietLink(
+                    key: const Key('sign-in-step-copy-link'),
+                    label: _copiedUrl == app.pendingAuthorizeUrl
+                        ? 'Link copied'
+                        : _copyFailureUrl == app.pendingAuthorizeUrl
+                        ? 'Could not copy. Try again'
+                        : 'Copy sign-in link',
+                    onPressed: _copying ? null : () => unawaited(_copyLink()),
+                  )
+                : null,
+          ),
         );
       },
     );

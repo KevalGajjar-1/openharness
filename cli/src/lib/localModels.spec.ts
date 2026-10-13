@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import type { GpuProcess } from './gpuProcesses.js'
 import { baseModel, compatibleModels, contextLadder, fitOf, LocalModels, modelBudget, modelFamily, rankForCoding, readRunRecords, type GridInventory } from './localModels.js'
 import { GridFleetRpc, type GridFleetResult } from './gridFleetRpc.js'
 import { AppStartError, type AppEngineOps, type AppEngineRecord, type AppModel } from './appModels.js'
@@ -149,11 +150,14 @@ describe('local model discovery and lifecycle', () => {
   })
 
   it('downloads, loads and verifies without another user step', async () => {
+    // Not running: nothing serves it, so no name a harness could be on.
+    expect((await service.list('home')).models[0]).not.toHaveProperty('servedAs')
     const ack = await service.act('home', 'org/Small-GGUF', 'start')
     expect(ack.operation?.phase).toBe('running')
     await service.settled()
     const snapshot = await service.list('home')
-    expect(snapshot.models[0]).toMatchObject({ state: 'running', canStop: true,
+    // Shown as the catalog's `Small`, served under its file's name — the one the grid lists, and a harness on it says.
+    expect(snapshot.models[0]).toMatchObject({ name: 'Small', state: 'running', canStop: true, servedAs: ['Small-Q4'],
       tokensPerSecond: 17.6, requests: 4, windowSeconds: 3600, operation: { phase: 'done', stage: 'verifying' } })
     expect(snapshot.models[0]).not.toHaveProperty('memoryBytes')
     expect(calls.find(args => args.includes('join'))).toEqual(['--remote', 'join', 'home', '--serve', 'Small-Q4.gguf', '--max-concurrency', '1', '--parallel', '1', '--ctx-size', '131072', '--endpoint-port', expect.stringMatching(/^\d+$/), '--reasoning-budget', '0'])
@@ -322,7 +326,7 @@ describe('local model discovery and lifecycle', () => {
       engines: [{ endpoint_url: null, models: ['Small-Q4.gguf'] }], advertise_as: ['Small-Q4.gguf'] }))
     await writeFile(join(records, 'remote.heartbeat'), '')
     const first = await service.list('home')
-    expect(first.models[0]).toMatchObject({ id: 'local:Small-Q4.gguf', state: 'running', canStop: true })
+    expect(first.models[0]).toMatchObject({ id: 'local:Small-Q4.gguf', state: 'running', canStop: true, servedAs: ['Small-Q4'] })
     await service.act('home', first.models[0].id, 'stop'); await service.settled()
     const fresh = modelFixture({ stateDir, processEnv: { GRID_HOME: home }, run, request: request as typeof fetch , inventory })
     expect((await fresh.list('home')).models[0]).toMatchObject({ state: 'downloaded', canStart: true })
@@ -601,6 +605,8 @@ describe('local model discovery and lifecycle', () => {
       .toEqual({ fitBytes: 32 * 1024 ** 3, fitMemory: 'unified' })
     expect(fitOf({ backend: 'cpu', usable_bytes: 20 * 1024 ** 3, memory: { total_gb: 32 } })).toEqual({ fitBytes: 16 * 1024 ** 3, fitMemory: 'ram' })
     expect(fitOf({})).toEqual({})
+    // A card that names no memory adds none, and none at all is no GPU figure.
+    expect(fitOf({ backend: 'cuda', usable_bytes: 7 * 1024 ** 3, gpus: [{ backend: 'cuda' }] })).toEqual({ fitBytes: 7 * 1024 ** 3, fitMemory: 'vram' })
     // Two 24 GB cards in a 64 GB PC.
     expect(modelBudget({ backend: 'cuda', usable_bytes: 46 * 1024 ** 3, memory: { total_gb: 64 } })).toBe(46 * 1024 ** 3)
   })
@@ -937,6 +943,41 @@ describe('local model discovery and lifecycle', () => {
     // Half of its 64 GB, not the 54 GB grid reports free: the rest stays for everything else it runs.
     expect(JSON.parse(String(sent[1]?.body)).device).toEqual({ device_class: 'apple-silicon', usable_bytes: 32 * 1024 ** 3,
       backend: 'metal', mem_bandwidth_gbps: 400, compute_gflops: 15600 })
+  })
+
+  it("counts the VRAM this picker's own engine holds as the next model's, on an NVIDIA card", async () => {
+    // A 24 GB card running our 27B: 2.7 GB free beside it. Starting another model stops ours first, so
+    // the catalog is fitted to what ours holds as well, never to what is left beside it.
+    const MiB = 1024 ** 2, original = run.getMockImplementation()!
+    const card = { device_class: 'nvidia', backend: 'cuda', usable_bytes: 2746 * MiB, memory: { total_gb: 16 }, gpus: [{ backend: 'cuda', memory_total_mb: 24564 }] }
+    const grid = { pid: 30956, name: join(home, 'bin', 'llama-server'), bytes: 21000 * MiB }
+    const browser = { pid: 2014, name: '/usr/lib/chromium/chromium', bytes: 300 * MiB }
+    // An app's engine this picker started, known by its record: its binary, or its pid.
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(join(stateDir, 'app-engines.json'), JSON.stringify([{ spec: 1, modelId: 'app:llama.cpp:Other.gguf', grid: 'home',
+      name: 'Other', engine: 'llama.cpp', served: 'other', alias: 'other', port: 9000, binary: '/opt/llama/llama-server', pid: 4242 }]))
+    const fitted = async (device: Record<string, unknown>, processes?: GpuProcess[]): Promise<number | undefined> => {
+      run.mockImplementation(async (args, output) => args[0] === 'device-info' ? ok(device) : original(args, output))
+      request.mockClear()
+      const models = modelFixture({ stateDir, processEnv: { GRID_HOME: home }, run, request: request as typeof fetch, inventory,
+        ...(processes ? { gpuProcesses: async () => processes } : {}) })
+      const snapshot = await models.list('home')
+      const sent = JSON.parse(String(request.mock.calls.find(([url]) => String(url).includes('/catalog'))![1]?.body)).device.usable_bytes
+      expect(snapshot.fitBytes).toBe(sent)
+      return sent
+    }
+    expect(await fitted(card, [grid, browser])).toBe((2746 + 21000) * MiB)
+    expect(await fitted(card, [{ pid: 777, name: '/opt/llama/llama-server', bytes: 4000 * MiB }, { pid: 4242, name: 'ollama', bytes: 1000 * MiB }]))
+      .toBe((2746 + 5000) * MiB)
+    // Never more than the card has, and with no card's size to hold it to, all of it.
+    expect(await fitted(card, [{ ...grid, bytes: 30000 * MiB }])).toBe(24564 * MiB)
+    expect(await fitted({ ...card, gpus: [] }, [grid])).toBe((2746 + 21000) * MiB)
+    // Nothing of ours on it, no way to tell, no figure to add to, or no NVIDIA card: as grid says.
+    expect(await fitted(card, [browser])).toBe(2746 * MiB)
+    expect(await fitted(card)).toBe(2746 * MiB)
+    expect(await fitted({ ...card, usable_bytes: undefined }, [grid])).toBeUndefined()
+    expect(await fitted({ device_class: 'apple-silicon', backend: 'metal', usable_bytes: 54 * 1024 ** 3, memory: { total_gb: 64 } }, [grid]))
+      .toBe(32 * 1024 ** 3)
   })
 
   it('leaves out a measurement the machine did not report, so the catalog falls back to its own', async () => {
@@ -1669,6 +1710,27 @@ describe('models other apps downloaded, started in their own app', () => {
       .toMatchObject({ state: 'running', canStop: true })
   })
 
+  it('forgets the engines the Jev decision models left, which blocked every chat model\'s start', async () => {
+    // As on a computer that ran them before #1141: laya-english's engine long gone, kev's still up.
+    const jev = (modelId: string, name: string, port: number): AppEngineRecord => ({ spec: 1, modelId, grid: 'home', name,
+      engine: 'llama.cpp', served: name, alias: name, port, binary: '/opt/llama-server', pid: 4300 + port % 100 })
+    const laya = jev('jev:ggml-org/Laya-GGUF', 'laya-english', 52954), kev = jev('jev:ggml-org/Kev-0.8B-GGUF', 'kev-0.8b', 60437)
+    up.add(kev.modelId); joinedAliases.add(kev.alias)
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(join(stateDir, 'app-engines.json'), JSON.stringify([laya, kev]))
+    service = appService()
+    const snapshot = await service.list('home', true)
+    expect(snapshot.models.map(m => m.name)).not.toEqual(expect.arrayContaining(['laya-english']))
+    expect(snapshot.models.some(m => m.id.startsWith('jev:'))).toBe(false)
+    expect(JSON.parse(await readFile(join(stateDir, 'app-engines.json'), 'utf8'))).toEqual([])
+    await vi.waitFor(() => expect(ops.stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ modelId: kev.modelId })))
+    await vi.waitFor(() => expect(joinedAliases.has(kev.alias)).toBe(false))
+    // A chat model starts: nothing left to "stop first".
+    const started = await service.act('home', ollama.id, 'start'); await service.settled()
+    expect(started.operation).not.toMatchObject({ phase: 'failed' })
+    expect(ops.start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: ollama.id }), expect.anything(), expect.anything())
+  })
+
   it.each(['join refused', 'credentials unavailable', 'credentials threw'])('takes an app engine down after %s, retaining another grid\'s record', async scenario => {
     service = appService()
     const elsewhere: AppEngineRecord = { spec: 1, modelId: studio.id, grid: 'elsewhere', name: studio.name,
@@ -1845,7 +1907,7 @@ describe('models other apps downloaded, started in their own app', () => {
       engine: 'ollama', served: ollama.ref, alias: ollama.name, port: 41000, binary: ollama.binary, pid: 4242 }]))
     service = appService({ appEngines: undefined })
     expect((await service.list('home')).models.find(model => model.id === ollama.id))
-      .toMatchObject({ state: 'downloaded', canStart: false, canStop: true })
+      .toMatchObject({ state: 'downloaded', canStart: false, canStop: true, servedAs: [ollama.name] })
     const result = await service.act('home', ollama.id, 'stop'); await service.settled()
     expect(result.operation?.phase).toBe('done')
     expect(calls).toContainEqual(['--remote', 'leave', 'home', '--engine', ollama.name])

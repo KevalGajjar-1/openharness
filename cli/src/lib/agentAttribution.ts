@@ -5,8 +5,8 @@
  *
  * Who started a harness is its row's (`startedBy`, sent by `harness new` when an agent runs it); how each engine is
  * told is its launch contract's (`EngineLaunch.attribution`, engines/launches.ts `attributionArgs`). The person turns
- * it off for a computer with `harness settings pull-request-line off` (lib/agentSettings.ts), read at each launch, so
- * a relaunch follows it too.
+ * it on for the account with `harness settings pull-request-line on` or in Settings ▸ Experimental (lib/agentSettings.ts),
+ * read at each launch, so a relaunch follows it too.
  */
 import { env } from '../config/env.js'
 import { agentInstructionArgs, launchContract, type AttributionPlace } from '../engines/launches.js'
@@ -19,7 +19,7 @@ export const AGENT_ATTRIBUTION_LINE = '🤝 Started by another agent in [Harness
 export type StartedBy = 'agent'
 
 /**
- * What every harness is told as it starts, while the person lets agents start agents (Settings ▸ Agents): that it runs in
+ * What every harness is told as it starts, while the person lets agents start agents (Settings ▸ Experimental): that it runs in
  * Harness, the verbs that hand work to another agent, and when to: every harness started spends the person's tokens, so
  * only for work that gains from it, and closed once answered (owner, October 12). An agent that does not know Harness is
  * there never uses it, and every harness Harness starts is an agent that could (docs/design/2026-10-11-agent-client.md).

@@ -69,7 +69,8 @@ class ModelManagerController extends ChangeNotifier {
   /// The machine's RAM. On an NVIDIA machine a model runs in the card, not in this: see [fitsInVram].
   double? memoryBytes;
 
-  /// What the catalog fits models to (`fitBytes`) — on an NVIDIA machine the VRAM free on its card —
+  /// What the catalog fits models to (`fitBytes`) — on an NVIDIA machine the VRAM its card has for
+  /// models: what is free on it and what our own running model holds, which starting another frees —
   /// and that card's VRAM in all (`gpuMemoryBytes`); null when the daemon did not say.
   double? fitBytes, gpuMemoryBytes;
 
@@ -78,13 +79,13 @@ class ModelManagerController extends ChangeNotifier {
   bool fitsInVram = false;
 
   /// The figure a heading names this machine's memory by, and what follows it: an NVIDIA card's VRAM
-  /// (`VRAM`, or `VRAM free` where only what is free on it is known), else the machine's memory
+  /// (`VRAM`, or `VRAM for models` where only that is known), else the machine's memory
   /// (`unit` empty).
   ({double bytes, String unit})? get headingMemory => fitsInVram
       ? gpuMemoryBytes != null
             ? (bytes: gpuMemoryBytes!, unit: 'VRAM')
             : fitBytes != null
-            ? (bytes: fitBytes!, unit: 'VRAM free')
+            ? (bytes: fitBytes!, unit: 'VRAM for models')
             : null
       : memoryBytes != null
       ? (bytes: memoryBytes!, unit: '')

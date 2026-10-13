@@ -4,11 +4,15 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 
 /// Agent Messages (docs/design/2026-10-10-agent-messages.md) as this window
-/// sees them: harnesses in a tab with Agent Messages on message each other with
-/// `harness send`, and the daemons deliver. The window only shows it — each
-/// tab's flag (the backend's, off unless a person turned it on), the traffic
-/// the daemons report as `messages_changed`, a tab's log, and the marks a
-/// message leaves on its panes. Nothing here composes or sends.
+/// sees them: harnesses in the same tab message each other with `harness send`,
+/// and the daemons deliver. Whether they may is the account's experiment
+/// (Settings ▸ Experimental, `agent_messages`, off until a person turns it on),
+/// not the tab's: a tab's switch, a 💬 beside its ×, was easy to hit by mistake
+/// and turned the tab off, failing a message that was waiting (owner,
+/// 2026-10-12).
+/// The window only shows what moved — the traffic the daemons report as
+/// `messages_changed`, a tab's log, and the marks a message leaves on its
+/// panes. Nothing here composes, sends or turns anything on.
 
 /// What became of a message for one recipient. A message never expires: it
 /// stays queued until it is delivered, or fails for a reason a person can read.
@@ -201,7 +205,8 @@ typedef AgentMessageLog = ({
   bool complete,
 });
 
-/// A tab with Agent Messages on, and the machines to ask for its traffic.
+/// A tab whose harnesses may message each other, and the machines to ask for
+/// its traffic.
 typedef AgentMessagesRemoteTab = ({String tabId, List<String> machineIds});
 
 /// The short note a message leaves in a pane's header: `→ api` on the
@@ -222,29 +227,20 @@ class PaneMessageMark {
   final bool warning;
 }
 
-/// How a tab's 💬 reads. Traffic is not one of them: a tab never shows it. A
-/// moving 💬 sent the owner looking in the panes for messages that agents
-/// take at their tool calls; they arrive when they arrive (owner, 2026-10-12).
-enum TabMessagesState { off, on }
-
 typedef AgentMessageTabsRead = Future<Map<String, dynamic>?> Function();
-typedef AgentMessagesWrite = Future<Map<String, dynamic>> Function(
-  String tabId,
-  bool enabled,
-);
 typedef AgentMessagesRequest = Future<Map<String, dynamic>> Function(
   String machineId,
   Map<String, dynamic> payload,
 );
 typedef AgentNameOf = String? Function(String machineId, String agentId);
 
-/// Each tab's flag, the traffic the daemons report, and the pane marks it
-/// leaves. Its own notifier, as `AgentAlerts` is: a message arriving must not
-/// rebuild the workspace, only the 💬 and the marks that listen here.
+/// Whether this account has Agent Messages at all, the traffic the daemons
+/// report, and the pane marks it leaves. Its own notifier, as `AgentAlerts`
+/// is: a message arriving must not rebuild the workspace, only the marks and
+/// an open log that listen here. A tab shows nothing of it.
 class AgentMessagesController extends ChangeNotifier {
   AgentMessagesController({
     required this.read,
-    required this.write,
     required this.request,
     required this.nameOf,
     DateTime Function()? now,
@@ -252,8 +248,10 @@ class AgentMessagesController extends ChangeNotifier {
     this.markLife = const Duration(seconds: 5),
   }) : now = now ?? DateTime.now;
 
+  /// The account's desk tabs as the daemon proxies them from the backend
+  /// (`GET /api/agent-messages`). Only whether it answers is used: each tab's
+  /// `enabled` an older daemon or backend still sends is not read.
   final AgentMessageTabsRead read;
-  final AgentMessagesWrite write;
   final AgentMessagesRequest request;
   final AgentNameOf nameOf;
 
@@ -270,10 +268,6 @@ class AgentMessagesController extends ChangeNotifier {
   /// How long a pane's mark stays, unless the pane is focused first.
   final Duration markLife;
 
-  final _enabled = <String, bool>{};
-  final _pending = <String, bool>{};
-  final _failed = <String, String>{};
-  final _writes = <String, int>{};
   final _traffic = <String, int>{};
   final _seenMessages = <String>{};
   // A mark holds the timer that ends it, so nothing has to compare clocks to
@@ -285,23 +279,10 @@ class AgentMessagesController extends ChangeNotifier {
 
   /// Whether the daemon and backend answered for this account's tabs. Until
   /// they have — and for good, with an older CLI or backend that does not know
-  /// Agent Messages (404) — there is no 💬 and no menu row: "off" would be a
-  /// guess, and a click could not take.
+  /// Agent Messages (404) — there is no Show Agent Messages: no daemon would
+  /// hold a log to show.
   bool get loaded => _loaded;
   bool _loaded = false;
-
-  /// On when the person turned it on; off when they did not, and whenever the
-  /// backend or daemon cannot say — an older one has no flag to read.
-  bool isOn(String tabId) => _pending[tabId] ?? _enabled[tabId] ?? false;
-
-  /// A turn on or off is on its way to the backend.
-  bool isPending(String tabId) => _pending.containsKey(tabId);
-
-  TabMessagesState stateOf(String tabId) =>
-      isOn(tabId) ? TabMessagesState.on : TabMessagesState.off;
-
-  /// Why the last turn on or off for [tabId] did not take.
-  String? failureFor(String tabId) => _failed[tabId];
 
   /// Counts the `messages_changed` frames for [tabId], so an open log knows
   /// when to read again.
@@ -314,13 +295,12 @@ class AgentMessagesController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// Read every tab's flag again. A failure keeps what was known: one dropped
-  /// request must not turn a tab's 💬 off under the person. An answer of null
-  /// is a daemon or backend without Agent Messages.
+  /// Ask again whether the daemon and backend know Agent Messages. A failure
+  /// keeps what was known: one dropped request must not take Show Agent
+  /// Messages away. An answer of null is a daemon or backend without them.
   Future<void> refresh() async {
     if (_disposed) return;
     final read = ++_reads, account = _account;
-    final writes = Map.of(_writes);
     Map<String, dynamic>? answer;
     try {
       answer = await this.read();
@@ -328,63 +308,11 @@ class AgentMessagesController extends ChangeNotifier {
       return;
     }
     if (_disposed || account != _account || read != _reads) return;
-    if (answer == null) {
-      if (!_loaded && _enabled.isEmpty) return;
-      _loaded = false;
-      _enabled.clear();
-      _notify();
-      return;
-    }
-    final tabs = answer['tabs'];
-    final next = <String, bool>{
-      for (final tab in tabs is List ? tabs : const [])
-        if (tab is Map && tab['id'] is String)
-          tab['id'] as String: tab['enabled'] == true,
-    };
-    // A write that landed while this read was out is newer than its answer.
-    for (final MapEntry(:key, :value) in _writes.entries) {
-      if (writes[key] != value && _enabled.containsKey(key)) {
-        next[key] = _enabled[key]!;
-      }
-    }
-    _enabled
-      ..clear()
-      ..addAll(next);
-    _loaded = true;
+    final loaded = answer != null;
+    if (loaded == _loaded) return;
+    _loaded = loaded;
     _notify();
   }
-
-  /// Turn Agent Messages on or off for [tabId]. Shown at once, put back if
-  /// the backend refuses or cannot be reached. Answers whether it took.
-  Future<bool> setEnabled(String tabId, bool enabled) async {
-    if (_disposed || _pending.containsKey(tabId)) return false;
-    final account = _account;
-    _pending[tabId] = enabled;
-    _failed.remove(tabId);
-    _notify();
-    var saved = false;
-    try {
-      final answer = await write(tabId, enabled);
-      if (_disposed || account != _account) return false;
-      final confirmed = answer['enabled'];
-      _enabled[tabId] = confirmed is bool ? confirmed : enabled;
-      saved = _enabled[tabId] == enabled;
-    } catch (_) {
-      if (_disposed || account != _account) return false;
-    }
-    _pending.remove(tabId);
-    _writes[tabId] = (_writes[tabId] ?? 0) + 1;
-    if (!saved) {
-      _failed[tabId] =
-          'Agent Messages could not be turned ${enabled ? 'on' : 'off'}. '
-          'Check that Harness is signed in and online, then try again.';
-    }
-    _notify();
-    unawaited(refresh());
-    return saved;
-  }
-
-  Future<bool> toggle(String tabId) => setEnabled(tabId, !isOn(tabId));
 
   /// A `messages_changed` frame from a daemon: a message moved, or a sender
   /// hit the rate limit.
@@ -608,10 +536,6 @@ class AgentMessagesController extends ChangeNotifier {
   void reset() {
     _account++;
     _reads++;
-    _enabled.clear();
-    _pending.clear();
-    _failed.clear();
-    _writes.clear();
     _traffic.clear();
     _seenMessages.clear();
     _polling.clear();
@@ -642,7 +566,8 @@ class AgentMessagesRemoteWatch {
   final AgentMessagesController controller;
   final ValueListenable<bool> foreground;
 
-  /// The tabs to ask about now: on, with a harness on another machine.
+  /// The tabs to ask about now: those whose harnesses may message each
+  /// other, with a harness on another machine.
   final List<AgentMessagesRemoteTab> Function() tabs;
   final Duration every;
   Timer? _timer;

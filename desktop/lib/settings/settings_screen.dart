@@ -3,9 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../shared/theme/app_theme.dart' as grid;
 import '../state/app_state.dart';
-import '../core/viewer_mode.dart';
 import '../widgets/harness_customize_pane.dart';
-import 'agent_settings.dart';
 import 'experimental_features.dart';
 import 'settings_body.dart';
 import 'settings_compact.dart';
@@ -71,7 +69,6 @@ class SettingsScreen extends StatefulWidget {
     this.experimentalFeatures,
     this.source = 'unknown',
     this.compactBelow = 0,
-    this.agentSettings,
   }) : assert(
          initialSection != SettingsSection.customize,
          'Open workspace actions through showSettingsScreen.',
@@ -94,9 +91,6 @@ class SettingsScreen extends StatefulWidget {
   /// screen instead of sitting side by side.
   final double compactBelow;
 
-  /// Settings ▸ Agents' store. Null reads this computer's daemon (tests pass a fake).
-  final AgentSettingsStore? agentSettings;
-
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -108,21 +102,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Narrow screens only: a section is open over the list. Opening Settings on
   /// a named section starts there; otherwise the list comes first.
   late bool _sectionOpen = widget.initialSection != null;
-
-  /// A browser has no daemon of its own to keep what agents may do: that is each computer's.
-  late final AgentSettingsStore _agentSettings =
-      widget.agentSettings ??
-      (kViewerMode
-          ? AgentSettingsStore(
-              unavailable: 'Agents run on your computers: change this in the Harness app on each one.',
-            )
-          : AgentSettingsStore.api(widget.notifier.api));
-
-  @override
-  void dispose() {
-    if (widget.agentSettings == null) _agentSettings.dispose();
-    super.dispose();
-  }
 
   bool get _compact => MediaQuery.sizeOf(context).width < widget.compactBelow;
 
@@ -170,7 +149,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       section: _section,
       notifier: widget.notifier,
       experimentalFeatures: widget.experimentalFeatures,
-      agentSettings: _agentSettings,
     );
     if (_compact) {
       return SettingsCompactScreen(

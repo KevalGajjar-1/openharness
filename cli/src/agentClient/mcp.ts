@@ -25,7 +25,7 @@ export const INSTRUCTIONS = `Harness runs coding agents (Claude Code, Codex) in 
 
 Every harness spends the person's tokens. Start one (harness_start) only for work that can run in parallel with yours, needs another model's view (a review, a second opinion from Codex), takes long, or belongs in its own folder. Do quick work yourself. For scratch or new work give it a project name (project), not a folder of your own: Claude Code and Codex ask the person to trust a folder Harness did not make.
 
-List first (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in a tab where the person turned Agent Messages on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
+List first (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in your tab, while Agent Messages are on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
 
 Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself. Never ask a harness to publish, deploy, delete or push.`
 
@@ -70,7 +70,7 @@ export const TOOLS: Tool[] = [
     // that says nothing counts as destructive and open-world there, so `codex exec` refused every start ("MCP tool
     // call requires approval, but approval policy is never") and interactive Codex asked each time (codex-rs
     // core/src/mcp_tool_call.rs `requires_mcp_tool_approval`, 0.162.1). What an agent may start is Harness's to
-    // decide (Settings ▸ Agents, the spawn limits).
+    // decide (Settings ▸ Experimental, the spawn limits).
     annotations: { destructiveHint: false, openWorldHint: false },
     argv: (a, cwd) => {
       // A folder was required, and a relative one was resolved against this server's folder, so an MCP agent could not
@@ -107,7 +107,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_send',
-    description: 'Send a message to a teammate: a harness in the same tab as you, where the person turned Agent Messages on (the tab\'s chat icon). Refused anywhere else, even to a harness you started.',
+    description: 'Send a message to a teammate: a harness in the same tab as you, while Agent Messages are on (Settings ▸ Experimental, off by default). Refused anywhere else, even to a harness you started.',
     inputSchema: schema({ to: { type: 'string', description: 'The teammate\'s name.' }, text: { type: 'string' } }, ['to', 'text']),
     // A message adds to a teammate's inbox in this tab and nothing more; as harness_start, said so Codex does not ask.
     annotations: { destructiveHint: false, openWorldHint: false },

@@ -495,19 +495,13 @@ final harnessCommands = <HarnessCommand>[
     action: ShortcutAction.orchestrate,
   ),
   // Agent Messages (docs/design/2026-10-10-agent-messages.md): the active
-  // tab's log, and its flag. Their native menu rows are File's.
+  // tab's log; its native menu row is File's. There is no turning it on or
+  // off for a tab: that is the account's, in Settings ▸ Experimental.
   const HarnessCommand(
     'agent_messages.show',
     'Show Agent Messages',
     ShortcutGroup.actions,
     nativeAction: 'showAgentMessages',
-    keywords: _agentMessagesKeywords,
-  ),
-  const HarnessCommand(
-    'agent_messages.toggle',
-    'Agent Messages: turn on or off for this tab',
-    ShortcutGroup.actions,
-    nativeAction: 'toggleAgentMessages',
     keywords: _agentMessagesKeywords,
   ),
   const HarnessCommand(
