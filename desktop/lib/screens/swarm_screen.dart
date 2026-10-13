@@ -50,6 +50,7 @@ import '../shortcuts/keymap_commands.dart';
 import '../shortcuts/keymap_host.dart';
 import '../shortcuts/keymap_native.dart';
 import '../shortcuts/keymap_settings.dart';
+import '../state/account_phones.dart';
 import '../state/app_state.dart';
 import '../state/notification_inbox.dart';
 import '../state/status_menu.dart';
@@ -579,6 +580,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     _pullRequest = WorkspacePullRequest(app)..addListener(_statusPrefsChanged);
     _harnessMonitor = HarnessMonitor(app, sampleResources: false)
       ..addListener(_monitorChanged);
+    _accountPhones = AccountPhones(app)..addListener(_accountPhonesChanged);
     app.reviewSessionClose = _reviewSessionClose;
     app.changeCompanionAgent = _changeCompanionAgent;
     app.canChangeCompanionAgent = _canChangeCompanionAgent;
@@ -799,6 +801,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
   void dispose() {
     _devicesHarness.dispose();
     _harnessMonitor.dispose();
+    _accountPhones.removeListener(_accountPhonesChanged);
+    _accountPhones.dispose();
     if (app.reviewSessionClose == _reviewSessionClose) {
       app.reviewSessionClose = null;
     }
@@ -1487,6 +1491,17 @@ class _SwarmScreenState extends State<SwarmScreen> {
     if (_menuHost) _syncNative();
   }
 
+  /// Whether the account has a phone: Add Phone's icon leaves the tab row once
+  /// it does. Why, and when it comes back, is in `state/account_phones.dart`.
+  late final AccountPhones _accountPhones;
+  void _accountPhonesChanged() {
+    if (!mounted) return;
+    // The Flutter tab strip and Linux's title bar draw it from build; macOS
+    // from the native payload.
+    setState(() {});
+    if (_menuHost) _syncNative();
+  }
+
   WorkspaceSubscriptionUsage get _subscriptionUsage =>
       WorkspaceSubscriptionUsage.fromRows(_modelsMenu?.rows ?? const []);
 
@@ -1823,6 +1838,8 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'activeId': app.activeSwarmId,
       'searchTooltip': _commandTooltip('Open Harness', 'harnesses.list'),
       'addPhoneTooltip': _addPhoneTooltip,
+      // Not once the account has a phone: see `state/account_phones.dart`.
+      'addPhoneVisible': _accountPhones.showsAddPhone,
       'storeTooltip': _commandTooltip('Explore Harness Store', 'app.store'),
       'devicesVisible': app.devicesEnabled,
       // The row's last control: Sign in, or whose account this is.
@@ -2984,13 +3001,9 @@ class _SwarmScreenState extends State<SwarmScreen> {
   Future<void> _addPhone() async {
     // Open, from its card or by hand, it is this computer's offer
     // ([_phoneOfferCard]) spent for good — and a sign-in made from inside it
-    // (its "Sign in…") must not bring the card back once it closes, so the
-    // offer is dropped on the way out too.
+    // (its Continue with…) must not bring the card back once it closes, so
+    // the offer is dropped on the way out too.
     app.dropPhoneOffer();
-    // "Manage devices…" pops the dialog and asks for Machines, but this
-    // [_dialog] is still open until the pop lands — a picker opened from
-    // the callback would be refused. So it is remembered, and opened after.
-    var manageDevices = false;
     try {
       await _dialog(
         () => showAddPhoneDialog(
@@ -2998,14 +3011,16 @@ class _SwarmScreenState extends State<SwarmScreen> {
           app,
           keymap: _keymap,
           onConnectMachine: () => unawaited(_openMachines()),
-          onManageDevices: () => manageDevices = true,
+          // "See your phones": Machines, at its phones, once the dialog has
+          // gone. ⚠️ Asked for, not opened here: right after the pop this
+          // route still reads as not current until its next frame, and the
+          // picker refused to open — the link did nothing. The request waits
+          // for the route ([_maybeOpenMachinesRequest]).
+          onManageDevices: () => app.requestMachines(phones: true),
         ),
       );
     } finally {
       app.dropPhoneOffer();
-    }
-    if (manageDevices && mounted) {
-      await _openMachines(phones: true, toggle: false);
     }
   }
 
@@ -7101,7 +7116,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       children: [
         _searchButton(theme),
         _notificationsButton(theme),
-        _addPhoneButton(theme),
+        if (_accountPhones.showsAddPhone) _addPhoneButton(theme),
         if (app.devicesEnabled) _devicesButton(context),
         WorkspaceStoreButton(
           key: const ValueKey('swarm-store-button'),
@@ -7944,8 +7959,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
       final showDevices = app.devicesEnabled && room >= devicesWidth;
       // Add Phone likewise, and it goes before Devices: a phone is added once,
       // and the account menu, the Harness menu and `> add phone` still open it.
+      // Not at all once the account has a phone (`state/account_phones.dart`).
       final addPhoneWidth = cell.width * 4;
       final showAddPhone =
+          _accountPhones.showsAddPhone &&
           room >= addPhoneWidth + (showDevices ? devicesWidth : 0);
       // Search, notifications, Add Phone, Devices, Store and the account —
       // none of it here when the title bar holds them.
@@ -8198,8 +8215,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
     builder: (context, emphasized) => SizedBox(
       width: workspaceBarCellSizeOf(context).width * 4,
       height: workspaceBarControlHeight(context),
+      // The plain phone the account menu and Harness ▸ Add Phone… show: one
+      // silhouette everywhere (design/icon-design-system.md). Its old radio
+      // waves read as NFC, and were the row's one busy glyph.
       child: Icon(
-        AppIcons.smartphoneNfc,
+        AppIcons.smartphone,
         size: 16,
         color: theme.foreground.withValues(
           alpha: !_shortcutsEnabled

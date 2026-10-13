@@ -9,12 +9,15 @@ import 'package:harness/core/models.dart';
 import 'package:harness/core/config.dart';
 import 'package:harness/core/phone_app_links.dart';
 import 'package:harness/auth/auth_session.dart';
+import 'package:harness/auth/sign_in_provider.dart';
 import 'package:harness/viewer/viewer_services.dart';
 import 'package:harness/viewer/viewer_key_store.dart';
 import 'package:harness/shared/theme/app_theme.dart' as grid;
 import 'package:harness/shared/widgets/qr_code_view.dart';
 import 'package:harness/state/app_state.dart';
 import 'package:harness/widgets/add_phone_dialog.dart';
+import 'package:harness/widgets/desktop_chrome.dart'
+    show DesktopChrome, DesktopDialogSurface;
 
 import 'swarm_interactions_test.dart' show chord;
 import 'swarm_screen_test.dart' show mount;
@@ -36,7 +39,10 @@ AppNotifier _signedInApp() {
 
 /// A scripted daemon: answers in order, records every code it was handed.
 class _FakeDaemon {
-  _FakeDaemon(this.answers);
+  /// Copied: a fixed-length `List.filled` cannot be answered from, and the
+  /// dialog would say "Could not pair" instead of asking again.
+  _FakeDaemon(Iterable<FutureOr<PhonePairAnswer> Function()> answers)
+    : answers = [...answers];
 
   final List<FutureOr<PhonePairAnswer> Function()> answers;
   final codes = <String>[];
@@ -103,14 +109,9 @@ Future<void> _open(
   await tester.pump();
 }
 
-/// "Not showing up? Scan a code instead": the code comes up, and — once the
-/// sign-in code it waits for has answered — is armed.
-Future<void> _showCode(WidgetTester tester) async {
-  await tester.tap(find.byKey(const ValueKey('add-phone-show-code')));
-  await tester.pump();
-  // The sign-in code's answer, which the QR waits for.
-  await tester.pump();
-}
+/// The sign-in code's answer, which the QR waits for: the code is up — and
+/// armed — from the first frame, and shows once its sign-in code is in.
+Future<void> _codeUp(WidgetTester tester) => tester.pump();
 
 String _qrData(WidgetTester tester) =>
     tester.widget<PhonePairQr>(find.byType(PhonePairQr)).data;
@@ -165,57 +166,90 @@ void main() {
       ..currentUser = const CurrentUserProfile(email: 'browser@example.test');
   }
 
-  group('the phone signs in', () {
-    testWidgets(
-      'signed in, it says what to do on the phone, with which account, and '
-      'looks for it — nothing armed, no code up',
-      (tester) async {
-        final app = _signedInApp();
-        addTearDown(app.dispose);
-        final signIn = _FakeSignIn();
-        final daemon = _FakeDaemon([]);
-        await _open(tester, app, daemon.call, signInCode: signIn.call);
-
-        expect(find.text('Add your phone'), findsOneWidget);
-        // The phone's welcome headline, word for word.
-        expect(
-          find.text(
-            'Manage all your agents on all your computers from your phone.',
-          ),
-          findsOneWidget,
-        );
-        expect(find.text('ON YOUR PHONE'), findsOneWidget);
-        expect(find.textContaining('ON THIS '), findsNothing);
-        expect(find.text('Install Harness'), findsOneWidget);
-        expect(find.text('Sign in'), findsOneWidget);
-        expect(find.text('With dee+phone@example.com.'), findsOneWidget);
-        expect(find.byKey(const ValueKey('add-phone-looking')), findsOneWidget);
-        expect(find.byKey(const ValueKey('add-phone-sign-in')), findsNothing);
-
-        // The code is put away, and nothing goes to the daemon or the backend
-        // for it until it is asked for.
-        expect(find.byType(PhonePairQr), findsNothing);
-        expect(daemon.codes, isEmpty);
-        expect(signIn.minted, 0);
-        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-        await tester.pump();
-      },
-    );
-
-    testWidgets('a phone that signs in to the account is ready, and the '
-        'beat stops', (tester) async {
+  group('signed in, the code is the dialog', () {
+    testWidgets('it is up and armed at once, under one line and the stores — '
+        'nothing else to read', (tester) async {
       final app = _signedInApp();
       addTearDown(app.dispose);
-      await _open(tester, app, _FakeDaemon([]).call);
+      final signIn = _FakeSignIn();
+      final daemon = _FakeDaemon(List.filled(3, _failed('NO_INTENT')));
+      await _open(tester, app, daemon.call, signInCode: signIn.call);
+      await _codeUp(tester);
+
+      expect(find.text('Add your phone'), findsOneWidget);
+      expect(find.byType(PhonePairQr), findsOneWidget);
+      expect(
+        Uri.splitQueryString(Uri.parse(_qrData(tester)).fragment)['h'],
+        'h1',
+      );
+      expect(find.text('Scan with the Harness app.'), findsOneWidget);
+      expect(find.text('No app yet?'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('add-phone-show-downloads')),
+          matching: find.text('App Store · Google Play'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('add-phone-close')), findsOneWidget);
+      // Few words (owner, 2026-10-13): no headline, no steps, no status.
+      expect(
+        find.text(
+          'Manage all your agents on all your computers from your phone.',
+        ),
+        findsNothing,
+      );
+      expect(find.text('Install Harness'), findsNothing);
+      expect(find.textContaining('Looking for your phone'), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
+      expect(find.text('Cancel'), findsNothing);
+      // Armed with the code on screen.
+      expect(signIn.minted, 1);
+      expect(daemon.codes, hasLength(1));
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.byType(AddPhoneDialog), findsNothing);
+      expect(daemon.tokens.single.isCancelled, isTrue);
+    });
+
+    testWidgets('a phone that signs in to the account is ready; Done closes', (
+      tester,
+    ) async {
+      final app = _signedInApp();
+      addTearDown(app.dispose);
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(3, _failed('NO_INTENT'))).call,
+        onManageDevices: () {},
+      );
+      await _codeUp(tester);
       expect(find.byKey(const ValueKey('add-phone-done')), findsNothing);
 
       await _joins(tester, app);
       await tester.pump();
       expect(find.byKey(const ValueKey('add-phone-ready')), findsOneWidget);
       expect(find.text('Dee’s iPhone is ready.'), findsOneWidget);
-      expect(find.byKey(const ValueKey('add-phone-looking')), findsNothing);
-      expect(find.byKey(const ValueKey('add-phone-show-code')), findsNothing);
-      expect(find.text('Cancel'), findsNothing);
+      expect(find.byType(PhonePairQr), findsNothing);
+      expect(find.text('Scan with the Harness app.'), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-close')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('add-phone-see-phones')),
+        findsOneWidget,
+      );
+      // One row across the foot: See your phones at the panel's left edge,
+      // Done at its right, both inside the panel's padding.
+      final panel = tester
+          .getRect(find.byType(DesktopDialogSurface))
+          .deflate(DesktopChrome.panelPadding);
+      final link = tester.getRect(
+        find.byKey(const ValueKey('add-phone-see-phones')),
+      );
+      final done = tester.getRect(find.byKey(const ValueKey('add-phone-done')));
+      expect((link.center.dy - done.center.dy).abs(), lessThan(1));
+      expect(link.left, moreOrLessEquals(panel.left, epsilon: 1));
+      expect(done.right, moreOrLessEquals(panel.right, epsilon: 1));
       // Nothing moves once the phone is in: the dialog settles.
       await tester.pumpAndSettle();
       expect(find.byType(AddPhoneDialog), findsOneWidget);
@@ -225,12 +259,60 @@ void main() {
       expect(find.byType(AddPhoneDialog), findsNothing);
     });
 
+    testWidgets('See your phones closes it and hands Machines to the caller', (
+      tester,
+    ) async {
+      final app = _signedInApp();
+      addTearDown(app.dispose);
+      var manage = 0;
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(3, _failed('NO_INTENT'))).call,
+        onManageDevices: () => manage++,
+      );
+      await _codeUp(tester);
+      await _joins(tester, app);
+      await tester.pump();
+      expect(find.text('See your phones'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('add-phone-see-phones')));
+      await tester.pumpAndSettle();
+      expect(manage, 1);
+      expect(find.byType(AddPhoneDialog), findsNothing);
+    });
+
+    testWidgets('without a way to Machines, ready says so with Done alone', (
+      tester,
+    ) async {
+      final app = _signedInApp();
+      addTearDown(app.dispose);
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(3, _failed('NO_INTENT'))).call,
+      );
+      await _codeUp(tester);
+      await _joins(tester, app);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('add-phone-ready')), findsOneWidget);
+      expect(find.byKey(const ValueKey('add-phone-see-phones')), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-done')), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('a computer joining the account is not the phone', (
       tester,
     ) async {
       final app = _signedInApp();
       addTearDown(app.dispose);
-      await _open(tester, app, _FakeDaemon([]).call);
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(3, _failed('NO_INTENT'))).call,
+      );
+      await _codeUp(tester);
       await _joins(
         tester,
         app,
@@ -240,66 +322,50 @@ void main() {
       );
       await tester.pump();
       expect(find.byKey(const ValueKey('add-phone-ready')), findsNothing);
-      expect(find.byKey(const ValueKey('add-phone-looking')), findsOneWidget);
+      expect(find.byType(PhonePairQr), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
     });
 
-    testWidgets('after a minute it names the account the phone needs', (
-      tester,
-    ) async {
+    testWidgets('waiting says nothing more: no status after minutes, and '
+        'nothing keeps the frames busy', (tester) async {
       final app = _signedInApp();
       addTearDown(app.dispose);
-      await _open(tester, app, _FakeDaemon([]).call);
-      await tester.pump(const Duration(seconds: 59));
-      expect(
-        find.byKey(const ValueKey('add-phone-still-looking')),
-        findsNothing,
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(200, _failed('NO_INTENT'))).call,
       );
-      await tester.pump(const Duration(seconds: 1));
-      expect(
-        find.byKey(const ValueKey('add-phone-still-looking')),
-        findsOneWidget,
-      );
-      expect(find.text('Still looking for your phone'), findsOneWidget);
-      expect(
-        find.text('Your phone has to be signed in with dee+phone@example.com.'),
-        findsOneWidget,
-      );
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump();
-    });
-
-    testWidgets('under Reduce Motion nothing keeps the frames busy', (
-      tester,
-    ) async {
-      final app = _signedInApp();
-      addTearDown(app.dispose);
-      await _open(tester, app, _FakeDaemon([]).call, reduceMotion: true);
+      await _codeUp(tester);
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('add-phone-looking')), findsOneWidget);
+      await tester.pump(const Duration(minutes: 2));
+      expect(find.textContaining('Looking'), findsNothing);
+      expect(find.textContaining('Still looking'), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
+      expect(find.byType(PhonePairQr), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
     });
   });
 
   group('a computer with no account', () {
-    testWidgets('signs in first: its step leads, the phone\'s wait, nothing '
-        'is armed and there is no code to show', (tester) async {
+    testWidgets('the sign-in\'s ways in, with no words around them: nothing '
+        'is armed and there is no code', (tester) async {
       final app = _signedInApp()..signedIn = false;
       addTearDown(app.dispose);
       final signIn = _FakeSignIn();
       final daemon = _FakeDaemon([]);
       await _open(tester, app, daemon.call, signInCode: signIn.call);
-      expect(find.textContaining('ON THIS '), findsOneWidget);
+      expect(find.text('Add your phone'), findsOneWidget);
+      expect(find.byKey(const Key('login-continue-google')), findsOneWidget);
+      expect(find.byKey(const Key('login-continue-apple')), findsOneWidget);
       expect(
-        find.text('Your phone signs in with the same account.'),
+        find.byKey(const ValueKey('add-phone-sign-in-email')),
         findsOneWidget,
       );
-      expect(find.text('With the same account.'), findsOneWidget);
-      expect(find.byKey(const ValueKey('add-phone-sign-in')), findsOneWidget);
-      expect(find.byKey(const ValueKey('add-phone-looking')), findsNothing);
-      expect(find.byKey(const ValueKey('add-phone-show-code')), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-cancel')), findsOneWidget);
+      expect(find.text('Sign in first'), findsNothing);
+      expect(find.text('Scan with the Harness app.'), findsNothing);
       expect(find.byType(PhonePairQr), findsNothing);
       expect(daemon.codes, isEmpty);
       expect(signIn.minted, 0);
@@ -312,42 +378,60 @@ void main() {
       await tester.pump();
     });
 
-    testWidgets('signed in while it is open: its step is ticked where it '
-        'was, the phone\'s name the account, and the code can come up', (
+    testWidgets('the way pressed says what it waits on; the others stay', (
       tester,
     ) async {
       final app = _signedInApp()..signedIn = false;
       addTearDown(app.dispose);
-      final signIn = _FakeSignIn();
-      await _open(
-        tester,
-        app,
-        _FakeDaemon(List.filled(4, _failed('NO_INTENT'))).call,
-        signInCode: signIn.call,
+      await _open(tester, app, _FakeDaemon([]).call);
+      app
+        ..signingIn = true
+        ..signInProvider = SignInProvider.apple
+        ..pendingAuthorizeUrl = 'https://auth.example.test/authorize';
+      app.notifyListeners();
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('login-continue-apple')),
+          matching: find.text('Waiting for your browser'),
+        ),
+        findsOneWidget,
       );
-      // The dialog is centred and grows as a whole; inside it, the phone's
-      // steps stay where they were under this computer's.
-      double gap() =>
-          tester.getTopLeft(find.text('ON YOUR PHONE')).dy -
-          tester.getTopLeft(find.textContaining('ON THIS ')).dy;
-      final before = gap();
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('login-continue-google')),
+          matching: find.text('Continue with Google'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(PhonePairQr), findsNothing);
+      app.signingIn = false;
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+    });
+
+    testWidgets('signed in while it is open: the code comes up in the same '
+        'dialog, with its sign-in code', (tester) async {
+      final app = _signedInApp()..signedIn = false;
+      addTearDown(app.dispose);
+      final signIn = _FakeSignIn();
+      final daemon = _FakeDaemon(List.filled(4, _failed('NO_INTENT')));
+      await _open(tester, app, daemon.call, signInCode: signIn.call);
+      expect(find.byType(PhonePairQr), findsNothing);
 
       app.signedIn = true;
       app.notifyListeners();
       await tester.pump();
-      await tester.pump(const Duration(seconds: 2));
-      expect(gap(), before);
-      expect(find.text('Signed in'), findsOneWidget);
-      expect(find.text('As dee+phone@example.com.'), findsOneWidget);
-      expect(find.text('With dee+phone@example.com.'), findsOneWidget);
-      expect(find.byKey(const ValueKey('add-phone-sign-in')), findsNothing);
-      expect(find.byKey(const ValueKey('add-phone-looking')), findsOneWidget);
-
-      await _showCode(tester);
+      await _codeUp(tester);
+      expect(find.byKey(const Key('login-continue-google')), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-close')), findsOneWidget);
+      expect(find.byType(PhonePairQr), findsOneWidget);
+      expect(signIn.minted, 1);
       expect(
         Uri.splitQueryString(Uri.parse(_qrData(tester)).fragment)['h'],
         'h1',
       );
+      expect(daemon.codes, hasLength(1));
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
     });
@@ -373,7 +457,7 @@ void main() {
       app.selectedMachineId = 'b';
       final daemon = _FakeDaemon(List.filled(3, _failed('NO_INTENT')));
       await _open(tester, app, daemon.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       final before = _qrData(tester);
       expect(Uri.splitQueryString(Uri.parse(before).fragment)['m'], 'b');
       expect(find.text('Computer b'), findsOneWidget);
@@ -403,7 +487,7 @@ void main() {
       daemon.call,
       onConnectMachine: () => opened = true,
     );
-    await _showCode(tester);
+    await _codeUp(tester);
     expect(find.byType(PhonePairQr), findsNothing);
     expect(daemon.codes, isEmpty);
     expect(
@@ -502,7 +586,7 @@ void main() {
       final signIn = _FakeSignIn();
       final daemon = _FakeDaemon(List.filled(80, _failed('NO_INTENT')));
       await _open(tester, app, daemon.call, signInCode: signIn.call);
-      await _showCode(tester);
+      await _codeUp(tester);
 
       expect(
         Uri.splitQueryString(Uri.parse(_qrData(tester)).fragment)['h'],
@@ -522,17 +606,17 @@ void main() {
       expect(signIn.minted, 2, reason: 'nothing is minted after closing');
     });
 
-    testWidgets('put away, the code lets its renewal lapse; shown again, a '
-        'fresh one is asked for', (tester) async {
+    testWidgets('the stores\' code in its place, the code lets its renewal '
+        'lapse; back, a fresh one is asked for', (tester) async {
       final app = _signedInApp();
       addTearDown(app.dispose);
       final signIn = _FakeSignIn();
       final daemon = _FakeDaemon(List.filled(80, _failed('NO_INTENT')));
       await _open(tester, app, daemon.call, signInCode: signIn.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       expect(signIn.minted, 1);
 
-      await tester.tap(find.byKey(const ValueKey('add-phone-show-code')));
+      await tester.tap(find.byKey(const ValueKey('add-phone-show-downloads')));
       await tester.pump();
       expect(find.byType(PhonePairQr), findsNothing);
       final armed = daemon.codes.length;
@@ -544,7 +628,9 @@ void main() {
         reason: 'the loop ends after the answer it was waiting for',
       );
 
-      await _showCode(tester);
+      await tester.tap(find.byKey(const ValueKey('add-phone-hide-downloads')));
+      await tester.pump();
+      await _codeUp(tester);
       expect(signIn.minted, 2);
       expect(
         Uri.splitQueryString(Uri.parse(_qrData(tester)).fragment)['h'],
@@ -566,7 +652,7 @@ void main() {
         daemon.call,
         signInCode: _FakeSignIn(available: false).call,
       );
-      await _showCode(tester);
+      await _codeUp(tester);
       final fields = Uri.splitQueryString(Uri.parse(_qrData(tester)).fragment);
       expect(fields.keys, ['e', 'm', 'c']);
       expect(fields['c'], daemon.codes.single);
@@ -589,10 +675,9 @@ void main() {
         () => const PhonePairAnswer.paired('Dee’s iPhone'),
       ]);
       await _open(tester, app, daemon.call);
-      expect(daemon.codes, isEmpty, reason: 'nothing armed with no code up');
-      await _showCode(tester);
+      await _codeUp(tester);
 
-      expect(daemon.codes, hasLength(1));
+      expect(daemon.codes, hasLength(1), reason: 'armed with the code up');
       final code = daemon.codes.single;
       expect(
         _qrData(tester),
@@ -603,10 +688,7 @@ void main() {
           signIn: 'h1',
         ).toString(),
       );
-      expect(
-        find.text('On your phone, open Computers and scan this code.'),
-        findsOneWidget,
-      );
+      expect(find.text('Scan with the Harness app.'), findsOneWidget);
       expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
 
       await tester.pump(const Duration(milliseconds: 1500));
@@ -626,7 +708,7 @@ void main() {
       expect(find.byType(AddPhoneDialog), findsNothing);
     });
 
-    testWidgets('a code that did not match is replaced, QR and all', (
+    testWidgets('a code that did not match is replaced quietly, QR and all', (
       tester,
     ) async {
       final app = _signedInApp();
@@ -637,10 +719,13 @@ void main() {
         _failed('NO_INTENT'),
       ]);
       await _open(tester, app, daemon.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       await tester.pump();
       final first = daemon.codes.single;
-      expect(_status(tester), "That code didn't work. Scan the new one above.");
+      // Most often a phone already in, pairing late by an earlier dialog's
+      // code: nothing for the person to do here, so nothing in red.
+      expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
+      expect(find.textContaining("didn't work"), findsNothing);
       expect(_qrData(tester), isNot(contains('c=$first')));
 
       await tester.pump(const Duration(milliseconds: 1500));
@@ -648,9 +733,8 @@ void main() {
       final second = daemon.codes.last;
       expect(second, isNot(first));
       expect(_qrData(tester), contains('c=$second&'));
-      // An instruction outlives the "no phone yet" that follows it.
       await tester.pump();
-      expect(_status(tester), "That code didn't work. Scan the new one above.");
+      expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
@@ -658,6 +742,29 @@ void main() {
       expect(daemon.tokens.last.isCancelled, isTrue);
       await tester.pump(const Duration(seconds: 10));
       expect(daemon.codes, hasLength(2), reason: 'nothing asks after closing');
+    });
+
+    testWidgets('a mismatch also takes away what an earlier answer said', (
+      tester,
+    ) async {
+      final app = _signedInApp();
+      addTearDown(app.dispose);
+      final daemon = _FakeDaemon([
+        _failed('TIMEOUT'),
+        _failed('CODE_MISMATCH'),
+        _failed('NO_INTENT'),
+      ]);
+      await _open(tester, app, daemon.call);
+      await _codeUp(tester);
+      await tester.pump();
+      expect(_status(tester), 'Your phone stopped answering. Scan again.');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump();
+      expect(daemon.codes, hasLength(2));
+      expect(find.byKey(const ValueKey('add-phone-status')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
     });
 
     testWidgets('rate limited waits a minute before asking again', (
@@ -670,7 +777,7 @@ void main() {
         _failed('NO_INTENT'),
       ]);
       await _open(tester, app, daemon.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       await tester.pump();
       expect(_status(tester), 'Too many tries. Wait a minute.');
       await tester.pump(const Duration(seconds: 59));
@@ -689,7 +796,7 @@ void main() {
       addTearDown(app.dispose);
       final daemon = _FakeDaemon([_failed(PhonePairAnswer.unavailable)]);
       await _open(tester, app, daemon.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       await tester.pump();
       expect(_status(tester), startsWith('Update Harness on this '));
       await tester.pump(const Duration(seconds: 30));
@@ -706,7 +813,7 @@ void main() {
       final answer = Completer<PhonePairAnswer>();
       final daemon = _FakeDaemon([() => answer.future]);
       await _open(tester, app, daemon.call);
-      await _showCode(tester);
+      await _codeUp(tester);
       expect(daemon.codes, hasLength(1));
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -721,12 +828,17 @@ void main() {
     });
   });
 
-  group('Get Harness', () {
-    testWidgets('beside Install Harness: one code, for either store, with '
-        'nothing to press but Back', (tester) async {
-      final app = _signedInApp()..signedIn = false;
+  group('App Store · Google Play', () {
+    testWidgets('one code, for either store, in the Harness code\'s place; '
+        'Back brings it back', (tester) async {
+      final app = _signedInApp();
       addTearDown(app.dispose);
-      await _open(tester, app, _FakeDaemon([]).call);
+      await _open(
+        tester,
+        app,
+        _FakeDaemon(List.filled(5, _failed('NO_INTENT'))).call,
+      );
+      await _codeUp(tester);
       expect(_downloadCodes(tester), isEmpty);
       // Named by its stores, not "Get Harness", which in the computer's own
       // Harness read as this app's download.
@@ -738,16 +850,15 @@ void main() {
         ),
         findsOneWidget,
       );
-      // Before this computer has an account too: the app can come first.
       await tester.tap(open);
       await tester.pump();
-      expect(find.text('Get Harness on your phone'), findsOneWidget);
-      expect(find.text('Scan with your phone’s Camera.'), findsOneWidget);
 
       // One code: the website's, which sends an iPhone to the App Store and
-      // an Android phone to Google Play.
+      // an Android phone to Google Play. One kind of code on screen at a
+      // time: the Harness code goes while it is up.
       expect(_downloadCodes(tester), ['https://harness.autonomous.ai/app']);
       expect(kPhoneAppUrl, 'https://harness.autonomous.ai/app');
+      expect(find.byType(PhonePairQr), findsNothing);
       expect(
         find.bySemanticsLabel(
           'QR code for Harness on the App Store or Google Play',
@@ -761,18 +872,16 @@ void main() {
         tester.getTopLeft(find.text('App Store')).dy,
         greaterThan(tester.getBottomLeft(find.byType(QrCodeView)).dy),
       );
-      // Nothing to press here: no Cancel, no Sign in.
-      expect(find.text('Cancel'), findsNothing);
-      expect(find.byKey(const ValueKey('add-phone-sign-in')), findsNothing);
-      expect(find.byType(FilledButton), findsNothing);
+      // Few words: no heading or caption of its own; Close stays.
+      expect(find.text('Get Harness on your phone'), findsNothing);
+      expect(find.text('Scan with the Harness app.'), findsNothing);
+      expect(find.byKey(const ValueKey('add-phone-close')), findsOneWidget);
 
-      // Back is the way back to the steps, and their buttons.
       await tester.tap(find.byKey(const ValueKey('add-phone-hide-downloads')));
       await tester.pump();
+      await _codeUp(tester);
       expect(_downloadCodes(tester), isEmpty);
-      expect(find.text('Install Harness'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
-      expect(find.byKey(const ValueKey('add-phone-sign-in')), findsOneWidget);
+      expect(find.byType(PhonePairQr), findsOneWidget);
 
       // Esc, over the store's code, closes the dialog.
       await tester.tap(open);

@@ -535,6 +535,15 @@ def restart(cli_changed):
     run('systemctl', '--user', 'is-active', '--quiet', 'hn-screen.service')
 
 
+def in_screen(pid):
+    """Whether this client runs in hn-screen.service: the OS screen, not SSH or this command."""
+    try:
+        return any(line.split(':', 2)[-1].endswith('/hn-screen.service')
+                   for line in (PROC / str(pid) / 'cgroup').read_text().splitlines())
+    except OSError:
+        return False
+
+
 def capture_view():
     """Remember the OS screen, without selecting an unrelated SSH client."""
     try:
@@ -542,15 +551,7 @@ def capture_view():
                    '#{client_pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{client_tty}', timeout=3)
         for row in rows.splitlines():
             parts = row.split('\t')
-            if len(parts) != 5 or not parts[0].isdigit():
-                continue
-            groups = Path('/proc') / parts[0] / 'cgroup'
-            try:
-                belongs = any(line.split(':', 2)[-1].endswith('/hn-screen.service')
-                              for line in groups.read_text().splitlines())
-            except OSError:
-                continue
-            if not belongs:
+            if len(parts) != 5 or not parts[0].isdigit() or not in_screen(parts[0]):
                 continue
             if all(re.fullmatch(pattern, value) for pattern, value in
                    zip([r'\$\d+', r'@\d+', r'%\d+', r'/dev/pts/\d+'], parts[1:])):
@@ -584,17 +585,20 @@ def restore_view(view):
 
 
 def screen_ready(target):
-    """Wait for an attached client executing the selected binary, not just foot."""
+    """Wait for the screen's own client executing the selected binary, not just foot."""
     deadline = time.monotonic() + 30
     observed = {}
     while time.monotonic() < deadline:
         try:
-            # list-clients deliberately includes the backing tmux connections.
-            # hn-list-clients identifies hn's own rendering clients instead.
-            clients = run('/usr/bin/hn', 'hn-list-clients', '-F', '#{client_pid}', timeout=3)
+            # hn-list-clients names hn's rendering clients, but has no rows when an hn started
+            # elsewhere first (over SSH, before anyone logged in at the screen): the screen's client
+            # then serves its own socket, and every update was judged failed and rolled back
+            # (2026-10-12, 2026-10-13). list-clients names it either way, beside the backing tmux
+            # connections and this command's own client; the screen's cgroup tells them apart.
+            clients = run('/usr/bin/hn', 'list-clients', '-F', '#{client_pid}', timeout=3)
             for pid in clients.splitlines():
-                if pid.isdigit():
-                    executable = Path('/proc') / pid / 'exe'
+                if pid.isdigit() and in_screen(pid):
+                    executable = PROC / pid / 'exe'
                     observed[pid] = str(executable.resolve())
                     if executable.samefile(target / 'harness-tui'):
                         write(STATE / 'screen.json', {'pid': int(pid), 'executable': observed[pid], 'target': str(target)})

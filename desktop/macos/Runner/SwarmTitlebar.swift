@@ -7,9 +7,17 @@ import ImageIO
 enum HarnessControlSymbols {
   static let size: CGFloat = 16
   static let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
-  static func image(_ name: String, description: String? = nil) -> NSImage? {
+  /// The same, in one ink. Device symbols such as `iphone` also carry a filled
+  /// screen layer that the default rendering tints grey, so beside the plain
+  /// outlines around them they read as blurred; monochrome keeps the outline
+  /// alone. macOS 12 has no such rendering and keeps the default.
+  static let outlineConfiguration: NSImage.SymbolConfiguration = {
+    if #available(macOS 13.0, *) { return configuration.applying(.preferringMonochrome()) }
+    return configuration
+  }()
+  static func image(_ name: String, description: String? = nil, outline: Bool = false) -> NSImage? {
     NSImage(systemSymbolName: name, accessibilityDescription: description)?
-      .withSymbolConfiguration(configuration)
+      .withSymbolConfiguration(outline ? outlineConfiguration : configuration)
   }
 }
 
@@ -285,7 +293,8 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
       addPhone.target = self
       addPhone.representedObject = "addPhone"
       addPhone.identifier = NSUserInterfaceItemIdentifier(HarnessKeymapMenu.actionPrefix + "addPhone")
-      addPhone.image = HarnessControlSymbols.image("iphone")
+      // The outline only, as the title bar's Add Phone draws it.
+      addPhone.image = HarnessControlSymbols.image("iphone", outline: true)
       appMenu.insertItem(addPhone, at: appMenu.index(of: settings) + 1)
       let customize = NSMenuItem(title: "Appearance…", action: #selector(menuAction(_:)), keyEquivalent: "")
       customize.target = self
@@ -2065,7 +2074,13 @@ private final class SwarmTabStrip: NSView {
     phoneButton.isBordered = false
     phoneButton.focusRingType = .none
     phoneButton.title = ""
-    phoneButton.image = HarnessControlSymbols.image("iphone.radiowaves.left.and.right")
+    // The plain phone of Harness ▸ Add Phone… and the account menu: one
+    // silhouette everywhere (design/icon-design-system.md), no radio waves —
+    // and its outline only, as clear as Search beside it. The button keeps the
+    // outline configuration too: its draw() applies its own, and the default
+    // would bring the grey screen back.
+    phoneButton.image = HarnessControlSymbols.image("iphone", outline: true)
+    phoneButton.symbolConfiguration = HarnessControlSymbols.outlineConfiguration
     phoneButton.imagePosition = .imageOnly
     phoneButton.isEnabled = false
     phoneButton.target = self
@@ -2238,6 +2253,11 @@ private final class SwarmTabStrip: NSView {
     statusBar.setAccessibilityHidden(passiveFooter || statusBar.isHidden)
     devicesButton.isHidden = state["devicesVisible"] as? Bool != true
     devicesButton.setAccessibilityHidden(devicesButton.isHidden)
+    // Add Phone leaves the row once the account has a phone (Dart's
+    // `state/account_phones.dart` says why and when). Absent is shown, as it
+    // was before the key existed.
+    phoneButton.isHidden = state["addPhoneVisible"] as? Bool == false
+    phoneButton.setAccessibilityHidden(phoneButton.isHidden)
     // The row's last control: Sign in, or whose account this is. Absent (a
     // viewer build, teardown), nothing is drawn.
     let account = state["account"] as? [String: Any]
@@ -2257,7 +2277,8 @@ private final class SwarmTabStrip: NSView {
       accountButton.setAccessibilityLabel(accountKind == .signIn ? SwarmAccountButton.label : "Account")
       accountButton.setAccessibilityHelp(accountButton.toolTip)
     }
-    var children: [Any] = [scroll, newButton, searchButton, phoneButton]
+    var children: [Any] = [scroll, newButton, searchButton]
+    if !phoneButton.isHidden { children.append(phoneButton) }
     if !devicesButton.isHidden { children.append(devicesButton) }
     children.append(storeButton)
     if !accountButton.isHidden { children.append(accountButton) }
@@ -2287,7 +2308,7 @@ private final class SwarmTabStrip: NSView {
     searchButton.toolTip = state["searchTooltip"] as? String ?? "Open Harness"
     searchButton.setAccessibilityHelp(searchButton.toolTip)
     phoneButton.foreground = palette.navigationForeground
-    phoneButton.isEnabled = actionsEnabled
+    phoneButton.isEnabled = actionsEnabled && !phoneButton.isHidden
     phoneButton.toolTip = state["addPhoneTooltip"] as? String ?? "Add Phone"
     phoneButton.setAccessibilityHelp(phoneButton.toolTip)
     storeButton.toolTip = state["storeTooltip"] as? String ?? "Explore Harness Store"
@@ -2541,7 +2562,9 @@ private final class SwarmTabStrip: NSView {
     let phoneEdge = devicesButton.isHidden ? storeButton.frame.minX : devicesButton.frame.minX
     phoneButton.frame = NSRect(x: phoneEdge - iconWidth,
       y: (bounds.height - toolHeight) / 2, width: iconWidth, height: toolHeight)
-    searchButton.frame = NSRect(x: phoneButton.frame.minX - iconWidth,
+    // Hidden, Add Phone gives its place to Search.
+    let searchEdge = phoneButton.isHidden ? phoneEdge : phoneButton.frame.minX
+    searchButton.frame = NSRect(x: searchEdge - iconWidth,
       y: (bounds.height - toolHeight) / 2, width: iconWidth, height: toolHeight)
     // Only navigation actions share the tab row. Context has the full footer.
     let tabBudget = max(0, searchButton.frame.minX - cell * 6)

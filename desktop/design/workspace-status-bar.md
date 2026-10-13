@@ -29,7 +29,13 @@ signed in, then Add Phone, Appearance,
 Notifications, Settings and Sign out, each opening what the app already has.
 Nothing is drawn between the icons and the account control; `controlGap`
 separates them. A narrow window drops Devices first; the account control
-always stays. A viewer build (the browser) draws none of this. Flutter draws it
+always stays. Add Phone (the plain phone glyph, before Devices) shows only
+while the account has no phone (owner, 2026-10-13): the row is for what is
+used every day, and a phone is added once. It goes by the account, not the
+computer, since a phone finds every computer on its account by itself; it
+comes back when the account's last phone is removed, and stays while the
+device list cannot be read. Harness ▸ Add Phone…, the account menu,
+`> add phone` and Machines still open Add Phone (`state/account_phones.dart`). A viewer build (the browser) draws none of this. Flutter draws it
 with `WorkspaceStoreButton`, `WorkspaceSignInButton` and `WorkspaceAvatarButton`,
 AppKit with `SwarmStoreButton` and `SwarmAccountButton`; the menu is
 `widgets/account_menu.dart` on both. Run `workspace_account_test.dart`.

@@ -123,6 +123,7 @@ import { createLiveTransport } from './engines/liveTransport.js'
 import { createLiveWatcher } from './engines/liveWatcher.js'
 import { readerEngine, READER_SERVICES } from '../engines/worker/protocol.js'
 import { createRecaps } from './turns/recaps.js'
+import { stopDeadline } from './stopDeadline.js'
 import { createUpdateHandoff, handOverOnceReleased, probeStagedMaster, type TeardownStep } from './updateHandoff.js'
 import { needsUpdaterBeside, startUpdaterBeside } from './updaterBeside.js'
 import { createHeartbeats } from './turns/heartbeats.js'
@@ -2602,6 +2603,12 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     console.log(`\n[cli] ${signal} — shutting down`)
     // A slow teardown may exhaust the master's grace. Persist already acknowledged bindings first.
     registry.flush({ exiting: true })
+    const leave = (): never => {
+      try { if (readPid() === process.pid) rmSync(PID_FILE, { force: true }) } catch { /* ignore */ }
+      process.exit(coreLink.supervised && forGood(signal) ? CORE_EXIT_STOP : 0)
+    }
+    // A core with no master keeps the master's grace on itself (core/stopDeadline.ts).
+    const deadline = stopDeadline({ supervised: coreLink.supervised, exit: leave, log: (line) => console.log(line) })
     // Mid-handoff everything below is already being torn down, and nothing has been started yet: leave
     // — a second teardown of closed servers is noise.
     if (updateHandoff.restarting()) {
@@ -2621,23 +2628,30 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     heartbeats.clear()
     cursorSubagents.stop()
     normalizers.stopPollers()
+    deadline.at('Cursor discovery')
     await cursorDiscovery.stop()
+    deadline.at('the transcript watcher')
     await watcher.stop()
     runtimeProfiles.stop()
+    deadline.at('Share')
     await ports.sharing?.stop()
     // The data folder's socket first: a successor waiting for this core to leave (lib/localSocket.ts) can
     // start as soon as it is gone, whatever the clients below take to close.
+    deadline.at('the local socket')
     await localSocket?.close()
+    deadline.at('the local websocket')
     await localWsServer.close()
     hookServer.close()
     nativeControls.close()
     externalResumes?.stop()
     usageLink.port.stop(); ports.usage?.stop()
+    deadline.at('the viewers')
     await ports.viewers?.stop()
+    deadline.at('the gateway')
     await gateway.stop()
+    deadline.at('the backend')
     await backend.stop()
-    try { if (readPid() === process.pid) rmSync(PID_FILE, { force: true }) } catch { /* ignore */ }
-    process.exit(coreLink.supervised && forGood(signal) ? CORE_EXIT_STOP : 0)
+    leave()
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))

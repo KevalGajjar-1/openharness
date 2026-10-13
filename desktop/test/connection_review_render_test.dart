@@ -149,20 +149,18 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          expect(find.text('Cancel').hitTestable(), findsOneWidget);
-          await capture('add-phone');
-          // The code under "Not showing up?" opens, and shows, at every size.
-          final showCode = find.byKey(const ValueKey('add-phone-show-code'));
-          await tester.ensureVisible(showCode);
-          await tester.pumpAndSettle();
-          await tester.tap(showCode);
-          await tester.pumpAndSettle();
+          // The code is the dialog: up at once, and whole, at every size.
           final code = find.byType(PhonePairQr);
           await tester.ensureVisible(code);
           await tester.pumpAndSettle();
           expect(code.hitTestable(), findsOneWidget);
-          await capture('add-phone-code');
-          await tester.tap(find.text('Cancel'));
+          expect(find.text('Scan with the Harness app.'), findsOneWidget);
+          final close = find.byKey(const ValueKey('add-phone-close'));
+          await tester.ensureVisible(close);
+          await tester.pumpAndSettle();
+          expect(close.hitTestable(), findsOneWidget);
+          await capture('add-phone');
+          await tester.tap(close);
           await tester.pumpAndSettle();
         }
 

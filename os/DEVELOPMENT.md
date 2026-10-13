@@ -378,7 +378,10 @@ daemon counts: one serving beside it is stopped first, and activation fails unle
 unit's daemon answers afterward. The CLI starts and stops the daemon through that unit
 on Harness OS (`cli/src/lib/platformDaemon.ts`), so a sign-in or sign-out cannot move it
 outside systemd. Never `systemctl stop` the unit: every pane's scope is PartOf it.
-Failure restores the previous
+The core alone ends its own stop after 2.5 s, as a master would end it, and the unit
+stops waiting after 10 s. The new screen counts once `hn-screen.service`'s own client
+runs the selected binary, whichever hn server answers: an hn started over SSH before the
+screen leaves `hn-list-clients` empty. Failure restores the previous
 selection. `harness updates rollback` restores the previous runtime and holds
 rejected versions until a newer release arrives. Ordinary macOS/Linux hn is unchanged.
 
