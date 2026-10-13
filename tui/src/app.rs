@@ -1262,6 +1262,7 @@ impl App {
                 app.follow_account(status.get("signedIn").and_then(Value::as_bool).unwrap_or(false));
                 app.connect(&id);
                 app.refresh_machines();
+                crate::account::daemon_status(app, &status);
             }
             Err(_) => {
                 app.daemon_down = true;
@@ -1645,7 +1646,10 @@ impl App {
                     let what = if failed { format!("{name} failed{}", agent.did.as_ref().filter(|d| !d.is_empty()).map(|d| format!(": {d}")).unwrap_or_default()) } else { format!("{name} finished") };
                     if !replay && !subagent && looking.as_ref() != Some(&key) {
                         agent.unread = true;
-                        if mine && !visible.contains(&key) { self.say(what.clone(), if failed { theme::DANGER } else { theme::ONLINE }) }
+                        // Only a failure is said on the status line. "… finished" took the whole bar
+                        // into the message colours for seconds as the window's spinner became its ✓,
+                        // which says the same: the bar seemed to flash whenever a window was done.
+                        if mine && failed && !visible.contains(&key) { self.say(what.clone(), theme::DANGER) }
                     } else if looking.as_ref() == Some(&key) { self.mark_seen_key(key) }
                     if mine && !self.terminal_focused && !replay && !subagent { crate::notify("Harness", &what) }
                     if !replay && !subagent && !failed { crate::commands::notify_harness(self, "harness-done", &hook_key) }
@@ -5729,6 +5733,7 @@ impl App {
     /// started in — once, when the desk has answered and this computer's daemon is connected.
     /// Until then (or if it never connects: not signed in) the window shows what it can.
     pub fn maybe_start_shell(&mut self) {
+        if crate::account::entry_required(self) { return }
         if self.shell_asked || !self.desk_answered || self.capture.is_some() { return }
         // A headless client makes only the sessions it is asked for.
         if self.headless { self.shell_asked = true; return }
@@ -6818,6 +6823,23 @@ mod recovery_tests {
         app.on_frame("test-peer", "agent_renamed", json!({"agentId": "agent-1", "name": "Deploy checklist", "engine": "claude"}));
         let agent = app.fleet.agent("test-peer", "agent-1").unwrap();
         assert_eq!((agent.name.as_str(), agent.engine.as_str(), agent.project.as_str(), agent.branch.as_str()), ("Deploy checklist", "claude", "webapp", "main"));
+    }
+
+    /// A harness finishing in a window not shown is its tab's ✓ — not "… finished" taking the whole
+    /// status line into the message colours, which read as the bar flashing. A failure is still said.
+    #[tokio::test]
+    async fn a_harness_finishing_out_of_sight_leaves_the_status_line_alone() {
+        let mut app = fixture();
+        app.fleet.merge_roster("test-peer", &[json!({"id": "agent-1", "name": "fix-login", "engine": "claude"})]);
+        // Open in a pane of its own, not in the window being shown.
+        app.panes.insert(99, crate::pane::Pane::new(99, "test-peer", "agent-1", 80, 24));
+        app.toast = None;
+        app.on_frame("test-peer", "turn_ended", json!({"agentId": "agent-1"}));
+        assert!(app.toast.is_none(), "a finish is not said on the status line: {:?}", app.toast);
+        assert!(app.fleet.agent("test-peer", "agent-1").unwrap().unread, "it is done and unread: its tab shows ✓");
+        app.fleet.agents.get_mut(&("test-peer".to_string(), "agent-1".to_string())).unwrap().errored = true;
+        app.on_frame("test-peer", "turn_ended", json!({"agentId": "agent-1"}));
+        assert!(app.toast.as_ref().is_some_and(|t| t.0.contains("failed")), "a failure is still said: {:?}", app.toast);
     }
 
     /// `set -g @hn-window-name …` by hand (or from a config file) changes the tab as Appearance does.

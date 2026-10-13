@@ -680,8 +680,11 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
       .toEqual([engineBin('claude'), '--permission-mode', 'plan'])
     expect(buildEngineCommandArgv('claude', { permissionMode: 'acceptEdits', bypassPermission: true }))
       .toEqual([engineBin('claude'), '--permission-mode', 'acceptEdits'])
+    // Claude Code's Ask names its mode: given no flag, 2.1.296 started in auto (2026-10-12).
     expect(buildEngineCommandArgv('claude', { permissionMode: 'ask', bypassPermission: true }))
-      .toEqual([engineBin('claude')])
+      .toEqual([engineBin('claude'), '--permission-mode', 'default'])
+    expect(buildEngineCommandArgv('codex', { permissionMode: 'ask', bypassPermission: true }))
+      .toEqual([engineBin('codex')])
     expect(buildEngineCommandArgv('claude', { permissionMode: 'full' }))
       .toEqual([engineBin('claude'), '--dangerously-skip-permissions'])
     expect(buildEngineCommandArgv('codex', { permissionMode: 'readOnly' }))
@@ -697,7 +700,7 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
   it('makes auto the same flags as bypassPermission, for every engine with modes', () => {
     for (const [engine, modes] of Object.entries(PERMISSION_MODES)) {
       expect(modes?.auto, engine).toEqual(BYPASS_PERMISSION_FLAGS[engine as keyof typeof BYPASS_PERMISSION_FLAGS])
-      expect(modes?.ask, engine).toEqual([])
+      expect(modes?.ask, engine).toEqual(engine === 'claude' ? ['--permission-mode', 'default'] : [])
     }
   })
 
@@ -1038,6 +1041,23 @@ describe('the permission gates', () => {
     expect(dropped).toEqual({ choice: { permissionMode: 'ask', bypassPermission: false }, droppedFlag: '--auto' })
   })
 
+  it('drops Claude Code\'s mode for a relaunch to no flag at all, since its Ask names a mode with that flag', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'harness-engine-gate-'))
+    dirs.push(binDir)
+    process.env.HARNESS_ENGINE_TEST_PATH = binDir
+    fakeEngine(binDir, 'claude', '--resume')
+    const shell = bashProbeShell()
+    for (const permissionMode of ['auto', 'ask']) {
+      const dropped = await dropPermissionFlagIfUnsupported('claude', { permissionMode, bypassPermission: permissionMode === 'auto' }, shell)
+      expect(dropped).toEqual({ choice: { permissionMode: null, bypassPermission: false }, droppedFlag: '--permission-mode' })
+      expect(buildEngineCommandArgv('claude', { ...dropped.choice, permissionMode: dropped.choice.permissionMode ?? undefined })).toEqual([engineBin('claude')])
+    }
+    // A create in Ask is told to update, never to choose the Ask it chose.
+    const refusal = await refusePermissionFlagIfUnsupported('claude', { permissionMode: 'ask' }, shell)
+    expect(refusal?.detail).toContain('Update claude and try again.')
+    expect(refusal?.detail).not.toContain('choose Ask')
+  })
+
   it('leaves a relaunch alone when the flag is supported', async () => {
     const shell = withFakeOpencode('--auto')
     const kept = await dropPermissionFlagIfUnsupported('opencode', { permissionMode: 'auto', bypassPermission: true }, shell)
@@ -1065,8 +1085,10 @@ describe('permissionFlagToVerify', () => {
     expect(permissionFlagToVerify('codex', { permissionMode: 'readOnly' })).toBe('--sandbox')
   })
 
-  it('has nothing to verify for Ask, an engine with no table, or a terminal', () => {
-    expect(permissionFlagToVerify('claude', { permissionMode: 'ask' })).toBeNull()
+  it('has nothing to verify for an Ask with no flag, an engine with no table, or a terminal', () => {
+    expect(permissionFlagToVerify('codex', { permissionMode: 'ask' })).toBeNull()
+    // Claude Code's Ask passes its mode, verified like any other.
+    expect(permissionFlagToVerify('claude', { permissionMode: 'ask' })).toBe('--permission-mode')
     expect(permissionFlagToVerify('muse', { bypassPermission: true })).toBeNull()
     expect(permissionFlagToVerify('terminal', { bypassPermission: true })).toBeNull()
   })

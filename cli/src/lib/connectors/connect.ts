@@ -35,7 +35,7 @@ export function customCode(name: string, taken: Set<string>): string {
   return validateCode(code)
 }
 
-interface Flow { connector: string, state: 'pending' | 'connected' | 'failed', error: string, cancel: boolean }
+interface Flow { connector: string, state: 'pending' | 'connected' | 'failed', error: string, cancel: boolean, signIn: SignIn }
 
 /** Browser sign-ins in progress, each finishing on its own. */
 export class Flows {
@@ -45,7 +45,7 @@ export class Flows {
   async start(code: string, signIn: SignIn, label?: string): Promise<{ flow: string, authorize_url: string | null }> {
     const authorize = await signIn.prepare()
     const flow = randomBytes(12).toString('base64url')
-    const record: Flow = { connector: code, state: 'pending', error: '', cancel: false }
+    const record: Flow = { connector: code, state: 'pending', error: '', cancel: false, signIn }
     // One sign-in per service: a newer one replaces a forgotten tab.
     for (const other of this.items.values()) if (other.connector === code && other.state === 'pending') other.cancel = true
     this.items.set(flow, record)
@@ -63,6 +63,15 @@ export class Flows {
     const record = this.items.get(flow)
     if (!record) throw new ConnectorError('This sign-in has ended. Try again.')
     return { connector: record.connector, state: record.state, error: record.error }
+  }
+
+  /** A browser redirect caught on another device (the phone), for this computer's own sign-in. */
+  deliver(flow: string, url: string): { connector: string, state: string } {
+    const record = this.items.get(flow)
+    if (!record || record.state !== 'pending' || record.cancel) throw new ConnectorError('This sign-in has ended. Try again.')
+    if (!record.signIn.deliver) throw new ConnectorError('This service finishes its sign-in on its own.')
+    try { record.signIn.deliver(url) } catch { throw new ConnectorError('This is not the sign-in address. Try again.') }
+    return { connector: record.connector, state: record.state }
   }
 
   get pending(): boolean { return [...this.items.values()].some(flow => flow.state === 'pending') }

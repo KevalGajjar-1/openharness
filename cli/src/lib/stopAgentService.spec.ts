@@ -8,6 +8,7 @@ import { checkPidRuntime, terminateDeletedAgent } from './deleteAgentFallback.js
 import { createForgetSession } from '../core/agents/forget.js'
 import { env } from '../config/env.js'
 import { controlTranscriptEvidence } from '../engines/transcriptBindings.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 vi.mock('./captureResumeIdentity.js', () => ({ captureResumeIdentity: vi.fn(async session => session) }))
 vi.mock('../engines/transcriptBindings.js', async original => ({ ...await original<object>(),
   controlTranscriptEvidence: vi.fn(),
@@ -80,7 +81,7 @@ it('cancels immediately, then joins the core pane commit before capturing the ru
   row.runtimes = [{ backend: 'tmux', paneId: '%90' }]
   committed()
   await stopping
-  expect(deps.tmuxBackend!.kill).toHaveBeenCalledWith({ backend: 'tmux', paneId: '%90' })
+  expect(deps.tmuxBackend!.kill).toHaveBeenCalledWith({ backend: 'tmux', paneId: '%90' }, expect.any(Function))
 })
 it('storage failure leaves the live process and registry untouched', async () => {
   vi.spyOn(stoppedAgents, 'save').mockImplementation(() => { throw new Error('disk full') })
@@ -94,6 +95,29 @@ it('preserves an unexpected evidence failure without signalling or hiding its ca
   await expect(createStopAgentService(deps)(row.agentId)).rejects.toThrow('Evidence implementation unavailable')
   expect(terminateDeletedAgent).not.toHaveBeenCalled()
   expect(deps.forgetSession).not.toHaveBeenCalled()
+})
+// A close of a harness still starting that waited in vain for its first conversation (closeAgentService.ts).
+it('stops a harness that never bound a conversation without one, only when its close asks', async () => {
+  Object.assign(row, { sessionId: '', transcriptPath: null, boundAt: null })
+  vi.mocked(captureResumeIdentity).mockRejectedValue(new IdentityReadUnavailable('the native control descriptor type is unavailable'))
+  await expect(createStopAgentService(deps)(row.agentId)).rejects.toThrow('descriptor type is unavailable')
+  expect(registry.byAgent(row.agentId)).toBe(row)
+  const unkept = vi.fn()
+  await createStopAgentService(deps)(row.agentId, { withoutConversation: unkept })
+  expect(unkept).toHaveBeenCalledOnce()
+  expect(stoppedAgents.get(row.agentId)).toMatchObject({ active: false, sessionId: '' })
+  expect(registry.byAgent(row.agentId)).toBeUndefined()
+})
+it.each(['a bound conversation', 'a known transcript', 'a bind time', 'a conversation seen live', 'another failure'] as const)('never lets go of %s that cannot be read', async kind => {
+  Object.assign(row, { sessionId: kind === 'a bound conversation' ? 'saved' : '', transcriptPath: kind === 'a known transcript' ? '/fixture/t.jsonl' : null,
+    boundAt: kind === 'a bind time' ? 1 : null })
+  vi.mocked(captureResumeIdentity).mockRejectedValue(kind === 'another failure' ? new Error('disk gone')
+    : kind === 'a conversation seen live' ? new ObservedConversationUnavailable('Conversation identity is held: the observed conversation file is unavailable.')
+    : new IdentityReadUnavailable('the transcript is unreadable'))
+  const unkept = vi.fn()
+  await expect(createStopAgentService(deps)(row.agentId, { withoutConversation: unkept })).rejects.toThrow()
+  expect(unkept).not.toHaveBeenCalled()
+  expect(registry.byAgent(row.agentId)).toBe(row)
 })
 it.each(['before', 'after'] as const)('honors cancellation at the %s checkpoint before retiring the terminal', async phase => {
   let current = true
@@ -224,7 +248,7 @@ it('only signals through the validated process deleter and does not erase a newe
   row.runtimes.push({ backend: 'unknown', endpointId: 'fixture', paneId: '2' } as any)
   await createStopAgentService(deps)(row.agentId)
   expect(signal).toHaveBeenCalledExactlyOnceWith(77, 'SIGTERM'); expect(deps.stopJobs.has(row.agentId)).toBe(true)
-  expect(deps.tmuxBackend!.kill).toHaveBeenCalledExactlyOnceWith({ backend: 'tmux', paneId: '%44' })
+  expect(deps.tmuxBackend!.kill).toHaveBeenCalledExactlyOnceWith({ backend: 'tmux', paneId: '%44' }, expect.any(Function))
 })
 
 it.each(['claude', 'codex'] as const)('captures an unbound %s conversation before deleting its process', async engine => {

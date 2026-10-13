@@ -4,7 +4,7 @@
 #   . ~/esp/esp-idf-5.5.4/export.sh
 #   idf.py -B build -DPROJECT_VER=0.0.99-pod -DPOD_PANEL_TURN=180 build
 #
-# POD_PANEL_TURN=180: every Pro panel is mounted upside down (owner, 2026-10-11), so release images use it too (picture and touch turn together).
+# POD_PANEL_TURN=180: the DEFAULT of the screen-turn setting (picture and touch turn together). Release images use it; the app's setting overrides it per unit.
 # Dev builds are safe from the daemon's OTA: a `-pod` version fails its plain X.Y.Z rule, so it is never offered an image.
 cmake_minimum_required(VERSION 3.16)
 

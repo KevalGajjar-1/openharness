@@ -17,6 +17,8 @@ unsigned pod_pet_runs(const char *engine, pod_scene_t scene);
 void pod_pet_draw(ht_scene_t *s, int x, int y, int side, const char *engine, pod_scene_t scene,
                   uint32_t clock_ms, uint32_t started_ms);
 #define POD_PET_STEP_MS 33   // 1000 / 30: the frame rate of anything drawn in code from the clock
+#define POD_CS_ANIM_MS 66    // Console: the equaliser, the spinner and the working mark (about 15 fps; a new height every 66 ms)
+#define POD_CS_WAVE_MS 100   // Console: the voice wave (square bars)
 // Milliseconds (>= 1) from clock_ms until what pod_pet_draw draws next changes, from the same step clock it draws by.
 // POD_PET_STEP_MS when the scene moves every frame (bars or waves from the clock) or the engine has no pet.
 uint32_t pod_pet_next_step_ms(const char *engine, pod_scene_t scene, uint32_t clock_ms, uint32_t started_ms);

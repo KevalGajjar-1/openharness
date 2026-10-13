@@ -7,6 +7,7 @@ import '../core/config.dart';
 import '../core/models.dart';
 import '../core/test_run.dart';
 import '../logging/http_log.dart';
+import '../viewer/device_ack.dart';
 import '../viewer/device_log.dart';
 import '../viewer/device_log_sync.dart' show DeviceLogAppendAnswer, DeviceLogFetched;
 import '../ws/local_daemon_transport.dart';
@@ -133,29 +134,18 @@ class ApiClient {
     return unwrapApiResponse(res) as Map<String, dynamic>?;
   }
 
-  // -- Agent Messages: which desk tabs let their harnesses message each other (proxied like the desk) --
+  // -- Agent Messages: the account's desk tabs, as the daemon proxies them like the desk --
 
-  /// `{revision, machines, tabs: [{id, name, enabled, panes}]}` (backend routes/agentMessages.ts). Null
-  /// when the daemon or backend predates Agent Messages (404): the app then offers none. Signed out
-  /// (401) or a backend out of reach (503) throws [ApiException], a moment the app waits out.
+  /// `{revision, machines, tabs: [{id, name, panes}]}` (backend routes/agentMessages.ts). The app
+  /// reads it only to know the daemon and backend have Agent Messages, which Show Agent Messages
+  /// waits for: each tab's `enabled` a backend may still answer is not read, since whether agents
+  /// may message is the account's `agent_messages` experiment now. Null when the daemon or backend
+  /// predates Agent Messages (404): the app then offers none. Signed out (401) or a backend out of
+  /// reach (503) throws [ApiException], a moment the app waits out.
   Future<Map<String, dynamic>?> readAgentMessageTabs() async {
     final res = await _dio.get('/api/agent-messages');
     if (res.statusCode == 404) return null;
     return unwrapApiResponse(res) as Map<String, dynamic>?;
-  }
-
-  /// Turn Agent Messages on or off for one tab; answers `{tabId, enabled, revision}`. A local write
-  /// to the daemon, like [deskOps].
-  Future<Map<String, dynamic>> setAgentMessages(
-    String tabId,
-    bool enabled,
-  ) async {
-    final res = await _dio.patch(
-      '/api/agent-messages/tabs/${Uri.encodeComponent(tabId)}',
-      data: {'enabled': enabled},
-      options: Options(headers: {'x-adapter-local': '1'}),
-    );
-    return Map<String, dynamic>.from(unwrapApiResponse(res) as Map);
   }
 
   // -- account-wide Experimental preferences --
@@ -310,6 +300,37 @@ class ApiClient {
     }
   }
 
+  /// `GET /api/device-keys/acks?since=` — the acknowledgements ("It's mine" said on another device,
+  /// `viewer/device_ack.dart`) of keys added after entry [since], unchecked: the device log judges each.
+  /// Null when there are none to read (a backend from before them, signed out, or unreachable). A short
+  /// deadline: while it runs, the read of the log that asked holds back its "New device" notices.
+  Future<List<Object?>?> deviceAcks(int since) async {
+    try {
+      final res = await _dio.get(
+        '/api/device-keys/acks',
+        queryParameters: {'since': since},
+        options: Options(receiveTimeout: const Duration(seconds: 5)),
+      );
+      if (res.statusCode != 200) return null;
+      final data = unwrapApiResponse(res);
+      final acks = data is Map ? data['acks'] : null;
+      return acks is List ? acks.cast<Object?>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// `POST /api/device-keys/acks` — share this app's "It's mine" for a device with the account's other
+  /// devices. False when the backend did not keep it (or predates it).
+  Future<bool> postDeviceAck(DevAck ack) async {
+    try {
+      final res = await _dio.post('/api/device-keys/acks', data: {'ack': ack.toJson()});
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// `GET /api/device-keys/seen` — when each key last opened a session, `{pub: ms}`; empty when it
   /// cannot be read. A hint for offering to remove apps not used in a long while.
   Future<Map<String, int>> deviceKeysSeen() async {
@@ -374,12 +395,14 @@ class ApiClient {
 
   /// `POST /api/devices/dismiss` — new devices marked as seen: [pub] one, neither argument every
   /// one, [pubs] exactly those (what the person was shown), [baseline] the "Already on your account"
-  /// list. False when the daemon predates the route (an old one answers a `pubs` body with an error).
-  Future<bool> daemonDismissDevices({String? pub, List<String>? pubs, bool baseline = false}) async {
+  /// list. [confirm]: "It's mine" for the one device named — the daemon shares it with the account's
+  /// other devices (one that predates it ignores the field and only marks it seen). False when the
+  /// daemon predates the route (an old one answers a `pubs` body with an error).
+  Future<bool> daemonDismissDevices({String? pub, List<String>? pubs, bool baseline = false, bool confirm = false}) async {
     try {
       final res = await _dio.post(
         '/api/devices/dismiss',
-        data: {'pub': ?pub, 'pubs': ?pubs, if (baseline) 'baseline': true},
+        data: {'pub': ?pub, 'pubs': ?pubs, if (baseline) 'baseline': true, if (confirm) 'confirm': true},
         options: Options(headers: {'x-adapter-local': '1'}),
       );
       return res.statusCode == 200;

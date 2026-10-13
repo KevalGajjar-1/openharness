@@ -65,7 +65,7 @@ describe('the recaps in their own process', () => {
     await vi.waitFor(() => expect(core.said('summary')).toHaveLength(1))
     expect(core.query).toHaveBeenCalledWith('lastTurn', { sessionId: 's1' })
     expect(core.said('summary')[0]).toMatchObject({ frame: { type: 'turn_summary', agentId: 'a1', dbSessionId: 's1' } })
-    expect(core.said('card').map(({ frame }) => frame.payload.kind)).toEqual(['processing', 'done', 'summary'])
+    expect(core.said('card').map(({ frame }) => frame.payload.kind)).toEqual(['turn_started', 'processing', 'done', 'summary'])
     expect(core.said('recaps').at(-1)).toMatchObject({ sessionId: 's1', recaps: { busy: false, history: [expect.any(String)] } })
     // A change is said once: a beat that changes nothing says nothing more.
     const before = core.said('recaps').length

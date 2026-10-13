@@ -465,7 +465,7 @@ class MainFlutterWindow: NSWindow {
 ///
 /// ```
 /// Add Phone…
-/// Customize Harness
+/// Appearance…
 /// Settings…            ⌘,
 /// ──────────
 /// Check for Updates…
@@ -481,7 +481,7 @@ class MainFlutterWindow: NSWindow {
 /// ```
 ///
 /// Two places add to this menu — this window (Check for Updates) and the title
-/// bar (Settings, Customize, Add Phone) — in an order AppKit decides, so each
+/// bar (Settings, Appearance, Add Phone) — in an order AppKit decides, so each
 /// calls this once it is done, and it rebuilds the whole menu from what is
 /// there. Rows are found by what they do, not where they are; anything it does
 /// not know keeps a place above Quit.

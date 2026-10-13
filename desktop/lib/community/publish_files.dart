@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'hub_contract.dart';
+import 'output_check.dart';
 
 const _skippedFolders = {
   'node_modules',
@@ -94,8 +95,11 @@ class NeedsOutput extends FormatException {
 ///
 /// The output is [viewer] (the page a fork was published with), or else `preview.html`, skipping a
 /// page still as it is in [original] (the fork's files as they arrived), which shows the original.
-/// Any other page is never assumed: an app's `index.html` usually needs files the Hub's sandbox
-/// cannot load. Without a page of its own, the output is [picture], a page showing the viewer.
+/// Failing both, a page the session made is the output only when it runs on its own: one at the top
+/// of the project (`index.html` first), or else an `index.html` in a folder of its own (an agent often
+/// puts a game in `<name>/`), shallowest first. An app's `index.html` usually needs files the Hub's
+/// sandbox cannot load, while a one-file game or page shows as it is. Without a page of its own, the
+/// output is [picture], a page showing the viewer.
 Future<ProjectSelection> selectProjectFiles(
   String folder, {
   String? marker,
@@ -105,17 +109,11 @@ Future<ProjectSelection> selectProjectFiles(
 }) async {
   final root = Directory(await Directory(folder).resolveSymbolicLinks());
   final (candidates, scannedAll) = await _candidates(root);
-  final (own, stale) = await _output(candidates, viewer, original);
+  final output = await _output(candidates, viewer, original);
   final shown =
-      own ??
+      output.page ??
       (picture == null
-          ? throw NeedsOutput(
-              stale != null
-                  ? '${stale.path} is still the original\'s and has none of your changes. '
-                        'Ask your agent to update it to show the current result, then publish again.'
-                  : 'The Hub shows what a session made. Ask your agent for a preview.html that runs '
-                        'on its own (for a review, a page presenting it), then publish again.',
-            )
+          ? throw NeedsOutput(_needsOutputMessage(output))
           : _Candidate.page('preview.html', picture));
   final rest =
       candidates.where((c) => c.path != shown.path && c.path != marker).toList()
@@ -162,26 +160,98 @@ Future<ProjectSelection> selectProjectFiles(
   );
 }
 
-/// The page readers see, and the original's page passed over on the way, if any.
-Future<(_Candidate?, _Candidate?)> _output(
+/// A page that would show readers less than it shows here, and what it loads that the Hub cannot.
+typedef _NeedsFiles = ({String path, List<String> loads});
+
+/// The page readers see, the original's page passed over on the way, and a page passed over for
+/// needing other files, if any.
+typedef _Output = ({
+  _Candidate? page,
+  _Candidate? stale,
+  _NeedsFiles? needsFiles,
+});
+
+Future<_Output> _output(
   List<_Candidate> candidates,
   String? viewer,
   Map<String, String> original,
 ) async {
   _Candidate? stale;
-  for (final name in {?viewer, 'preview.html'}) {
+  _NeedsFiles? needsFiles;
+  final named = {?viewer, 'preview.html'};
+  for (final name in named) {
     final page = candidates
         .where((c) => c.path == name && name.endsWith('.html'))
         .firstOrNull;
     if (page == null) continue;
-    if (original.containsKey(name) && await page.content() == original[name]) {
+    if (await _isOriginal(page, original)) {
       stale ??= page;
       continue;
     }
-    return (page, stale);
+    return (page: page, stale: stale, needsFiles: null);
   }
-  return (null, stale);
+  for (final page in _madePages(candidates, skip: named)) {
+    if (await _isOriginal(page, original)) {
+      stale ??= page;
+      continue;
+    }
+    // Measured before reading, as every file is: a page over the limit is never the output.
+    if (await page.sentBytes() > hubMaxFileChars) continue;
+    final content = await page.content();
+    if (content == null) continue;
+    final loads = outsideResources(content);
+    if (loads.isEmpty) return (page: page, stale: stale, needsFiles: null);
+    needsFiles ??= (path: page.path, loads: loads);
+  }
+  return (page: null, stale: stale, needsFiles: needsFiles);
 }
+
+/// Pages that may be the session's output, other than [skip]: the top level's (`index.html` first,
+/// then by name), then each folder's `index.html`, shallowest first, then by path.
+List<_Candidate> _madePages(
+  List<_Candidate> candidates, {
+  required Set<String> skip,
+}) {
+  int rank(_Candidate c) =>
+      c.depth == 0 ? (c.path == 'index.html' ? 0 : 1) : 1 + c.depth;
+  return candidates
+      .where(
+        (c) =>
+            !skip.contains(c.path) &&
+            (c.depth == 0
+                ? p.extension(c.path).toLowerCase() == '.html'
+                : p.basename(c.path) == 'index.html'),
+      )
+      .toList()
+    ..sort(
+      (a, b) =>
+          rank(a) != rank(b) ? rank(a) - rank(b) : a.path.compareTo(b.path),
+    );
+}
+
+/// A fork's page still as it arrived, which shows the original rather than this session's result.
+Future<bool> _isOriginal(_Candidate page, Map<String, String> original) async =>
+    original.containsKey(page.path) &&
+    await page.content() == original[page.path];
+
+/// What to ask the agent for when the project has no page of its own to show.
+String _needsOutputMessage(_Output output) {
+  final stale = output.stale, needsFiles = output.needsFiles;
+  if (stale != null) {
+    return '${stale.path} is still the original\'s and has none of your changes. '
+        'Ask your agent to update it to show the current result, then publish again.';
+  }
+  if (needsFiles != null) {
+    return '${needsFiles.path} loads ${_listed(needsFiles.loads)}, which the Hub cannot reach. '
+        'Ask your agent for a preview.html with everything inside it, then publish again.';
+  }
+  return 'The Hub shows what a session made. Ask your agent for a preview.html that runs '
+      'on its own (for a review, a page presenting it), then publish again.';
+}
+
+String _listed(List<String> items) =>
+    items.take(4).join(', ') +
+    (items.length > 4 ? ' and ${items.length - 4} more' : '');
 
 Future<(List<_Candidate>, bool)> _candidates(Directory root) async {
   final found = <_Candidate>[];

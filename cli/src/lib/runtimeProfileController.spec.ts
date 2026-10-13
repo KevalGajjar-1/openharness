@@ -238,6 +238,27 @@ describe('runtime pane parsing', () => {
       .toMatchObject({ idle: false, draft: true })
   })
 
+  it('reads OpenCode 2\'s lighter grey placeholder as a placeholder, not a draft', () => {
+    // Copied off a brand-new OpenCode 2.0.24 pane (2026-10-12): the placeholder is
+    // `38;2;180;180;180` over the box's `48;2;25;25;25`, one step lighter than 1.18's 128, and just
+    // above the grey this reader took for muted (≤ 0xb0). A new harness read as holding a draft, was
+    // never idle, and switching its model came back AGENT_BUSY until a first message cleared it.
+    const BOX = '\u001b[48;2;25;25;25m'
+    const WHITE = '\u001b[38;2;255;255;255m'
+    const HINT = '\u001b[38;2;180;180;180m'
+    const pane = (composer: string) => [
+      `  \u001b[38;2;178;148;187m┃${WHITE}${BOX}  ${composer}${WHITE}     \u001b[49m`,
+      `  \u001b[38;2;178;148;187m┃${WHITE}${BOX}  \u001b[38;2;178;148;187mBuild${WHITE} ${HINT}·${WHITE} DeepSeek-V4-Flash-0731\u001b[49m`,
+      '  \u001b[38;2;178;148;187m╹\u001b[38;2;25;25;25m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+    ].join('\n')
+
+    expect(inspectRuntimePane('opencode', pane(`${HINT}Ask anything… "Fix a TODO in the codebase"`)))
+      .toMatchObject({ idle: true, draft: false })
+    // ⚠️ Still the direction that must never be wrong: what the user types is the composer's white.
+    expect(inspectRuntimePane('opencode', pane(`${WHITE}switch me please`)))
+      .toMatchObject({ idle: false, draft: true })
+  })
+
   it('reads copilot, whose composer carries no marker while its sent messages do', () => {
     // Copied off a live pane. Copilot echoes every message the user has ALREADY SENT into the
     // transcript as `❯ <text>` in full brightness, and draws its composer as a `┃` box that carries

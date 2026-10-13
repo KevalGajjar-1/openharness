@@ -12,8 +12,11 @@ retired; only the host routes below were kept.
 |---|---|
 | `/`, `/s/:id`, `/auth/callback`, `/callback` | The Flutter app (`public/harness-web/index.html`, via `rewrites()` in `next.config.js`) |
 | `/download` (and `/install` → it) | Install page: CLI command and desktop downloads |
+| `/app` | The phone app's download code: an iPhone or iPad is redirected to the App Store and an Android device to Google Play, by user agent (`src/lib/phoneApp.ts`); anything else gets both stores |
 | `/pair` | Phone setup guidance — the mobile app and the desktop "add phone" dialog link here |
 | `/os` | The Harness operating system landing page: plain HTML/CSS, local fonts and screenshots in `public/os/` |
+| `/agents` | Harness for agents: install, the agent commands with examples and exit codes, the plugin and skill. One plain HTML file, `public/agents/index.html`, with no script |
+| `/llms.txt` | The [llms.txt](https://llmstxt.org) summary for agents, `public/llms.txt` |
 | `/os/latest` | Redirect to the newest complete published OS release; OS tags only, stable preferred, five-minute server lookup cache |
 | `/desktop` | Desktop download page; offers the build for the visitor's OS and CPU (`src/lib/desktopPlatform.ts`), with links to every other build and the CLI command |
 | `/hub`, `/hub/following`, `/hub/yours` | Public three-column gallery, followed creators, and your publications; `?q=`, `?category=` and `?sort=popular` narrow and order them |
@@ -27,6 +30,11 @@ retired; only the host routes below were kept.
 | `/flash-circle.sh` | The dial firmware flasher script |
 | `/install.sh`, `/cli/install.sh`, `/desktop/install.sh` | Redirect to the installers on `cdn.autonomous.ai` |
 | `ac.autonomous.ai`, `fleet.autonomous.ai` | Redirect to `harness.autonomous.ai` |
+
+`/agents` and `/llms.txt` describe commands agents run as written. `scripts/agents-site.spec.ts` checks every
+`harness` command on them against `cli/src/cli.ts`, the exit codes against the agent commands, and the install
+lines against `.claude-plugin/marketplace.json`; `scripts/check-agents-site.mjs` checks the built server serves
+both unchanged. Change them with the CLI and the [harness skill](../plugins/harness/skills/harness/SKILL.md).
 
 The CLI installer is `cli/scripts/install.sh`. The desktop installer's source is
 `scripts/desktop-install.sh` here, published with `scripts/upload-desktop-install-sh.sh`.
@@ -111,11 +119,21 @@ transferred. Nothing becomes public until the creator reviews the output, source
 and clicks Publish. A draft survives the existing sign-in flow; repeated submission uses one
 publication ID. Remote projects and older apps can use the project-folder picker or import
 `OPEN-HARNESS.json`. The output is the project's `preview.html` (or the page a fork arrived with,
-once changed). Without one, as for a native result such as a Typst PDF or a Blender model, the
+once changed), or else a page the session made that loads nothing the sandbox cannot reach, such as
+a one-file game: a top-level page (`index.html` first), then a folder's `index.html`. Without one, as for a native result such as a Typst PDF or a Blender model, the
 desktop asks the machine's daemon for a picture of the harness's viewer (`viewer_surface`, headless
 Chrome) and publishes it as `preview.html` and the cover; a fork still opens the real viewer. The first version requires a self-contained HTML preview, up to 30 files/6 MB;
 hidden configuration, symlinks and installed dependencies are excluded. Conversation tails may be
-incomplete and the review form says so. `/explore` links remain compatible with `/hub`.
+incomplete and the review form says so. A draft that arrives from Desktop or a bundle is translated
+into English once the creator is signed in (`POST /api/community/translate`: title, description and
+the people's and agent's turns; tool output stays as it is), and the form can switch back to the
+original before publishing. `/explore` links remain compatible with `/hub`.
+
+What people publish is HTML and JavaScript, and Cloudflare's managed rules in front of the Hub and
+its API refuse a request body with raw `<script>` in it. So bodies travel gzipped: Desktop hands
+off the draft as a `draft.json.gz` file, `communityRequest` sends every body as `application/gzip`,
+the proxy forwards those bytes unchanged, and the backend unpacks them (bounded) before validating
+(`backend/src/lib/gzipJson.ts`). Plain JSON bodies and an older Desktop's text field still work.
 
 Backend reads are public; likes, comments, following, publication, and unpublication require SSO.
 Counts are persisted, like/follow writes are idempotent, comment retries have per-user request IDs,

@@ -48,7 +48,7 @@ int main(void) {
         if (!pod_pet_for(e)) for (int side = 40; side <= 720; side++) assert(pod_logo_find(e, pod_logo_cover_size(side)));
     }
     assert(pod_logo_find("cursor", 99) == NULL && pod_logo_find("nope", 28) == NULL && pod_logo_find(NULL, 28) == NULL);
-    assert(pod_logo_cover_size(132) == 72 && pod_logo_cover_size(270) == 72 && pod_logo_cover_size(230) == 72 && pod_logo_cover_size(260) == 72 && POD_LOGO_NSIZES == 2);
+    assert(pod_logo_cover_size(132) == 72 && pod_logo_cover_size(270) == 72 && pod_logo_cover_size(230) == 72 && pod_logo_cover_size(260) == 72 && POD_LOGO_NSIZES == 4);
     for (unsigned i = 0; i < pod_mark_count; i++) assert(strlen(pod_marks[i].engine) < 12);   // fits pod_agent_t.engine[12]
     puts("pod assets ok");
     return 0;

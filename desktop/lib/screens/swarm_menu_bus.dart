@@ -84,9 +84,9 @@ class SwarmMenuState extends ChangeNotifier {
   bool canGoBack = false;
   bool canGoForward = false;
 
-  /// Whether Agent Messages is on in the active tab; null where it has none
-  /// (the Store). File's Agent Messages row shows it as a checkmark.
-  bool? agentMessages;
+  /// Whether the active tab has an Agent Messages log to show: not the Store,
+  /// and not with an older CLI or backend. File's Show Agent Messages needs it.
+  bool canShowAgentMessages = false;
   List<SwarmMenuEntry> history = const [];
   List<SwarmMenuEntry> closedHistory = const [];
 
@@ -109,7 +109,7 @@ class SwarmMenuState extends ChangeNotifier {
         canClosePane = args['canClosePane'] as bool? ?? false;
         canGoBack = args['canGoBack'] as bool? ?? false;
         canGoForward = args['canGoForward'] as bool? ?? false;
-        agentMessages = args['activeAgentMessages'] as bool?;
+        canShowAgentMessages = args['canShowAgentMessages'] as bool? ?? false;
         history = _parseEntries(args['history'], closed: false);
         closedHistory = _parseEntries(args['closedHistory'], closed: true);
         paneActions = {
@@ -134,7 +134,7 @@ class SwarmMenuState extends ChangeNotifier {
     canClosePane = false;
     canGoBack = false;
     canGoForward = false;
-    agentMessages = null;
+    canShowAgentMessages = false;
     history = const [];
     closedHistory = const [];
     paneActions = const {};

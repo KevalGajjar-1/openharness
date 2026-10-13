@@ -110,7 +110,15 @@ describe('relaunch helpers', () => {
     }), 'a1', expect.any(Function), undefined)
     const grid = { networkId: 'grid-1', networkName: 'Home grid' }
     await helpers.relaunchOverrides(session({ dsh: undefined, dshRuntime: undefined, agent: undefined } as Partial<RegisteredSession>), { gridLaunch: grid } as never)
-    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ dsh: null, agent: null, gridLaunch: grid }), 'a1', expect.any(Function), undefined)
+    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ dsh: null, agent: null, startedBy: null, gridLaunch: grid }), 'a1', expect.any(Function), undefined)
+  })
+
+  it('keeps who started it from the row, so a harness another agent started keeps its pull request line', async () => {
+    const { deps, helpers } = setup()
+    const grid = { networkId: 'grid-1', networkName: 'Home grid' }
+    // A retarget's source is the new grid alone: who started the harness is still the row's.
+    await helpers.relaunchOverrides(session({ startedBy: 'agent' }), { gridLaunch: grid } as never)
+    expect(buildLaunchOverrides).toHaveBeenLastCalledWith(deps.launchOverridesDeps, 'claude', expect.objectContaining({ startedBy: 'agent', gridLaunch: grid }), 'a1', expect.any(Function), undefined)
   })
 
   it('records the web-search decision a relaunch made, when it made one', () => {

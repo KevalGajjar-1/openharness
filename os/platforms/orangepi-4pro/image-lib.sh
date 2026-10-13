@@ -3,7 +3,6 @@
 
 MNT=$(mktemp -d)
 LOOP=
-MADE_NODE=
 
 release_image() {
     set +e
@@ -19,35 +18,33 @@ release_image() {
     for m in dev/pts dev proc sys; do mountpoint -q "$MNT/$m" && umount "$MNT/$m"; done
     mountpoint -q "$MNT" && umount "$MNT"
     [[ -n $LOOP ]] && losetup -d "$LOOP"
-    [[ -n $MADE_NODE ]] && rm -f "$MADE_NODE"
     rmdir "$MNT" 2>/dev/null
     LOOP=
-    MADE_NODE=
     RESOLV=
 }
 RESOLV=
 trap release_image EXIT
 
 # attach_image IMAGE [GROW]: GROW (e.g. +3G) enlarges the file and its root filesystem first.
+# The partition table is edited in the file and partition 1 attached by its offset, so neither
+# step needs the kernel to rescan a loop device: a container (build-docker.sh) cannot.
 attach_image() {
-    local image=$1 grow=${2:-} part
-    [[ -z $grow ]] || truncate -s "$grow" "$image"
-    LOOP=$(losetup -fP --show "$image")
-    [[ -z $grow ]] || parted -s "$LOOP" resizepart 1 100%
-    partprobe "$LOOP" || true
-    part=${LOOP}p1
-    if [[ ! -b $part ]]; then
-        # A container (build-docker.sh) has no udev to create partition nodes.
-        local major minor
-        IFS=: read -r major minor < "/sys/class/block/${LOOP#/dev/}p1/dev"
-        mknod "$part" b "$major" "$minor"
-        MADE_NODE=$part
-    fi
+    local image=$1 grow=${2:-} start size
     if [[ -n $grow ]]; then
-        e2fsck -fy "$part" >/dev/null || true
-        resize2fs "$part" >/dev/null
+        truncate -s "$grow" "$image"
+        parted -s "$image" resizepart 1 100%
     fi
-    mount "$part" "$MNT"
+    read -r start size < <(sfdisk -J "$image" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+part = table["partitions"][0]
+print(part["start"] * table.get("sectorsize", 512), part["size"] * table.get("sectorsize", 512))')
+    LOOP=$(losetup -f --show --offset "$start" --sizelimit "$size" "$image")
+    if [[ -n $grow ]]; then
+        e2fsck -fy "$LOOP" >/dev/null || true
+        resize2fs "$LOOP" >/dev/null
+    fi
+    mount "$LOOP" "$MNT"
     for m in dev dev/pts proc sys; do mount --bind "/$m" "$MNT/$m"; done
     # Network for the chroot, and no service starts from package scripts; both undone on release.
     if [[ -e $MNT/etc/resolv.conf || -L $MNT/etc/resolv.conf ]]; then

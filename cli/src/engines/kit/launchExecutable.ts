@@ -1,7 +1,7 @@
 /** A launch resolves once, then keeps that executable through probes and dispatch. */
 import { execFile } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { accessSync, closeSync, constants, openSync, readSync, statSync } from 'node:fs'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { engineBin, enginePathOverride } from '../../lib/engineBin.js'
 import { engineInstallPaths, engineInstallRecipe, type EngineInstallRecipe } from '../../lib/engineInstall.js'
 import { engineShellArgv, interactiveEngineShell } from '../../lib/engineLaunch.js'
@@ -60,10 +60,12 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
   const environment = await launchEnvironment(shell)
   if (!environment || !environment.HOME || !isAbsolute(environment.HOME)) return held('Waiting to read the engine’s launch environment.')
   const command = engineBin(engine), override = enginePathOverride(engine)
-  const entries = environment.PATH?.split(delimiter) ?? []
-  if (entries.length === 0 || entries.length > 256 || entries.some(path => !isAbsolute(path) || path.length > 4096)) {
-    return held('Waiting for a bounded, absolute engine search path.')
-  }
+  // An entry that is not absolute names no fixed folder, so it is left out of the search, as an over-long
+  // one is. It is not a reason to hold: `~/.dotnet/tools` is on the login PATH of every Mac with the .NET SDK
+  // (its /etc/paths.d file says it that way), and 0.3.74 held every launch on such a computer for good.
+  const listed = environment.PATH?.split(delimiter) ?? []
+  const entries = listed.filter(path => isAbsolute(path) && path.length <= 4096)
+  if (entries.length === 0 || listed.length > 256) return held('Waiting for a bounded, absolute engine search path.')
   const recipe = override ? undefined : engineInstallRecipe(engine)
   const names = [...new Set([command, ...(recipe?.executable.names ?? [])])]
   const candidates = command.includes('/') ? [resolve(command)] : names.flatMap(name => entries.map(path => join(path, name)))
@@ -76,7 +78,7 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         try {
-          const paths = new NativePaths(new NativeEvidenceBudget(250))
+          const paths = new NativePaths(new NativeEvidenceBudget())
           if (paths.resolveSync(path, true)) return held('Waiting for the engine search path to stop changing.')
           // A dangling executable/ancestor alias is an existing user choice,
           // not evidence that installation is safe. Ordinary missing folders
@@ -90,7 +92,38 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
     }
     const executable = executableSnapshot(nativeVersionProbe({ args: [], output: /^$/, timeoutMs: 5_000 }, () => path))
     if (!executable) return held('Waiting for the selected engine executable to stop changing.')
-    return { state: 'ready', executable, environment }
+    return { state: 'ready', executable, environment: withNodeForScript(path, environment) }
   }
   return recipe ? { state: 'install', recipe, environment: environment as Record<string, string> } : held('Waiting for the configured engine executable to become available.')
+}
+
+/**
+ * An engine whose executable is a Node script (`#!/usr/bin/env node`: what `npm install -g` leaves for
+ * Codex, Claude Code and the other npm engines) needs a `node` on its PATH. Harness installs those with its
+ * own Node (lib/engineLaunch.ts `npmRuntimePrelude`; Desktop's setup too, bootstrap/agent_prefetch.dart) and
+ * never adds that Node to the person's PATH, so on a computer without a Node of its own the engine could
+ * not start: in a fresh Ubuntu VM (2026-10-11) Codex installed by the daemon failed its `--help` probe with
+ * "/usr/bin/env: ‘node’: No such file or directory" and every launch of it held for good, and a pane would
+ * have failed the same way. Only for such a script, and only when no directory of the launch PATH has a
+ * `node`, Harness's Node goes at the END of that PATH. The probe runs with this environment and the pane sets
+ * it again after its rc files, so both find the same Node; a Node the person has is never shadowed.
+ */
+export function withNodeForScript(path: string, environment: NodeJS.ProcessEnv, node: string = managedNodePath()): NodeJS.ProcessEnv {
+  const entries = environment.PATH?.split(delimiter) ?? []
+  const bin = dirname(node)
+  if (!isAbsolute(node) || bin.includes(delimiter) || entries.length >= 256 || !runsOnPathNode(path)) return environment
+  const executableFile = (file: string) => { try { accessSync(file, constants.X_OK); return statSync(file).isFile() } catch { return false } }
+  if (entries.some(entry => executableFile(join(entry, 'node')))) return environment
+  return { ...environment, PATH: [...entries, bin].join(delimiter) }
+}
+
+/** The script's first line names `env node` (or `env -S node …`) as its interpreter. */
+function runsOnPathNode(path: string): boolean {
+  let fd: number | undefined
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
+    const head = Buffer.alloc(256)
+    const line = head.subarray(0, readSync(fd, head, 0, head.length, 0)).toString('utf8').split('\n')[0]!
+    return /^#!\s*\S*\/env(?:\s+-S)?\s+node(?:\s|$)/.test(line)
+  } catch { return false } finally { if (fd !== undefined) closeSync(fd) }
 }

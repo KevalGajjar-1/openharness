@@ -96,6 +96,9 @@ export class CableFleet {
 
   get isConnected(): boolean { return [...this.entries.values()].some(e => e.session.isConnected) }
 
+  /** Is any connected dial asking for `turn.stats`? */
+  wantsStats(): boolean { return [...this.entries.values()].some(e => e.session.wantsStats) }
+
   start(): void {
     if (!this.stopped) return
     this.stopped = false
@@ -326,6 +329,8 @@ export class CableFleet {
   questionClose(...args: Parameters<Surface['questionClose']>) { return this.send('questionClose', ...args) }
   turnStarted(...args: Parameters<Surface['turnStarted']>) { return this.send('turnStarted', ...args) }
   turnStep(...args: Parameters<Surface['turnStep']>) { return this.send('turnStep', ...args) }
+  turnReply(...args: Parameters<Surface['turnReply']>) { return this.send('turnReply', ...args) }
+  turnStats(...args: Parameters<Surface['turnStats']>) { return this.send('turnStats', ...args) }
   turnDone(...args: Parameters<Surface['turnDone']>) { return this.send('turnDone', ...args) }
   summary(...args: Parameters<Surface['summary']>) { return this.send('summary', ...args) }
   turnError(...args: Parameters<Surface['turnError']>) { return this.send('turnError', ...args) }

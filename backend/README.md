@@ -77,6 +77,9 @@ make release-backend ARGS=--dry-run       # preview, tags/pushes nothing
 
 (equivalent to `bash backend/scripts/release-be.sh`, see that script for details).
 
+The script refuses a checkout that lacks the last `vX.Y.Z_backend` release's commit: it would deploy
+older code under a newer version. Update the checkout first; `ARGS=--allow-older` is for a rollback.
+
 ### Memory sizing and Redis limits
 
 The `backend` app runs as a pm2 cluster: every worker has its own V8 heap. `ecosystem.config.cjs`

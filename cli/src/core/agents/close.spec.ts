@@ -17,14 +17,15 @@ vi.mock('../../lib/closeAgentService.js', async (real) => {
 const row = (over: Partial<RegisteredSession> = {}) =>
   ({ agentId: 'a1', sessionId: 's1', engine: 'claude', cwd: '/work/app', registeredAt: 0, ...over }) as RegisteredSession
 
-function setup(over: Partial<ClosingDeps> = {}, advertised: RegisteredSession[] = []) {
+function setup(over: Partial<ClosingDeps> = {}, advertised: RegisteredSession[] = [], current = row()) {
   const deps: ClosingDeps = {
     readScreen: readInlineScreen,
-    registry: { advertised: vi.fn(() => advertised) } as unknown as ClosingDeps['registry'],
+    registry: { advertised: vi.fn(() => advertised), byAgent: vi.fn(() => current) } as unknown as ClosingDeps['registry'],
     cleanupTabs: { refresh: vi.fn(async () => {}), isHidden: vi.fn(() => true), assertHidden: vi.fn(async () => {}) },
     watcher: { pollSession: vi.fn(async () => {}) } as unknown as ClosingDeps['watcher'],
     captureTerminal: vi.fn(async () => 'screen'),
     sessionTurnState: vi.fn(() => false),
+    nativeRecoveryReady: vi.fn(() => true),
     openQuestions: { has: vi.fn(() => false) },
     terminals: { captureRetained: vi.fn(async () => ({ state: 'succeeded', value: 'scrollback' })) } as unknown as ClosingDeps['terminals'],
     sessionCheckpoints: { save: vi.fn(async () => {}) } as unknown as ClosingDeps['sessionCheckpoints'],
@@ -49,7 +50,35 @@ describe('closing agents no window shows', () => {
     expect(close.changed).toBe(deps.announceSession)
   })
 
+  it('knows a close of one already closed: not live, and kept stopped with the conversation the close names', () => {
+    const live = row({ agentId: 'live' })
+    const kept = row({ agentId: 'kept', sessionId: 's-kept', registeredAt: 5 })
+    const registry = { byAgent: vi.fn((id: string) => (id === 'live' ? live : undefined)) } as unknown as ClosingDeps['registry']
+    const stoppedAgents = { get: vi.fn((id: string) => (id === 'kept' || id === 'live' ? kept : null)), resumeReservedAt: vi.fn((_id: string): number | null => null) }
+    const { close } = setup({ registry, stoppedAgents })
+    const asked = (agentId: string, over: Record<string, string> = {}) => ({ agentId, sessionId: 's-kept', createdAt: new Date(5).toISOString(), mode: 'now' as const, ...over })
+    expect(close.closedAlready!(asked('kept'))).toBe(true)
+    // Asked before its conversation was known: the creation alone.
+    expect(close.closedAlready!(asked('kept', { sessionId: '' }))).toBe(true)
+    expect(close.closedAlready!(asked('kept', { sessionId: 's-other' }))).toBe(false)
+    expect(close.closedAlready!(asked('kept', { createdAt: new Date(6).toISOString() }))).toBe(false)
+    expect(close.closedAlready!(asked('live'))).toBe(false)
+    expect(close.closedAlready!(asked('gone'))).toBe(false)
+    // Being resumed: about to be live again, not closed.
+    stoppedAgents.resumeReservedAt.mockReturnValueOnce(1)
+    expect(close.closedAlready!(asked('kept'))).toBe(false)
+    // A record that cannot be read says nothing.
+    stoppedAgents.get.mockImplementationOnce(() => { throw new Error('unreadable') })
+    expect(close.closedAlready!(asked('kept'))).toBe(false)
+    // A core that keeps no stopped agents knows none closed.
+    expect(setup({ registry }).close.closedAlready!(asked('kept'))).toBe(false)
+  })
+
   describe('what an agent is doing', () => {
+    it('uses the registry and turn holds when the core has no separate native recovery gate', async () => {
+      expect(await setup({ nativeRecoveryReady: undefined }).close.activity(row())).toBe('idle')
+    })
+
     it('reads its newest lines first, then its screen, its turn and whether it is asking', async () => {
       const { deps, close } = setup()
       expect(await close.activity(row())).toBe('idle')
@@ -61,16 +90,18 @@ describe('closing agents no window shows', () => {
     })
 
     it('with no session yet, has no lines to read', async () => {
-      const { deps, close } = setup()
-      await close.activity(row({ sessionId: '' }))
+      const session = row({ sessionId: '' })
+      const { deps, close } = setup({}, [], session)
+      await close.activity(session)
       expect(deps.watcher.pollSession).not.toHaveBeenCalled()
     })
 
     it.each(['ENGINE_STALE_REPLY', 'ENGINE_UNAVAILABLE'])('reads once more after %s, once the restarted worker is linked again', async code => {
       vi.spyOn(console, 'log').mockImplementation(() => {})
       const pollSession = vi.fn().mockRejectedValueOnce(Object.assign(new Error(code), { code })).mockResolvedValue(undefined)
-      const { deps, close } = setup({ watcher: { pollSession } as unknown as ClosingDeps['watcher'] })
-      expect(await close.activity(row({ engine: 'codex' }))).toBe('idle')
+      const session = row({ engine: 'codex' })
+      const { deps, close } = setup({ watcher: { pollSession } as unknown as ClosingDeps['watcher'] }, [], session)
+      expect(await close.activity(session)).toBe('idle')
       expect(deps.engineReady).toHaveBeenCalledWith('codex', CLOSE_READ_RECONNECT_MS)
       expect(pollSession).toHaveBeenCalledTimes(2)
     })

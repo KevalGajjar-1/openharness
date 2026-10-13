@@ -448,11 +448,14 @@ describe('message', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('writes what a person typed into the agent the frame names, and reads no tab an older window still names', () => {
-    const inputs = createInput(deps().deps)
+    const typed = vi.fn()
+    const inputs = createInput({ ...deps().deps, typed })
     const submit = vi.spyOn(inputs.input, 'submit').mockImplementation(() => {})
     vi.spyOn(console, 'log').mockImplementation(() => {})
     inputs.messageRequest({ content: 'hello', agentId: 's1', tabId: 'swarm-a' })
     expect(submit.mock.calls).toEqual([['a1', 'hello', undefined]])
+    // The person sent it: a harness another agent started is theirs from then on (services/agentCleanup.ts).
+    expect(typed).toHaveBeenCalledWith('s1')
   })
 
   it('names the agent by agent id or session id, and drops a frame with no text or no agent', () => {

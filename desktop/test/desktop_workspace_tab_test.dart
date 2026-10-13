@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -35,6 +36,8 @@ Widget _host({
   VoidCallback? onClose,
   VoidCallback? onRename,
   bool enabled = true,
+  ValueListenable<bool> showShortcuts = const AlwaysStoppedAnimation(false),
+  Map<String, String?> shortcuts = const {},
 }) => RepaintBoundary(
   key: boundary,
   child: MaterialApp(
@@ -63,7 +66,7 @@ Widget _host({
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
-                          for (final tab in tabs)
+                          for (final (index, tab) in tabs.indexed)
                             Builder(
                               builder: (context) => SizedBox(
                                 width:
@@ -76,6 +79,12 @@ Widget _host({
                                   id: tab.name,
                                   label: tab.name,
                                   selected: tab.name == 'Desktop',
+                                  showShortcuts: showShortcuts,
+                                  shortcutHint: shortcuts.containsKey(tab.name)
+                                      ? shortcuts[tab.name]
+                                      : index < 9
+                                      ? '⌘${index + 1}'
+                                      : null,
                                   onSelect: enabled
                                       ? (onSelect ?? () {})
                                       : null,
@@ -187,8 +196,15 @@ void main() {
         addTearDown(tester.view.reset);
         grid.AppTheme.brightness.value = brightness;
         final boundary = GlobalKey();
+        final showShortcuts = ValueNotifier(false);
+        addTearDown(showShortcuts.dispose);
         await tester.pumpWidget(
-          _host(brightness: brightness, scale: scale, boundary: boundary),
+          _host(
+            brightness: brightness,
+            scale: scale,
+            boundary: boundary,
+            showShortcuts: showShortcuts,
+          ),
         );
         expect(tester.takeException(), isNull);
         if (scale == 1) {
@@ -217,12 +233,31 @@ void main() {
         await mouse.addPointer(location: const Offset(1260, 90));
         await tester.pump();
         await _capture(tester, boundary, 'tabs-${brightness.name}-$scale-rest');
+        showShortcuts.value = true;
+        await tester.pump();
+        for (var number = 1; number <= _eightTabs.length; number++) {
+          expect(find.text('⌘$number'), findsOneWidget);
+        }
+        expect(mark, findsNothing, reason: 'Command replaces the status');
+        expect(tester.getRect(_tab('Desktop')), tabBounds);
+        expect(_close('Desktop').hitTestable(), findsNothing);
+        expect(tester.takeException(), isNull);
+        await _capture(
+          tester,
+          boundary,
+          'tabs-${brightness.name}-$scale-command',
+        );
+        showShortcuts.value = false;
+        await tester.pump();
+        expect(find.text('⌘2'), findsNothing);
+        expect(mark, findsOneWidget);
+        expect(tester.getRect(_label('Desktop')), title);
         await mouse.moveTo(title.center);
         await tester.pumpAndSettle();
         expect(_close('Desktop').hitTestable(), findsOneWidget);
         expect(mark, findsOneWidget, reason: 'hover keeps the status');
-        // Eight tabs are narrow: the name moves left only as far as 💬 and ×
-        // need, never right.
+        // Eight tabs are narrow: the name moves left only as far as × needs,
+        // never right.
         expect(
           tester.getRect(_label('Desktop')).left,
           lessThanOrEqualTo(title.left),
@@ -304,8 +339,8 @@ void main() {
     final status = tester.getRect(find.byKey(const ValueKey('status:website')));
     expect(
       status.right,
-      lessThanOrEqualTo(close.left - DesktopWorkspaceTab.messagesWidth),
-      reason: 'revealed, the name and status clear 💬 and ×',
+      lessThanOrEqualTo(close.left),
+      reason: 'revealed, the name and status clear ×',
     );
     expect(
       tester.getRect(_label('website')).left,
@@ -336,7 +371,7 @@ void main() {
         tester.getSemantics(status).getSemanticsData().flagsCollection.isButton,
         isTrue,
       );
-      expect(find.text('⌘1'), findsNothing, reason: 'tabs show no shortcut');
+      expect(find.text('⌘1'), findsNothing, reason: 'Command is not held');
       Focus.of(tester.element(_label('Desktop'))).requestFocus();
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -362,13 +397,38 @@ void main() {
 
   testWidgets('a disabled tab reveals nothing', (tester) async {
     await tester.pumpWidget(
-      _host(tabs: const [(name: 'Notes', working: true)], enabled: false),
+      _host(
+        tabs: const [(name: 'Notes', working: true)],
+        enabled: false,
+        showShortcuts: const AlwaysStoppedAnimation(true),
+      ),
     );
+    expect(find.text('⌘1'), findsNothing);
     expect(find.byKey(const ValueKey('status:Notes')), findsOneWidget);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: tester.getCenter(_label('Notes')));
     await tester.pump();
     expect(_close('Notes').hitTestable(), findsNothing);
     await mouse.removePointer();
+  });
+
+  testWidgets('held hints follow remapped and unbound shortcuts', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        tabs: const [
+          (name: 'Desktop', working: true),
+          (name: 'Notes', working: true),
+        ],
+        showShortcuts: const AlwaysStoppedAnimation(true),
+        shortcuts: const {'Desktop': '⌃⌥⌘R', 'Notes': null},
+      ),
+    );
+    expect(find.text('⌃⌥⌘R'), findsOneWidget);
+    expect(find.text('⌘1'), findsNothing);
+    expect(find.text('⌘2'), findsNothing);
+    expect(find.byKey(const ValueKey('status:Desktop')), findsNothing);
+    expect(find.byKey(const ValueKey('status:Notes')), findsOneWidget);
   });
 }

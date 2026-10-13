@@ -20,6 +20,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "app/pro_voice.h"
+#include "display/pro_turn.h"
 #include "pod/pod_mem.h"
 #include "pod/pod_model.h"
 #include "pro_app_api.h"
@@ -158,7 +159,9 @@ static bool msg_settings(cJSON **root)
                            cJSON_AddBoolToObject(o, "muted", config_load_muted()) &&
                            cJSON_AddBoolToObject(o, "quiet", false) && cJSON_AddBoolToObject(o, "straightTitle", false) &&
                            cJSON_AddBoolToObject(o, "focusFace", false) && cJSON_AddBoolToObject(o, "scrollReversed", false) &&
-                           cJSON_AddBoolToObject(o, "round", false));
+                           cJSON_AddBoolToObject(o, "round", false) &&
+                           cJSON_AddBoolToObject(o, "screenTurned", config_load_turn(pro_turn_build_default())) &&
+                           cJSON_AddStringToObject(o, "uiSkin", config_load_skin(0) == 1 ? "console" : "classic"));
 }
 
 // Absent means unchanged. The whole set is checked before any of it is applied.
@@ -178,6 +181,15 @@ static void handle_settings_set(const cJSON *p)
     const cJSON *bright = cJSON_GetObjectItemCaseSensitive(p, "brightness");
     const cJSON *muted = cJSON_GetObjectItemCaseSensitive(p, "muted");
     const cJSON *lang = cJSON_GetObjectItemCaseSensitive(p, "voiceLang");
+    const cJSON *turned = cJSON_GetObjectItemCaseSensitive(p, "screenTurned");
+    if (turned && !cJSON_IsBool(turned)) error = "Screen turn is not valid.";
+    const cJSON *skin = cJSON_GetObjectItemCaseSensitive(p, "uiSkin");
+    int skin_id = -1;
+    if (skin) {
+        if (cJSON_IsString(skin) && skin->valuestring && !strcmp(skin->valuestring, "classic")) skin_id = 0;
+        else if (cJSON_IsString(skin) && skin->valuestring && !strcmp(skin->valuestring, "console")) skin_id = 1;
+        else error = "Interface is not valid.";
+    }
     if (cJSON_IsString(lang) && (!lang->valuestring || !lang->valuestring[0] || strlen(lang->valuestring) >= CFG_VLANG_MAX))
         error = "Language code is not valid.";
     if (!error) {
@@ -189,6 +201,14 @@ static void handle_settings_set(const cJSON *p)
         }
         if (cJSON_IsBool(muted) && !config_save_muted(cJSON_IsTrue(muted))) error = "Could not save.";
         if (cJSON_IsString(lang) && !config_save_voicelang(lang->valuestring)) error = "Could not save.";
+        if (cJSON_IsBool(turned)) {
+            if (config_save_turn(cJSON_IsTrue(turned))) pro_app_request_turn(cJSON_IsTrue(turned));
+            else error = "Could not save.";
+        }
+        if (skin_id >= 0) {
+            if (config_save_skin(skin_id)) pro_app_request_skin(skin_id);
+            else error = "Could not save.";
+        }
     }
     ESP_LOGI(TAG, "settings.set ok=%d muted=%d", error == NULL, (int)config_load_muted());
     cJSON *root = msg("settings.state");
@@ -211,6 +231,7 @@ static void send_hello(void)
     msg_string(&root, "swarms", "members-v1");
     msg_string(&root, "recap", "long-v1");
     msg_string(&root, "activity", "steps-v1");
+    msg_string(&root, "stats", "turn-v1");
     msg_string(&root, "player", "library-v1");
     msg_string(&root, "ota", "v1");
     char mac[24] = "";
@@ -550,6 +571,30 @@ static void handle_turn_activity(const char *id, const cJSON *p)
     if (step && step[0]) pro_app_turn(id, "step", step, -1);
 }
 
+// One optional count: absent is -1 (unknown); present must be a whole number 0..max, else the message is refused.
+static bool stat_of(const cJSON *p, const char *key, int max, int *out)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(p, key);
+    *out = -1;
+    if (!v) return true;
+    if (!cJSON_IsNumber(v) || !(v->valuedouble >= 0 && v->valuedouble <= max) ||
+        v->valuedouble != (double)(int)v->valuedouble) return false;
+    *out = (int)v->valuedouble;
+    return true;
+}
+
+static void handle_turn_stats(const char *id, const cJSON *p)
+{
+    int passed, failed, commits, tin, tout;
+    if (!stat_of(p, "testsPassed", 1000000, &passed) || !stat_of(p, "testsFailed", 1000000, &failed) ||
+        !stat_of(p, "commits", 1000000, &commits) || !stat_of(p, "tokensIn", 50000000, &tin) ||
+        !stat_of(p, "tokensOut", 50000000, &tout)) {
+        s_bad++;
+        return;
+    }
+    pro_app_turn_stats(id, passed, failed, commits, tin, tout);
+}
+
 static bool flag(const cJSON *p, const char *key) { return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(p, key)); }
 
 // restore is history filled back in, quiet is "the desktop already shows this agent", silent is a sub-agent's turn: the
@@ -840,6 +885,7 @@ static void handle_message(const cJSON *root)
         if (!strcmp(t, "turn.activity")) { handle_turn_activity(agent_id, p); return; }
         if (!strcmp(t, "turn.done")) { pro_app_turn(agent_id, "done", "", 0); return; }
         if (!strcmp(t, "turn.error")) { pro_app_turn(agent_id, "error", "", 0); return; }
+        if (!strcmp(t, "turn.stats")) { handle_turn_stats(agent_id, p); return; }
         if (!strcmp(t, "summary")) { handle_summary(agent_id, p); return; }
         if (!strcmp(t, "question")) { handle_question(agent_id, p); return; }
         if (!strcmp(t, "question.close")) { handle_question_close(agent_id, p); return; }

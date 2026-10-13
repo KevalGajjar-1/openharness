@@ -294,8 +294,130 @@ static void draw_test_tri_seam(void)
     }
 }
 
+// ht_pro_rect_aa: the corner pixels are a blend between the ground and the ink; the middle is the ink.
+// (x+1,y+1) of an r=16 corner is a whole pixel outside the circle, so the blended pixel is on the diagonal at (x+4,y+4).
+static void draw_test_rect_aa(void)
+{
+    const uint16_t ground = 0x2104, ink = 0xffff;
+    ht_scene_t s; ht_scene_clear(&s, 0);
+    CHECK(ht_pro_rect_aa(&s, 8, 8, 40, 40, 16, ink));
+    draw_over(&s, ground);
+    CHECK(px(8, 8) == ground && px(9, 9) == ground);
+    unsigned g = (px(12, 12) >> 5) & 63;
+    CHECK(px(12, 12) != ground && px(12, 12) != ink && g > ((ground >> 5) & 63) && g < 63);
+    CHECK(px(28, 28) == ink && px(8, 28) == ink && px(28, 8) == ink && px(47, 47) != ink);
+    CHECK(px(22, 8) != ground && px(22, 8) != ink && px(47, 28) == ink);
+    CHECK(!ht_pro_rect_aa(&s, 0, 0, 0, 5, 2, ink));
+    ht_scene_clear(&s, 0);   // radius 0 is a plain rectangle
+    CHECK(ht_pro_rect_aa(&s, 8, 8, 10, 10, 0, ink));
+    draw_over(&s, ground);
+    CHECK(px(8, 8) == ink && px(17, 17) == ink && px(18, 18) == ground);
+}
+
+// ---- v3 Task 4: the renderer speedups must not change a pixel. corner_cover_ref and ref_over are copies of the renderer's
+// code from before the fast path; the references below paint a run with them, the way the old rect_aa_raster did.
+static unsigned ref_isqrt(unsigned n)
+{
+    unsigned r = 0, bit = 1u << 30;
+    while (bit > n) bit >>= 2;
+    for (; bit; bit >>= 2) {
+        if (n >= r + bit) { n -= r + bit; r = (r >> 1) + bit; } else r >>= 1;
+    }
+    return r;
+}
+static unsigned corner_cover_ref(int rad, int px, int py)
+{
+    int vx = (px*2+1-2*rad)*8, vy = (py*2+1-2*rad)*8;
+    int cov = rad*16 - (int)ref_isqrt((unsigned)(vx*vx + vy*vy)) + 8;
+    return cov <= 0 ? 0 : cov >= 16 ? 16 : (unsigned)cov;
+}
+static uint16_t ref_over(uint16_t fg, uint16_t bg, unsigned a)
+{
+    if (a == 255) return fg;
+    unsigned b = 255 - a;
+    unsigned r = (fg >> 11) * a + (bg >> 11) * b + 128;
+    unsigned g = ((fg >> 5) & 63) * a + ((bg >> 5) & 63) * b + 128;
+    unsigned v = (fg & 31) * a + (bg & 31) * b + 128;
+    r = (r + (r >> 8)) >> 8; g = (g + (g >> 8)) >> 8; v = (v + (v >> 8)) >> 8;
+    return (uint16_t)((r << 11) | (g << 5) | v);
+}
+enum { BW = 128, BH = 96 };
+static uint16_t big_a[BW * BH], big_b[BW * BH];
+static void ref_aa_raster(const ht_run_t *r, ht_rect_t clip, uint16_t *out)   // the old rect_aa_raster, plain-AA runs
+{
+    int rad = r->radius;
+    int x0 = r->x > clip.x ? r->x : clip.x, x1 = r->x + r->w < clip.x + clip.w ? r->x + r->w : clip.x + clip.w;
+    int y0 = r->y > clip.y ? r->y : clip.y, y1 = r->y + r->pro_height < clip.y + clip.h ? r->y + r->pro_height : clip.y + clip.h;
+    for (int y = y0; y < y1; y++) {
+        int dy = y - r->y;
+        uint16_t *row = out + (y-clip.y)*clip.w - clip.x;
+        int cy = dy < rad ? dy : dy >= r->pro_height-rad ? r->pro_height-1-dy : -1;
+        for (int x = x0; x < x1; x++) {
+            int dx = x - r->x, cx = dx < rad ? dx : dx >= r->w-rad ? r->w-1-dx : -1;
+            unsigned cov = cx < 0 || cy < 0 ? 16 : corner_cover_ref(rad, cx, cy);
+            if (cov >= 16) row[x] = r->fg;
+            else if (cov) row[x] = ref_over(r->fg, row[x], cov*255/16);
+        }
+    }
+}
+static void ground_big(uint16_t *b) { for (int i = 0; i < BW * BH; i++) b[i] = (uint16_t)(0x2104 + (i * 7 & 0x3f)); }
+static const int SIZES_W[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 16, 17, 31, 32, 33, 64, 81, 120};
+static const int SIZES_H[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 16, 17, 31, 32, 33, 64, 80};
+static void draw_test_corner_cover_fast_path(void)
+{
+    ht_rect_t full = {0, 0, BW, BH}, cut = {7, 4, 90, 60};
+    for (int rad = 0; rad <= 40; rad++)
+        for (unsigned iw = 0; iw < sizeof SIZES_W / sizeof *SIZES_W; iw++)
+            for (unsigned ih = 0; ih < sizeof SIZES_H / sizeof *SIZES_H; ih++) {
+                int w = SIZES_W[iw], h = SIZES_H[ih];
+                ht_scene_t sc; ht_scene_clear(&sc, 0);
+                CHECK(ht_pro_rect_aa(&sc, 3, 2, w, h, rad, ht_rgb(0xe8a030)));
+                for (int c = 0; c < 2; c++) {
+                    ht_rect_t clip = c ? cut : full;
+                    ground_big(big_a); ground_big(big_b);
+                    ht_pro_raster(&sc.runs[0], clip, big_a);
+                    ref_aa_raster(&sc.runs[0], clip, big_b);
+                    if (memcmp(big_a, big_b, (size_t)clip.w * clip.h * 2)) {
+                        fprintf(stderr, "corner_cover differs: radius %d size %dx%d clip %d\n", rad, w, h, c);
+                        CHECK(0);
+                    }
+                }
+            }
+    checks++;
+}
+static void draw_test_rect_aa_stroke(void)
+{
+    ht_rect_t full = {0, 0, BW, BH}, cut = {7, 4, 90, 60};
+    uint16_t ink = ht_rgb(0x3a4a9a), fill = ht_rgb(0x111214);
+    for (int rad = 0; rad <= 40; rad++)
+        for (unsigned iw = 0; iw < sizeof SIZES_W / sizeof *SIZES_W; iw++)
+            for (unsigned ih = 0; ih < sizeof SIZES_H / sizeof *SIZES_H; ih++) {
+                int w = SIZES_W[iw], h = SIZES_H[ih];
+                ht_scene_t old, nu;   // the old way: the border fill, then the inset fill with the radius one smaller
+                ht_scene_clear(&old, 0); ht_scene_clear(&nu, 0);
+                ht_pro_rect_aa(&old, 3, 2, w, h, rad, ink);
+                ht_pro_rect_aa(&old, 4, 3, w - 2, h - 2, rad - 1, fill);
+                CHECK(ht_pro_rect_aa_stroke(&nu, 3, 2, w, h, rad, ink, fill));
+                CHECK(nu.count == 1);
+                for (int c = 0; c < 2; c++) {
+                    ht_rect_t clip = c ? cut : full;
+                    ground_big(big_a); ground_big(big_b);
+                    for (int i = 0; i < nu.count; i++) ht_pro_raster(&nu.runs[i], clip, big_a);
+                    for (int i = 0; i < old.count; i++) ref_aa_raster(&old.runs[i], clip, big_b);
+                    if (memcmp(big_a, big_b, (size_t)clip.w * clip.h * 2)) {
+                        fprintf(stderr, "stroke differs: radius %d size %dx%d clip %d\n", rad, w, h, c);
+                        CHECK(0);
+                    }
+                }
+            }
+    checks++;
+}
+
 int main(void)
 {
+    draw_test_corner_cover_fast_path();
+    draw_test_rect_aa_stroke();
+    draw_test_rect_aa();
     draw_test_cell_plain_and_packed();
     draw_test_edge_softening();
     draw_test_no_white_halo();

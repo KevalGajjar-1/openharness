@@ -3,7 +3,10 @@
  * call, the messages waiting in its pane's inbox (messages/inbox.ts) become the model's context before its next
  * request (`hookSpecificOutput.additionalContext` after PostToolUse: Claude Code 2.1.296, Codex 0.162.1). No
  * keystroke reaches the pane, so a draft or a permission dialog is never touched, and a teammate's words never
- * arrive as the person's.
+ * arrive as the person's. Each message also leaves one line in the pane for the person (`systemMessage`, which
+ * neither engine gives the model): Claude Code draws it as "PostToolUse:Bash says: ← lead: …", Codex as
+ * "↳ Hook · ← lead: …". Without it a tab's agents traded messages while their panes showed nothing (owner,
+ * 2026-10-12: "i don't see the messages in the panes").
  *
  * Its own command, apart from notify.mjs, which stays free of model-visible output (#684,
  * coreIsolation.spec.ts). The daemon writes the script itself, into the inbox root, rather than shipping a second
@@ -67,6 +70,7 @@ async function main() {
   const claimed = join(root, 'claimed')
   mkdirSync(claimed, { recursive: true, mode: 0o700 })
   const texts = []
+  const notices = []
   for (const name of names) {
     const file = join(dir, name)
     let item
@@ -79,12 +83,15 @@ async function main() {
     if (typeof item.session === 'string' && item.session && session && item.session !== session) continue
     try { renameSync(file, join(claimed, number + '-' + name)) } catch { continue }
     texts.push(item.text)
+    if (typeof item.notice === 'string' && item.notice) notices.push(item.notice)
   }
   try { rmdirSync(dir) } catch { /* something still waits, or another hook emptied it */ }
   if (!texts.length) return
   const event = typeof input?.hook_event_name === 'string' ? input.hook_event_name : 'PostToolUse'
+  // The person sees a line per message in the pane (systemMessage), the model reads them whole (additionalContext).
+  const output = { ...(notices.length ? { systemMessage: notices.join('\\n') } : {}), hookSpecificOutput: { hookEventName: event, additionalContext: texts.join('\\n\\n') } }
   // A pipe is written asynchronously on macOS: exit only once the engine has it all.
-  await new Promise((resolve) => process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: texts.join('\\n\\n') } }), resolve))
+  await new Promise((resolve) => process.stdout.write(JSON.stringify(output), resolve))
 }
 
 main().catch(() => {}).finally(() => process.exit(0))

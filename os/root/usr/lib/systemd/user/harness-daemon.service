@@ -20,6 +20,10 @@ TimeoutStartSec=150
 Restart=on-failure
 RestartSec=2
 KillMode=process
+# The core alone ends its own stop after 2.5 s (cli/src/core/stopDeadline.ts). An older CLI has no such
+# bound, and systemd's default 90 s held an update for all of it (2026-10-13). Its main process only, as
+# the CLI's own unit does: the agents in tmux outlive the kill.
+TimeoutStopSec=10
 
 [Install]
 WantedBy=default.target

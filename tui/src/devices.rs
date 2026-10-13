@@ -1128,7 +1128,7 @@ fn reach(app: &App, m: &crate::fleet::Machine) -> (&'static str, Color, String) 
     let spin = theme::spinner(app.tick);
     match &m.reach {
         _ if linking => (spin, theme::WARN, "connecting…".into()),
-        _ if m.local => ("✓", theme::ONLINE, "this computer".into()),
+        _ if m.local => ("✓", theme::ONLINE, "connected".into()),
         _ if !m.online() => ("·", theme::MUTED, "offline".into()),
         Reach::Ready => ("✓", theme::ONLINE, "connected".into()),
         Reach::Connecting => (spin, theme::WARN, "connecting…".into()),
@@ -1195,7 +1195,9 @@ fn account_row(app: &App) -> Row {
 
 fn machines_rows(app: &App) -> Vec<Row> {
     let mut rows = vec![account_row(app)];
-    let here = "This computer";
+    // This computer's section, under its name ("This computer" only until it has one).
+    let here = app.fleet.local_machine_name();
+    let here = here.as_str();
     let password = app.devices.password.as_ref();
     let set = password.and_then(|p| p.as_ref().ok()).and_then(|v| v.get("hasPassword")).and_then(Value::as_bool);
     let state = match password {
@@ -1768,7 +1770,9 @@ mod tests {
         let groups: Vec<&str> = picker.rows.iter().filter_map(|r| r.group.as_deref()).collect::<Vec<_>>();
         let mut seen: Vec<&str> = Vec::new();
         for g in groups { if seen.last() != Some(&g) { seen.push(g) } }
-        assert_eq!(seen, vec!["Account", "This computer", "Your machines", "Linked from here", "Add a machine", "Set up a server"], "each group once, in order");
+        // This computer's section is under its name once it has one ("studio" here), not "This computer".
+        assert_eq!(seen, vec!["Account", app.fleet.local_machine_name().as_str(), "Your machines", "Linked from here", "Add a machine", "Set up a server"], "each group once, in order");
+        assert!(!seen.contains(&"This computer"));
         assert!(picker.rows.iter().any(|r| r.id == "add:login" && r.label == "2. Sign in as dev+hn@example.com"), "the server steps name the account");
         // A machine opens its actions: no Remove for this computer, Connect for one not linked.
         go_to(&mut app, &format!("m:{REMOTE}"));
@@ -2397,7 +2401,7 @@ mod tests {
                 let (s, _) = screen(&mut app, w, h);
                 assert!(s.contains(view.title()), "{} at {w}x{h}:\n{s}", view.id());
                 match view {
-                    View::Machines => assert!(s.contains("This computer") && s.contains("Your machines") && s.contains("enter choose"), "{s}"),
+                    View::Machines => assert!(s.contains(&app.fleet.local_machine_name()) && !s.contains("This computer") && s.contains("Your machines") && s.contains("enter choose"), "{s}"),
                     View::Connect => assert!(s.contains("gpu-box") && s.contains("Not linked yet") && s.contains("enter choose"), "{s}"),
                     View::Phone if w == 80 => assert!(s.contains("to show the QR code") && app.devices.phone.drawn.get().is_none(), "too small says so:\n{s}"),
                     View::Phone => assert!(app.devices.phone.drawn.get().is_some(), "{s}"),

@@ -19,9 +19,13 @@ typedef struct {
     int16_t scroll;        // the first row shown (the Tabs grid's rows of covers, a tab's agents, a recap's lines)
 } pod_frame_t;
 
+// Which interface draws the model. Classic is the zero value, so a zeroed nav is Classic.
+typedef enum { POD_SKIN_CLASSIC = 0, POD_SKIN_CONSOLE = 1 } pod_skin_t;
+
 typedef struct {
     pod_frame_t stack[4];
     uint8_t depth;
+    pod_skin_t skin;       // the interface; pod_ui_set_skin sets it and resets the rest to the root
     uint32_t talk_started_ms, send_started_ms;
     char sent_agent[ID_MAX];
     pod_view_t talk_prev;  // AGENT or RECAP: the screen TALK was opened from (talk_over goes back to it)
@@ -43,6 +47,8 @@ typedef enum {
     POD_A_TABS,         // from an agent screen: straight back to the Tabs root (from TALK it aborts first)
     POD_A_INBOX,        // the bell: push the Inbox (from anywhere but TALK and the Inbox itself)
     POD_A_OPEN_NOTIF,   // arg: index into model->unread, from the Inbox: open that agent (an Agent/Recap frame over the Inbox) and mark it read
+    POD_A_ATTENTION,    // Console chip: follow to the next asking agent after the current one, in Recent order (wraps; none: nothing)
+    POD_A_FOLLOW,       // arg: index into model->agents: open that agent from anywhere (Inbox rows with no unread entry); the glue resolves the id
     POD_A_SCROLL        // arg: signed delta added to the top frame's scroll (clamped to >= 0): rows, whatever the screen draws as one.
 } pod_action_t;
 

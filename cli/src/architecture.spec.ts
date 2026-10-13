@@ -408,7 +408,7 @@ describe('the daemon\'s shape', () => {
     // are read with the session stores' declarations (lib/engineHomes.ts), data as well.
     for (const entry of ['lib/engineLaunch.ts', 'lib/launchOverrides.ts', 'engines/launches.ts', 'engines/kit/launchArgs.ts',
       'engines/kit/launchStartup.ts', 'dsh/adapters.ts', 'engines/launchPrep.ts', 'engines/kit/folderTrust.ts',
-      'engines/kit/resumeRepair.ts', 'dsh/runtime.ts', 'lib/apiInstructions.ts']) {
+      'engines/kit/resumeRepair.ts', 'dsh/runtime.ts', 'lib/apiInstructions.ts', 'engines/kit/attribution.ts', 'lib/agentAttribution.ts']) {
       expect([...closureOf(entry).keys()].filter(file => /^engines\/(claude|codex)\//.test(file) && !contracts.has(file)
         && !SESSION_STORES.has(file) && file !== 'engines/codex/hookContract.ts'), entry).toEqual([])
     }

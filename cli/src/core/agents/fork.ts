@@ -120,8 +120,9 @@ export function createAgentForker({
     // engines/codex/launch.ts) and the model it had before the grid (`-m`), and a profile gets
     // its hooks. A fork was launched without any of them, and came back on Codex's default model where a
     // restart of its source came back on the source's own (e2e/forks.e2e.ts). The harness and the named
-    // agent are the fork's own (a new runtime, above and below), so they are not rebuilt here.
-    const built = await relaunchOverrides(source, { ...source, dsh: null, agent: null }, owner, native, label)
+    // agent are the fork's own (a new runtime, above and below), so they are not rebuilt here. A fork is started by
+    // whoever forks it, not by the agent that started its source: its pull requests carry no line for that.
+    const built = await relaunchOverrides(source, { ...source, dsh: null, agent: null, startedBy: null }, owner, native, label)
     if (!current()) return changed
     if (!built.ok) return built
     if (built.overrides.native && prepareNative && !await prepareNative(built.overrides.native, owner,

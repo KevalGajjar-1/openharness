@@ -110,6 +110,19 @@ export function clearEnvArgs(sessionId: string, names: readonly string[]): strin
   return args
 }
 
+/**
+ * The names `tmux show-environment -g` lists [listing] with a value that [matches] names. A `-NAME` line
+ * is one already marked for removal, which tmux keeps out of every new pane itself.
+ */
+export function serverVariables(listing: string, matches: (name: string) => boolean): string[] {
+  return [...new Set(listing.split('\n').map((line) => /^([^-=\s][^=\s]*)=/.exec(line)?.[1]).filter((name): name is string => !!name && matches(name)))]
+}
+
+/** The argv for removing [names] from the tmux server's global environment, which every new pane starts from. */
+export function unsetServerEnvArgs(names: readonly string[]): string[] {
+  return names.flatMap((name, i) => [...(i ? [';'] : []), 'set-environment', '-g', '-u', name])
+}
+
 export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
   readonly name = 'tmux' as const
   readonly instanceId = 'tmux:default'
@@ -310,15 +323,17 @@ export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
     return terminalActionNotStarted('The waiting pane no longer has this adoption identity')
   }
 
-  async kill(runtime: TmuxRuntimeRef): Promise<TerminalActionResult> {
+  async kill(runtime: TmuxRuntimeRef, current?: () => boolean): Promise<TerminalActionResult> {
     if (!/^%\d+$/.test(runtime.paneId)) return terminalActionNotStarted('invalid tmux pane identity')
     // Discovered harnesses can share a tmux session with unrelated work. The
     // canonical pane id is the entire target; never widen this to kill-session.
     // The last pane gone closes its session, a notification to every control client: on a tmux before
     // 3.7, not while one attaches (tmuxControlGate.ts).
-    const ok = await inTmuxRoom('notify', () => new Promise<boolean>((resolve) => {
+    const ok = await inTmuxRoom('notify', () => new Promise<boolean | undefined>((resolve) => {
+      if (current && !current()) { resolve(undefined); return }
       run('tmux', ['kill-pane', '-t', runtime.paneId], { timeout: 5_000 }, (error) => resolve(!error))
     }))
+    if (ok === undefined) return terminalActionNotStarted('The harness changed before pane close')
     if (ok) return TERMINAL_ACTION_SUCCEEDED
     // The engine may have exited and removed its pane before the parallel PID
     // check completed. Only authoritative inventory makes that an idempotent success.
@@ -392,6 +407,25 @@ export class TmuxBackend implements TerminalBackend<TmuxRuntimeRef> {
       state: 'succeeded',
       value: new Map([...titles].map(([paneId, title]) => [terminalRouteKey({ backend: 'tmux', paneId }), title])),
     }
+  }
+
+  /**
+   * Remove every variable [matches] names from the tmux server's global environment, and say which.
+   *
+   * A tmux server keeps the environment it was started with as its global environment, and builds every
+   * new pane's from it (with the session's own on top). A server a core started before that core held
+   * harnessd's variables back (lib/harnessdEnv.ts), an earlier boot's or an older build's, hands them to
+   * every pane it makes until it is told to forget them, and it outlives the core. Nothing to do with no
+   * server: the next one starts from this core's environment, which no longer has them. Asked once, as
+   * the core takes the server over at start; a failure costs only this, never the start.
+   */
+  async unsetServerEnvironment(matches: (name: string) => boolean): Promise<string[]> {
+    const ask = (args: string[]) => new Promise<string | null>((resolve) => {
+      run('tmux', args, { timeout: 5_000 }, (error, stdout) => resolve(error ? null : stdout))
+    })
+    const names = serverVariables(await ask(['show-environment', '-g']) ?? '', matches)
+    if (!names.length) return []
+    return await ask(unsetServerEnvArgs(names)) === null ? [] : names
   }
 
   async inventory(): Promise<TerminalInventoryResult> {

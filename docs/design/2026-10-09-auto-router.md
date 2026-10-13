@@ -16,7 +16,7 @@ task goes and does it, without a list and without a question:
   permission mode last chosen for that agent), in the project and with the agent
   the router chose. A line says which. A project that cannot be read opens New
   Harness on the task instead of guessing.
-- **Nothing decided** — Jev cannot be reached (no key, offline, no credit) or the
+- **Nothing decided** — Jev cannot be reached (signed out, offline, out of credit) or the
   router fails: the box says so and sends nothing.
 
 There is no undo; the owner chose instant sends. Esc while the session's pane comes
@@ -75,9 +75,20 @@ elsewhere), so the bar stands. The log
 records the runner-up with every decision, to set these numbers from real use. The session the person last sent
 to (within ten minutes) is told to Jev, so a short follow-up finds it.
 
-The key is the person's OpenRouter key (`OPENROUTER_API_KEY`, `ori login`, or
-`~/.config/typesafe/credentials`). The router logs OpenRouter's reported cost of
-every answer.
+**Harness pays** (owner, 2026-10-11): at about $0.00017 a decision, a person who presses ⌘B a hundred
+times a day costs about $0.50 a month. A computer with no OpenRouter key of its own asks the backend's
+`POST /api/route/jev` (`backend/src/routes/jevRoute.ts`) through `core.account.backend`, so the core signs
+it and the router holds no credential. The backend asks Jev with Harness's key (`JEV_OPENROUTER_API_KEY`).
+The key never ships in the CLI, because this repository is public. The backend fixes the model, bounds a
+decision just above the largest the router builds (about 73 KB, 4 questions of 41 options), caps each
+account at 30 a minute and 1,000 a day and everyone at `JEV_DAILY_DECISIONS` a day (counted in Redis,
+shared by every process and pod), and logs the cost but never the words. The budget is the key's credit
+limit on OpenRouter; the OpenRouter account should keep prompt logging and training off, since every
+person's message and session descriptions now go out under it.
+
+A person with a key of their own (`OPENROUTER_API_KEY`, `ori login`, or
+`~/.config/typesafe/credentials`) still asks Jev directly with it, one hop shorter. The router logs
+OpenRouter's reported cost of every answer on that key.
 
 ## What was measured
 

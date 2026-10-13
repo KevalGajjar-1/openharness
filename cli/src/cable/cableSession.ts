@@ -261,6 +261,7 @@ import { withSelectedPassage, type SelectionCommand, type SelectionResult } from
 import type { VisitCommand, VisitResult } from './windowVisit.js'
 import type { FormCommand, FormResult } from './windowForm.js'
 import { deriveLongRecap, extendShortRecap } from '../lib/deviceRecap.js'
+import type { TurnStatsFields } from './turnStats.js'
 
 export interface RouteDecision {
   agentId: string
@@ -433,6 +434,10 @@ export interface DeviceSettings {
   focusFace: boolean
   scrollReversed: boolean
   round: boolean
+  /** Harness Pro only: the screen is mounted the other way up. Absent from round dials and Pro 0.1.0. */
+  screenTurned?: boolean
+  /** Harness Pro only: which interface the screen shows. Absent from round dials and older Pro firmware. */
+  uiSkin?: 'classic' | 'console'
   voiceLang: string
   /** Presence advertises companion.set support. Omitted by older firmware. */
   followCompanion?: boolean
@@ -515,6 +520,9 @@ export const openDialPort: PortOpener = async (onData, onClosed) => {
  * filled with defaults: a default is a value this computer invented, and the pane would then show a
  * setting the device does not have — the exact failure `settings.state` exists to prevent.
  */
+/** True when the device's settings carry a `uiSkin` at all (an older firmware has none and would ignore the patch). */
+const hasUiSkin = (value: unknown): boolean => typeof value === 'object' && value !== null && 'uiSkin' in value
+
 function readSettings(value: unknown): DeviceSettings | undefined {
   if (!value || typeof value !== 'object') return undefined
   const raw = value as Record<string, unknown>
@@ -524,6 +532,7 @@ function readSettings(value: unknown): DeviceSettings | undefined {
   if (typeof raw.character !== 'number' || !Number.isFinite(raw.character)) return undefined
   if (typeof raw.face !== 'number' || !Number.isFinite(raw.face)) return undefined
   if (typeof raw.voiceLang !== 'string') return undefined
+  if (raw.screenTurned !== undefined && typeof raw.screenTurned !== 'boolean') return undefined
   return {
     brightness: Math.max(0, Math.min(100, Math.round(raw.brightness))),
     character: Math.round(raw.character),
@@ -535,6 +544,8 @@ function readSettings(value: unknown): DeviceSettings | undefined {
     scrollReversed: raw.scrollReversed as boolean,
     round: raw.round as boolean,
     voiceLang: raw.voiceLang,
+    ...(raw.screenTurned !== undefined ? { screenTurned: raw.screenTurned as boolean } : {}),
+    ...(raw.uiSkin === 'classic' || raw.uiSkin === 'console' ? { uiSkin: raw.uiSkin as 'classic' | 'console' } : {}),
     ...(raw.companionProtocol === 2 ? {companionProtocol:2, companionDetails:readCompanionIdentity(raw.companionDetails)} : {}),
     ...(typeof raw.followCompanion === 'boolean' &&
         (raw.companion === null || typeof raw.companion === 'string')
@@ -582,6 +593,8 @@ export class CableSession {
   private longRecap = false
   /** `activity: 'steps-v1'`: `action`, `elapsedSeconds` and `step` on turn.activity. */
   private stepsActivity = false
+  /** `stats: 'turn-v1'`: the `turn.stats` frame before turn.done. */
+  private statsTurn = false
   /** `player: 'library-v1'`: the paged `player.library`. */
   private playerCapable = false
   private playerOffset = 0
@@ -592,13 +605,13 @@ export class CableSession {
 
   /** For the greeting's log line: which capabilities this hello named, or nothing. */
   private capabilitiesNamed(): string {
-    const named = [this.swarmMembers && 'swarms', this.longRecap && 'recap', this.stepsActivity && 'activity', this.playerCapable && 'player']
+    const named = [this.swarmMembers && 'swarms', this.longRecap && 'recap', this.stepsActivity && 'activity', this.statsTurn && 'stats', this.playerCapable && 'player']
       .filter(Boolean)
     return named.length ? ` caps ${named.join(',')}` : ''
   }
 
   private resetCapabilities(): void {
-    this.swarmMembers = this.longRecap = this.stepsActivity = this.playerCapable = false
+    this.swarmMembers = this.longRecap = this.stepsActivity = this.statsTurn = this.playerCapable = false
     this.playerOffset = this.playerRequest = 0
     this.playerLibraryKey = ''
     this.playerLibraryAt = 0
@@ -1106,6 +1119,7 @@ export class CableSession {
         this.swarmMembers = str('swarms') === 'members-v1'
         this.longRecap = str('recap') === 'long-v1'
         this.stepsActivity = str('activity') === 'steps-v1'
+        this.statsTurn = str('stats') === 'turn-v1'
         this.playerCapable = str('player') === 'library-v1'
         const mac = str('mac') ?? ''
         // Rule 1: every greeting is answered, but only an unfamiliar dial gets the full state.
@@ -1151,6 +1165,7 @@ export class CableSession {
         const settings = readSettings(msg.settings)
         const settingsChanged = JSON.stringify(settings) !== JSON.stringify(this.greetedSettings)
         this.greetedSettings = settings
+        this.skinReported = hasUiSkin(msg.settings)
         if (settingsChanged && mac === this.greetedMac && fw === this.greetedFw) this.report()
         if (mac !== this.greetedMac || fw !== this.greetedFw) {
           this.playerOffset = this.playerRequest = 0
@@ -1539,6 +1554,7 @@ export class CableSession {
         // it hopeful — which is why the settings are taken even when `ok` is false.
         const settings = readSettings(msg.settings)
         if (settings) this.greetedSettings = settings
+        if (hasUiSkin(msg.settings)) this.skinReported = true
         if (msg.ok === false) this.log(`cable: device refused a settings change: ${str('error') ?? 'no reason given'}`)
         this.report()
         return
@@ -2167,10 +2183,16 @@ export class CableSession {
    * `settings.state`, which arrives as a status update like any other. A caller that waited here would
    * be waiting on a device that may be asleep.
    */
+  private skinReported = false
+
   async setSettings(patch: DeviceSettingsPatch): Promise<boolean> {
     // `id` addresses the DEVICE; it is not one of its settings and must not be sent as one.
     const fields = Object.entries(patch).filter(([key, value]) => value !== undefined && key !== 'id' && key !== 'companion' && key !== 'companionDetails' && key !== 'companionProtocol')
     if (!fields.length) return true
+    if (patch.uiSkin !== undefined && !this.skinReported) {
+      this.log('cable: uiSkin not written — this device did not report one (older firmware)')
+      return false
+    }
     const sent = await this.send({ t: 'settings.set', ...Object.fromEntries(fields) })
     if (!sent) this.log('cable: settings change not written — the device is not on the wire')
     return sent
@@ -2689,6 +2711,18 @@ export class CableSession {
     this.markLive(agentId)
     if (!this.stepsActivity) return
     await this.send({ t: 'turn.activity', agentId, text: '', step })
+  }
+  /** The agent's reply as it streams: its latest paragraph as `action`, for a `steps-v1` device's working screen. Nobody else is told. */
+  async turnReply(agentId: string, action: string): Promise<void> {
+    if (!this.stepsActivity || !action) return
+    await this.send({ t: 'turn.activity', agentId, text: '', action: clipUtf8(action, ACTION_MAX_BYTES) })
+  }
+  /** A connected device that wants `turn.stats`: the token reads are only worth doing for one. */
+  get wantsStats(): boolean { return this.statsTurn && this.isConnected }
+  /** The turn's test and commit counts, for a `stats: 'turn-v1'` device; nothing when none were seen. */
+  async turnStats(agentId: string, stats: TurnStatsFields): Promise<void> {
+    if (!this.statsTurn || !Object.keys(stats).length) return
+    await this.send({ t: 'turn.stats', agentId, ...stats })
   }
   async turnDone(agentId: string): Promise<void> {
     this.liveTurns.delete(agentId)

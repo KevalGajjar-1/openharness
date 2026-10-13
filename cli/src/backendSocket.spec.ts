@@ -755,6 +755,21 @@ describe('BackendSocket outbound queue', () => {
     await socket.stop()
   })
 
+  it('gives a shell result card to the devices tee and never to the relay', async () => {
+    const socket = relaySocket('token')
+    const tee = vi.fn()
+    socket.onOutboundCommander = tee
+    socket.connect()
+    wsMock.instances[0].open()
+    const relayed = vi.fn()
+    vi.spyOn(socket as unknown as { toGateway(what: string, call: (g: unknown) => void): void }, 'toGateway')
+      .mockImplementation((_what, call) => call({ commander: relayed }))
+    socket.sendCommander({ type: 'commander_event', agentId: 's1', dbSessionId: 's1', payload: { kind: 'tool_end', id: 't1', outputTail: 'x' } })
+    expect(tee).toHaveBeenCalledTimes(1)
+    expect(relayed).not.toHaveBeenCalled()
+    await socket.stop()
+  })
+
   it('sends a frame though the orchestrator watching the frames cannot read its state', async () => {
     // A full disk: reading the orchestrator's state makes its folder, and that threw out of every send,
     // so a turn's end never reached a window (e2e/diskfull.e2e.ts).
@@ -2601,6 +2616,25 @@ describe('desk_changed relay', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(frames.filter((f) => f.type === 'desk_changed')).toHaveLength(1)
     await socket.unregisterLocalClient('local:desk')
+    await socket.stop()
+  })
+
+  it('hands the backend\'s connectors_changed on, for the connectors service to merge, and only the backend\'s', async () => {
+    const socket = relaySocket('token')
+    const heard: unknown[] = []
+    socket.onAccountNotice = (notice) => { heard.push(notice) }
+    socket.registerLocalClient('local:vault', { sendFrame: () => true, sendBinary: () => true })
+    socket.connect()
+    const ws = wsMock.instances[0]
+    ws.open()
+    ws.message({ t: 'down', connId: '', frame: { type: 'connectors_changed', payload: { revision: 6 } } })
+    await vi.waitFor(() => expect(heard).toContainEqual({ type: 'connectors_changed', revision: 6 }))
+    // A client relayed with its own connId is not the backend.
+    ws.message({ t: 'down', connId: 'web-1', frame: { type: 'connectors_changed', payload: { revision: 99 } } })
+    socket.handleLocalFrame('local:vault', { type: 'connectors_changed', payload: { revision: 98 } })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(heard).toHaveLength(1)
+    await socket.unregisterLocalClient('local:vault')
     await socket.stop()
   })
 

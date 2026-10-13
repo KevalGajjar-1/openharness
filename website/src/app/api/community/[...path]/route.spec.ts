@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DELETE, GET, POST } from './route';
 
@@ -14,6 +15,26 @@ describe('community API boundary', () => {
     expect(options.headers.get('x-autonomous-env')).toBe('stag');
     expect(options.headers.get('cookie')).toBeNull();
     expect(options.redirect).toBe('error'); expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+  it('forwards a translation with the longer wait it needs', async () => {
+    vi.stubEnv('COMMUNITY_API_URL', 'http://127.0.0.1:54882');
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ success: true, data: {} })); vi.stubGlobal('fetch', fetcher);
+    await POST(new Request('https://harness.example/api/community/translate', { method: 'POST', body: '{"title":"Tiêu đề"}' }), { params: Promise.resolve({ path: ['translate'] }) });
+    expect(String(fetcher.mock.calls[0][0])).toBe('http://127.0.0.1:54882/api/community/translate');
+    expect(timeout).toHaveBeenCalledWith(58_000);
+    expect((await POST(new Request('https://harness.example/api/community/translate/x', { method: 'POST' }), { params: Promise.resolve({ path: ['translate', 'x'] }) })).status).toBe(404);
+    timeout.mockRestore();
+  });
+  it('forwards a gzipped body byte for byte, still gzipped', async () => {
+    vi.stubEnv('COMMUNITY_API_URL', 'http://127.0.0.1:54882');
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ success: true, data: { id: 'x' } }, { status: 201 })); vi.stubGlobal('fetch', fetcher);
+    const gzipped = gzipSync(JSON.stringify({ files: [{ path: 'index.html', content: '<script>go()</script>' }] }));
+    const response = await POST(new Request('https://harness.example/api/community/harnesses', { method: 'POST', body: gzipped, headers: { 'content-type': 'application/gzip' } }), { params: Promise.resolve({ path: ['harnesses'] }) });
+    expect(response.status).toBe(201);
+    const options = fetcher.mock.calls[0][1];
+    expect(options.headers.get('content-type')).toBe('application/gzip');
+    expect(Buffer.from(options.body).equals(gzipped)).toBe(true);
   });
   it('rejects arbitrary proxy destinations and oversized publications before forwarding', async () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);

@@ -942,7 +942,7 @@ function permissionModeFromTokens(engine: RegisteredSession['engine'], tokens: r
   if (!modes) return null
   // `full` is checked ahead of the rest where the engine has it: its flag is a single token no other
   // mode shares, and an argv carrying both it and `--permission-mode` is running without permissions
-  // whatever else it says. `ask` is empty and can never be "found".
+  // whatever else it says. `ask` is empty for most engines and can never be "found"; Claude Code's names its mode.
   const names = ['full', ...Object.keys(modes).filter((mode) => mode !== 'full')]
   for (const mode of names) {
     const flags = modes[mode]
