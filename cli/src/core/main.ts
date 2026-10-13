@@ -113,10 +113,15 @@ import { SHELL_REQUESTS } from '../lib/shellProtocol.js'
 import { answerShellQuery } from './shellQueries.js'
 import { createTerminalControl } from './terminals/control.js'
 import { createTerminalRequests } from './terminals/requests.js'
+import { createBrowser } from './terminals/browser.js'
+import { loopbackGet } from '../lib/loopbackGet.js'
+import { writeBrowserShim } from '../lib/browserShim.js'
 import { createAgentEvents } from './agents/events.js'
 import { createSessionNormalizers } from './transcripts/normalizers.js'
 import { createInput } from './input.js'
-import { createQuestions } from './questions.js'
+import { createQuestionResponse, createQuestions } from './questions.js'
+import { createCloudAgents, type CloudAgents } from './agents/cloud.js'
+import { createCloudLink } from './cloudLink.js'
 import { createTurnActivity } from './turns/activity.js'
 import { createLastTurnReader } from './transcripts/lastTurn.js'
 import { createEngineReaders } from './engines/readers.js'
@@ -163,7 +168,7 @@ import { createEngineHooks, installEngineHooks, installOpencodePluginBeforeSpawn
 import { createCursorDiscovery } from './engines/cursorDiscovery.js'
 import { createCursorTaskHooks, loadPendingCursorTasks } from './engines/cursorTasks.js'
 import { databaseHistory, hermesDb } from './transcripts/databaseHistory.js'
-import { CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, TURN_DELIVERERS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
+import { CLOUD_FALLBACKS, CLOUD_REQUESTS, type CloudCore, CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, TURN_DELIVERERS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
 import { createServiceHost, testFaults } from './serviceHost.js'
 import { startStalls } from './stall.js'
 import { createServiceLinks, type ServiceLinks } from './serviceLinks.js'
@@ -742,11 +747,21 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     want: () => devicesWake.ask('wifi', 'a Wi-Fi device'),
     doors: wifiDoors({
       registry, machineId: machineIdNow, displayName: projectDisplayName, running: (sessionId) => turnStartedAt.has(sessionId),
-      socket: () => backendRef ?? null, deviceInput: () => deviceInput, answer: (request) => questions.answer(request),
+      socket: () => backendRef ?? null, deviceInput: () => deviceInput, answer: (request) => cloudAgents?.answer(request) ?? questions.answer(request),
       stop: (agentId) => cancelAgent(agentId, true), devices: () => ports.devices,
     }),
   })
+  // The cloud agents' doors (core/agents/cloud.ts), handed to the core API now and built once the questions and
+  // the socket are, below; the cloud service starts after both.
+  let cloudAgents: CloudAgents | null = null
+  const cloudDoors: CloudCore = {
+    publish: (harnesses) => cloudAgents?.doors.publish(harnesses),
+    ask: (agentId, requestId, question) => cloudAgents?.doors.ask(agentId, requestId, question),
+    unask: (agentId, requestId) => cloudAgents?.doors.unask(agentId, requestId),
+  }
   const coreApi = createCoreApi({
+    cloud: cloudDoors,
+    cloudRows: () => (cloudAgents?.dialRows() ?? []) as unknown as RegisteredSession[],
     // Agents' terminals: a literal-argv launch, and a read-only view for Share's observers (core/terminalWatch.ts).
     terminals: { ...TERMINALS_OFF, ...createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder: (cwd) => !!backendRef?.purgeAgentService?.blocksFolder(cwd) }), watch: terminalWatch.watch },
     dataDir: env.ADAPTER_DATA_DIR,
@@ -787,6 +802,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The dial's working card: what a Claude Code or Codex pane's footer says, read here so the pane never
     // leaves the core.
     activityText: async (agentId) => {
+      // A cloud harness says what it is doing on its frame ("Calling Hair Lab").
+      if (cloudAgents?.owns(agentId)) return cloudAgents.activity(agentId)
       const session = registry.resolve(agentId)
       if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
       const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
@@ -794,6 +811,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     },
     // The same footer for a Harness Pro, with its timer beside it (the agent's sentence comes from the cards).
     activitySnapshot: async (agentId) => {
+      if (cloudAgents?.owns(agentId)) {
+        const text = cloudAgents.activity(agentId)
+        return text ? { text } : null
+      }
       const session = registry.resolve(agentId)
       if (!session || (session.engine !== 'claude' && session.engine !== 'codex')) return null
       const screen = await terminals.capture(session, { mode: 'visible', ansi: false })
@@ -820,6 +841,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       // The working tiles are the recaps' to say: asked, and sent to the dial when they answer.
       if (attached) for (const frame of openQuestions.values()) ports.devices?.card(frame)
       if (attached) void mirror.liveCards().then((cards) => { for (const frame of cards) ports.devices?.card(frame) })
+      if (attached) for (const frame of cloudAgents?.liveCards() ?? []) ports.devices?.card(frame)
     },
     // What a device or another machine asks of an agent here: the SAME handlers the backend socket
     // drives, called directly — the slash-command adaptation and the turn and question plumbing live there.
@@ -852,16 +874,16 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     turns: {
       send: (agentId, text) => backendRef?.onMessage?.(agentId, text),
       stop: (agentId) => backendRef?.onCancel?.(agentId),
-      recent: async (agentId, n) => mirror.recent(registry.resolve(agentId)?.sessionId || agentId, n),
+      recent: async (agentId, n) => cloudAgents?.recent(agentId) ?? mirror.recent(registry.resolve(agentId)?.sessionId || agentId, n),
       asks: async (agentId) => mirror.recentAsks(registry.resolve(agentId)?.sessionId || agentId),
       ...deliveries.turns,
     },
     questions: {
       // The device's own object, verbatim: rebuilt as `{ [requestId]: optionId }` it was keyed by the
       // REQUEST id, not the question key `asking.answer` expects, and named a question that does not exist.
-      answer: (agentId, requestId, answers) => { void asking.answer({ agentId, requestId, answers }) },
-      answerReviewed: async (answer) => (await questions.answer({ agentId: answer.agentId, requestId: answer.requestId,
-        answers: answer.answers, expectedQuestions: answer.questions, selectedLabels: answer.selections, freeTextKeys: answer.freeTextKeys })).ok,
+      answer: (agentId, requestId, answers) => { void (cloudAgents?.answer({ requestId, answers }) ?? asking.answer({ agentId, requestId, answers })) },
+      answerReviewed: async (answer) => (await (cloudAgents?.answer({ requestId: answer.requestId, answers: answer.answers }) ?? questions.answer({ agentId: answer.agentId, requestId: answer.requestId,
+        answers: answer.answers, expectedQuestions: answer.questions, selectedLabels: answer.selections, freeTextKeys: answer.freeTextKeys }))).ok,
     },
   })
   // Each service starts and is called through the host, so one that fails is logged and left off and
@@ -990,6 +1012,20 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const deviceIsWatching = (): boolean => backend.hasCommander() || cableWatchingLocal() || wifiCore.connected()
   /** Anyone who can DRAW a question: a device, a cabled dial, or a desktop window on this computer. */
   const someoneCanAnswer = (): boolean => deviceIsWatching() || backend.hasLocalClient()
+  // A page a program in a harness's pane opens (Claude Code's `/login`) goes to the phone typing there, and the
+  // sign-in the phone catches comes back to the program (core/terminals/browser.ts, lib/browserShim.ts).
+  const browser = createBrowser({
+    agentOfPane: (pane) => registry.list().find((session) => session.tmuxPane === pane)?.agentId,
+    sendTo: (connId, type, payload) => backend.sendViewerFrame(connId, type, payload),
+    isLocal: isLocalClientId,
+    who: (connId) => backend.remoteClient(connId)?.identity ?? connId,
+    replay: (url) => loopbackGet(url),
+    now: Date.now,
+    log: (line) => console.log(line),
+  })
+  backend.browserProvider = { open: browser.open, callback: browser.callback }
+  // The script every pane's BROWSER names asks this daemon first; rewritten as it starts (the CLI may have moved).
+  writeBrowserShim(daemonCommand())
   const terminalStreams = new TerminalStreamManager({
     terminals,
     resolveAgent: (agentId) => registry.resolve(agentId),
@@ -1011,7 +1047,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The keystroke prewarm (grid-reads-without-waking issue 03): typing into a pane whose agent runs on
     // a sleeping grid starts that grid while the person types. Here, in the daemon's own input path, so
     // an older desktop and typing from a phone get it too; an agent on its own login has no `grid`.
-    onInput: (agentId, typed) => {
+    onInput: (agentId, typed, from) => {
+      if (typed) browser.typed(agentId, from)
       const grid = registry.resolve(agentId)?.grid
       if (grid) ports.models?.prewarm(grid)
       // The person typing into a harness another agent started makes it theirs (services/agentCleanup.ts).
@@ -1199,7 +1236,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     deviceInput,
   })
   const questions = asking.questions
-  backend.questionProvider = asking.questionResponse
+  // Cloud harnesses (core/agents/cloud.ts): listed with the rest; their questions shown as the panes' are, and
+  // answered through the cloud service.
+  cloudAgents = createCloudAgents({ port: () => ports.cloud, clients: backend, openQuestions: asking.openQuestions, deviceInput })
+  const cloud = cloudAgents
+  backend.questionProvider = createQuestionResponse((payload) => cloud.answer(payload) ?? asking.answer(payload))
   const openQuestions = asking.openQuestions
   // The agents on this machine (core/agents/list.ts), in the socket's frames, with its monitor readings.
   backend.agentsProvider = createAgentList({
@@ -1207,6 +1248,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     toProject: (s) => backend.toProject(s), toStoppedProject: (s) => backend.toStoppedProject(s),
     // The monitor's readings, through its port (services/monitor.ts): none while it is off.
     harnessResourcesReader: () => (ports.monitor ?? MONITOR_OFF).resources(), harnessStorageReader: (agents, invalidate) => (ports.monitor ?? MONITOR_OFF).storage(agents, invalidate),
+    cloudFrames: () => cloud.frames(),
   }).agentsList
   const questionWatcher = asking.questionWatcher
 
@@ -1418,6 +1460,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // as the core sees it there (core/orchestratorLink.ts). It reads its Directors' turns from the frames sent.
   if (outOfProcess.has('orchestrator')) ports.orchestrator = orchestratorLink.port
   else serviceHost.start('orchestrator', inline!.startOrchestrator, coreApi, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS)
+  // Cloud agents, an experiment (services/cloud.ts): in its own process once it is on, asked through its port
+  // (core/cloudLink.ts), which starts it; or in this one behind the service host's guard.
+  if (outOfProcess.has('cloud')) ports.cloud = createCloudLink((type, payload) => serviceLinks.call('cloud', type, payload))
+  else serviceHost.start('cloud', inline!.startCloud, coreApi, CLOUD_FALLBACKS, CLOUD_REQUESTS)
   backend.onFrameSent = (frame) => ports.orchestrator?.frame(frame)
   // Share (services/sharing.ts): in this process, or in its own once it is on (core/sharingLink.ts). Its
   // observers' frames reach it as the relay hands them over.
@@ -1501,11 +1547,17 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     .find((session) => session.tmuxPane === tmuxPane
       || session.runtimes.some((runtime) => runtime.backend === 'tmux' && runtime.paneId === tmuxPane))?.agentId ?? null
   // A rename, a model and effort, or an app opening an agent (core/agents/update.ts).
-  backend.agentUpdateProvider = createAgentUpdate({
+  const agentUpdate = createAgentUpdate({
     registry, clients: backend, toProject: (s) => backend.toProject(s), closeAgentService: () => backend.closeAgentService,
     onAgentRename: (session, name) => { void terminals.setTitle(session, name) },
     onRuntimeProfileUpdate: (sessionId, selectedModel) => runtimeController.setProfile(sessionId, selectedModel),
   }).agentUpdate
+  // A cloud harness is no registry row: its rename goes to the cloud service (core/agents/cloud.ts).
+  backend.agentUpdateProvider = async (payload, reply) => {
+    const cloud = cloudAgents?.update(payload)
+    if (cloud) reply(await cloud)
+    else await agentUpdate(payload, reply)
+  }
   runtimeProfiles.onChanged = (sessionId) => {
     const session = registry.resolve(sessionId)
     if (session) syncSession(session)
@@ -2483,7 +2535,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   restoreCancelled = (agentId) => stopJobs.has(agentId) || pinnedControls.has(agentId) || (restartJobs.operation(agentId) !== undefined && restartJobs.operation(agentId) !== 'restart')
   binding.whileChanging((agentId) => restorePanes.busy(agentId) || restartJobs.busy(agentId) || stopJobs.has(agentId))
   const stopAgent = lifecycle.stopAgent
-  backend.stopProvider = createStopRequest({ byAgent: (id) => registry.byAgent(id), stop: stopAgent })
+  const stopTerminalAgent = createStopRequest({ byAgent: (id) => registry.byAgent(id), stop: stopAgent })
+  backend.stopProvider = (payload) => cloud.stop(String(payload.agentId ?? payload.sessionId ?? '')) ?? stopTerminalAgent(payload)
   backend.purgeAgentService = lifecycle.purgeAgentService
   backend.purgeProvider = createPurgeRequest({ purgeAgentService: () => lifecycle.purgeAgentService, invalidateStorage: () => { void (ports.monitor ?? MONITOR_OFF).storage([], true) } })
   // Closing agents no window shows, and the cleanup preview (core/agents/close.ts).
@@ -2539,15 +2592,35 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     byAgent: (id) => registry.byAgent(id), toProject: (s) => backend.toProject(s),
     modelTarget: (selection) => (ports.models ?? MODELS_OFF).launchTarget(selection),
   })
-  backend.createProvider = launches.create
+  // A cloud agent is made by its service (core/agents/cloud.ts); every other engine launches here.
+  // Answered when the service answers, never in the connection's line: the window's next requests go on.
+  backend.createProvider = async (payload, asker, answer) => {
+    const made = cloud.create(payload)
+    if (made) void made.then(answer)
+    else await launches.create(payload, asker, answer)
+  }
   backend.createStatusProvider = launches.createStatus
   backend.cancelCreateProvider = launches.cancelCreate
   backend.restartProvider = launches.relaunch
   backend.forkProvider = launches.fork
 
   const submitAgent = inputs.submitAgent
-  backend.onMessage = (id, content, deliveryId) => submitAgent(id, content, deliveryId)
-  backend.messageProvider = inputs.messageRequest
+  // Words for a cloud harness go to its service, and a delivery among them is settled as the pane's are.
+  backend.onMessage = (id, content, deliveryId) => {
+    // An Agent Messages turn its mailbox no longer wants written waits, as a pane's does (core/input.ts).
+    if (cloud.owns(id) && deliveryId?.startsWith('team:') && !(ports.messages?.canWrite(deliveryId) ?? false)) {
+      deliveries.settled({ deliveryId, sessionId: id, state: 'rejected', reason: 'team_waiting_control' })
+      return
+    }
+    const sent = cloud.deliver(id, content)
+    if (!sent) { submitAgent(id, content, deliveryId); return }
+    if (deliveryId) void sent.then((result) => deliveries.settled({ deliveryId, sessionId: id, state: result.ok ? 'delivered' : 'rejected', ...(result.ok ? {} : { reason: result.error }) }))
+  }
+  backend.messageProvider = (payload) => {
+    const agentId = typeof payload.agentId === 'string' ? payload.agentId : typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    if (cloud.owns(agentId)) { void cloud.deliver(agentId, typeof payload.content === 'string' ? payload.content : ''); return }
+    inputs.messageRequest(payload)
+  }
   backend.onCancelOrchestratorMessage = id => input.cancelDelivery(id)
   deliveries.ready() // The input is wired: what was delivered meanwhile (Agent Messages' queue resuming) is written now.
 
@@ -2748,7 +2821,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     if (!isLocalOnly(card)) wifiCore.card(withoutUpdate(card))
     const payload = card.payload as Record<string, unknown> | undefined
     const full = card.type === 'commander_event' && payload?.kind === 'summary' && typeof card.agentId === 'string'
-      ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) : undefined
+      ? mirror.lastFullText(registry.byAgent(card.agentId)?.sessionId ?? card.agentId) ?? cloudAgents?.said(card.agentId) : undefined
     ports.devices?.card(full ? { ...card, payload: { ...payload, fullText: full } } : card)
   }
 

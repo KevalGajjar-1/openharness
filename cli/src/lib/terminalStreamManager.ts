@@ -175,8 +175,10 @@ export interface TerminalStreamManagerDeps {
    * grid-reads-without-waking issue 03), which is why it lives here, below every client that types. `typed`: the frame
    * holds what the person typed or pasted, not only what the terminal sends by itself (lib/typedInput.ts), which the
    * agent cleanup reads as the person joining a harness another agent started (services/agentCleanup.ts).
+   * `from`: the stream's connection and what its client said it is on `terminal_open`, so a page a program in the
+   * pane opens can go to the phone the person is typing on (core/terminals/browser.ts).
    */
-  onInput?: (agentId: string, typed: boolean) => void
+  onInput?: (agentId: string, typed: boolean, from: { connId: string, kind: string | null }) => void
 }
 
 function sizeFrom(payload: FramePayload): TerminalStreamSize | null {
@@ -676,7 +678,7 @@ export class TerminalStreamManager {
 
   /** See `TerminalStreamManagerDeps.onInput`. A listener's failure is its own: input is never held by it. */
   private tookInput(state: ActiveStream, typed: boolean): void {
-    try { this.deps.onInput?.(state.agentId, typed) } catch (error) {
+    try { this.deps.onInput?.(state.agentId, typed, { connId: state.connId, kind: state.client?.kind ?? null }) } catch (error) {
       this.diagnostic(state, 'input_listener_failed', { reason: error instanceof Error ? error.message : String(error) })
     }
   }

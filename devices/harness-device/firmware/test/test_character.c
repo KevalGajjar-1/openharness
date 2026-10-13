@@ -738,7 +738,8 @@ static void focus_face(void)
     for (unsigned pe = 0; pe < ht_pet_count; pe++) {
         const ht_pet_t *pet = &ht_pets[pe];
         const char *eng = pet->engine;
-        assert(pet_of(eng) == pet && ht_focus_engine_index(eng) >= 0);   // a known engine, listed once
+        // A known engine, listed once: one with a mark, or a cloud agent (Fo), which has a pet and no mark of its own.
+        assert(pet_of(eng) == pet && (ht_focus_engine_index(eng) >= 0 || !strcmp(eng, "fo")));
         for (unsigned q = 0; q < pe; q++) assert(strcmp(ht_pets[q].engine, eng));
         // Clear of the curved title: no layout, state or step puts ink above the foot of its cells.
         for (int layout = 0; layout < 3; layout++)       // recap card, working line, resting line

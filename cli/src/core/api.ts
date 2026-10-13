@@ -1,5 +1,6 @@
 import type { PreparedHandoff, HandoffPermit, HandoffOutcome } from '../lib/handoffAuthority.js'
 import type { AgentTokenUsage, AgentUsageTarget } from '../lib/agentUsageWire.js'
+import type { CloudHarness } from '../lib/cloudAgents.js'
 import type { GridAssignmentProcess, GridAssignmentAnswer } from '../lib/gridAssignmentWire.js'
 /**
  * The boundary the services stand on (docs/design/2026-10-03-harnessd.md, "The core boundary"):
@@ -151,6 +152,10 @@ export interface CoreApi {
     resolve(id: string): RegisteredSession | undefined
     /** The live agents the apps are shown. */
     advertised(): RegisteredSession[]
+    /** The running cloud harnesses (core/agents/cloud.ts) as rows an agent list reads: an id, a start, an
+     *  engine and a name, with no pane, transcript or process. Only the lists that show them ask (the dial,
+     *  the fleet); absent where a core or process offers none. */
+    cloud?(): RegisteredSession[]
     /** Whether the agent's terminal is attached: a frame without one reads to the apps as "agent gone". */
     terminalAvailable(agentId: string): boolean
     /** Send the agent's frame to the apps again. */
@@ -304,6 +309,8 @@ export interface CoreApi {
    *  serves and the machine it serves as. An experiment writes them into the prompts of the agents it runs
    *  (`… orchestrator --port 18473 --machine …`). */
   daemon: DaemonAddress
+  /** The cloud agents' doors into the core (services/cloud.ts): absent from a core or a process that offers them none. */
+  cloud?: CloudCore
   /** The Wi-Fi device's doors into the core (services/wifi.ts): each one call it made when it ran here. */
   wifi: {
     /** What it lists and reads in line (`WifiView`), asked again before each request it answers. */
@@ -561,6 +568,9 @@ export const LONG_ANSWERS: Readonly<Record<string, Readonly<Record<string, numbe
     launchTarget: 3 * MINUTE, privateGridName: 2 * MINUTE, lists: 2 * MINUTE,
   },
   store: { dsh_install: 30 * MINUTE, dsh_update: 30 * MINUTE, dshMaterialize: 6 * MINUTE },
+  // A cloud agent's maker answers on its own time: Fo's reply waits 40 s, and a busy Fo is retried for half a
+  // minute more. A wait shorter than that said "not running" of words that were then sent anyway.
+  cloud: { create: 3 * MINUTE, deliver: 3 * MINUTE, answer: 3 * MINUTE, stopHarness: 2 * MINUTE, cloud_send: 3 * MINUTE },
 }
 
 /** The orchestrator (services/orchestrator.ts): its projects, for the apps and for the agents it runs. */
@@ -575,6 +585,10 @@ export const SHARE_REQUESTS = [
  *  owner's other machines and from the windows. A service in the edge host since 2026-10-12, no longer an
  *  experiment: its own process cost every computer it was on 62 MiB at idle for a few MiB of messaging. */
 export const MESSAGES_REQUESTS = ['agent_messages'] as const
+
+/** Cloud agents (services/cloud.ts, cloud/service.ts): a cloud harness's conversation for its chat pane, and
+ *  which cloud agents are connected here, for New Harness. */
+export const CLOUD_REQUESTS = ['cloud_transcript', 'cloud_send', 'cloud_agents'] as const
 
 /**
  * What Agent Messages in a process of its own may do through the core, and nothing more (core/messagesLink.ts
@@ -611,6 +625,9 @@ export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[];
   memory: { requests: MEMORY_REQUESTS, state: [] },
   // Request-only too: it keeps nothing, and asks Jev only when a client asks it.
   router: { requests: ROUTER_REQUESTS, state: [] },
+  // Cloud agents. Its harnesses: one was started here, and is watched again as the daemon starts. A New Harness
+  // for one, an answer or a message to one wakes it too (its port's calls, core/agents/cloud.ts).
+  cloud: { requests: CLOUD_REQUESTS, state: ['cloud/harnesses.json'] },
 }
 
 /** The services that may write turns into agents from a process of their own (core/deliveries.ts): the experiments,
@@ -897,6 +914,40 @@ export interface MessagesPort {
 /** What the core gets when Agent Messages fails: none of its deliveries may be written (each waits, unwritten), and
  *  a settings write tells it nothing. */
 export const MESSAGES_FALLBACKS: PortFallbacks<MessagesPort> = { canWrite: false, settingsChanged: undefined }
+
+/**
+ * The cloud agents' doors into the core (docs/design/2026-10-11-cloud-agents.md, "The one core change"): the
+ * harnesses its service owns, which have no pane, and the questions they ask. The core lists them beside the
+ * terminal agents and tells every client what changed (core/agents/cloud.ts).
+ */
+export interface CloudCore {
+  /** Every cloud harness, replacing the last list. */
+  publish(harnesses: CloudHarness[]): void
+  /** One waits on the person: shown wherever questions show; the answer comes back through `CloudPort.answer`. */
+  ask(agentId: string, requestId: string, question: { text: string; choices: string[] }): void
+  /** That question is no longer asked. */
+  unask(agentId: string, requestId: string): void
+}
+
+/** What the cloud service answers the core: done, or why not, in words a person reads. */
+export type CloudResult = { ok: true; detail?: string } | { ok: false; error: string; detail?: string }
+
+/** The core's calls into the cloud agents' service: a New Harness for one, a person's words, an answer, a new name, a Stop. */
+export interface CloudPort {
+  /** `agent_create` for a cloud agent: the new harness's frame, or why not. */
+  create(request: Record<string, unknown>): Promise<{ ok: true; agent: Record<string, unknown> } | { ok: false; error: string; detail?: string }>
+  deliver(agentId: string, text: string): Promise<CloudResult>
+  answer(agentId: string, requestId: string, answers: Record<string, string>): Promise<CloudResult>
+  /** Rename Harness: the name Harness shows. The maker's own name for the work stays as it is. */
+  rename(agentId: string, name: string): Promise<CloudResult>
+  /** Stop Harness. Not `stop`: a service host reads a port's `stop` as stopping the service itself. */
+  stopHarness(agentId: string): Promise<CloudResult>
+}
+
+/** A call the cloud service could not take: it is off, failing, or slower than the core waits. */
+export const CLOUD_DOWN = { ok: false as const, error: 'SERVICE_UNAVAILABLE', detail: 'Cloud agents are not running here. Try again in a moment.' }
+/** What the core gets when the cloud service fails: each call is refused with a reason, and nothing is lost but it. */
+export const CLOUD_FALLBACKS: PortFallbacks<CloudPort> = { create: later(CLOUD_DOWN), deliver: later(CLOUD_DOWN), answer: later(CLOUD_DOWN), rename: later(CLOUD_DOWN), stopHarness: later(CLOUD_DOWN) }
 
 /** What a delivered turn answers: delivered, or refused with the machine's name and a reason a person can read. */
 export type SendResult = { ok: true } | { ok: false; machine: string; reason: string }
@@ -1395,10 +1446,11 @@ export interface CorePorts {
   sharing: SharingPort | null
   recaps: RecapsPort | null
   agentCleanup: AgentCleanupPort | null
+  cloud: CloudPort | null
 }
 
 export function emptyPorts(): CorePorts {
-  return { usage: null, store: null, search: null, viewers: null, models: null, workspaces: null, messages: null, devices: null, wifi: null, monitor: null, orchestrator: null, sharing: null, recaps: null, agentCleanup: null }
+  return { usage: null, store: null, search: null, viewers: null, models: null, workspaces: null, messages: null, devices: null, wifi: null, monitor: null, orchestrator: null, sharing: null, recaps: null, agentCleanup: null, cloud: null }
 }
 
 export interface CoreApiDeps {
@@ -1453,6 +1505,10 @@ export interface CoreApiDeps {
   dialWatching: CoreApi['clients']['dialWatching']
   /** The Wi-Fi device's doors (core/wifi.ts). */
   wifi: CoreApi['wifi']
+  /** The cloud agents' doors (core/agents/cloud.ts). */
+  cloud?: CloudCore
+  /** The running cloud harnesses as list rows (`agents.cloud`). */
+  cloudRows?: () => RegisteredSession[]
   lastTurn: CoreApi['transcripts']['lastTurn']
   /** Where a turn's cards and recaps go: the devices, and the apps. Only their own frame types reach these. */
   turnCard: CoreApi['clients']['turnCard']
@@ -1465,7 +1521,7 @@ export function createCoreApi({
   gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, connectorVault, observer, privateGridName, machineName, backend, onNotice,
   runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
   closeAgent, activityAt,
-  signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, lastTurn, turnCard, turnSummary,
+  signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, cloud, cloudRows, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
 }: CoreApiDeps): CoreApi {
   // The devices reach the windows through these alone, and only with their own frames: a devices process
@@ -1487,6 +1543,7 @@ export function createCoreApi({
       byAgent: (agentId) => registry.byAgent(agentId),
       resolve: (id) => registry.resolve(id),
       advertised: () => registry.advertised(),
+      ...(cloudRows ? { cloud: cloudRows } : {}),
       terminalAvailable: (agentId) => registry.terminalAvailable(agentId),
       sync: syncSession,
       runtimeModels,
@@ -1534,5 +1591,6 @@ export function createCoreApi({
     },
     daemon,
     wifi,
+    ...(cloud ? { cloud } : {}),
   }
 }

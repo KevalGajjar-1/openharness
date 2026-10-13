@@ -26,6 +26,8 @@ export class FakeService {
   access = ''
   refresh = ''
   revoked = false
+  /** Answers `initialize` to anyone and refuses only what follows, as Wajo's Fo does: still protected. */
+  openHandshake = false
   registered: Record<string, unknown>[] = []
   seen: { auth?: string, session?: string, body: string }[] = []
   private challenge = new Map<string, string>()
@@ -70,6 +72,10 @@ export class FakeService {
     }
     if (url.pathname === '/mcp') {
       this.seen.push({ auth: request.headers.authorization, session: request.headers['mcp-session-id'] as string | undefined, body: text })
+      const handshake = /"method"\s*:\s*"initialize"/.test(text)
+      if (this.openHandshake && handshake && !request.headers.authorization) {
+        send(response, 200, { jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }); return
+      }
       if (request.headers.authorization !== `Bearer ${this.access}`) {
         send(response, 401, { error: 'invalid_token' }, { 'WWW-Authenticate': `Bearer resource_metadata="${this.base}/.well-known/oauth-protected-resource/mcp"` }); return
       }

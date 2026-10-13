@@ -9,6 +9,7 @@
  */
 import { isTerminalEngine, PROCESS_ENGINES, type ProcessEngine } from '../../engines/types.js'
 import type { AgentFrame } from '../../lib/agentFrame.js'
+import { isCloudAgent, type CloudAgentFrame, type CloudAgentId } from '../../lib/cloudAgents.js'
 import type { MonitorActivity, MonitorCompletions } from '../../lib/harnessMonitor.js'
 import type { createHarnessResourcesReader } from '../../lib/harnessResources.js'
 import type { createHarnessStorageReader } from '../../lib/harnessTelemetry.js'
@@ -38,13 +39,13 @@ function clipDeviceAgentName(input: string): string {
 
 export function deviceAgentListItem(
   raw: unknown,
-): { id: unknown; name?: string; engine?: ProcessEngine; selectedModel?: string | null } {
+): { id: unknown; name?: string; engine?: ProcessEngine | CloudAgentId; selectedModel?: string | null } {
   const o = (raw ?? {}) as Record<string, unknown>
-  const item: { id: unknown; name?: string; engine?: ProcessEngine; selectedModel?: string | null } = { id: o.id }
+  const item: { id: unknown; name?: string; engine?: ProcessEngine | CloudAgentId; selectedModel?: string | null } = { id: o.id }
   if (typeof o.name === 'string') item.name = clipDeviceAgentName(o.name)
-  // The dial only ever meets process engines — a terminal never reaches it (see `deviceAgentRow`),
-  // and the union here says so rather than repeating fourteen string literals.
-  if (typeof o.engine === 'string' && (PROCESS_ENGINES as readonly string[]).includes(o.engine)) item.engine = o.engine as ProcessEngine
+  // The dial only ever meets process engines and cloud agents — a terminal never reaches it (see
+  // `deviceAgentRow`), and the union here says so rather than repeating fourteen string literals.
+  if (typeof o.engine === 'string' && ((PROCESS_ENGINES as readonly string[]).includes(o.engine) || isCloudAgent(o.engine))) item.engine = o.engine as ProcessEngine | CloudAgentId
   // Runtime model/effort profile (opaque runtime-v1:...) — lets the device render + change model/effort.
   if (typeof o.selectedModel === 'string' || o.selectedModel === null) item.selectedModel = o.selectedModel
   return item
@@ -75,11 +76,13 @@ export interface AgentListDeps {
   monitorActivityProvider: ((sessionId: string) => MonitorActivity) | null
   /** How an agent's last turn ended, from the turn frames the socket sent. */
   monitorCompletions: Pick<MonitorCompletions, 'state'>
+  /** The cloud agents' harnesses (core/agents/cloud.ts): listed with the rest, with no pane. */
+  cloudFrames?: () => CloudAgentFrame[]
 }
 
 export function createAgentList({
   registry, stoppedAgents, toProject, toStoppedProject, harnessResourcesReader, harnessStorageReader,
-  monitorActivityProvider, monitorCompletions,
+  monitorActivityProvider, monitorCompletions, cloudFrames = () => [],
 }: AgentListDeps) {
   /**
    * Answers `agents_list` through `reply`: before it returns, or, for the monitor's readings, once
@@ -91,11 +94,13 @@ export function createAgentList({
     reply: (result: Record<string, unknown>) => void,
   ): Promise<void> => {
     const sessions = registry.advertised()
-    const projects = await Promise.all(sessions.map((s) => toProject(s)))
+    const projects: Array<AgentFrame | CloudAgentFrame> = await Promise.all(sessions.map((s) => toProject(s)))
     // Older clients/devices keep their live-only contract. The desktop picker
     // explicitly asks for stopped work and receives no stale terminal routes.
     const savedSessions = payload.includeStopped === true && sessionRole() !== 'device' ? stoppedAgents.available(sessions) : []
     projects.push(...await Promise.all(savedSessions.map(s => toStoppedProject(s))))
+    // A cloud harness is listed while it runs, and once stopped where stopped agents are asked for.
+    projects.push(...cloudFrames().filter((frame) => frame.status !== 'stopped' || (payload.includeStopped === true && sessionRole() !== 'device')))
     // Ordered by creation time, oldest → newest — a stable tab order that doesn't reshuffle as
     // sessions become active (createdAt = the session's registeredAt). The id breaks a tie so the
     // order is TOTAL: without it two agents registered in the same millisecond fall through to array

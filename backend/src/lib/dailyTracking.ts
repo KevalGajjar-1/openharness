@@ -164,8 +164,11 @@ export function presenceWriteDue(last: PresenceWriteState, now: Date, minInterva
 }
 
 /** Surfaces other than the desktop app whose person is counted (`user_daily_client_presence`). */
-export type ClientSurface = 'tui' | 'mobile' | 'web'
-export const CLIENT_SURFACES: ReadonlySet<string> = new Set<ClientSurface>(['tui', 'mobile', 'web'])
+export type ClientSurface = 'tui' | 'harness-os' | 'harness-os-pi' | 'mobile' | 'web'
+export const CLIENT_SURFACES: ReadonlySet<string> = new Set<ClientSurface>(['tui', 'harness-os', 'harness-os-pi', 'mobile', 'web'])
+/** What a daemon reports a `harness tui` window as: the TUI, or Harness OS on a PC or an Orange Pi
+ *  (cli lib/windowSurfaces.ts tuiPresence), so a person's source is told apart. */
+export const TUI_SURFACES: ReadonlySet<string> = new Set<ClientSurface>(['tui', 'harness-os', 'harness-os-pi'])
 
 /**
  * `touchUserOnlineDay` for the other surfaces, one row per (user, surface, day): the TUI reported by

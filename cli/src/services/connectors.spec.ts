@@ -86,6 +86,10 @@ describe('the connectors service', () => {
     expect(await requests.connectors!({ action: 'nope' }, OWNER)).toEqual({ error: 'CONNECTORS_FAILED', detail: 'Unknown action.' })
     expect(await requests.connectors!({ action: 'custom', name: 'Mine', url: 'https://mine.example/mcp', headers: { Authorization: 'Bearer pat' } }, OWNER))
       .toEqual({ connector: 'mine', state: 'connected' })
+    // An API key for a cloud agent, never an agent's MCP server.
+    expect(await requests.connectors!({ action: 'custom', kind: 'api', name: 'Devin', url: 'https://api.devin.ai', key: 'cog_x' }, OWNER))
+      .toEqual({ connector: 'devin', state: 'connected' })
+    expect(vault.token('devin')).toMatchObject({ api_entry: { origin: 'https://api.devin.ai' }, transport: 'none' })
     expect(await requests.connectors!({ action: 'disconnect', connector: 'linear' }, OWNER)).toEqual({ connector: 'linear', state: 'not_connected' })
     expect(vault.token('linear')).toBeUndefined()
   })

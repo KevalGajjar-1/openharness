@@ -272,6 +272,19 @@ describe('⌘K: which agent a typed task belongs to', () => {
     expect(route.mock.calls[1]![4]).toMatchObject({ agentId: 'a2' })
   })
 
+  it('weighs the cloud harnesses too, where the core offers them', async () => {
+    const core = fakeCore({
+      agents: {
+        advertised: vi.fn(() => [session('a1')]),
+        cloud: vi.fn(() => [{ ...session('cloud_1', 2, 'fo'), defaultName: 'haircut' } as RegisteredSession]),
+        displayName: vi.fn((s: RegisteredSession) => s.agentId),
+      },
+    })
+    const { fleet } = setup({}, core)
+    route.mockResolvedValue(decision({ agentId: 'cloud_1', confidence: 0.9, reason: 'errands', via: 'claude' }))
+    expect((await fleet.routeTask('book a haircut')).candidates.map((candidate) => [candidate.agentId, candidate.engine])).toEqual([['cloud_1', 'fo'], ['a1', 'claude']])
+  })
+
   it('weighs the first fifteen in rail order and says so; ranks the router’s runners-up first', async () => {
     const sessions = Array.from({ length: 17 }, (_, i) => session(`a${String(i).padStart(2, '0')}`, i))
     const { fleet } = setup({}, fakeCore({ agents: { advertised: vi.fn(() => sessions), displayName: vi.fn((s: RegisteredSession) => s.agentId) } }))

@@ -242,7 +242,10 @@ class WorkspacePaneContext {
     final agentId = pane.isViewer ? pane.ownerAgentId : pane.agentId;
     final agent = _agentFor(app, pane.machineId, agentId);
     final project = agent == null ? null : machine?.projectOf(agent);
-    final machineName = machine?.machine.displayName ?? pane.machineId;
+    // A cloud harness runs in its maker's cloud: that is said where a remote
+    // computer's name goes ("Devin's cloud").
+    final machineName =
+        agent?.cloud?.place ?? machine?.machine.displayName ?? pane.machineId;
     final engine = agent?.engine ?? pane.session?.engineId;
     final provider =
         agent?.gridModel ??

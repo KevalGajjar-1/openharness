@@ -8,9 +8,13 @@ const mocks = vi.hoisted(() => ({ request: vi.fn(), push: vi.fn(), headers: vi.f
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock('@/lib/community/client', () => ({ communityRequest: mocks.request, sessionHeaders: mocks.headers }));
 const project = { version: 1, title: 'My orbit', description: 'A new perspective', category: 'Experiments', engine: 'Codex', viewerPath: 'index.html', files: [{ path: 'index.html', content: '<h1>My orbit</h1>' }], conversation: [{ role: 'user', text: 'Change the orbit.' }], forkedFrom: 'starter-orbit' };
-/** The Hub as it answers by default: a draft already in English, and a publication's id. */
-const hub = (english?: object) => async (path: string, options?: { body?: unknown }) =>
-  path === 'translate' ? (english ? { ...english, translated: true } : { ...options?.body as object, translated: false }) : { id: 'published-fixture' };
+/** The Hub as it answers by default: a draft already in English, your publications (none), and a publication's id. */
+const hub = (english?: object, mine: object[] = []) => async (path: string, options?: { body?: unknown }) =>
+  path === 'translate' ? (english ? { ...english, translated: true } : { ...options?.body as object, translated: false })
+    : path === 'harnesses?mine=true' ? { harnesses: mine } : { id: 'published-fixture' };
+const tankId = '11111111-2222-4333-8444-555555555555';
+const tank = { id: tankId, title: 'TANK 1987', description: 'A tank game', category: 'Experiments', engine: 'Codex', viewerPath: 'tank/index.html', files: [{ path: 'tank/index.html', content: '<canvas></canvas><script>go()</script>' }], conversation: [{ role: 'user', text: 'Make a tank game.' }], cover: `/api/community/harnesses/${tankId}/cover?v=1` };
+const saved = (id: string) => mocks.request.mock.calls.find(([path, options]) => path === `harnesses/${id}` && options?.method === 'PUT');
 const published = () => mocks.request.mock.calls.filter(([path]) => path === 'harnesses');
 const translations = () => mocks.request.mock.calls.filter(([path]) => path === 'translate');
 const bundleFile = (bundle: object) => Object.assign(new File([JSON.stringify(bundle)], 'OPEN-HARNESS.json', { type: 'application/json' }), { text: async () => JSON.stringify(bundle) });
@@ -93,6 +97,39 @@ describe('explicit publication', () => {
     expect(screen.queryByText(/The Hub shows what a session made/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Your output loads/)).not.toBeInTheDocument();
   });
+  it('opens one of your publications to edit and saves it over the same address', async () => {
+    window.history.replaceState(null, '', `/hub/publish?edit=${tankId}`);
+    const answer = hub(undefined, [{ id: tankId, title: tank.title }]);
+    mocks.request.mockImplementation(async (path: string, options?: { body?: unknown }) => path === `harnesses/${tankId}` && !options ? { harness: tank, social: {} } : answer(path, options));
+    render(<PublishPage />);
+    expect(await screen.findByDisplayValue('TANK 1987')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Update your harness.' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'TANK 1987 II' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /I have permission/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith(`/hub/${tankId}`));
+    expect(saved(tankId)![1].body).toMatchObject({ title: 'TANK 1987 II', viewerPath: 'tank/index.html', files: tank.files, confirmed: true, license: 'MIT' });
+    // The cover stays as it is: its address is not an image to send back.
+    expect(saved(tankId)![1].body).not.toHaveProperty('cover');
+    expect(published()).toHaveLength(0);
+    expect(translations()).toHaveLength(0);
+    window.history.replaceState(null, '', '/');
+  });
+  it('saves an arriving draft over one of your publications when you choose it', async () => {
+    mocks.request.mockImplementation(hub(undefined, [{ id: tankId, title: tank.title }]));
+    render(<PublishPage />);
+    fireEvent.change(screen.getByLabelText('Import fork bundle'), { target: { files: [bundleFile(project)] } });
+    await screen.findByDisplayValue('My orbit');
+    fireEvent.change(screen.getByLabelText('Upload HTML output'), { target: { files: [Object.assign(new File(['<h1>v2</h1>'], 'index.html'), { text: async () => '<h1>v2</h1>' })] } });
+    await waitFor(() => expect(screen.queryByText(/still the original/)).not.toBeInTheDocument());
+    fireEvent.change(await screen.findByLabelText('Publish as'), { target: { value: tankId } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /I have permission/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith(`/hub/${tankId}`));
+    // Where a publication came from is not an edit's to change.
+    expect(saved(tankId)![1].body).not.toHaveProperty('forkedFrom');
+    expect(published()).toHaveLength(0);
+  });
   it('translates an arriving draft into English and keeps the original to switch back to', async () => {
     const original = { ...project, title: 'Quỹ đạo của tôi', description: 'Một góc nhìn mới', conversation: [{ role: 'user', text: 'Đổi quỹ đạo.' }, { role: 'tool', text: 'ok' }] };
     mocks.request.mockImplementation(hub({ title: 'My orbit', description: 'A new perspective', conversation: [{ role: 'user', text: 'Change the orbit.' }, { role: 'tool', text: 'ok' }] }));
@@ -116,7 +153,11 @@ describe('explicit publication', () => {
     fireEvent.change(screen.getByLabelText('Import fork bundle'), { target: { files: [bundleFile({ ...project, title: 'Quỹ đạo' })] } });
     await screen.findByDisplayValue('Quỹ đạo');
     expect(translations()).toHaveLength(0);
-    mocks.request.mockRejectedValueOnce(new Error('The translation failed. Try again.'));
+    const answer = hub();
+    mocks.request.mockImplementation(async (path: string, options?: { body?: unknown }) => {
+      if (path === 'translate') throw new Error('The translation failed. Try again.');
+      return answer(path, options);
+    });
     mocks.headers.mockReturnValue({ Authorization: 'Bearer fixture' }); fireEvent.focus(window);
     expect(await screen.findByText(/Could not translate into English/)).toBeInTheDocument();
     expect(screen.getByDisplayValue('Quỹ đạo')).toBeInTheDocument();

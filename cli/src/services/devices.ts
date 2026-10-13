@@ -145,7 +145,8 @@ export function startDevices(core: CoreApi, ports: CorePorts, deps: DevicesDeps)
   // The assistant's latest paragraph per agent, as the processing cards carry it; gone when the turn ends.
   const latestUpdate = new Map<string, string>()
   const cableHost = new DaemonCableHost({
-    sessions: () => core.agents.advertised(),
+    // The cloud harnesses too, where the core offers them: tiles on the desk the dial walks like any other.
+    sessions: () => [...core.agents.advertised(), ...core.agents.cloud?.() ?? []],
     refresh: deps.refresh,
     displayName: (session) => core.agents.displayName(session),
     appFocus: () => focus.voice ?? undefined,

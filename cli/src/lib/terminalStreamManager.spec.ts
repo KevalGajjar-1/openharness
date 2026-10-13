@@ -186,8 +186,9 @@ describe('TerminalStreamManager', () => {
     // must start nothing either.
     const typed: string[] = []
     const person: boolean[] = []
+    const from: Array<{ connId: string, kind: string | null }> = []
     await manager.stop()
-    manager = newManager({ onInput: (agentId, byPerson) => { typed.push(agentId); person.push(byPerson) } })
+    manager = newManager({ onInput: (agentId, byPerson, source) => { typed.push(agentId); person.push(byPerson); from.push(source) } })
     await manager.handleFrame('web-1', 'terminal_open', { requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40 })
     const controller = sent.find((frame) => frame.type === 'terminal_ready' && frame.connId === 'web-1')!.payload.streamId as string
     await manager.handleFrame('web-2', 'terminal_open', {
@@ -211,6 +212,8 @@ describe('TerminalStreamManager', () => {
     await manager.handleBinary('web-1', { kind: TerminalBinaryKind.input, streamId: controller, seq: 1, compressed: false, bytes: Buffer.from('\x1b[I\x1b[?1;2c') })
     expect(typed).toEqual(['agent-1', 'agent-1', 'agent-1'])
     expect(person).toEqual([true, true, false])
+    // Who typed: the controller's connection (core/terminals/browser.ts sends a page to the phone typing).
+    expect(from[0]?.connId).toBe('web-1')
   })
 
   it('opens with a keyframe, streams coalesced output, and writes ordered raw input', async () => {

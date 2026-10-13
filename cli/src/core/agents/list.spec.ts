@@ -60,6 +60,21 @@ describe('the agents a window asks for', () => {
   })
 })
 
+describe('the cloud harnesses', () => {
+  const cloud = (id: string, createdAt: string, status = 'active') => ({ id, name: id, engine: 'fo', createdAt, status, selectedModel: null, location: 'cloud' }) as never
+
+  it('are listed with the rest in the same order, and a stopped one only where stopped agents are asked for', async () => {
+    const a1 = session('a1')
+    const { ask, replies } = setup([a1], [], { cloudFrames: () => [cloud('cloud_1', '2026-10-05T09:00:00.000Z'), cloud('cloud_2', '2026-10-05T11:00:00.000Z', 'stopped')] })
+    await ask({})
+    expect(replies[0].agents.map((agent: { id: string }) => agent.id)).toEqual(['cloud_1', 'a1'])
+    await ask({ includeStopped: true })
+    expect(replies[1].agents.map((agent: { id: string }) => agent.id)).toEqual(['cloud_1', 'a1', 'cloud_2'])
+    await ask({ includeStopped: true }, 'device')
+    expect(replies[2].agents).toEqual([{ id: 'cloud_1', name: 'cloud_1', engine: 'fo', selectedModel: null }, { id: 'a1', name: 'a1 name', engine: 'claude', selectedModel: null }])
+  })
+})
+
 describe('the agents a device asks for', () => {
   it('only the rows it drives, at most a hundred, each with only what its firmware reads, and never a stopped one', async () => {
     const live = [session('shell', { engine: 'terminal' }), ...Array.from({ length: 105 }, (_, i) => session(`agent-${String(i).padStart(3, '0')}`))]
@@ -173,6 +188,8 @@ describe('the device\'s rows', () => {
     expect(deviceAgentListItem({ id: 'a', engine: 'codex', selectedModel: 'runtime-v1:s:codex:gpt@high' }))
       .toStrictEqual({ id: 'a', engine: 'codex', selectedModel: 'runtime-v1:s:codex:gpt@high' })
     expect(deviceAgentListItem({ id: 'a', engine: 42, selectedModel: null })).toStrictEqual({ id: 'a', selectedModel: null })
+    // A cloud agent is driven from the dial too: its question screen answers it.
+    expect(deviceAgentListItem({ id: 'cloud_1', engine: 'devin-cloud', selectedModel: null })).toStrictEqual({ id: 'cloud_1', engine: 'devin-cloud', selectedModel: null })
   })
 
   it('a terminal is no row of a device\'s; anything else is', () => {

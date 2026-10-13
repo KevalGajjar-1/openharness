@@ -31,6 +31,22 @@ export function bridgeKey(vault: Store): string {
   })
 }
 
+/**
+ * The capability for Harness's own calls through the bridge (its cloud agents, services/cloud.ts): a second key,
+ * in `harness-key.json`, never written into an agent's configuration. The bridge's key is in every agent's MCP
+ * entry, so an agent (one a page talked into it) could otherwise list the connections and spend a Devin or
+ * Cursor key through the `/api/` route.
+ */
+export function harnessKey(vault: Store): string {
+  return locked(vault.root, () => {
+    const key = vault.file('harness-key.json').key
+    if (typeof key === 'string' && key.length >= 32) return key
+    const fresh = randomBytes(32).toString('base64url')
+    writePrivate(join(vault.root, 'harness-key.json'), { key: fresh })
+    return fresh
+  })
+}
+
 export function bridgeUrl(key: string, code: string, port = bridgePort()): string {
   return `http://127.0.0.1:${port}/${key}/${code}/mcp`
 }

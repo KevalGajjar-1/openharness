@@ -127,7 +127,7 @@ export interface Candidate {
 }
 /** `live`: its heartbeat sidecar is fresh (the grid is hearing from it). `pidAlive`: the process its run
  *  record names exists — the only liveness that holds while the grid sleeps and the sidecar goes stale. */
-interface Owned { file: string; selector: string; aliases: string[]; nodeId: string; name: string; live: boolean; pidAlive: boolean; siblings: number }
+interface Owned { file: string; selector: string; aliases: string[]; nodeId: string; name: string; live: boolean; pidAlive: boolean; dead: boolean; siblings: number }
 interface Receipt { spec: 1; grid: string; operation?: ModelOperation }
 /** What the grid says is running on it, read WITHOUT waking it (`gridModels.gridInventory`): the
  * overview's node objects while it is awake, nothing while it sleeps — and its owner status (`running`,
@@ -454,6 +454,15 @@ export class LocalModels {
     return sizes.every(size => size > 0) && sizes.reduce((sum, size) => sum + size, 0) === candidate.size
   }
 
+  /** The run records whose process is gone ([Owned.dead]), left: grid's leave of a dead engine tears its
+   *  identity down, so the join a start makes next is a fresh one, not a union respawned with a model
+   *  nobody asked for. Best effort — the start goes on either way, the record read as nothing. */
+  private async clearDead(grid: string): Promise<void> {
+    for (const dead of (await this.owned(grid)).filter(instance => instance.dead)) {
+      await this.run(['--remote', 'leave', grid, '--engine', dead.selector], undefined, 60_000)
+    }
+  }
+
   /** Grid's non-secret run records distinguish locally owned --serve processes
    * from external endpoints. Stop delegates identity checks and teardown to Grid. */
   private async owned(grid: string): Promise<Owned[]> {
@@ -471,7 +480,14 @@ export class LocalModels {
       const heartbeat = await stat(join(folder, name.replace(/\.json$/, '.heartbeat'))).catch(() => null)
       const live = heartbeat !== null && Date.now() - heartbeat.mtimeMs < 90_000
       const specs = rows(record.engines)
-      if (specs.length || record.media) this.blockers.set(grid, 'Open Model Manager to add a model alongside those already running.')
+      // A record whose process is gone serves nothing: the computer restarted, or the engine died, and grid
+      // keeps the record (run/engines survives a reboot) until something leaves it. Read as an engine, it
+      // held its model forever — not startable ("It cannot start now. Try again in a moment.", after an NVIDIA
+      // machine restarted), and every other model behind "Stop … first". A start clears it ([clearDead]).
+      const pid = recordPid(record)
+      const pidAlive = pid !== null && processExists(pid)
+      const dead = pid !== null && !pidAlive
+      if ((specs.length || record.media) && !dead) this.blockers.set(grid, 'Open Model Manager to add a model alongside those already running.')
       for (const spec of specs) {
         if (spec.endpoint_url || spec.api_kind || !Array.isArray(spec.models) || spec.models.length !== 1) continue
         const file = str(spec.models[0])
@@ -482,10 +498,9 @@ export class LocalModels {
         const named = 'advertise_as' in spec ? spec.advertise_as : specs.length === 1 ? record.advertise_as : undefined
         const advertised = Array.isArray(named) ? named.filter((v: unknown) => typeof v === 'string' && v.length > 0) : []
         const aliases: string[] = advertised.length ? advertised : [file]
-        const pid = recordPid(record)
         result.push({ file: basename(file), selector: file, aliases, nodeId: str(record.node_id), name: str(record.meta_name), live,
-          pidAlive: pid !== null && processExists(pid), siblings: specs.length + (record.media ? 1 : 0) })
-        this.blockers.set(grid, `Stop ${cleanName(aliases[0])} first to start another local model.`)
+          pidAlive, dead, siblings: specs.length + (record.media ? 1 : 0) })
+        if (!dead) this.blockers.set(grid, `Stop ${cleanName(aliases[0])} first to start another local model.`)
       }
     }
     return result
@@ -727,6 +742,8 @@ export class LocalModels {
       asleep = inventory.state === 'asleep' || inventory.status === 'asleep'
       nodes = inventory.state === 'awake' ? rows(inventory.nodes) : []
     } catch { inventoryError = 'Running models could not be checked. Try again.' }
+    // (A dead engine's record holds nothing: its model reads as downloaded, and starts.)
+    owned = owned.filter(instance => !instance.dead)
     const operation = this.active?.grid === grid ? this.active.operation : this.receipt?.grid === grid ? this.receipt.operation : undefined
     const apps = await this.apps(force)
     const records = (await this.records()).filter(record => record.grid === grid)
@@ -864,6 +881,7 @@ export class LocalModels {
       // Leaving the last engine removes Grid's local registration. Restore the
       // account's existing grids before resolving ownership or joining again.
       await must(['--remote', 'sync'], 'Models could not be checked. Try again.')
+      await this.clearDead(grid)
     }
     // The last scan has every model a person could have clicked; a model it lacks waits for a new one.
     let apps = operation.modelId.startsWith('app:') ? await this.apps() : []
@@ -875,7 +893,7 @@ export class LocalModels {
     if (started || (operation.modelId.startsWith('app:') && app?.engine !== 'grid')) {
       return this.performApp(grid, operation, app?.engine === 'grid' ? undefined : app)
     }
-    const owned = await this.owned(grid)
+    const owned = (await this.owned(grid)).filter(instance => !instance.dead)
     const appServed = this.appCandidates(apps)
     const candidate = [...this.candidates, ...await this.known(grid, owned, appServed), ...appServed].find(c => c.id === operation.modelId)
     if (candidate?.appPath && operation.action === 'start') await this.linkApp(candidate)

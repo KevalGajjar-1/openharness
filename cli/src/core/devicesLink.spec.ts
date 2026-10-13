@@ -118,6 +118,14 @@ describe('what the devices ask of the core', () => {
     })
   })
 
+  it('lists the cloud harnesses after this computer\'s agents, as the dial lists agents', async () => {
+    const row = { agentId: 'cloud_1', engine: 'fo', displayName: 'haircut', registeredAt: 1 } as unknown as RegisteredSession
+    const core = fakeCore({ agents: { cloud: () => [row] } })
+    const devices = createDevicesLink({ core, notify: () => true, call: vi.fn(), state: () => STATE })
+    vi.mocked(core.agents.advertised).mockReturnValue([{ agentId: 'a1', engine: 'claude' } as RegisteredSession])
+    expect(((await devices.answer('view', {})) as { agents: Array<{ agentId: string }> }).agents.map((agent) => agent.agentId)).toEqual(['a1', 'cloud_1'])
+  })
+
   it('is the core\'s own doors and the sign-in, asked when they need them', async () => {
     const { core, devices } = link()
     vi.mocked(core.agents.activityText).mockResolvedValue('Reading')

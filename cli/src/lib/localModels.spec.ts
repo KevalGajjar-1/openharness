@@ -1095,6 +1095,36 @@ describe('local model discovery and lifecycle', () => {
   })
 })
 
+describe('a run record its engine did not outlive', () => {
+  // As on an NVIDIA machine after a restart: grid's record of the engine survives in run/engines, its
+  // process does not, and the model read as held by it — "It cannot start now. Try again in a moment."
+  it('holds nothing: the model reads downloaded and starts, the record cleared before the join', async () => {
+    await writeFile(join(home, 'models', 'Small-Q4.gguf'), Buffer.alloc(64))
+    await writeFile(join(records, 'remote.json'), JSON.stringify({ node_id: 'local-node', meta_name: 'harness', pid: deadPid(),
+      engines: [{ endpoint_url: null, models: ['Small-Q4.gguf'] }], advertise_as: [] }))
+    expect((await service.list('home', true)).models[0]).toMatchObject({ id: 'org/Small-GGUF', state: 'downloaded', canStart: true, canStop: false })
+    const ack = await service.act('home', 'org/Small-GGUF', 'start'); await service.settled()
+    expect(ack.error).toBeUndefined()
+    const leave = calls.findIndex(args => args.join(' ') === '--remote leave home --engine Small-Q4.gguf')
+    const joined = calls.findIndex(args => args.includes('join'))
+    expect(leave).toBeGreaterThanOrEqual(0)
+    expect(joined).toBeGreaterThan(leave)
+    expect((await service.list('home', true)).models[0]).toMatchObject({ state: 'running', operation: { phase: 'done' } })
+  })
+
+  it('a start goes on when the record cannot be left, and nothing stands in another model\'s way', async () => {
+    await writeFile(join(home, 'models', 'Small-Q4.gguf'), Buffer.alloc(64))
+    await writeFile(join(records, 'stale.json'), JSON.stringify({ node_id: 'old-node', pid: deadPid(),
+      engines: [{ endpoint_url: null, models: ['Other-Q4.gguf'] }], advertise_as: [] }))
+    const original = run.getMockImplementation()!
+    run.mockImplementation(async (args, output) => { if (!args.includes('leave')) return original(args, output); calls.push(args); return { ...ok(), ok: false } })
+    await service.act('home', 'org/Small-GGUF', 'start'); await service.settled()
+    expect(calls).toContainEqual(['--remote', 'leave', 'home', '--engine', 'Other-Q4.gguf'])
+    expect(calls.some(args => args.includes('join'))).toBe(true)
+    expect((await service.list('home', true)).models[0].operation).toMatchObject({ phase: 'done' })
+  })
+})
+
 /** A pid that existed a moment ago and no longer does. */
 function deadPid(): number {
   return Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout)
@@ -1125,7 +1155,7 @@ describe('the Model Manager while its grid sleeps (grid-reads-without-waking iss
     expect((await service.list('home')).models).toEqual([expect.objectContaining({ id: 'local:Small-Q4.gguf', state: 'running', gridAsleep: true, canStop: true })])
   })
 
-  it.each([['a process that is gone', () => deadPid()], ['a join mid-spawn (pid 0)', () => 0], ['no pid at all', () => 'x']])(
+  it.each([['a join mid-spawn (pid 0)', () => 0], ['no pid at all', () => 'x']])(
     'does not call %s parked', async (_name, pid) => {
       gridState = 'asleep'; catalogCards = []
       await writeFile(join(records, 'remote.json'), parkedRecord(pid()))
@@ -1133,6 +1163,12 @@ describe('the Model Manager while its grid sleeps (grid-reads-without-waking iss
       expect(row).toMatchObject({ id: 'local:Small-Q4.gguf', state: 'available', canStop: true })
       expect(row).not.toHaveProperty('gridAsleep')
     })
+
+  it('does not call a process that is gone parked, nor offer it at all: nothing of it is left to stop', async () => {
+    gridState = 'asleep'; catalogCards = []
+    await writeFile(join(records, 'remote.json'), parkedRecord(deadPid()))
+    expect((await service.list('home')).models).toEqual([])
+  })
 
   it('an engine the awake grid lists is running with no asleep flag', async () => {
     serving = true

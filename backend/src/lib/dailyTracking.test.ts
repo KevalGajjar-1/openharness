@@ -18,7 +18,7 @@ vi.mock('./prisma.js', () => ({
   },
 }))
 
-import { presenceTracker, presenceWriteDue, recordTurnStarted, touchClientOnlineDay, touchDeviceOnlineDay, touchMachineOnlineDay, touchUserOnlineDay } from './dailyTracking.js'
+import { CLIENT_SURFACES, presenceTracker, presenceWriteDue, recordTurnStarted, touchClientOnlineDay, touchDeviceOnlineDay, touchMachineOnlineDay, touchUserOnlineDay, TUI_SURFACES } from './dailyTracking.js'
 import { utcDayStart } from '../types/analytics.js'
 
 describe('touchUserOnlineDay', () => {
@@ -70,6 +70,15 @@ describe('touchClientOnlineDay', () => {
     expect(open.update).toEqual({ lastSeenAt: now, connections: { increment: 1 } })
     expect(ping.update).toEqual({ lastSeenAt: now })
     expect(ping.create.connections).toBe(0)
+  })
+
+  it('tells a TUI on Harness OS, on a PC or an Orange Pi, from the TUI anywhere else', async () => {
+    expect([...TUI_SURFACES]).toEqual(['tui', 'harness-os', 'harness-os-pi'])
+    for (const surface of TUI_SURFACES) expect(CLIENT_SURFACES.has(surface)).toBe(true)
+    for (const other of ['desktop', 'mobile', 'web', 'orangepi', '']) expect(TUI_SURFACES.has(other)).toBe(false)
+    const now = new Date('2026-10-13T08:00:00.000Z')
+    await touchClientOnlineDay('user-1', 'harness-os-pi', now, { isNewConnection: true })
+    expect(db.clientPresenceUpsert.mock.calls[0][0].create).toMatchObject({ userId: 'user-1', surface: 'harness-os-pi' })
   })
 })
 

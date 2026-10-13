@@ -84,7 +84,7 @@ import '../shared/theme/app_theme.dart' as grid;
 import '../terminal/remote_media_download.dart';
 import 'take_over.dart';
 import '../widgets/engine_identity.dart'
-    show allEngines, engineIdentity, isTerminalEngine;
+    show allEngines, engineIdentity, isCloudAgentId, isTerminalEngine;
 import '../store/store_screen.dart' show openStoreAgent;
 import 'dial_status.dart';
 import 'grid_pictures.dart';
@@ -3399,6 +3399,27 @@ class AppNotifier extends ChangeNotifier {
   /// tile of a machine, rather than only the focused one, call [panesFor]
   /// instead; those are the transport-wide events, and they are marked.
   TerminalSession? get activeTerminal => focusedPane?.session;
+
+  /// Dial scroll handlers of the mounted cloud chat panes. A cloud harness has no
+  /// terminal session to scroll, so its conversation registers here, by machine
+  /// and agent, for as long as it is on screen.
+  final _cloudScrollHandlers =
+      <(String, String), void Function(int phase, int dy, int velocity)>{};
+
+  /// Called by a cloud chat pane while mounted; returns how to withdraw it.
+  VoidCallback registerCloudScroll(
+    String machineId,
+    String agentId,
+    void Function(int phase, int dy, int velocity) handler,
+  ) {
+    final key = (machineId, agentId);
+    _cloudScrollHandlers[key] = handler;
+    return () {
+      if (identical(_cloudScrollHandlers[key], handler)) {
+        _cloudScrollHandlers.remove(key);
+      }
+    };
+  }
 
   bool get canAddPane => panes.length < maxPanes;
 
@@ -11281,6 +11302,52 @@ class AppNotifier extends ChangeNotifier {
     }
   }
 
+  /// A cloud harness's conversation from message [after] on (`cloud_transcript`,
+  /// CLI services/cloud.ts): `{messages: [{id, from, text, at}], total}`, or
+  /// null when its machine cannot answer.
+  Future<Map<String, dynamic>?> readCloudTranscript(
+    String machineId,
+    String agentId, {
+    int after = 0,
+  }) async {
+    try {
+      final reply = await _conn(machineId).request(
+        'cloud_transcript',
+        payload: {'agentId': agentId, if (after > 0) 'after': after},
+        timeout: const Duration(seconds: 8),
+      );
+      return reply['error'] != null ? null : reply;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The person's words for a cloud harness (`cloud_send`): null once its
+  /// maker took them, else why not, in words a person reads ("Cursor Cloud is
+  /// still working").
+  Future<String?> sendCloudMessage(
+    String machineId,
+    String agentId,
+    String text,
+  ) async {
+    try {
+      final reply = await _conn(machineId).request(
+        'cloud_send',
+        payload: {'agentId': agentId, 'text': text},
+        // Longer than the machine waits on its cloud service (3 min, CLI
+        // core/api.ts LONG_ANSWERS): a maker answering slowly is not a failure.
+        timeout: const Duration(seconds: 200),
+      );
+      if (reply['error'] == null) return null;
+      final detail = reply['detail'];
+      return detail is String && detail.isNotEmpty
+          ? detail
+          : 'It could not be sent. Try again.';
+    } catch (_) {
+      return 'It could not be sent. Try again.';
+    }
+  }
+
   /// The rows of [sessionId] on [machineId] before [beforeTurn], or its last
   /// rows (`session_tail`, the same index as [searchSessions]). Null when the
   /// machine cannot answer: offline, a CLI that predates the request, or a
@@ -11732,6 +11799,31 @@ class AppNotifier extends ChangeNotifier {
     return answer;
   }
 
+  /// A cloud harness (CLI services/cloud.ts): made by the machine's cloud
+  /// service at its maker, opened in a pane as any new harness is. Null when it
+  /// started; otherwise what to tell the person ("Add your Devin API key…").
+  Future<String?> createCloudHarness(
+    String machineId, {
+    required String engine,
+    required String prompt,
+    String? repositoryUrl,
+    int? acuLimit,
+    String? swarmId,
+    PaneSplitRequest? split,
+    HarnessPlacement? placement,
+  }) => _create(
+    machineId,
+    {
+      'engine': engine,
+      'prompt': prompt,
+      'repositoryUrl': ?repositoryUrl,
+      'acuLimit': ?acuLimit,
+    },
+    swarmId: swarmId,
+    split: split,
+    placement: placement,
+  );
+
   /// How long, from its start, a create waits for its agent's download beside setup
   /// ([agentPrefetch]). OpenCode took 7–12 s in the VM runs, Codex and Claude Code (one npm, after
   /// setup's Node) 25 s more; on a slow network the wait is the download's, since a pane that stopped
@@ -12182,6 +12274,26 @@ class AppNotifier extends ChangeNotifier {
         'SESSION_STOP_FAILED',
         'INVALID_SESSION',
       };
+      // A cloud agent's service refuses in words a person reads ("Add your
+      // Devin API key…"), and a retry of the same New Harness gets the same
+      // harness (its `creationId`), so none of these is left unconfirmed.
+      const cloudRefusals = {
+        'NOT_CONNECTED',
+        'INVALID_REQUEST',
+        'CONNECTIONS_UNAVAILABLE',
+        'CLOUD_FAILED',
+        'BUSY',
+        'RATE_LIMITED',
+        'UNREACHABLE',
+        'SERVICE_UNAVAILABLE',
+      };
+      final cloudRefusal =
+          isCloudAgentId(choices['engine'] as String?) &&
+          cloudRefusals.contains(failure.code);
+      if (cloudRefusal) {
+        creation._refusal = failure.code;
+        return creation._complete(failure.detail ?? 'Could not start it.');
+      }
       if (refusedBeforeLaunch.contains(failure.code)) {
         creation._refusal = failure.code;
         if (failure.code == 'INVALID_CWD' && choices['projectSource'] != null) {
@@ -17107,11 +17219,17 @@ class AppNotifier extends ChangeNotifier {
         // A finger going down is the gesture; moves and the inertial tail
         // must not keep asking macOS for focus after the person switches away.
         if (phase == 0) _requestDeviceWindow(machine);
-        activeTerminal?.scroll(
-          phase,
-          (payload['dy'] as num?)?.round() ?? 0,
-          (payload['velocity'] as num?)?.round() ?? 0,
-        );
+        final dy = (payload['dy'] as num?)?.round() ?? 0;
+        final velocity = (payload['velocity'] as num?)?.round() ?? 0;
+        final pane = focusedPane;
+        final cloudScroll = pane?.agentId == null
+            ? null
+            : _cloudScrollHandlers[(pane!.machineId, pane.agentId!)];
+        if (cloudScroll != null) {
+          cloudScroll(phase, dy, velocity);
+        } else {
+          activeTerminal?.scroll(phase, dy, velocity);
+        }
         return;
       case 'dial_selection':
         final reply = const ['search', 'match'].contains(payload['op'])

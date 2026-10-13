@@ -26,6 +26,8 @@ model CommunityHarness {
   credits       Json     @default("[]")
   deletedAt     DateTime?
   createdAt     DateTime @default(now())
+  // Set when its author edits it (routes/communityEdit.ts); never on publishing.
+  updatedAt     DateTime?
 
   @@index([autonomousEnv, deletedAt, createdAt])
   @@index([autonomousEnv, authorId])
@@ -574,7 +576,8 @@ model UserDailyPresence {
 /// Per-day record of a user on a surface other than the desktop app — `UserDailyPresence` stays the
 /// desktop app's alone. One row per (user, surface, UTC day); DAU is a distinct `userId`.
 /// `surface`: 'tui' (`harness tui`, reported by the local daemon like a desktop window: adapter-ws
-/// `app_presence { surface: 'tui' }`, src/lib/adapterWs.ts), 'mobile' / 'web' (the app's and the
+/// `app_presence { surface: 'tui' }`, src/lib/adapterWs.ts) — 'harness-os' / 'harness-os-pi' when that
+/// TUI is Harness OS on a PC / on an Orange Pi (cli lib/windowSurfaces.ts) —, 'mobile' / 'web' (the app's and the
 /// browser's own web-ws sockets, declared with `?client=` — src/lib/webWs.ts; the daemon's relay
 /// socket declares nothing and is never counted). `connections` = sessions opened that day (for
 /// mobile/web one per machine socket); a session spanning midnight gives the next day `0`.

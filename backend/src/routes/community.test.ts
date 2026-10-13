@@ -54,6 +54,7 @@ const db = vi.hoisted(() => {
 })
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
+import { communityEditRoutes, resetEditRateLimits } from './communityEdit.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
 import { errorHandler } from '../middlewares/errorHandler.js'
 import { communityStarters, isPublicCommunityRead } from '../lib/communityAccess.js'
@@ -71,13 +72,13 @@ async function publish(token = 'alice', payload = sample, env = 'prod') {
 }
 beforeEach(async () => {
   for (const model of [db.communityHarness, db.communityLike, db.communityComment, db.communityFollow]) model.rows.splice(0)
-  vi.clearAllMocks()
+  vi.clearAllMocks(); resetEditRateLimits()
   app = Fastify(); app.setErrorHandler(errorHandler)
   registerAuthMiddleware(app, async (token, autonomousEnv = 'prod') => {
     if (!['alice', 'bob'].includes(token)) throw new Error('Invalid token')
     return { sub: token, email: `${token}@example.com`, role: 'user', autonomousEnv }
   })
-  await app.register(communityRoutes); await app.ready()
+  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.ready()
 })
 afterEach(async () => app.close())
 
@@ -113,6 +114,31 @@ describe('publications and access', () => {
     expect((await send(Buffer.from('not gzip'))).statusCode).toBe(400)
     // Bounded: a small body that would inflate past the snapshot is refused, not unpacked.
     expect((await send(gzipSync(Buffer.alloc(7_000_000, 32)))).statusCode).toBe(400)
+  })
+  it('lets the author edit a publication in place, keeping its address, likes, origin and cover', async () => {
+    const cover = 'data:image/png;base64,' + Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64')
+    const original = await publish('bob', { ...sample, title: 'Original' })
+    const id = await publish('alice', { ...sample, forkedFrom: original, cover } as typeof sample)
+    await call('PUT', `harnesses/${id}/like`, 'bob', { liked: true })
+    const { confirmed, license, ...rest } = sample
+    const edit = { ...rest, title: 'TANK 1987', files: [{ path: 'tank/index.html', content: '<canvas></canvas><script>go()</script>' }], viewerPath: 'tank/index.html', confirmed, license }
+    expect((await call('PUT', `harnesses/${id}`, 'alice', edit)).statusCode).toBe(200)
+    const read = (await call('GET', `harnesses/${id}`, 'alice')).json().data
+    expect(read.harness).toMatchObject({ id, title: 'TANK 1987', viewerPath: 'tank/index.html', forkedFrom: original })
+    expect(read.harness.cover).toMatch(new RegExp(`^/api/community/harnesses/${id}/cover\\?v=\\d+$`))
+    expect(read.social.likes).toBe(1)
+    expect(db.communityHarness.rows).toHaveLength(2)
+  })
+  it('refuses an edit by anyone but the author, of a starter, or that changes where it came from', async () => {
+    const id = await publish('alice')
+    const { confirmed, license, ...rest } = sample
+    const edit = { ...rest, title: 'Mine now', confirmed, license }
+    expect((await call('PUT', `harnesses/${id}`, 'bob', edit)).statusCode).toBe(403)
+    expect((await call('PUT', `harnesses/${id}`, undefined, edit)).statusCode).toBe(401)
+    expect((await call('PUT', `harnesses/${starter}`, 'alice', edit)).statusCode).toBe(400)
+    expect((await call('PUT', `harnesses/${id}`, 'alice', { ...edit, forkedFrom: starter })).statusCode).toBe(400)
+    expect((await call('PUT', `harnesses/${id}`, 'alice', { ...edit, viewerPath: 'missing.html' })).statusCode).toBe(400)
+    expect((await call('GET', `harnesses/${id}`)).json().data.harness.title).toBe(sample.title)
   })
   it('returns the same publication after a lost-response retry', async () => {
     const payload = { ...sample, clientId: crypto.randomUUID() }

@@ -23,10 +23,14 @@ export function coverImage(value: string): { type: string; bytes: Buffer } | nul
   return valid ? { type: `image/${match[1]}`, bytes } : null
 }
 
-/** Readers get a cover's address, never its bytes: a feed page would otherwise carry every image inline. */
-function withCoverPath<T extends { id: string; cover: string | null }>(row: T): Omit<T, 'cover'> & { cover?: string } {
+/**
+ * Readers get a cover's address, never its bytes: a feed page would otherwise carry every image inline.
+ * The address names the version, since the website caches a cover for a day and an edit can change it.
+ */
+function withCoverPath<T extends { id: string; cover: string | null; updatedAt?: Date | null }>(row: T): Omit<T, 'cover'> & { cover?: string } {
   const { cover, ...rest } = row
-  return { ...rest, ...(cover ? { cover: `/api/community/harnesses/${row.id}/cover` } : {}) }
+  const version = row.updatedAt ? `?v=${row.updatedAt.getTime()}` : ''
+  return { ...rest, ...(cover ? { cover: `/api/community/harnesses/${row.id}/cover${version}` } : {}) }
 }
 const searchMaxChars = 80
 /** The fields a reader searches by. TODO(BE): an unanchored match scans the environment's publications; move to an Atlas Search index once the feed outgrows that. */
@@ -48,7 +52,7 @@ const file = z.object({
   encoding: z.literal('base64').optional(),
 }).strict()
 
-export const publicationSchema = z.object({
+const publicationFields = z.object({
   title: z.string().trim().min(1).max(100),
   description: z.string().trim().min(1).max(300),
   category: z.enum(communityCategories),
@@ -62,7 +66,11 @@ export const publicationSchema = z.object({
   clientId: z.string().uuid().optional(),
   license: z.literal('MIT'),
   confirmed: z.literal(true),
-}).strict().superRefine((value, ctx) => {
+})
+type Snapshot = Pick<z.infer<typeof publicationFields>, 'files' | 'viewerPath' | 'harnessId'>
+
+/** What every published snapshot must hold, new or edited. */
+function checkSnapshot(value: Snapshot, ctx: z.RefinementCtx): void {
   for (const file of value.files) {
     if (file.encoding && (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.content) || file.content.length % 4 !== 0)) ctx.addIssue({ code: 'custom', message: 'Invalid binary file encoding.' })
     const lower = file.path.toLowerCase();
@@ -76,9 +84,17 @@ export const publicationSchema = z.object({
   if (marker && !value.files.some(file => file.path === marker && !file.encoding)) ctx.addIssue({ code: 'custom', message: 'Include the harness project source.' })
   if (Buffer.byteLength(JSON.stringify(value)) > communityLimits.snapshotBytes)
     ctx.addIssue({ code: 'custom', message: 'Keep the published snapshot under 6 MB.' })
-})
+}
 
-function environment(req: FastifyRequest): string {
+export const publicationSchema = publicationFields.strict().superRefine(checkSnapshot)
+
+/**
+ * An edit replaces what a publication shows; where it came from (`forkedFrom`, its credits) stays
+ * as it was published. A cover left out keeps the one it has.
+ */
+export const publicationEditSchema = publicationFields.omit({ forkedFrom: true, clientId: true }).strict().superRefine(checkSnapshot)
+
+export function environment(req: FastifyRequest): string {
   try { return req.user?.autonomousEnv ?? parseAutonomousEnvironment(req.headers['x-autonomous-env']) }
   catch { throw new ValidationError('Invalid Autonomous environment') }
 }
@@ -162,7 +178,7 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     })
   })
 
-  // What a reader's page refreshes: the publication itself never changes after it is published.
+  // What a reader's page refreshes: the publication itself changes only when its author edits it.
   app.get<{ Params: z.infer<typeof params> }>('/api/community/harnesses/:id/social', { preHandler: validateParams(params) }, async (req, reply) => {
     const autonomousEnv = environment(req)
     const post = await publication(req.params.id, autonomousEnv)
