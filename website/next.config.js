@@ -132,7 +132,7 @@ module.exports = {
           { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
         ],
       },
-      ...['/', '/s/:id', '/auth/callback', '/callback', '/harness-web', '/harness-web/index.html', '/harness-web/release.json'].map((source) => ({
+      ...['/', '/web', '/s/:id', '/auth/callback', '/callback', '/harness-web', '/harness-web/index.html', '/harness-web/release.json'].map((source) => ({
         source,
         headers: [
           { key: 'Cache-Control', value: 'no-store' },
