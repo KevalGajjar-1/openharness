@@ -389,7 +389,10 @@ class _RootShellState extends ConsumerState<RootShell>
         // three buttons beside it, which is the one strip of this window that
         // must stay reachable.
         // Device bands, most urgent first: a removal (red before neutral), a key that joined and left,
-        // a new device, a held computer id. The mobile app stacks them in the same order.
+        // a new device, a held computer id. The mobile app stacks them in the same order. They are
+        // the workspace's: a shared harness (`/s/…`, web only) is someone's session, not the place
+        // to review your own devices.
+        final deviceBands = home && shared == null;
         return Column(
           children: [
             // The app's commands as a menu strip (Linux only; macOS carries
@@ -402,13 +405,13 @@ class _RootShellState extends ConsumerState<RootShell>
                 app.status != AppStatus.checkingEnvironment &&
                 app.status != AppStatus.preparingEnvironment)
               UpdateNotice(notifier: app),
-            if (app.visibleDeviceRemovals.isNotEmpty && home)
+            if (app.visibleDeviceRemovals.isNotEmpty && deviceBands)
               DeviceRemovalNoticeBand(notifier: app),
-            if (app.departedDevices.isNotEmpty && home)
+            if (app.departedDevices.isNotEmpty && deviceBands)
               DeviceDepartedNoticeBand(notifier: app),
-            if (app.newDevices.isNotEmpty && home)
+            if (app.newDevices.isNotEmpty && deviceBands)
               NewDeviceNotice(notifier: app),
-            if (app.deviceConflict != null && home)
+            if (app.deviceConflict != null && deviceBands)
               DeviceConflictNoticeBand(notifier: app),
             Expanded(child: framed),
           ],
