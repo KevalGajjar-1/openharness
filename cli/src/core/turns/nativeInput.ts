@@ -10,7 +10,7 @@ export interface NativeInputAdmission {
   owns(id: string): boolean
   /** A short-lived, original-owner and complete-frontier proof. It is checked
    * again inside every actual paste/key dispatch after optional screen reads. */
-  prepare(original: RegisteredSession): Promise<{ verify(): void }>
+  prepare(original: RegisteredSession, purpose?: 'control' | 'answer'): Promise<{ verify(): void }>
   blocksControl(id: string, forAnswer: boolean): boolean
   held(id: string, reason: string | undefined): void
 }

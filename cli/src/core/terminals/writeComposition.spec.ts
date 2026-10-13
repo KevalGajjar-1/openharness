@@ -9,6 +9,8 @@ import { readInlineScreen } from '../../testing/inlineScreen.js'
 import { createInput, messageWriter, type InputDeps } from '../input.js'
 import { createTerminalControl } from './control.js'
 import { createTerminalWriter } from './writer.js'
+import { RuntimeProfileController } from '../../lib/runtimeControl.js'
+import { encodeRuntimeProfile } from '../../engines/kit/runtime.js'
 
 // These are the only process functions the composed path may use. No fixture
 // command can reach a host tmux server, engine home or daemon.
@@ -72,11 +74,66 @@ function setup(options: { now?: () => number; native?: boolean } = {}) {
   const input = createInput(deps)
   const write = () => input.deviceInput.legacyWrite(row.agentId, ticket => messageWriter(deps)(row.agentId, 'hello', undefined, ticket))
   const cancel = () => input.deviceInput.interruptWrite(row.agentId,
-    ticket => terminal.keyTerminalAction('session', 'C-c', ticket.allowed, ticket))
+    ticket => terminal.interruptTerminalAction('session', ticket.allowed, ticket))
   return { row, calls, terminal, input, deps, readScreen, promptTyped, capture, write, cancel, notifications,
     pause: (command: string) => { pause = command }, finish: (command: string) => { callbacks.get(command)!(); callbacks.delete(command) },
     onCommand: (callback: typeof onCommand) => { onCommand = callback } }
 }
+
+it.each(['literal', 'submit'] as const)('native control revokes %s during real buffer preparation and fences cleanup Escape', async kind => {
+  const run = setup({ native: true })
+  let valid = true
+  run.deps.native!.prepare = async () => ({ verify: () => { if (!valid) throw Error('generation frontier changed') } })
+  const release = run.input.acquireTerminalControl('agent', { forAnswer: true })!
+  run.pause('load-buffer')
+  const effect = kind === 'literal' ? run.terminal.typeTerminal('agent', 'filter') : run.terminal.submitTerminal('agent', '/model next')
+  await flush()
+  valid = false
+  run.finish('load-buffer'); await expect(effect).resolves.toBe(false)
+  await expect(run.terminal.keyTerminal('agent', 'Escape')).resolves.toBe(false)
+  expect(run.calls).toEqual(['delete-buffer'])
+  expect(run.terminal.pinnedControls.has('agent')).toBe(true)
+  release(); run.input.nativeInput!.close()
+})
+
+it.each(['key', 'submit'] as const)('a caller-supplied %s dispatch cannot bypass the pinned native proof', async kind => {
+  const run = setup({ native: true })
+  let valid = true
+  run.deps.native!.prepare = async () => ({ verify: () => { if (!valid) throw Error('generation frontier changed') } })
+  const release = run.input.acquireTerminalControl('agent')!
+  const ticket = run.terminal.writer.ticket('agent')
+  const write = { allowed: ticket.allowed, dispatch: <T>(effect: () => Promise<T>): Promise<T> => {
+    valid = false
+    return ticket.dispatch(effect)
+  } }
+  const result = kind === 'key'
+    ? run.terminal.keyTerminalAction('agent', 'Enter', write.allowed, write)
+    : run.terminal.submitTerminalAction('agent', '/model next', write)
+  await expect(result).resolves.toMatchObject({ dispatch: 'not_started' })
+  expect(run.calls).toEqual(kind === 'submit' ? ['delete-buffer'] : [])
+  release(); run.input.nativeInput!.close()
+})
+
+it.each(['support', 'catalog'] as const)('a model control read cannot adopt a conversation rebound during %s preparation', async phase => {
+  const run = setup()
+  const target = encodeRuntimeProfile({ sessionId: 'agent', engine: 'claude', model: 'opus', effort: 'high' })
+  const rebind = () => { run.row.sessionId = 'replacement'; run.row.boundAt = 2 }
+  const apply = vi.fn()
+  const controller = new RuntimeProfileController({
+    manager: { getState: () => ({}), selectedModel: () => null,
+      supportsControl: async () => { if (phase === 'support') rebind(); return true },
+      modelsForSession: async () => { if (phase === 'catalog') rebind(); return [{ id: target }] },
+    } as never,
+    getSession: () => run.row, modelControlFor: () => ({ validate: async () => {}, apply }),
+    readScreen: run.deps.readScreen, validateRuntime: run.terminal.validateTerminal, capture: run.terminal.captureTerminal,
+    sendText: run.terminal.submitTerminal, sendLiteral: run.terminal.typeTerminal, sendKey: run.terminal.keyTerminal,
+    acquireInput: run.input.acquireTerminalControl,
+  })
+  await expect(controller.setProfile('agent', target)).rejects.toMatchObject({ code: 'BUSY' })
+  expect(apply).not.toHaveBeenCalled()
+  expect(run.terminal.pinnedControls.has('agent')).toBe(false)
+  expect(run.calls).toEqual([])
+})
 
 it.each(['unavailable', 'empty'] as const)('holds the real native tmux Enter when its screen becomes %s after paste', async fault => {
   const run = setup({ native: true })
@@ -171,12 +228,12 @@ it('cannot regain a pinned sequence ticket after Cancel', async () => {
   release()
 })
 
-it('checks the interrupt deadline after the final native proof immediately before spawn', async () => {
+it.each([3, 4])('checks the interrupt deadline after the final native proof immediately before spawn (check %s)', async expireAt => {
   let clock = 0, checks = 0
   const run = setup({ now: () => clock })
-  await expect(run.input.deviceInput.interruptWrite('agent', ticket => run.terminal.keyTerminalAction('session', 'C-c',
-    () => { if (++checks === 3) clock = 5000; return true }, ticket))).rejects.toThrow('deadline expired')
-  expect(checks).toBe(3)
+  await expect(run.input.deviceInput.interruptWrite('agent', ticket => run.terminal.interruptTerminalAction('session',
+    () => { if (++checks === expireAt) clock = 5000; return true }, ticket))).rejects.toThrow('deadline expired')
+  expect(checks).toBe(expireAt)
   expect(run.calls).toEqual([])
 })
 

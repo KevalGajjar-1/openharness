@@ -98,6 +98,38 @@ describe('native input through the shared pane writer', () => {
   }
   const flush = async () => { for (let index = 0; index < 50; index++) await Promise.resolve() }
 
+  it.each([false, true])('pins a copied native owner for asynchronous control admission (answer: %s)', async forAnswer => {
+    const run = native(), original = structuredClone(run.row)
+    const release = run.inputs.acquireTerminalControl('native-session', { forAnswer, original })!
+    const admission = vi.mocked(run.deps.terminal.pinTerminalControl).mock.calls[0][1]!
+    expect(admission).toBeDefined()
+    run.row.sessionId = 'replacement'
+    await admission.prepare()
+    expect(run.admission.prepare).toHaveBeenCalledExactlyOnceWith(original, forAnswer ? 'answer' : 'control')
+    expect(run.inputs.acquireTerminalControl('native-agent', { original })).toBeNull()
+    release()
+  })
+
+  it.each([Error('native proof unavailable'), 'native proof unavailable'])('shows failed native control admission without dropping its reservation', async error => {
+    const run = native()
+    const release = run.inputs.acquireTerminalControl('native-agent')!
+    const admission = vi.mocked(run.deps.terminal.pinTerminalControl).mock.calls[0][1]!
+    vi.mocked(run.admission.prepare).mockRejectedValue(error)
+    await expect(admission.prepare()).rejects.toBe(error)
+    expect(run.admission.held).toHaveBeenLastCalledWith('native-agent', 'native proof unavailable')
+    expect(run.inputs.input.controlHeld('native-agent')).toBe(true)
+    release()
+  })
+
+  it('does not acquire native terminal control for a missing original row', () => {
+    const run = native({ resolve: () => undefined })
+    const release = vi.fn()
+    vi.spyOn(run.inputs.input, 'acquireControl').mockReturnValue(release)
+    expect(run.inputs.acquireTerminalControl('native-agent')).toBeNull()
+    expect(release).toHaveBeenCalledOnce()
+    expect(run.deps.terminal.pinTerminalControl).not.toHaveBeenCalled()
+  })
+
   it.each(['app', 'device'] as const)('%s delivery never enters legacy prompt acknowledgement or composer clearing', async route => {
     vi.useFakeTimers()
     const run = native()

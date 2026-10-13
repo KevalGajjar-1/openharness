@@ -27,6 +27,7 @@ import type { ScreenReading } from '../engines/facets/screen.js'
 import { TERMINAL_LEASE_REFUSED, TerminalWriteHeld, terminalActionNotStarted, type TerminalActionResult, type TerminalWrite } from '../lib/terminalTypes.js'
 import type { TerminalControl } from './terminals/control.js'
 import { launchBound } from './engines/sessionBinding.js'
+import { paneReadIdentity } from './transcripts/readIdentity.js'
 
 type Frame = { type: string; agentId?: string; dbSessionId?: string; payload: Record<string, unknown> }
 
@@ -245,11 +246,22 @@ export function createInput(deps: InputDeps) {
   })
   const input: SessionInputController = new SessionInputController(sessionInputDeps(deps, () => deviceInput, nativeInput))
   const deviceInput: AutonomousDeviceInput = new AutonomousDeviceInput(deviceInputDeps(deps, () => input))
-  const acquireTerminalControl = (id: string, opts?: { forAnswer?: boolean }): (() => void) | null => {
-    const agentId = resolve(id)?.agentId ?? id
+  const acquireTerminalControl = (id: string, opts?: { forAnswer?: boolean; original?: RegisteredSession }): (() => void) | null => {
+    const found = resolve(id)
+    if (opts?.original && paneReadIdentity(opts.original) !== paneReadIdentity(found)) return null
+    const original = found && structuredClone(found)
+    const agentId = original?.agentId ?? id
     const releaseInput = input.acquireControl(agentId, opts)
     if (!releaseInput) return null
-    const releaseTerminal = pinTerminalControl(agentId)
+    const native = deps.native?.owns(agentId) ? deps.native : undefined
+    if (native && !original) { releaseInput(); return null }
+    const releaseTerminal = pinTerminalControl(agentId, native ? { prepare: async () => {
+      try { return await native.prepare(original!, opts?.forAnswer ? 'answer' : 'control') }
+      catch (error) {
+        nativeNotify('hold', () => native.held(agentId, error instanceof Error ? error.message : String(error)))
+        throw error
+      }
+    } } : undefined)
     if (!releaseTerminal) {
       releaseInput()
       return null

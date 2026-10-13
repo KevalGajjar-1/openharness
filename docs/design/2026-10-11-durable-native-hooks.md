@@ -1,5 +1,33 @@
 # Durable native hook delivery
 
+October 13 pinned-control checkpoint: model and question control reserve their
+original conversation before optional preparation and retain one native proof
+through every later capture, literal, paste, key and cleanup. Revocation settles
+logical admission waiters immediately, but leaves the old driver's pin in place
+until that driver releases it. Late reads cannot adopt replacement authority.
+
+Cancel has a separate, fixed C-c port with its own fresh terminal lease, supplied
+writer interrupt ticket and required native predicate. It cannot reuse or remove
+the revoked driver's pin. Atomic activation must call it only within the original
+one-use durable cancellation dispatch, through the shared writer's interrupt.
+
+Receipt `20261013T070022.871239Z-33798` passes types and 373 focused cases with
+100% per-file statements, branches, functions and lines in the five covered core
+modules. The earlier `20261013T065709.733470Z-22107` remains failed: it caught
+the revoked driver's pin incorrectly blocking Cancel, alongside two fixture
+corrections. Independent review approved the corrected scope over `66f1af8a7`;
+this is not whole-PR approval or native activation acceptance.
+
+All nine native-control, ten writer and nine input fault oracles fail by assertion
+in `20261013T071008.826384Z-67270` (34.1 seconds). The prior mutation receipt
+`20261013T070825.642294Z-60683` remains failed: an extra dispatch check masked the
+older deadline mutation. Extending the test to the final check immediately before
+the actual process spawn catches that fault again. Production source and goldens
+were unchanged by that test correction. Implementation and review ran approximately
+06:45–07:13 UTC with validation overlapping; merge and publication remain zero.
+Generation-scoped task/recap consumers, durable Cancel/rearm, atomic activation and
+final installed-client acceptance remain required.
+
 October 13 history/admission checkpoint: native input and answer admission now
 requires a fresh confirmed generation frontier. Running work holds new input and
 ordinary control; an answer can target one running generation, with its original
