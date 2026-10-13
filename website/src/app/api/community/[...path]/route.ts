@@ -1,3 +1,4 @@
+import { gzipType } from '@/lib/community/gzip';
 import { communityApiOrigin } from '@/lib/community/server';
 
 type Context = { params: Promise<{ path: string[] }> };
@@ -31,9 +32,11 @@ async function forward(request: Request, context: Context): Promise<Response> {
   for (const key of ['authorization', 'x-autonomous-env']) {
     const value = request.headers.get(key); if (value) headers.set(key, value);
   }
-  const body = ['GET', 'HEAD'].includes(request.method) ? undefined : (await request.text() || undefined);
-  if (body) headers.set('Content-Type', 'application/json');
-  if (body && new TextEncoder().encode(body).length > 6_100_000) return Response.json({ success: false, error: { message: 'Keep the snapshot under 6 MB.' } }, { status: 413 });
+  // Bytes, as sent: a gzipped body (lib/community/gzip.ts) stays gzipped to the backend, which unpacks it.
+  const bytes = ['GET', 'HEAD'].includes(request.method) ? undefined : new Uint8Array(await request.arrayBuffer());
+  const body = bytes?.length ? bytes : undefined;
+  if (body) headers.set('Content-Type', request.headers.get('content-type') === gzipType ? gzipType : 'application/json');
+  if (body && body.length > 6_100_000) return Response.json({ success: false, error: { message: 'Keep the snapshot under 6 MB.' } }, { status: 413 });
   try {
     const url = new URL(request.url), target = new URL(sessionPath ? `/api/auth/${sessionPath}` : `/api/community/${path}`, communityApiOrigin());
     target.search = url.search;

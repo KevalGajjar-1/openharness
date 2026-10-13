@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { POST } from './route';
 const draft = { version: 1, title: '</script><script>alert(1)</script>', files: [{ path: 'preview.html', content: '<h1>Hello</h1>' }], viewerPath: 'preview.html', conversation: [{ role: 'user', text: 'A reviewed brief.' }] };
@@ -19,6 +20,14 @@ describe('private desktop draft handoff', () => {
     expect((await POST(request({ ...draft, title: { invalid: true } }))).status).toBe(400);
     expect((await POST(request({ ...draft, viewerPath: 'missing.html' }))).status).toBe(400);
     expect((await POST(request({ ...draft, files: [null] }))).status).toBe(400);
+  });
+  it('opens the gzipped draft file Desktop sends, and refuses one that is not gzip or unpacks too large', async () => {
+    const send = (bytes: Uint8Array) => { const body = new FormData(); body.set('draft', new File([new Uint8Array(bytes)], 'draft.json.gz', { type: 'application/gzip' })); return POST(new Request('http://localhost/hub/import', { method: 'POST', body })); };
+    const response = await send(gzipSync(JSON.stringify(draft)));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('A reviewed brief.');
+    expect((await send(new TextEncoder().encode('not gzip'))).status).toBe(400);
+    expect((await send(gzipSync(Buffer.alloc(6_500_000, 32)))).status).toBe(400);
   });
   it('bounds streamed input even without a content-length header', async () => {
     const body = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(7_000_001)); controller.close(); } });

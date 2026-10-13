@@ -8,6 +8,7 @@ import { communityCategories, communityEngines, communityHarnessIds, communityHa
 import { validateBody, validateParams, validateQuery } from '../middlewares/validation.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 import { ValidationError } from '../errors/index.js'
+import { acceptGzipJson } from '../lib/gzipJson.js'
 
 const identifier = z.string().regex(/^[a-z0-9-]{1,80}$/)
 
@@ -113,6 +114,8 @@ async function publication(id: string, autonomousEnv: string) {
 
 export async function communityRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onSend', async (_req, reply) => { reply.header('Cache-Control', 'no-store') })
+  // A gzipped body unpacks to at most what a raw one may carry (the snapshot and its envelope).
+  acceptGzipJson(app, 6_100_000)
 
   const feedQuery = z.object({
     cursor: z.string().uuid().or(z.enum([...communityStarters] as [string, ...string[]])).optional(),

@@ -9,6 +9,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { communityLimits } from '../lib/communityContract.js'
 import { translateDraft, TranslationTooLong } from '../lib/communityTranslate.js'
+import { acceptGzipJson } from '../lib/gzipJson.js'
 import { harnessLlmConfigured } from '../lib/harnessLlm.js'
 import { createWindowLimiter } from '../lib/windowLimiter.js'
 import { validateBody } from '../middlewares/validation.js'
@@ -28,6 +29,7 @@ const bodySchema = z.object({
 }).strict()
 
 export async function communityTranslateRoutes(app: FastifyInstance): Promise<void> {
+  acceptGzipJson(app, 1_100_000)
   app.post<{ Body: z.infer<typeof bodySchema> }>(COMMUNITY_TRANSLATE_PATH, { bodyLimit: 1_100_000, preHandler: validateBody(bodySchema) }, async (req, reply) => {
     if (!harnessLlmConfigured()) {
       logger.error('community-translate: CURSOR_LLM_BASE_URL/CURSOR_LLM_API_KEY not configured — refusing')

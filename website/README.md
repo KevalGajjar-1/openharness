@@ -129,6 +129,12 @@ into English once the creator is signed in (`POST /api/community/translate`: tit
 the people's and agent's turns; tool output stays as it is), and the form can switch back to the
 original before publishing. `/explore` links remain compatible with `/hub`.
 
+What people publish is HTML and JavaScript, and Cloudflare's managed rules in front of the Hub and
+its API refuse a request body with raw `<script>` in it. So bodies travel gzipped: Desktop hands
+off the draft as a `draft.json.gz` file, `communityRequest` sends every body as `application/gzip`,
+the proxy forwards those bytes unchanged, and the backend unpacks them (bounded) before validating
+(`backend/src/lib/gzipJson.ts`). Plain JSON bodies and an older Desktop's text field still work.
+
 Backend reads are public; likes, comments, following, publication, and unpublication require SSO.
 Counts are persisted, like/follow writes are idempotent, comment retries have per-user request IDs,
 replies retain their parent and display a Creator badge,
