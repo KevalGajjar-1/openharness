@@ -4,14 +4,20 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { env } from '../config/env.js'
 import { isTerminalEngine } from '../engines/types.js'
-import { atomicWriteJson, projectDisplayName, strictPersistedRow, type RegisteredSession } from './registry.js'
+import { atomicWriteJson, projectDisplayName, strictPersistedRow, withRegistryFileLock, type RegisteredSession } from './registry.js'
 import { readPrivateStateFile, secureStateDirectory } from './secureState.js'
 import { sameProcessIdentity } from './terminalRuntime.js'
+import { inspectNativeControlFile } from './nativeControlFile.js'
+import { nativeTurnTarget, nativeTurnTransition, parseNativeTurnIntent, type NativeTurnIntent } from './nativeTurnIntent.js'
 
 const SAFE_ID = /^[a-zA-Z0-9_-]{1,128}$/
 const CATALOG_CACHE_RECORDS = 2048
 const CATALOG_CACHE_BYTES = 4 * 1024 * 1024
 const CATALOG_CACHE_MS = 30_000
+
+/** Durable receipt/Registry evidence can read disk. The final current check
+ * must only check the retained local owner, revocation and deadline. */
+export interface SavedNativeControlFence { verify(): void; current(): void }
 
 function catalogFingerprint(stat: BigIntStats): string {
   // ctime catches in-place edits even if a writer restores mtime. Inode/device
@@ -23,6 +29,7 @@ function catalogFingerprint(stat: BigIntStats): string {
 export class StoppedAgentStore {
   private readonly catalogCache = new Map<string, { fingerprint: string; bytes: number; at: number; session: RegisteredSession }>()
   private catalogCacheBytes = 0
+  private readonly uncertain = new Map<string, { before: string; bytes: string; candidate: RegisteredSession; verifyDirectory(): void }>()
 
   constructor(private readonly directory = join(env.ADAPTER_DATA_DIR, 'stopped-agents')) {}
 
@@ -31,9 +38,10 @@ export class StoppedAgentStore {
     try {
       secureStateDirectory(this.directory, false)
       const raw = JSON.parse(readPrivateStateFile(join(this.directory, `${agentId}.json`), 1024 * 1024))
-      if (raw.version !== 1) return null
+      if (raw.version !== 1) throw Error('Unknown saved state')
       const session = strictPersistedRow(raw.session)
-      return session?.agentId === agentId ? session : null
+      if (!session || session.agentId !== agentId) throw Error('Invalid saved state')
+      return session
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw new Error('Could not read the saved stopped harness.')
@@ -108,11 +116,26 @@ export class StoppedAgentStore {
     this.catalogCache.delete(agentId)
   }
 
+  private write<T>(apply: () => T): T {
+    secureStateDirectory(dirname(this.directory))
+    return withRegistryFileLock(apply, this.directory)
+  }
+
+  /** Ordinary snapshots cannot erase or replace an archived control reservation.
+   * Control changes require the original saved row's explicit strict transition. */
   save(session: RegisteredSession): void {
+    this.write(() => this.saveUnlocked(session))
+  }
+
+  private saveUnlocked(session: RegisteredSession): void {
     if (!SAFE_ID.test(session.agentId)) throw new Error('Invalid stopped harness identity.')
+    if (this.uncertain.has(session.agentId)) throw Error('Waiting for the original saved native control publication.')
     // An exited engine leaves its pane as a shell. Stopping that shell must keep
     // the conversation saved before releaseEngine cleared its binding/profile.
     const previous = this.get(session.agentId)
+    if (previous?.nativeControl && JSON.stringify(previous.nativeControl) !== JSON.stringify(session.nativeControl)) {
+      throw Error('Waiting to preserve the original saved native cancellation.')
+    }
     if (isTerminalEngine(session.engine) && previous) return
     // A temporarily unbound observation of the SAME process cannot erase a known conversation.
     // A replacement process must earn its own binding; never carry history across PID reuse.
@@ -155,7 +178,10 @@ export class StoppedAgentStore {
     delete snapshot.evidenceRevision
     // A snapshot without a tmux pane omits the legacy alias just like registry persistence.
     if (!snapshot.tmuxPane) delete (snapshot as Partial<RegisteredSession>).tmuxPane
-    atomicWriteJson(join(this.directory, `${session.agentId}.json`), { version: 1, session: snapshot })
+    const retained = previous ? this.inspectControl(previous) : undefined
+    atomicWriteJson(join(this.directory, `${session.agentId}.json`), { version: 1, session: snapshot }, false, () => {
+      retained?.verify()
+    })
     this.forgetCatalogRecord(session.agentId)
   }
 
@@ -163,11 +189,17 @@ export class StoppedAgentStore {
    *  Not `save`: that recomputes the name and stamps `touchedAt`, and a repair must not reorder the
    *  catalog or rename anything. Nothing else on the row changes. */
   patch(agentId: string, patch: Partial<Pick<RegisteredSession, 'cwd'>>): boolean {
+    return this.write(() => this.patchUnlocked(agentId, patch))
+  }
+
+  private patchUnlocked(agentId: string, patch: Partial<Pick<RegisteredSession, 'cwd'>>): boolean {
+    if (this.uncertain.has(agentId)) throw Error('Waiting for the original saved native control publication.')
     const saved = this.get(agentId)
     if (!saved) return false
+    const retained = this.inspectControl(saved)
     secureStateDirectory(dirname(this.directory))
     secureStateDirectory(this.directory)
-    atomicWriteJson(join(this.directory, `${agentId}.json`), { version: 1, session: { ...saved, ...patch } })
+    atomicWriteJson(join(this.directory, `${agentId}.json`), { version: 1, session: { ...saved, ...patch } }, false, retained.verify)
     this.forgetCatalogRecord(agentId)
     return true
   }
@@ -175,6 +207,10 @@ export class StoppedAgentStore {
   /** Reserve before tmux allocation. A crash between allocation and registry persistence
    * must not permit a second process under a new request/receipt ID. */
   beginResume(agentId: string): string | null {
+    return this.write(() => this.beginResumeUnlocked(agentId))
+  }
+
+  private beginResumeUnlocked(agentId: string): string | null {
     if (!SAFE_ID.test(agentId)) throw new Error('Invalid saved harness identity.')
     secureStateDirectory(dirname(this.directory))
     secureStateDirectory(this.directory)
@@ -210,16 +246,29 @@ export class StoppedAgentStore {
    * opened the same guarded way either way, so a symlink or anything else unsafe in its place
    * fails closed rather than being unlinked on trust.
    */
-  finishResume(agentId: string, token?: string): void {
+  finishResume(agentId: string, token?: string, authority?: SavedNativeControlFence): void {
+    this.write(() => this.finishResumeUnlocked(agentId, token, authority))
+  }
+
+  private finishResumeUnlocked(agentId: string, token?: string, authority?: SavedNativeControlFence): void {
     if (!SAFE_ID.test(agentId)) return
     const file = join(this.directory, `${agentId}.resume`)
+    let marker: ReturnType<typeof inspectNativeControlFile>
     try {
       secureStateDirectory(this.directory, false)
-      const marker = readPrivateStateFile(file, 1024)
-      if (token !== undefined && JSON.parse(marker).token !== token) return
-      unlinkSync(file)
-      this.syncDirectory()
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      marker = inspectNativeControlFile(file, this.directory)
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+    if (token !== undefined && JSON.parse(marker.content!).token !== token) return
+    const saved = this.get(agentId)
+    if (this.uncertain.has(agentId) || saved?.nativeControl && !authority) {
+      throw Error('Waiting to confirm the exact native resume handoff before clearing its reservation.')
+    }
+    const retained = saved ? this.inspectControl(saved) : undefined
+    authority?.verify()
+    retained?.verify(); marker.verify()
+    authority?.current()
+    unlinkSync(file)
+    this.syncDirectory()
   }
 
   private syncDirectory(): void {
@@ -229,6 +278,10 @@ export class StoppedAgentStore {
 
   /** Permanent deletion is separate from Stop, which always retains this record. */
   remove(agentId: string): void {
+    this.write(() => this.removeUnlocked(agentId))
+  }
+
+  private removeUnlocked(agentId: string): void {
     if (!SAFE_ID.test(agentId)) throw new Error('Invalid stopped harness identity.')
     if (!this.get(agentId)) return
     unlinkSync(join(this.directory, `${agentId}.json`))
@@ -242,16 +295,83 @@ export class StoppedAgentStore {
    * goes with it, since nothing can resume a record that is not listed. Null when there is no such record.
    */
   supersede(agentId: string): RegisteredSession | null {
+    return this.write(() => this.supersedeUnlocked(agentId))
+  }
+
+  private supersedeUnlocked(agentId: string): RegisteredSession | null {
     if (!SAFE_ID.test(agentId)) return null
     const saved = this.get(agentId)
     if (!saved) return null
+    if (saved.nativeControl || this.uncertain.has(agentId)) throw Error('A native cancellation cannot be superseded automatically.')
     const aside = join(this.directory, 'superseded')
     secureStateDirectory(aside)
     renameSync(join(this.directory, `${agentId}.json`), join(aside, `${agentId}.json`))
     this.forgetCatalogRecord(agentId)
-    this.finishResume(agentId)
+    this.finishResumeUnlocked(agentId)
     this.syncDirectory()
     return saved
+  }
+
+  /** Fresh saved-row authority. Catalog caches and age-based .resume takeover
+   * never grant native rearm permission. Every recovered image is synced. */
+  readNativeControl(input: RegisteredSession): { intent: NativeTurnIntent | undefined; verify(): void } {
+    if (this.uncertain.has(input.agentId)) throw Error('Waiting for the original saved native control publication.')
+    const proof = this.inspectControl(input)
+    proof.confirm(() => {})
+    return proof
+  }
+
+  private inspectControl(input: RegisteredSession) {
+    if (!SAFE_ID.test(input.agentId)) throw Error('Invalid stopped harness identity.')
+    const original = structuredClone(input), file = join(this.directory, `${original.agentId}.json`)
+    const retained = inspectNativeControlFile(file, this.directory)
+    const raw = JSON.parse(retained.content!), saved = raw.version === 1 && strictPersistedRow(raw.session)
+    if (!saved || nativeTurnTarget(saved) !== nativeTurnTarget(original)
+      || JSON.stringify(saved.nativeControl) !== JSON.stringify(original.nativeControl)) {
+      throw Error('The original saved native control owner changed.')
+    }
+    retained.verify()
+    return { ...retained, intent: saved.nativeControl, saved }
+  }
+
+  commitNativeControl(input: RegisteredSession, value: NativeTurnIntent, authority: SavedNativeControlFence): RegisteredSession {
+    const original = structuredClone(input), next = parseNativeTurnIntent(value)
+    if (!next || !nativeTurnTransition(original, next)) throw Error('Invalid saved native control transition.')
+    return this.write(() => {
+      const file = join(this.directory, `${original.agentId}.json`)
+      if (!SAFE_ID.test(original.agentId)) throw Error('Invalid stopped harness identity.')
+      let pending = this.uncertain.get(original.agentId)
+      const retained = inspectNativeControlFile(file, this.directory)
+      if (pending) {
+        pending.verifyDirectory()
+        if (nativeTurnTarget(pending.candidate) !== nativeTurnTarget(original)
+          || JSON.stringify(pending.candidate.nativeControl) !== JSON.stringify(next)
+          || retained.content !== pending.before && retained.content !== pending.bytes) {
+          throw Error('Waiting for the exact original saved native control publication.')
+        }
+      } else {
+        // A retry in a new core may see its prior publication. The exact request
+        // still has to confirm that image before obtaining launch authority.
+        const raw = JSON.parse(retained.content!), saved = raw.version === 1 && strictPersistedRow(raw.session)
+        if (!saved || nativeTurnTarget(saved) !== nativeTurnTarget(original)
+          || JSON.stringify(saved.nativeControl) !== JSON.stringify(original.nativeControl)
+            && JSON.stringify(saved.nativeControl) !== JSON.stringify(next)) throw Error('The original saved native control owner changed.')
+        if (this.uncertain.size >= 256) throw Error('Waiting for saved native control confirmation capacity.')
+        const candidate = { ...saved, schemaVersion: 3 as const, nativeControl: next }
+        pending = { before: retained.content!, candidate, bytes: JSON.stringify({ version: 1, session: candidate }, null, 2),
+          verifyDirectory: retained.verifyDirectory }
+        this.uncertain.set(original.agentId, pending)
+      }
+      const beforeCommit = () => { authority.verify(); pending.verifyDirectory(); retained.verify(); authority.current() }
+      beforeCommit()
+      if (retained.content !== pending.bytes) atomicWriteJson(file, { version: 1, session: pending.candidate }, false, beforeCommit)
+      pending.verifyDirectory()
+      const committed = this.inspectControl(pending.candidate)
+      committed.confirm(() => { authority.verify(); pending.verifyDirectory(); authority.current() })
+      committed.verify(); pending.verifyDirectory(); authority.current()
+      this.uncertain.delete(original.agentId); this.forgetCatalogRecord(original.agentId)
+      return structuredClone(committed.saved)
+    })
   }
 
   /** Suppress archives whose identity or conversation is already running. */

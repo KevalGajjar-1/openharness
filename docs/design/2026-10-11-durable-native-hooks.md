@@ -39,8 +39,37 @@ confirmation. An uncertain physical result cannot replay C-c. Storage retries
 retain the same request, rotate fairly across bounded slots and cannot renew its
 deadline. A completed publication followed by a failed read is confirmed afresh;
 only the exact proposed image can be recovered that way. Late callbacks cannot
-replace a successor's status. Conditional archive publication, explicit rearm and
-atomic daemon activation remain required before this path becomes live.
+replace a successor's status. Explicit rearm and atomic daemon activation remain
+required before this path becomes live.
+
+Saved agents now use the same retained private-file proof as the live Registry.
+Archive writes serialize under the store's own lock. Ordinary snapshots preserve
+the exact Cancel/rearm association; changing it requires a legal transition from
+the original saved row. A failed publication retains its exact candidate and
+original directory route until that same request confirms durability. Replacing
+an ancestor while moving the same directory inode cannot renew this authority.
+Receipt proofs run before the final disk-free owner/deadline fence. A native
+resume reservation is never cleared merely because it is old; clearing a real
+marker requires an explicit verified handoff. A missing marker remains an
+idempotent Stop cleanup, while missing receipt evidence still propagates failure.
+
+The archive checkpoint passes types and 337 cases in ten affected files, including
+architecture, Stop, Resume, purge and conversation ownership, with 100% statements,
+branches, functions and lines for the shared file proof
+(`20261013T100749.910031Z-64556`, 94.2 seconds). The final age-based Resume fixture
+also passes its complete baseline in the mutation run and types in
+`20261013T101527.599022Z-2105`. All 23 archive/Registry wiring faults fail by
+assertion after passing baselines (`20261013T101340.160549Z-89491`, 89.3 seconds).
+Earlier failed runs retain the invalid fixture, uncovered descriptor-sync branch,
+and a mutation oracle that needed an explicit rejected-promise assertion; none is
+reported as a passing run. Runtime source was unchanged by the final fixture fix.
+
+Independent review approved this persistence slice over `8aa4ff63b`, conditional
+on the now-completed validation. Review corrected missing-marker handling, stale
+snapshot control replacement, final local fencing and retained ancestor routes.
+Receipt/rearm composition and activation remain excluded from that approval.
+Implementation and review ran approximately 09:40–10:17 UTC on October 13, with
+validation overlapping; merge and publication remain zero.
 
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input

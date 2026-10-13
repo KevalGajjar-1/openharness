@@ -1,0 +1,274 @@
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { nativeTurnTarget, type NativeTurnIntent } from './nativeTurnIntent.js'
+import type { RegisteredSession } from './registry.js'
+
+const fault = vi.hoisted(() => ({ file: '', renamed: false, failDirectory: false, beforeRename: undefined as (() => void) | undefined, inspected: undefined as ((path: string) => void) | undefined, synced: undefined as (() => void) | undefined, fileSynced: undefined as (() => void) | undefined }))
+vi.mock('node:fs', async original => {
+  const actual = await original<typeof import('node:fs')>()
+  return { ...actual, lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+    const result = actual.lstatSync(...args); fault.inspected?.(String(args[0])); return result
+  }, renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+    if (String(args[1]) === fault.file) fault.beforeRename?.()
+    const value = actual.renameSync(...args)
+    if (String(args[1]) === fault.file) fault.renamed = true
+    return value
+  }, fsyncSync: (fd: number) => {
+    if (fault.failDirectory && fault.renamed && actual.fstatSync(fd).isDirectory()) throw Error('fixture directory sync failed')
+    actual.fsyncSync(fd)
+    if (fault.renamed && actual.fstatSync(fd).isDirectory()) fault.synced?.()
+    if (fault.renamed && actual.fstatSync(fd).isFile()) fault.fileSynced?.()
+  } }
+})
+vi.mock('./processLiveness.js', async original => ({ ...await original<object>(),
+  processLockIdentity: () => ({ startMarker: 'fixture-start', generationMarker: 'fixture-generation' }), lockOwnerAlive: () => true,
+}))
+let root: string, directory: string, file: string, row: RegisteredSession
+let store: import('./stoppedAgents.js').StoppedAgentStore
+const cancel = (): NativeTurnIntent => ({ version: 1, cancel: { processKey: null, target: nativeTurnTarget(row), request: {
+  requestId: 'original-cancel-request', nonce: 'original-cancel-nonce', agentId: row.agentId, conversationId: row.sessionId,
+  frontier: { index: -1, digest: null },
+} } })
+const reservation = (saved: RegisteredSession, id = 'original-rearm-request'): NativeTurnIntent => ({ ...saved.nativeControl!, rearm: {
+  requestId: id, agentId: saved.agentId, operation: 'resume', target: nativeTurnTarget(saved), launchToken: 'original-launch-token',
+} })
+const fence = (verify = () => {}, current = () => {}) => ({ verify, current })
+const commit = (input: RegisteredSession, next: NativeTurnIntent, verify: () => void) => store.commitNativeControl(input, next, fence(verify))
+const bytes = () => readFileSync(file, 'utf8')
+beforeEach(async () => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'stopped-native-control-')))
+  directory = join(root, 'stopped-agents'); file = join(directory, 'agent.json')
+  vi.stubEnv('ADAPTER_DATA_DIR', root); vi.resetModules()
+  const { StoppedAgentStore } = await import('./stoppedAgents.js')
+  store = new StoppedAgentStore(directory)
+  row = { schemaVersion: 2, agentId: 'agent', engine: 'cursor', sessionId: 'session', cwd: '/fixture/project', projectDir: '/fixture/project', transcriptPath: null,
+    tmuxPane: '%1', runtimes: [{ backend: 'tmux', paneId: '%1' }], primaryRuntimeKey: 'tmux\0%1', registeredAt: 1, boundAt: 2,
+    lastHookAt: 2, touchedAt: 2, active: false, source: 'hook', defaultName: 'Fixture', title: null, model: null, cliVersion: null,
+    processIdentity: { pid: 42, executable: '<cursor>', startMarker: 'fixture-start' } } as RegisteredSession
+  store.save({ ...row, schemaVersion: 3, nativeControl: cancel() })
+  row = store.get(row.agentId)!
+  fault.file = file; fault.renamed = false; fault.failDirectory = false; fault.beforeRename = undefined; fault.inspected = undefined; fault.synced = undefined; fault.fileSynced = undefined
+})
+afterEach(() => { fault.file = ''; fault.failDirectory = false; fault.beforeRename = undefined; fault.inspected = undefined; fault.synced = undefined; fault.fileSynced = undefined
+  vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules(); rmSync(root, { recursive: true, force: true }) })
+
+it('reserves under the saved-store lock and grants only a fresh exact durable proof', () => {
+  const next = reservation(row), saved = commit(row, next, () => {
+    expect(existsSync(join(directory, 'registry.json.lock'))).toBe(true)
+  })
+  expect(saved.nativeControl).toEqual(next)
+  const proof = store.readNativeControl(saved)
+  proof.verify()
+  store.patch(row.agentId, { cwd: '/fixture/changed' })
+  expect(() => proof.verify()).toThrow()
+  expect(store.get(row.agentId)!.nativeControl).toEqual(next)
+})
+
+it('preserves a pending launch when a later archive snapshot or repair is stale', () => {
+  const next = reservation(row), saved = commit(row, next, () => {})
+  const before = bytes()
+  expect(() => store.save(row)).toThrow('original saved native cancellation')
+  expect(bytes()).toBe(before)
+  store.save({ ...saved, title: 'Updated title' })
+  expect(store.get(row.agentId)).toMatchObject({ title: 'Updated title', nativeControl: next })
+})
+
+it('a stale independent store cannot replace a newer reservation', async () => {
+  const { StoppedAgentStore } = await import('./stoppedAgents.js'), peer = new StoppedAgentStore(directory)
+  const stale = peer.get(row.agentId)!
+  commit(row, reservation(row), () => {})
+  const before = bytes()
+  expect(() => peer.commitNativeControl(stale, reservation(stale, 'a-different-request'), fence())).toThrow('owner changed')
+  expect(() => peer.save(stale)).toThrow('original saved native cancellation')
+  expect(bytes()).toBe(before)
+})
+
+it('an uncertain publication cannot roll back, renew its token or escape through ordinary writes', () => {
+  const next = reservation(row)
+  fault.failDirectory = true
+  expect(() => commit(row, next, () => {})).toThrow('directory sync')
+  const published = bytes()
+  expect(JSON.parse(published).session.nativeControl).toEqual(next)
+  fault.failDirectory = false
+  expect(() => store.save(row)).toThrow('original saved native control publication')
+  expect(() => store.patch(row.agentId, { cwd: '/fixture/changed' })).toThrow('original saved native control publication')
+  expect(() => store.readNativeControl(store.get(row.agentId)!)).toThrow('original saved native control publication')
+  expect(() => commit(row, { ...next, rearm: { ...next.rearm!, launchToken: 'replacement-launch-token' } }, () => {}))
+    .toThrow('exact original saved native control publication')
+  expect(bytes()).toBe(published)
+  const resumed = commit(row, next, () => {})
+  expect(bytes()).toBe(published)
+  expect(store.readNativeControl(resumed).intent).toEqual(next)
+})
+
+it('does not overwrite a peer image while confirming an uncertain publication', () => {
+  const next = reservation(row)
+  fault.failDirectory = true
+  expect(() => commit(row, next, () => {})).toThrow()
+  fault.failDirectory = false
+  const peer = JSON.parse(bytes()); peer.session.title = 'A newer peer title'
+  writeFileSync(file, JSON.stringify(peer), { mode: 0o600 })
+  const before = bytes()
+  expect(() => commit(row, next, () => {})).toThrow('exact original saved native control publication')
+  expect(bytes()).toBe(before)
+})
+
+it('confirms the exact prior request after another store observes rename before sync', async () => {
+  const next = reservation(row)
+  fault.failDirectory = true
+  expect(() => commit(row, next, () => {})).toThrow()
+  fault.failDirectory = false
+  const { StoppedAgentStore } = await import('./stoppedAgents.js'), peer = new StoppedAgentStore(directory)
+  const recovered = peer.commitNativeControl(row, next, fence())
+  expect(peer.readNativeControl(recovered).intent).toEqual(next)
+})
+
+it('a failed external fence leaves the original bytes intact and can retry only its frozen request', () => {
+  const next = reservation(row), before = bytes()
+  expect(() => commit(row, next, () => { throw Error('receipt revoked') })).toThrow('receipt revoked')
+  expect(bytes()).toBe(before)
+  const saved = commit(row, next, () => {})
+  expect(saved.nativeControl).toEqual(next)
+})
+
+it('checks the original saved image again after the final external fence', () => {
+  const next = reservation(row)
+  let calls = 0
+  expect(() => commit(row, next, () => {
+    if (++calls !== 2) return
+    writeFileSync(file, bytes().replace('Fixture', 'Changed'), { mode: 0o600 })
+  })).toThrow()
+  expect(store.get(row.agentId)!.nativeControl).toEqual(row.nativeControl)
+})
+
+it('never clears a native resume reservation by age or without exact handoff authority', () => {
+  const token = store.beginResume(row.agentId)!
+  expect(token).toBeTruthy()
+  expect(() => store.finishResume(row.agentId)).toThrow('exact native resume handoff')
+  expect(() => store.finishResume(row.agentId, token)).toThrow('exact native resume handoff')
+  expect(() => store.finishResume(row.agentId, token, fence(() => { throw Error('handoff unavailable') }))).toThrow('handoff unavailable')
+  expect(store.beginResume(row.agentId)).toBeNull()
+  store.finishResume(row.agentId, 'different-token', fence())
+  expect(store.beginResume(row.agentId)).toBeNull()
+  store.finishResume(row.agentId, token, fence())
+  expect(store.resumeReservedAt(row.agentId)).toBeNull()
+})
+
+it('will not automatically supersede an archive that retains native cancellation', () => {
+  const before = bytes()
+  expect(() => store.supersede(row.agentId)).toThrow('cannot be superseded automatically')
+  expect(bytes()).toBe(before)
+})
+
+it('Stop can finish a cancelled archive that never reserved a resume', () => {
+  const before = bytes()
+  expect(() => store.finishResume(row.agentId)).not.toThrow()
+  expect(bytes()).toBe(before)
+  expect(store.resumeReservedAt(row.agentId)).toBeNull()
+})
+
+it('a missing receipt proof is not mistaken for a missing resume marker', () => {
+  const token = store.beginResume(row.agentId)!, marker = readFileSync(join(directory, `${row.agentId}.resume`), 'utf8')
+  expect(() => store.finishResume(row.agentId, token, fence(() => {
+    throw Object.assign(Error('original receipt unavailable'), { code: 'ENOENT' })
+  }))).toThrow('original receipt unavailable')
+  expect(readFileSync(join(directory, `${row.agentId}.resume`), 'utf8')).toBe(marker)
+})
+
+it('an older live archive cannot undo a newer Cancel that revoked its pending rearm', () => {
+  const reserved = commit(row, reservation(row), () => {})
+  const revoked: NativeTurnIntent = { ...reserved.nativeControl!, cancel: {
+    ...cancel().cancel, request: { ...cancel().cancel.request, requestId: 'another-cancel-request' },
+  }, rearm: { ...reserved.nativeControl!.rearm!, revoked: true } }
+  commit(reserved, revoked, () => {})
+  const before = bytes()
+  expect(() => store.save(reserved)).toThrow('original saved native cancellation')
+  expect(() => store.save({ ...reserved, nativeControl: undefined })).toThrow('original saved native cancellation')
+  expect(bytes()).toBe(before)
+})
+
+it('checks local revocation after the last file proof before rename', () => {
+  const before = bytes()
+  let revoked = false, calls = 0
+  expect(() => store.commitNativeControl(row, reservation(row), fence(() => {
+    if (++calls === 2) fault.inspected = path => { if (path === file) revoked = true }
+  }, () => { if (revoked) throw Error('local owner revoked') }))).toThrow('local owner revoked')
+  expect(bytes()).toBe(before)
+  expect(fault.renamed).toBe(false)
+})
+
+it('checks local revocation after the last file proof before removing a resume marker', () => {
+  const token = store.beginResume(row.agentId)!
+  let revoked = false
+  expect(() => store.finishResume(row.agentId, token, fence(() => {
+    fault.inspected = path => { if (path.endsWith('.resume')) revoked = true }
+  }, () => { if (revoked) throw Error('local owner revoked') }))).toThrow('local owner revoked')
+  expect(store.beginResume(row.agentId)).toBeNull()
+})
+
+it('retains the original parent through publication and durability readback', () => {
+  const next = reservation(row)
+  fault.synced = () => {
+    fault.synced = undefined
+    const previous = `${directory}-previous`
+    renameSync(directory, previous); mkdirSync(directory, { mode: 0o700 })
+    writeFileSync(file, readFileSync(join(previous, 'agent.json')), { mode: 0o600 })
+  }
+  expect(() => commit(row, next, () => {})).toThrow('directory changed')
+  expect(() => store.readNativeControl(store.get(row.agentId)!)).toThrow('original saved native control publication')
+  expect(() => commit(row, next, () => {})).toThrow('directory changed')
+})
+
+it('retains the original ancestor route when the same archive directory is reparented during sync', () => {
+  const next = reservation(row), previous = `${root}-previous`
+  fault.synced = () => {
+    fault.synced = undefined
+    renameSync(root, previous); mkdirSync(root, { mode: 0o700 })
+    renameSync(join(previous, 'stopped-agents'), directory)
+  }
+  try {
+    expect(() => commit(row, next, () => {})).toThrow()
+    expect(() => commit(row, next, () => {})).toThrow()
+    expect(() => store.readNativeControl(store.get(row.agentId)!)).toThrow('original saved native control publication')
+  } finally { rmSync(previous, { recursive: true, force: true }) }
+})
+
+it('does not confirm a file changed while its descriptor is being synced', () => {
+  fault.fileSynced = () => {
+    fault.fileSynced = undefined
+    writeFileSync(file, bytes() + ' ', { mode: 0o600 })
+  }
+  expect(() => commit(row, reservation(row), () => {})).toThrow('changed during durability confirmation')
+  expect(() => store.readNativeControl(store.get(row.agentId)!)).toThrow('original saved native control publication')
+})
+
+it.each(['truncated', 'unknown-version', 'invalid-control', 'different-agent'] as const)('preserves %s data instead of treating control as absent', kind => {
+  const value = JSON.parse(bytes())
+  if (kind === 'unknown-version') value.version = 2
+  if (kind === 'invalid-control') value.session.nativeControl = {}
+  if (kind === 'different-agent') value.session.agentId = 'other'
+  writeFileSync(file, kind === 'truncated' ? '{' : JSON.stringify(value), { mode: 0o600 })
+  const before = bytes()
+  expect(() => store.get(row.agentId)).toThrow('Could not read')
+  expect(() => store.save({ ...row, schemaVersion: 2, nativeControl: undefined })).toThrow('Could not read')
+  expect(bytes()).toBe(before)
+})
+
+it('refuses malformed transitions, changed owners and public control files', () => {
+  expect(() => commit(row, {} as NativeTurnIntent, () => {})).toThrow('Invalid saved native control transition')
+  expect(() => store.readNativeControl({ ...row, agentId: '../invalid' })).toThrow('Invalid stopped harness identity')
+  expect(() => store.readNativeControl({ ...row, sessionId: 'changed' })).toThrow('owner changed')
+  expect(() => store.readNativeControl({ ...row, nativeControl: undefined })).toThrow('owner changed')
+  chmodSync(file, 0o644)
+  expect(() => store.readNativeControl(row)).toThrow('private saved state')
+})
+
+it('a fresh proof rejects a replacement parent directory even if the file bytes match', () => {
+  const proof = store.readNativeControl(row)
+  const previous = `${directory}-previous`
+  renameSync(directory, previous); mkdirSync(directory, { mode: 0o700 })
+  writeFileSync(file, readFileSync(join(previous, 'agent.json')), { mode: 0o600 })
+  expect(() => proof.verify()).toThrow('directory changed')
+})

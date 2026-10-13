@@ -6,6 +6,7 @@ import sys
 
 cli = Path(sys.argv[1]).resolve()
 registry = 'src/lib/registry.ts'
+proof = 'src/lib/nativeControlFile.ts'
 unit = 'src/lib/registry.nativeControl.spec.ts'
 intent = 'src/lib/nativeTurnIntent.ts'
 intent_test = 'src/lib/nativeTurnIntent.spec.ts'
@@ -31,18 +32,19 @@ mutations = [
     ('load drops native control', registry,
      '          ...(raw.nativeControl ? { nativeControl: parseNativeTurnIntent(raw.nativeControl)! } : {}),',
      '', unit, 'keeps cancellation across registration'),
-    ('private inspection outlives retained proof', registry,
-     'privateState(); retained.verify()', 'retained.verify(); privateState()', unit,
+    ('private inspection outlives retained proof', proof,
+     'verifyDirectory(); privateState(file, false)\n    retained.verify()',
+     'retained.verify()\n    verifyDirectory(); privateState(file, false)', unit,
      'checks the retained file after all private-state inspection'),
     ('external fence changes commit owner', registry,
      'const verify = () => { unchanged(); fence(); unchanged() }',
      'const verify = () => { unchanged(); fence() }', unit,
      'rechecks the captured owner after the external commit fence'),
-    ('recovered enabling image is not synced', registry,
-     '          verify()\n          fsyncSync(fd)\n          if (version(fstatSync(fd, { bigint: true })) !== before)',
-     '          verify()\n          if (version(fstatSync(fd, { bigint: true })) !== before)', unit,
+    ('recovered enabling image is not synced', proof,
+     '          check()\n          fsyncSync(fd)\n          if (version(fstatSync(fd, { bigint: true })) !== before)',
+     '          check()\n          if (version(fstatSync(fd, { bigint: true })) !== before)', unit,
      'requires a recovered enabling image'),
-    ('path identity replaces retained descriptor', registry,
+    ('path identity replaces retained descriptor', proof,
      'version(fstatSync(fd, { bigint: true }))', 'version(lstatSync(path, { bigint: true }))', unit,
      'never syncs a substitute'),
     ('corrupt registry permits clean discovery', registry,

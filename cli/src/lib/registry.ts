@@ -24,7 +24,6 @@ import {
   constants,
   existsSync,
   fchmodSync,
-  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -35,7 +34,6 @@ import {
   rmSync,
   statSync,
   writeFileSync,
-  type BigIntStats,
 } from 'fs'
 import { randomUUID } from 'crypto'
 import { join, basename, dirname, relative, isAbsolute } from 'path'
@@ -61,7 +59,7 @@ import type { HookTerminalHint, ProcessIdentity, TerminalRuntimeRef } from './te
 import { externalReservations, externalResumePending, externalResumeIds, parseExternalResume, type ExternalResumeIntent } from './externalResume.js'
 import type { StartedBy } from './agentAttribution.js'
 import { nativeTurnTarget, nativeTurnTransition, parseNativeTurnIntent, type NativeTurnIntent } from './nativeTurnIntent.js'
-import { inspectHookFile } from '../engines/kit/nativeHookFiles.js'
+import { inspectNativeControlFile } from './nativeControlFile.js'
 
 export type { ProcessIdentity } from './terminalTypes.js'
 
@@ -410,24 +408,25 @@ function sleepSync(ms: number): void {
   Atomics.wait(view, 0, 0, ms)
 }
 
-function removeRegistryLockOwnedBy(token: string): void {
+function removeRegistryLockOwnedBy(token: string, lockDirectory: string): void {
   try {
-    const saved = JSON.parse(readFileSync(join(LOCK_DIR, 'owner.json'), 'utf8')) as { token?: unknown }
-    if (saved.token === token) rmSync(LOCK_DIR, { recursive: true, force: true })
+    const saved = JSON.parse(readFileSync(join(lockDirectory, 'owner.json'), 'utf8')) as { token?: unknown }
+    if (saved.token === token) rmSync(lockDirectory, { recursive: true, force: true })
   } catch { /* another owner or an unsafe artifact must not be removed */ }
 }
 
-function withRegistryFileLock<T>(apply: () => T): T {
-  secureStateDirectory(env.ADAPTER_DATA_DIR)
+export function withRegistryFileLock<T>(apply: () => T, directory = env.ADAPTER_DATA_DIR): T {
+  const lockDirectory = directory === env.ADAPTER_DATA_DIR ? LOCK_DIR : join(directory, 'registry.json.lock')
+  secureStateDirectory(directory)
   const uid = typeof process.getuid === 'function' ? process.getuid() : null
   const processIdentity = processLockIdentity(process.pid)
   for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
     const token = randomUUID()
     let created = false
     try {
-      mkdirSync(LOCK_DIR, { mode: 0o700 })
+      mkdirSync(lockDirectory, { mode: 0o700 })
       created = true
-      const owner = join(LOCK_DIR, 'owner.json')
+      const owner = join(lockDirectory, 'owner.json')
       const fd = openSync(owner, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       try {
         writeFileSync(fd, JSON.stringify({ pid: process.pid, ...processIdentity, token }))
@@ -436,22 +435,22 @@ function withRegistryFileLock<T>(apply: () => T): T {
       try {
         return apply()
       } finally {
-        removeRegistryLockOwnedBy(token)
+        removeRegistryLockOwnedBy(token, lockDirectory)
       }
     } catch (error) {
-      if (created) removeRegistryLockOwnedBy(token)
+      if (created) removeRegistryLockOwnedBy(token, lockDirectory)
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       let ownerPid = 0
       let ownerStartMarker = ''
       let ownerToken = ''
       try {
-        const stat = lstatSync(LOCK_DIR)
+        const stat = lstatSync(lockDirectory)
         if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== null && stat.uid !== uid)
           || (stat.mode & 0o777) !== 0o700) throw new Error('registry lock has unsafe owner, mode, or type')
-        const ownerStat = lstatSync(join(LOCK_DIR, 'owner.json'))
+        const ownerStat = lstatSync(join(lockDirectory, 'owner.json'))
         if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || (uid !== null && ownerStat.uid !== uid)
           || (ownerStat.mode & 0o777) !== 0o600) throw new Error('registry lock owner has unsafe owner, mode, or type')
-        const owner = JSON.parse(readFileSync(join(LOCK_DIR, 'owner.json'), 'utf8')) as {
+        const owner = JSON.parse(readFileSync(join(lockDirectory, 'owner.json'), 'utf8')) as {
           pid?: unknown; startMarker?: unknown; generationMarker?: unknown; token?: unknown
         }
         ownerPid = Number(owner.pid)
@@ -462,14 +461,14 @@ function withRegistryFileLock<T>(apply: () => T): T {
       }
       if (ownerPid > 0 && ownerToken && !lockOwnerAlive(ownerPid, ownerStartMarker)) {
         try {
-          const current = JSON.parse(readFileSync(join(LOCK_DIR, 'owner.json'), 'utf8')) as {
+          const current = JSON.parse(readFileSync(join(lockDirectory, 'owner.json'), 'utf8')) as {
             pid?: unknown; startMarker?: unknown; generationMarker?: unknown; token?: unknown
           }
           if (Number(current.pid) === ownerPid
             && lockStartMarker(current) === ownerStartMarker
             && current.token === ownerToken
             && !lockOwnerAlive(ownerPid, ownerStartMarker)) {
-            rmSync(LOCK_DIR, { recursive: true, force: true })
+            rmSync(lockDirectory, { recursive: true, force: true })
             continue
           }
         } catch { /* lock changed or disappeared; retry without deleting another owner's lock */ }
@@ -504,7 +503,7 @@ class AtomicWriteUnconfirmed extends Error {
   constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause), { cause }) }
 }
 
-export function atomicWriteJson(file: string, value: unknown, exclusive = false): void {
+export function atomicWriteJson(file: string, value: unknown, exclusive = false, beforeCommit?: () => void): void {
   const exists = hardenPrivateStateFileIfPresent(file)
   if (exclusive && exists) return
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
@@ -516,6 +515,7 @@ export function atomicWriteJson(file: string, value: unknown, exclusive = false)
       fchmodSync(fd, 0o600)
       fsyncSync(fd)
     } finally { closeSync(fd) }
+    beforeCommit?.()
     renameSync(temporary, file)
     renamed = true
     const directoryFd = openSync(dirname(file), 'r')
@@ -2375,24 +2375,7 @@ class Registry {
     if (this.writeBlocked || this.unconfirmedBinding?.affected.has(original.agentId)) {
       throw new IdentityReadUnavailable('native control is waiting for durable registry confirmation')
     }
-    // Inspect without chmod: changing permissions after capturing a file is not
-    // evidence that its earlier contents came from the private state writer.
-    const identity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.uid}:${info.mode}`
-    const stamp = (info: BigIntStats) => `${identity(info)}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
-    const privateState = () => {
-      let directoryIdentity = ''
-      for (const [path, directory, mode] of [[env.ADAPTER_DATA_DIR, true, 0o700], [FILE, false, 0o600]] as const) {
-        const info = lstatSync(path, { bigint: true })
-        if ((directory ? !info.isDirectory() : !info.isFile()) || (info.mode & 0o777n) !== BigInt(mode)
-          || typeof process.getuid === 'function' && info.uid !== BigInt(process.getuid())) {
-          throw new IdentityReadUnavailable('native control needs the original private registry')
-        }
-        if (directory) directoryIdentity = identity(info)
-      }
-      return directoryIdentity
-    }
-    const originalDirectory = privateState()
-    const retained = inspectHookFile(FILE, 0o600)
+    const retained = inspectNativeControlFile(FILE, env.ADAPTER_DATA_DIR)
     const values: unknown = retained.content === null ? null : JSON.parse(retained.content)
     const rows = Array.isArray(values) ? validatedRows(values) : null
     const saved = rows?.find(row => row.agentId === original.agentId)
@@ -2401,31 +2384,16 @@ class Registry {
     }
     const intent = saved.nativeControl
     const verify = () => {
-      privateState(); retained.verify()
+      retained.verify()
       const current = this.byAgent(original.agentId)
       if (this.writeBlocked || this.unconfirmedBinding?.affected.has(original.agentId) || !current
         || nativeTurnTarget(current) !== target || rowFingerprint(current.nativeControl) !== rowFingerprint(intent)) {
         throw new IdentityReadUnavailable('the original native control changed')
       }
     }
-    if (intent?.rearm?.replacement) {
-      // A peer can see rename before the publishing process confirms its
-      // directory. Enabling admission requires this exact image to be durable.
-      for (const [path, directory] of [[FILE, false], [env.ADAPTER_DATA_DIR, true]] as const) {
-        const version = directory ? identity : stamp, before = directory ? originalDirectory : retained.stamp
-        verify()
-        const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : constants.O_NONBLOCK))
-        try {
-          if (version(fstatSync(fd, { bigint: true })) !== before) throw new IdentityReadUnavailable('native control changed before durability confirmation')
-          verify()
-          fsyncSync(fd)
-          if (version(fstatSync(fd, { bigint: true })) !== before) {
-            throw new IdentityReadUnavailable('native control changed during durability confirmation')
-          }
-          verify()
-        } finally { closeSync(fd) }
-      }
-    }
+    // An enabling image observed after another process's rename must also be
+    // confirmed through descriptors proven to be the original file and parent.
+    if (intent?.rearm?.replacement) retained.confirm(verify)
     verify()
     return { intent, verify }
   }
