@@ -119,11 +119,15 @@ transferred. Nothing becomes public until the creator reviews the output, source
 and clicks Publish. A draft survives the existing sign-in flow; repeated submission uses one
 publication ID. Remote projects and older apps can use the project-folder picker or import
 `OPEN-HARNESS.json`. The output is the project's `preview.html` (or the page a fork arrived with,
-once changed). Without one, as for a native result such as a Typst PDF or a Blender model, the
+once changed), or else a top-level page (`index.html` first) that loads nothing the sandbox cannot
+reach, such as a one-file game. Without one, as for a native result such as a Typst PDF or a Blender model, the
 desktop asks the machine's daemon for a picture of the harness's viewer (`viewer_surface`, headless
 Chrome) and publishes it as `preview.html` and the cover; a fork still opens the real viewer. The first version requires a self-contained HTML preview, up to 30 files/6 MB;
 hidden configuration, symlinks and installed dependencies are excluded. Conversation tails may be
-incomplete and the review form says so. `/explore` links remain compatible with `/hub`.
+incomplete and the review form says so. A draft that arrives from Desktop or a bundle is translated
+into English once the creator is signed in (`POST /api/community/translate`: title, description and
+the people's and agent's turns; tool output stays as it is), and the form can switch back to the
+original before publishing. `/explore` links remain compatible with `/hub`.
 
 Backend reads are public; likes, comments, following, publication, and unpublication require SSO.
 Counts are persisted, like/follow writes are idempotent, comment retries have per-user request IDs,

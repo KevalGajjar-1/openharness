@@ -15,6 +15,16 @@ describe('community API boundary', () => {
     expect(options.headers.get('cookie')).toBeNull();
     expect(options.redirect).toBe('error'); expect(response.headers.get('cache-control')).toBe('no-store');
   });
+  it('forwards a translation with the longer wait it needs', async () => {
+    vi.stubEnv('COMMUNITY_API_URL', 'http://127.0.0.1:54882');
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ success: true, data: {} })); vi.stubGlobal('fetch', fetcher);
+    await POST(new Request('https://harness.example/api/community/translate', { method: 'POST', body: '{"title":"Tiêu đề"}' }), { params: Promise.resolve({ path: ['translate'] }) });
+    expect(String(fetcher.mock.calls[0][0])).toBe('http://127.0.0.1:54882/api/community/translate');
+    expect(timeout).toHaveBeenCalledWith(58_000);
+    expect((await POST(new Request('https://harness.example/api/community/translate/x', { method: 'POST' }), { params: Promise.resolve({ path: ['translate', 'x'] }) })).status).toBe(404);
+    timeout.mockRestore();
+  });
   it('rejects arbitrary proxy destinations and oversized publications before forwarding', async () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
     expect((await GET(new Request('https://harness.example/api/community/auth'), { params: Promise.resolve({ path: ['..', 'auth'] }) })).status).toBe(404);

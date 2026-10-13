@@ -1,7 +1,9 @@
 import { communityApiOrigin } from '@/lib/community/server';
 
 type Context = { params: Promise<{ path: string[] }> };
-const allowed = /^(?:harnesses(?:\/[a-z0-9-]{1,80}(?:\/like|\/social|\/comments(?:\/[a-f0-9-]{36})?)?)?|creators\/[a-z0-9-]{1,80}\/follow)$/;
+const allowed = /^(?:harnesses(?:\/[a-z0-9-]{1,80}(?:\/like|\/social|\/comments(?:\/[a-f0-9-]{36})?)?)?|creators\/[a-z0-9-]{1,80}\/follow|translate)$/;
+/** A translation asks the model several times over (the backend gives it 50 seconds); every other request answers within the usual wait. */
+const waitMs = (path: string) => path === 'translate' ? 58_000 : 12_000;
 const coverPath = /^harnesses\/[a-f0-9-]{36}\/cover$/;
 const coverTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const unavailable = () => Response.json({ success: false, error: { message: 'The community is temporarily unavailable. Try again.' } }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
@@ -35,7 +37,7 @@ async function forward(request: Request, context: Context): Promise<Response> {
   try {
     const url = new URL(request.url), target = new URL(sessionPath ? `/api/auth/${sessionPath}` : `/api/community/${path}`, communityApiOrigin());
     target.search = url.search;
-    const response = await fetch(target, { method: request.method, headers, body, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(12_000) });
+    const response = await fetch(target, { method: request.method, headers, body, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(waitMs(path)) });
     const content = await response.json();
     return Response.json(content, { status: response.status, headers: { 'Cache-Control': 'no-store' } });
   } catch {
