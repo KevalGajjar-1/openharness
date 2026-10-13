@@ -45,7 +45,19 @@ export function createTerminalWriter({ now = () => performance.now(), maxLanes =
     const epoch = state.epoch
     return ticket(state, () => current() && !state.retired && state.epoch === epoch && !state.interrupt)
   }
+  const revoke = (state: Lane) => {
+    state.epoch++
+    state.logical?.cancel()
+    state.logical = undefined
+    for (const pending of state.pending.splice(0)) pending.cancel()
+  }
   return {
+    /** Immediate logical revocation before cancellation storage or journal I/O.
+     * Actual commands retain their physical slots until they settle. */
+    revoke(id: string): void {
+      const state = lanes.get(id)
+      if (state) revoke(state)
+    },
     ticket(id: string): TerminalWrite {
       const state = lane(id)
       if (!state) return Object.freeze({ allowed: () => false, dispatch: async () => { throw full() } })
@@ -105,9 +117,10 @@ export function createTerminalWriter({ now = () => performance.now(), maxLanes =
       let started = false, resolve!: (value: T) => void, reject!: (error: unknown) => void
       const result = new Promise<T>((yes, no) => { resolve = yes; reject = no })
       const deadline = now() + 5000
+      const epoch = state.epoch + 1
       const expired = () => new TerminalWriteHeld('Waiting for terminal interrupt confirmation: its deadline expired.')
       const release = () => { clearTimeout(timer); state.interrupt = undefined; wake(state) }
-      const allowed = () => state.interrupt === reservation && now() < deadline
+      const allowed = () => state.interrupt === reservation && state.epoch === epoch && now() < deadline
       const reservation = { start: () => {
         if (started) return
         if (!allowed()) { reject(expired()); release(); return }
@@ -120,10 +133,7 @@ export function createTerminalWriter({ now = () => performance.now(), maxLanes =
       } }
       const timer = setTimeout(() => { reject(expired()); if (!started) release() }, 5000)
       state.interrupt = reservation
-      state.epoch++
-      state.logical?.cancel()
-      state.logical = undefined
-      for (const pending of state.pending.splice(0)) pending.cancel()
+      revoke(state)
       wake(state)
       return result
     },

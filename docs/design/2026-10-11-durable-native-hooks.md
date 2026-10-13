@@ -12,9 +12,11 @@ archiving and discovery must preserve the association.
 Ordinary admission stays held until an explicit request first reserves a launch
 token and then confirms a replacement process and conversation. Confirmation
 cannot skip the reservation or change its request, target or token. Each later
-Cancel has a distinct request ID. Activation also needs cancellation of an
-unconfirmed reservation and conditional archived-session publication; these
-transitions are not yet wired into the daemon.
+Cancel has a distinct request ID. Cancel during a reserved rearm marks that exact
+reservation revoked. Its receipt and token remain recorded until reconciliation
+proves it never dispatched or accounts for its original allocation; elapsed time
+cannot authorize another launch. An unbound Cancel records an empty conversation
+only with a null process key and empty frontier, never as a journal request.
 
 Writes publish only after the file and parent directory are synced. An uncertain
 write is sticky: unrelated saves cannot roll it back, and a retry can confirm only
@@ -28,6 +30,17 @@ daemon starts. Starting with an empty table could forget a cancellation when
 truncation removed its marker. Recovery requires repairing or restoring the saved
 state; the daemon does not discard it automatically. Native hook delivery accepts
 both valid schema 2 rows and schema 3 rows with valid control state.
+
+The eager Cancel controller captures the original row, native key and frontier
+before revoking input and writer authority. It saves the association before
+obtaining the journal's one-use interrupt capability. Disk, native owner, writer
+epoch and the original five-second deadline are checked at physical dispatch and
+confirmation. An uncertain physical result cannot replay C-c. Storage retries
+retain the same request, rotate fairly across bounded slots and cannot renew its
+deadline. A completed publication followed by a failed read is confirmed afresh;
+only the exact proposed image can be recovered that way. Late callbacks cannot
+replace a successor's status. Conditional archive publication, explicit rearm and
+atomic daemon activation remain required before this path becomes live.
 
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input

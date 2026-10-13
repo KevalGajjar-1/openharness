@@ -19,6 +19,9 @@ export interface NativeTurnIntent {
     readonly operation: 'restart' | 'resume'
     readonly target: string
     readonly launchToken: string
+    /** Cancel revokes admission without forgetting an already claimed launch.
+     * Its exact receipt must be reconciled before another launch is reserved. */
+    readonly revoked?: true
     readonly replacement?: { readonly processKey: string; readonly sessionId: string }
   }
 }
@@ -35,12 +38,18 @@ export function parseNativeTurnIntent(value: unknown): NativeTurnIntent | null {
   if (!object(value) || value.version !== 1 || !exact(value, value.rearm === undefined ? 'cancel,version' : 'cancel,rearm,version')) return null
   const cancel = value.cancel
   if (!object(cancel) || !exact(cancel, 'processKey,request,target') || cancel.processKey !== null && !processKey(cancel.processKey)
-    || !digest(cancel.target) || !validNativeGenerationCancellation(cancel.request)) return null
-  if (cancel.processKey === null && cancel.request.frontier.index !== -1) return null
+    || !digest(cancel.target)) return null
+  // Cancel before the first native binding still holds this agent. Only that
+  // null-owner association may omit a conversation; it is never a journal request.
+  const unbound = cancel.processKey === null && object(cancel.request) && cancel.request.conversationId === ''
+  if (!validNativeGenerationCancellation(unbound ? { ...cancel.request as object, conversationId: 'unbound' } : cancel.request)) return null
+  const request = cancel.request as NativeGenerationCancellation
+  if (cancel.processKey === null && request.frontier.index !== -1) return null
   const rearm = value.rearm
   if (rearm !== undefined) {
-    if (!object(rearm) || !exact(rearm, rearm.replacement === undefined
-      ? 'agentId,launchToken,operation,requestId,target' : 'agentId,launchToken,operation,replacement,requestId,target')
+    if (!object(rearm) || !exact(rearm, ['agentId', 'launchToken', 'operation', 'requestId', 'target',
+      ...(rearm.replacement === undefined ? [] : ['replacement']), ...(rearm.revoked === undefined ? [] : ['revoked'])].sort().join(','))
+      || rearm.revoked !== undefined && rearm.revoked !== true
       || !token(rearm.requestId) || !identifier(rearm.agentId) || (rearm.operation !== 'restart' && rearm.operation !== 'resume')
       || !digest(rearm.target) || !token(rearm.launchToken)) return null
     if (rearm.replacement !== undefined && (!object(rearm.replacement) || !exact(rearm.replacement, 'processKey,sessionId')
@@ -64,7 +73,7 @@ export function nativeTurnTarget(row: RegisteredSession): string {
 
 export function nativeTurnAdmitted(intent: NativeTurnIntent | undefined, owner: { agentId: string; sessionId: string; processKey: string }): boolean {
   if (!intent) return true
-  return intent.rearm?.agentId === owner.agentId && intent.rearm.replacement?.processKey === owner.processKey
+  return !intent.rearm?.revoked && intent.rearm?.agentId === owner.agentId && intent.rearm.replacement?.processKey === owner.processKey
     && intent.rearm.replacement.sessionId === owner.sessionId
 }
 
@@ -73,24 +82,28 @@ export function nativeTurnAdmitted(intent: NativeTurnIntent | undefined, owner: 
 export function nativeTurnTransition(row: RegisteredSession, next: NativeTurnIntent): boolean {
   const previous = row.nativeControl
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
-  const cancel = () => !next.rearm && next.cancel.target === nativeTurnTarget(row)
+  const cancel = () => next.cancel.target === nativeTurnTarget(row)
     && next.cancel.request.agentId === row.agentId && next.cancel.request.conversationId === row.sessionId
-  if (!previous) return cancel()
+  if (!previous) return !next.rearm && cancel()
   // Compare fields independently of caller property order.
   const originalCancel = (value: NativeTurnIntent['cancel']) => [value.processKey, value.target, value.request.requestId,
     value.request.nonce, value.request.agentId, value.request.conversationId, value.request.frontier.index, value.request.frontier.digest]
   if (!same(originalCancel(previous.cancel), originalCancel(next.cancel))) {
     // A newly admitted replacement may itself be cancelled. An unknown owner
     // never becomes known by filling in the old request after recovery.
-    return !!previous.rearm?.replacement && cancel()
-      && next.cancel.request.requestId !== previous.cancel.request.requestId
-      && (next.cancel.processKey === null || next.cancel.processKey === previous.rearm.replacement.processKey)
+    if (!previous.rearm || !cancel() || next.cancel.request.requestId === previous.cancel.request.requestId) return false
+    if (!previous.rearm.replacement) return next.cancel.processKey === null
+      && same(next.rearm, { ...previous.rearm, revoked: true })
+    return !next.rearm && (next.cancel.processKey === null || next.cancel.processKey === previous.rearm.replacement.processKey)
   }
   const reserved = previous.rearm, proposed = next.rearm
-  if (!reserved) return !proposed || !proposed.replacement && proposed.agentId === row.agentId
+  if (!reserved) return !proposed || !proposed.replacement && !proposed.revoked && proposed.agentId === row.agentId
     && proposed.target === nativeTurnTarget(row)
-  if (!proposed || !same([reserved.requestId, reserved.agentId, reserved.operation, reserved.target, reserved.launchToken],
-    [proposed.requestId, proposed.agentId, proposed.operation, proposed.target, proposed.launchToken])) return false
+  // The caller's fence must prove the revoked receipt never dispatched, or the
+  // exact original allocation is now accounted for. Age is not that proof.
+  if (!proposed) return reserved.revoked === true
+  if (!same([reserved.requestId, reserved.agentId, reserved.operation, reserved.target, reserved.launchToken, reserved.revoked],
+    [proposed.requestId, proposed.agentId, proposed.operation, proposed.target, proposed.launchToken, proposed.revoked])) return false
   if (reserved.replacement) return same([reserved.replacement.processKey, reserved.replacement.sessionId],
     proposed.replacement && [proposed.replacement.processKey, proposed.replacement.sessionId])
   return !proposed.replacement || proposed.agentId === row.agentId && proposed.replacement.sessionId === row.sessionId

@@ -44,6 +44,7 @@ it.each([
   ].map(cancel => ({ version: 1, cancel })),
   ...[null, [], {}, { ...rearm(), extra: true }, { ...rearm(), operation: 'automatic-restore' },
     { ...rearm(), requestId: 7 }, { ...rearm(), requestId: 'short' }, { ...rearm(), target: 'short' }, { ...rearm(), launchToken: 'short' },
+    { ...rearm(), revoked: false }, { ...rearm(), revoked: undefined },
     ...[undefined, '', 'x'.repeat(201), 'bad\nagent'].map(agentId => ({ ...rearm(), agentId })),
     ...[null, [], {}, { ...replacement(), extra: true }, { ...replacement(), processKey: cancel().processKey },
       { ...replacement(), processKey: '' }, { ...replacement(), sessionId: '' },
@@ -67,6 +68,35 @@ it('retains a hold without inventing native owner or frontier evidence', () => {
   expect(parseNativeTurnIntent({ ...unknown, cancel: { ...unknown.cancel, request: {
     ...unknown.cancel.request, frontier: { index: 0, digest: 'b'.repeat(64) },
   } } })).toBeNull()
+})
+
+it('retains an unbound Cancel only without physical interrupt authority', () => {
+  const unbound = { ...intent(), cancel: { ...cancel(), processKey: null,
+    request: { ...cancel().request, conversationId: '' } } }
+  expect(parseNativeTurnIntent(unbound)).toEqual(unbound)
+  expect(parseNativeTurnIntent({ ...unbound, cancel: { ...unbound.cancel, processKey: 'discovered-later' } })).toBeNull()
+  const row = { ...targetRow(), sessionId: '', boundAt: null }
+  expect(nativeTurnTransition(row, { ...unbound, cancel: { ...unbound.cancel, target: nativeTurnTarget(row) } })).toBe(true)
+})
+
+it('a new Cancel permanently revokes a pending rearm without adopting its future process', () => {
+  const row = targetRow(), reserved = { ...intent(), rearm: rearm() }
+  row.nativeControl = reserved
+  const revoked: NativeTurnIntent = { version: 1, cancel: { ...cancel(), processKey: null, target: nativeTurnTarget(row),
+    request: { ...cancel().request, requestId: 'cancel-prepared-resume' } }, rearm: { ...reserved.rearm, revoked: true } }
+  expect(parseNativeTurnIntent(revoked)).toEqual(revoked)
+  expect(nativeTurnTransition(row, revoked)).toBe(true)
+  expect(nativeTurnTransition(row, { version: 1, cancel: revoked.cancel })).toBe(false)
+  expect(nativeTurnTransition(row, { ...revoked, cancel: { ...revoked.cancel, processKey: 'future-replacement' } })).toBe(false)
+  expect(nativeTurnTransition(row, { ...revoked, cancel: { ...revoked.cancel, processKey: cancel().processKey } })).toBe(false)
+  row.nativeControl = revoked
+  expect(nativeTurnTransition(row, { ...reserved, rearm: { ...rearm(), replacement: replacement() } })).toBe(false)
+  expect(nativeTurnTransition(row, reserved)).toBe(false)
+  expect(nativeTurnTransition(row, revoked)).toBe(true)
+  const observed = { ...revoked, rearm: { ...revoked.rearm!, replacement: replacement() } }
+  expect(nativeTurnTransition(row, observed)).toBe(true)
+  expect(nativeTurnAdmitted(observed, { agentId: row.agentId, ...replacement() })).toBe(false)
+  expect(nativeTurnTransition(row, { version: 1, cancel: revoked.cancel })).toBe(true)
 })
 
 it('binds a durable target to the original process, conversation and routes, independent of key order or holds', () => {

@@ -11,9 +11,9 @@ device = 'src/core/deviceInput.ts'
 composition = 'src/core/terminals/writeComposition.spec.ts'
 unit = 'src/core/terminals/writer.spec.ts'
 mutations = [
-    ('old input regains authority after Cancel', writer, '      state.epoch++', '',
+    ('old input regains authority after Cancel', writer, '    state.epoch++', '',
      unit, 'revokes preparation immediately'),
-    ('logical cancellation waits for a worker', writer, '      state.logical?.cancel()', '',
+    ('logical cancellation waits for a worker', writer, '    state.logical?.cancel()', '',
      unit, 'revokes preparation immediately'),
     ('interrupt races unsettled physical I/O', writer, '      state.physical++', '',
      unit, 'drains only actual pane I/O'),

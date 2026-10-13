@@ -72,6 +72,34 @@ it('commits the original cancellation inside a discovery batch before granting a
   expect(proposed.cancel).not.toBe(registry.byAgent(row.agentId)?.nativeControl?.cancel)
 })
 
+it('continues the exact Cancel after a real commit publishes but its final proof read fails', async () => {
+  const { createNativeCancel } = await import('../core/turns/nativeCancel.js')
+  const read = registry.readNativeControl.bind(registry)
+  vi.spyOn(registry, 'readNativeControl').mockImplementationOnce(() => { throw Error('one-shot confirmation read failure') })
+    .mockImplementation(read)
+  const publish = vi.spyOn(registry, 'commitNativeControl')
+  const journal = vi.fn(async () => ({ recorded: false as const, source: {
+    owner: { agentId: row.agentId, sessionId: row.sessionId, processKey: 'original-process' }, facts: [], verify: () => {},
+  } }))
+  let clock = 0
+  const controller = createNativeCancel({ registry, capture: () => ({ owner: {
+    agentId: row.agentId, sessionId: row.sessionId, processKey: 'original-process',
+  }, frontier: { index: -1, digest: null } }), revoke: () => {}, revokeRearm: () => {}, journal,
+  writer: { revoke: () => {}, interrupt: async () => { throw Error('no interrupt capability was returned') } },
+  interrupt: async () => { throw Error('must not signal') }, held: () => {}, now: () => clock,
+  })
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const answer = controller.cancel(row), saved = rows()[0].nativeControl
+    expect(saved).toBeDefined(); expect(journal).not.toHaveBeenCalled()
+    clock = 1000
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(answer).resolves.toBe(false)
+    expect(publish).toHaveBeenCalledOnce(); expect(journal).toHaveBeenCalledOnce()
+    expect(rows()[0].nativeControl).toEqual(saved)
+  } finally { controller.close(); vi.useRealTimers() }
+})
+
 it('keeps cancellation across registration, load and an automatic process identity change', () => {
   const saved = commit(), expected = saved.nativeControl
   registry.register({ ...input(), sessionId: row.sessionId, title: 'A later observation' })

@@ -10,6 +10,21 @@ const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve()
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
+it('revokes logical work before cancellation storage without releasing a physical write', async () => {
+  const writer = createTerminalWriter(), physical = held(), effect = vi.fn(async () => {})
+  writer.revoke('absent')
+  const original = writer.ticket('a')
+  const active = writer.run('a', original, write => write.dispatch(() => physical.promise))
+  const queued = writer.run('a', original, effect)
+  const cancelled = [expect(active).rejects.toThrow('cancelled'), expect(queued).rejects.toThrow('cancelled')]
+  writer.revoke('a'); await Promise.all(cancelled)
+  expect(original.allowed()).toBe(false)
+  const next = writer.run('a', writer.ticket('a'), write => write.dispatch(effect))
+  await flush(); expect(effect).not.toHaveBeenCalled()
+  physical.resolve(); await next
+  expect(effect).toHaveBeenCalledOnce()
+})
+
 it('aborts one running preparation without interrupting queued epochs or releasing its actual allocation', async () => {
   const writer = createTerminalWriter({ maxPreparing: 1 }), preparation = held(), abort = new AbortController()
   let allowed!: () => boolean
@@ -74,7 +89,7 @@ it('revokes preparation immediately without letting its late cleanup free the re
   const cancelled = expect(old).rejects.toThrow('cancelled before completion')
   const pending = writer.run('a', original, async () => { calls.push('queued-old') })
   const rejected = expect(pending).rejects.toThrow('cancelled before completion')
-  await writer.interrupt('a', write => write.dispatch(async () => { calls.push('C-c') }))
+  await expect(writer.interrupt('a', write => write.dispatch(async () => { calls.push('C-c') }))).resolves.toBeUndefined()
   await flush(); expect(settled).toBe(true)
   await cancelled; await rejected
   expect(original.allowed()).toBe(false)
