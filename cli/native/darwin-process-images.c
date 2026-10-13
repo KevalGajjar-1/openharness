@@ -111,6 +111,8 @@ struct control_row {
     uint64_t seconds, micros;
     char command[MAXCOMLEN + 1], image[PROC_PIDPATHINFO_MAXSIZE];
     unsigned char command_digest[CC_SHA256_DIGEST_LENGTH];
+    unsigned char entry_digest[CC_SHA256_DIGEST_LENGTH];
+    int direct_entry;
     int fd_count;
     struct control_fd fds[CONTROL_FDS];
 };
@@ -129,9 +131,60 @@ static int control_birth(pid_t pid, struct proc_bsdinfo *info) {
 static int same_birth(const struct proc_bsdinfo *a, const struct proc_bsdinfo *b, int descriptors) {
     return a->pbi_start_tvsec == b->pbi_start_tvsec && a->pbi_start_tvusec == b->pbi_start_tvusec
         && a->pbi_ppid == b->pbi_ppid && (!descriptors || a->pbi_nfiles == b->pbi_nfiles)
+        && (a->pbi_flags & PROC_FLAG_LP64) == (b->pbi_flags & PROC_FLAG_LP64)
         && !memcmp(a->pbi_comm, b->pbi_comm, sizeof(a->pbi_comm));
 }
-static int control_command_digest(pid_t pid, unsigned char *out) {
+static const char *path_base(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+static int node_name(const char *name) {
+    return !strcmp(name, "node") || !strcmp(name, "nodejs") || !strcmp(name, "bun");
+}
+/* Only an unambiguous direct main file is classified. Never emit argv or scan
+ * environment strings as replacement arguments after a title rewrite. The
+ * digest lets a caller check a candidate without publishing the argument. */
+static int direct_entry(const unsigned char *raw, size_t size, int argc, const char *image, int wide, unsigned char *digest) {
+    if (argc < 2 || !node_name(path_base(image))) return 0;
+    size_t at = sizeof(int), end = at;
+    while (end < size && raw[end]) end++;
+    if (end == size || end == at || end - at >= PROC_PIDPATHINFO_MAXSIZE) return 0;
+    /* XNU exec_extract_strings aligns the executable_path= string to the
+     * target pointer size before argv. KERN_PROCARGS2 removes that 16-byte
+     * prefix. Calculate the exact padding; skipping all NULs would turn an
+     * empty argv[0] into argv[1], or even read the environment as arguments.
+     * https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c */
+    size_t align = wide ? 8 : 4;
+    at = sizeof(int) + ((end - sizeof(int) + 1 + align - 1) / align) * align;
+    if (at >= size) return 0;
+    for (size_t pad = end; pad < at; pad++) if (raw[pad]) return 0;
+    const char *entry = NULL;
+    int positional = 0;
+    for (int index = 0; index < argc; index++) {
+        if (!control_step() || at >= size || !raw[at]) return 0;
+        end = at;
+        while (end < size && raw[end]) end++;
+        if (end == size) return 0;
+        const char *arg = (const char *)raw + at;
+        if (!index) {
+            const char *base = path_base(arg);
+            if (strchr(arg, '/') && arg[0] != '/') return 0;
+            if (!node_name(base) && strcmp(base, "agent") && strcmp(base, "cursor-agent")) return 0;
+        } else if (!entry) {
+            if (index >= 8) return 0;
+            if (!positional && !strcmp(arg, "--")) positional = 1;
+            else if (!positional && (!strcmp(arg, "--no-warnings") || !strcmp(arg, "--no-deprecation")
+                || !strcmp(arg, "--enable-source-maps"))) { /* Supported no-value Node options only. */ }
+            else {
+                if (arg[0] != '/' || end - at >= PROC_PIDPATHINFO_MAXSIZE) return 0;
+                entry = arg;
+            }
+        }
+        at = end + 1;
+    }
+    return entry && CC_SHA256(entry, (CC_LONG)strlen(entry), digest) != NULL;
+}
+static int control_command_digest(pid_t pid, unsigned char *out, const char *image, int wide, unsigned char *entry, int *direct) {
     unsigned char raw[CONTROL_ARGS];
     size_t size = sizeof(raw);
     int mib[] = { CTL_KERN, KERN_PROCARGS2, pid };
@@ -139,10 +192,9 @@ static int control_command_digest(pid_t pid, unsigned char *out) {
     int argc;
     memcpy(&argc, raw, sizeof(argc));
     if (argc <= 0 || argc > 4096) return 0;
-    /* A rewritten title can destroy argv boundaries while the kernel retains
-     * the original argc. This view can also include environment strings. Never
-     * interpret or emit them as arguments: only compare a digest of the complete
-     * bounded view. Darwin's existing command reader supplies display text. */
+    if (direct) *direct = direct_entry(raw, size, argc, image, wide, entry);
+    /* The opaque identity remains the complete bounded view. Rewritten or
+     * otherwise unsupported argv can still identify a process, never its role. */
     return CC_SHA256(raw, (CC_LONG)size, out) != NULL;
 }
 static int compare_fd(const void *a, const void *b) {
@@ -185,10 +237,10 @@ static int control_read(pid_t pid, struct control_row *row, int *fds, int descri
     memset(row, 0, sizeof(*row)); row->pid = pid;
     if (!control_birth(pid, &before) || !control_step()
         || !image_path(pid, row->image, sizeof(row->image), &size)
-        || !control_command_digest(pid, row->command_digest)
+        || !control_command_digest(pid, row->command_digest, row->image, before.pbi_flags & PROC_FLAG_LP64, row->entry_digest, &row->direct_entry)
         || (descriptors && !control_fds(pid, row, fds)) || !control_step()
         || !image_path(pid, final_image, sizeof(final_image), &final_size)
-        || !control_command_digest(pid, final_digest)
+        || !control_command_digest(pid, final_digest, NULL, 0, NULL, NULL)
         || !control_birth(pid, &after) || !same_birth(&before, &after, descriptors)
         || size != final_size || memcmp(row->image, final_image, size)
         || memcmp(row->command_digest, final_digest, sizeof(final_digest))) return 0;
@@ -253,7 +305,10 @@ static int control_main(int argc, char **argv, int descriptors) {
         print_hex((unsigned char *)row->command, strlen(row->command));
         printf("\",\"imageHex\":\""); print_hex((unsigned char *)row->image, strlen(row->image));
         printf("\",\"commandDigest\":\""); print_hex(row->command_digest, sizeof(row->command_digest));
-        printf("\",\"fds\":[");
+        printf("\",\"directEntryDigest\":");
+        if (row->direct_entry) { putchar('"'); print_hex(row->entry_digest, sizeof(row->entry_digest)); putchar('"'); }
+        else printf("null");
+        printf(",\"fds\":[");
         for (int f = 0; f < row->fd_count; f++) {
             struct control_fd *fd = &row->fds[f];
             printf("%s{\"fd\":%d,\"type\":%u,\"mode\":%u,\"device\":\"%u\",\"inode\":\"%llu\"}",

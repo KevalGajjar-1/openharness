@@ -1,12 +1,30 @@
 import { buildSync } from 'esbuild'
+import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { NativeEvidenceBudget } from '../engines/kit/nativeEvidence.js'
-import { probeNativeProcessControl } from './nativeProcessControlProbe.js'
+import { directNodeEntryDigest, probeNativeProcessControl } from './nativeProcessControlProbe.js'
 
 const host = vi.hoisted(() => ({ exec: vi.fn() }))
 vi.mock('node:child_process', () => ({ execFile: host.exec }))
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
 afterEach(() => { Object.defineProperty(process, 'platform', platform); host.exec.mockReset() })
+
+it.each([
+  ['node', '/fixture/main.js'], ['agent', '/fixture/main.js'], ['/fixture/with space/node', '--no-warnings', '--', '/fixture/main.js'],
+].map(argv => ({ argv })))('digests only a direct entry from native argv boundaries %#', ({ argv }) => {
+  expect(directNodeEntryDigest('/fixture/node', argv)).toBe(createHash('sha256').update('/fixture/main.js').digest('hex'))
+})
+it.each([
+  [], ['node'], ['', 'node', '/fixture/main.js'], ['node /fixture/node', '/fixture/main.js'],
+  ['node', '-e', '/fixture/main.js'], ['node', '--print', '/fixture/main.js'], ['node', '--require', '/fixture/main.js'],
+  ['node', '/fixture/main.js', ''], ['node', 'relative.js'], ['node', '/fixture/main\0.js'],
+  ['node', ...Array(8).fill('--no-warnings'), '/fixture/main.js'],
+].map(argv => ({ argv })))('omits uncertain or unsupported direct entry evidence %#', ({ argv }) => {
+  expect(directNodeEntryDigest('/fixture/node', argv)).toBeUndefined()
+})
+it('does not classify a shell image through Node-looking argv', () => {
+  expect(directNodeEntryDigest('/bin/bash', ['node', '/fixture/main.js'])).toBeUndefined()
+})
 
 it('bundles the shared hook probes without daemon configuration, state migration or session modules', () => {
   const result = buildSync({ entryPoints: ['src/lib/nativeProcessControlProbe.ts', 'src/lib/nativeProcessImageArtifact.ts'],

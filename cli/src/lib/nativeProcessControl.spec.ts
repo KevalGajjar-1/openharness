@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NativeEvidenceBudget } from '../engines/kit/nativeEvidence.js'
-import { controlDescriptors, nativeProcessControl, parseNativeProcessControl } from './nativeProcessControl.js'
+import { controlDescriptors, controlIdentity, nativeProcessControl, parseNativeProcessControl } from './nativeProcessControl.js'
 import { env } from '../config/env.js'
 
 const host = vi.hoisted(() => ({ root: '', exec: vi.fn(), helper: vi.fn(), before: undefined as undefined | ((operation: string, path: string) => void) }))
@@ -50,6 +50,17 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(process, 'platform', platform); env.ADAPTER_RUNTIME_DIR = originalRuntime; vi.restoreAllMocks(); vi.unstubAllGlobals(); rmSync(host.root, { recursive: true, force: true }) })
 
 describe('strict Darwin control protocol', () => {
+  it('accepts an optional entry digest without changing the existing opaque process identity', () => {
+    const old = parse(output()).rows.get(42)!
+    for (const directEntryDigest of [undefined, null, 'b'.repeat(64)]) {
+      const row = parse(output({ ...record(), directEntryDigest })).rows.get(42)!
+      expect(row.directEntryDigest).toBe(directEntryDigest ?? undefined)
+      expect(controlIdentity(row)).toBe(controlIdentity(old))
+    }
+    for (const directEntryDigest of ['', 'B'.repeat(64), 'a'.repeat(63), 1, []]) {
+      expect(() => parse(output({ ...record(), directEntryDigest }))).toThrow('invalid process record')
+    }
+  })
   it('separates identity-only evidence from descriptor authority in both request and reply', async () => {
     host.exec.mockImplementationOnce((_path, _args, _options, callback) => callback(null,
       Buffer.from(output({ ...record(), fds: [] }, { schema: 2, mode: 'identity', parent: 0, children: [] })), Buffer.alloc(0)))

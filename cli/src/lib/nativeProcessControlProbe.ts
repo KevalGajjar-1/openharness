@@ -4,6 +4,8 @@ import { constants, closeSync, fstatSync, openSync, opendirSync, readlinkSync, r
 import { IdentityReadUnavailable } from '../engines/kit/identityScan.js'
 import type { NativeDescriptor } from '../engines/kit/nativeDescriptors.js'
 import { NativeEvidenceBudget, nativeText, nativeUnavailable } from '../engines/kit/nativeEvidence.js'
+import { createHash } from 'node:crypto'
+import { basename } from 'node:path'
 import { psEnv } from './childLocale.js'
 
 export interface NativeControlHelpers {
@@ -19,6 +21,9 @@ export interface NativeControlRow {
   imagePath: string
   argv?: readonly string[]
   commandDigest?: string
+  /** Optional positive direct Node entry, without exposing arguments. Not a
+   * replacement for the original opaque command identity. */
+  directEntryDigest?: string
   birth: string
   fds: readonly NativeDescriptor[]
 }
@@ -32,6 +37,20 @@ export const controlIdentity = (row: Omit<NativeControlRow, 'fds'>) =>
 const validPid = (pid: unknown): pid is number => Number.isInteger(pid) && Number(pid) > 0 && Number(pid) <= 0x7fffffff
 const sorted = (pids: readonly number[]) => [...pids].sort((a, b) => a - b).join(',')
 const uint = (value: unknown, max: number) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max
+
+export function directNodeEntryDigest(image: string, argv: readonly string[]): string | undefined {
+  if (!/^(?:node|nodejs|bun)$/.test(basename(image)) || argv.length < 2 || argv.some(value => !value)
+    || argv[0].includes('/') && !argv[0].startsWith('/')
+    || !/^(?:node|nodejs|bun|agent|cursor-agent)$/.test(basename(argv[0]))) return undefined
+  for (let index = 1, positional = false; index < Math.min(argv.length, 8); index++) {
+    const arg = argv[index]
+    if (!positional && arg === '--') { positional = true; continue }
+    if (!positional && ['--no-warnings', '--no-deprecation', '--enable-source-maps'].includes(arg)) continue
+    return arg.startsWith('/') && Buffer.byteLength(arg) < 4096 && !arg.includes('\0')
+      ? createHash('sha256').update(arg).digest('hex') : undefined
+  }
+  return undefined
+}
 
 /** lsof's socket family is immaterial to file ownership; every numeric FD remains in the pool. */
 export function controlDescriptors(rows: readonly NativeDescriptor[]): string {
@@ -71,6 +90,8 @@ export function parseNativeProcessControl(output: string, pids: readonly number[
     if (!row || !validPid(row.pid) || !pids.includes(row.pid) || rows.has(row.pid) || !uint(row.parentPid, 0x7fffffff)
       || !uint(row.startSeconds, Number.MAX_SAFE_INTEGER) || !row.startSeconds || !uint(row.startMicros, 999_999)
       || typeof row.commandDigest !== 'string' || !/^[a-f0-9]{64}$/.test(row.commandDigest)
+      || row.directEntryDigest !== undefined && row.directEntryDigest !== null
+        && (typeof row.directEntryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(row.directEntryDigest))
       || !Array.isArray(row.fds) || (!includeDescriptors && row.fds.length) || (fds += row.fds.length) > 4096) {
       return nativeUnavailable('the native control reply has an invalid process record')
     }
@@ -96,6 +117,7 @@ export function parseNativeProcessControl(output: string, pids: readonly number[
         ...(fd.type === 1 ? { device: BigInt(fd.device), inode: BigInt(fd.inode) } : {}) })
     }
     rows.set(row.pid, { pid: row.pid, parentPid: row.parentPid, command, imagePath, commandDigest: row.commandDigest,
+      ...(row.directEntryDigest ? { directEntryDigest: row.directEntryDigest } : {}),
       birth: `${row.startSeconds}:${row.startMicros}`, fds: descriptors })
   }
   return { parent, children: header.children, rows }
@@ -170,7 +192,9 @@ function linuxControl(pids: readonly number[], parent: number, budget: NativeEvi
     if (before.parentPid !== after.parentPid || before.startTicks !== after.startTicks || before.command !== after.command
       || /^[ZXx]/.test(after.state) || readlinkSync(`/proc/${pid}/exe`) !== imagePath) return nativeUnavailable('the native process changed during control inspection')
     if (!imagePath.startsWith('/') || imagePath.endsWith(' (deleted)') || !args.endsWith('\0') || !args[0] || args[0] === '\0') return nativeUnavailable('the native process command is incomplete')
-    return { pid, parentPid: before.parentPid, command: before.command, imagePath, argv: args.slice(0, -1).split('\0'), birth: String(before.startTicks) }
+    const argv = args.slice(0, -1).split('\0'), directEntryDigest = directNodeEntryDigest(imagePath, argv)
+    return { pid, parentPid: before.parentPid, command: before.command, imagePath, argv, birth: String(before.startTicks),
+      ...(directEntryDigest ? { directEntryDigest } : {}) }
   }
   const read = () => {
     const rows = new Map<number, NativeControlRow>()

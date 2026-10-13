@@ -7,23 +7,29 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { buildNativeHook } from '../../../scripts/lib/nativeHookBundle.mjs'
+import { env } from '../../config/env.js'
+import { resolveBinaryOnPath } from '../../lib/binaryOnPath.js'
+import { harnessPaneOwner, ownerCommand } from '../../lib/harnessSessionLabel.js'
 import { AgentCreationReceipts, creationFingerprint } from '../../lib/agentCreationReceipt.js'
 import { buildEngineLaunchArgv } from '../../lib/engineLaunch.js'
 import { nativeTurnTarget, type NativeTurnIntent } from '../../lib/nativeTurnIntent.js'
 import { prepareProcessImageHelper, type ProcessImageArtifact } from '../../lib/nativeProcessImageArtifact.js'
 import { probeNativeProcessControl, type NativeControlHelpers } from '../../lib/nativeProcessControlProbe.js'
 import type { RegisteredSession } from '../../lib/registry.js'
+import { readProcessEvidence } from '../../lib/processEvidence.js'
 import { isolatedTmux, type IsolatedTmux } from '../../testing/isolatedTmux.js'
 import type { NativeLaunch } from '../nativeLaunch.js'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { kernelBootId } from './nativeHookBoot.js'
 import type { HookPreparationProof } from './nativeHookFiles.js'
 import { nativeRearmExecCommand, prepareNativeRearmWitness, type NativeRearmWitnessCommand } from './nativeRearmWitness.js'
+import { createNativeRearmProof } from './nativeRearmProof.js'
 import { executableSnapshot, nativeVersionProbe } from './nativeVersion.js'
 import { shellSingleQuote } from '../../lib/shellQuote.js'
 
 const artifactPath = process.env.HARNESS_PROCESS_IMAGES_ARTIFACT
 const supported = process.platform === 'linux' || process.platform === 'darwin' && !!artifactPath
+const originalRuntime = env.ADAPTER_RUNTIME_DIR
 let root: string, artifact: string, images: ProcessImageArtifact | undefined, tmux: IsolatedTmux | undefined
 const children: Array<{ child: ReturnType<typeof spawn>; closed: Promise<void> }> = []
 let sequence = 0
@@ -45,6 +51,7 @@ afterEach(async () => {
     await closed
   }
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals(); env.ADAPTER_RUNTIME_DIR = originalRuntime
 })
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 function environment(directory: string) {
@@ -66,8 +73,8 @@ function start(script: string, directory: string, args: string[] = []) {
   children.push({ child, closed })
   return { child, closed, output: () => ({ stdout, stderr, code, signal }) }
 }
-async function fixture() {
-  const directory = join(root, `case-${++sequence}`); mkdirSync(directory, { mode: 0o700 })
+async function fixture(hold = false, spaced = false) {
+  const directory = join(root, `case-${++sequence}${spaced ? ' with spaces' : ''}`); mkdirSync(directory, { mode: 0o700 })
   const id = `private-rearm-request-${sequence}`, agentId = `fixture-agent-${sequence}`, token = `private-launch-token-${sequence}`
   const saved = { schemaVersion: 3, agentId, registeredAt: 1, engine: 'cursor', sessionId: 'fixture-session', boundAt: 2, active: true,
     processIdentity: { pid: 41, executable: '/fixture/cursor', startMarker: 'fixture-birth' }, runtimes: [{ backend: 'tmux', paneId: '%1' }],
@@ -81,7 +88,13 @@ async function fixture() {
   const receipts = new AgentCreationReceipts(join(directory, 'agent-creations'))
   await receipts.runIntent(id, fingerprint, request, { service: 'native', detail: 'fixture' }, async () => async () => ({ state: 'unconfirmed' }))
   const marker = join(directory, 'engine.json'), resumed = join(directory, 'continued'), engine = join(directory, 'cursor-agent')
-  writeFileSync(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,args:process.argv.slice(2)}));process.on('SIGCONT',()=>fs.writeFileSync(${JSON.stringify(resumed)},'continued'));setInterval(()=>{},1000);\n`, { mode: 0o700 })
+  const gate = join(directory, 'exec-allowed'), waiting = join(directory, 'waiting')
+  const main = hold ? join(directory, 'cursor-agent-package', 'cursor-agent', 'versions', '1', 'index.js') : engine
+  if (hold) mkdirSync(join(directory, 'cursor-agent-package', 'cursor-agent', 'versions', '1'), { recursive: true })
+  writeFileSync(main, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,args:process.argv.slice(2)}));process.on('SIGCONT',()=>fs.writeFileSync(${JSON.stringify(resumed)},'continued'));setInterval(()=>{},1000);\n`, { mode: 0o700 })
+  if (hold) writeFileSync(engine, '#!/bin/bash -p\n' + `printf '%s' $$ > ${shellSingleQuote(waiting)}\n`
+    + `while [ ! -f ${shellSingleQuote(gate)} ]; do /bin/sleep 0.05; done\n`
+    + `exec ${shellSingleQuote(process.execPath)} ${shellSingleQuote(main)} "$@"\n`, { mode: 0o700 })
   const executable = executableSnapshot(nativeVersionProbe({ args: [], output: /^$/, timeoutMs: 100 }, () => engine))!
   const proofs: HookPreparationProof[] = []
   const launch: NativeLaunch = { token, executable, opencodeMajor: null, environment: {}, proofs, current: () => executable.current() && proofs.every(p => p.current()),
@@ -94,7 +107,31 @@ async function fixture() {
     const path = await prepareProcessImageHelper(images, join(directory, 'probe-runtime'))
     return path ? { path, key: images.sha256 } : null
   }, invalidate: () => {} }
-  return { directory, input, receipts, marker, engine, launch, command, run, helpers, resumed }
+  return { directory, input, receipts, marker, engine, launch, command, run, helpers, resumed, saved, control, gate, waiting }
+}
+
+async function paneLaunch(p: Awaited<ReturnType<typeof fixture>>, shell = '/bin/sh', wrapped = false) {
+  tmux = await isolatedTmux(environment(p.directory))
+  tmux.env.HOME = join(root, 'home'); tmux.env.ZDOTDIR = join(root, 'home')
+  vi.stubEnv('TMUX', undefined); vi.stubEnv('TMUX_PANE', undefined); vi.stubEnv('TMUX_TMPDIR', tmux.root)
+  vi.stubEnv('HOME', join(root, 'home')); vi.stubEnv('ZDOTDIR', join(root, 'home'))
+  env.ADAPTER_RUNTIME_DIR = join(p.directory, 'probe-runtime')
+  if (images) vi.stubGlobal('__DARWIN_PROCESS_IMAGES__', JSON.stringify(images))
+  const argv = buildEngineLaunchArgv('cursor', { native: p.launch }, shell, process.execPath, '/fixture/grid', null)
+  await tmux.run('new-session', '-d', '-s', 'fixture-rearm', ...(wrapped ? ownerCommand(harnessPaneOwner(p.directory), argv) : argv))
+  return tmux.run('display-message', '-p', '-t', 'fixture-rearm', '#{pane_id}')
+}
+
+async function replacement(p: Awaited<ReturnType<typeof fixture>>, pane: string, pid: number) {
+  const observed = (await readProcessEvidence(pid, new NativeEvidenceBudget())).parent!
+  const row: RegisteredSession = { ...p.saved, nativeControl: p.control, tmuxPane: pane, primaryRuntimeKey: `tmux:${pane}`,
+    runtimes: [{ backend: 'tmux', paneId: pane }], processIdentity: { pid, executable: observed.executable,
+      startMarker: observed.startMarker, ...(observed.startTicks !== undefined ? { startTicks: observed.startTicks } : {}) } }
+  const path = join(p.directory, 'registry.json'), image = JSON.stringify([row])
+  writeFileSync(path, image, { mode: 0o600 })
+  const verify = () => { if (readFileSync(path, 'utf8') !== image) throw Error('private binding changed') }
+  const read = createNativeRearmProof({ receipts: p.receipts, owner: harnessPaneOwner(p.directory) })
+  return { row, prove: () => read(row, p.input, { verify, current: verify }) }
 }
 
 it.skipIf(!supported)('the shipped writer preserves boot/PID/precise birth through exec and refuses replay', async () => {
@@ -115,21 +152,56 @@ it.skipIf(!supported)('the shipped writer preserves boot/PID/precise birth throu
 
 it.skipIf(!supported)('the existing top-level wrapper resumes the witnessed engine after a real Stop', async () => {
   const p = await fixture()
-  tmux = await isolatedTmux(environment(p.directory))
-  tmux.env.HOME = join(root, 'home'); tmux.env.ZDOTDIR = join(root, 'home')
-  vi.stubEnv('TMUX', undefined); vi.stubEnv('TMUX_PANE', undefined); vi.stubEnv('TMUX_TMPDIR', tmux.root)
-  vi.stubEnv('HOME', join(root, 'home')); vi.stubEnv('ZDOTDIR', join(root, 'home'))
-  const argv = buildEngineLaunchArgv('cursor', { native: p.launch }, '/bin/sh', process.execPath, '/fixture/grid', null)
-  await tmux.run('new-session', '-d', '-s', 'fixture-rearm', ...argv)
+  const pane = await paneLaunch(p)
   try { await vi.waitFor(() => expect(existsSync(p.marker)).toBe(true), { timeout: 8000 }) }
-  catch (error) { console.log(await tmux.run('capture-pane', '-p', '-t', 'fixture-rearm')); throw error }
+  catch (error) { console.log(await tmux!.run('capture-pane', '-p', '-t', 'fixture-rearm')); throw error }
   const pid = JSON.parse(readFileSync(p.marker, 'utf8')).pid
   expect(existsSync(join(p.directory, 'agent-creations', `${p.input.id}.json.process`))).toBe(true)
   expect(p.receipts.readNativeRelaunchProcess(p.input.id, p.input).process.pid).toBe(pid)
+  const candidate = await replacement(p, pane, pid)
+  expect((await candidate.prove()).key).toContain(`\0${pid}\0`)
   process.kill(pid, 'SIGSTOP')
   await vi.waitFor(() => expect(existsSync(p.resumed)).toBe(true), { timeout: 8000 })
   expect(JSON.parse(readFileSync(p.marker, 'utf8')).pid).toBe(pid)
+  expect((await candidate.prove()).key).toContain(`\0${pid}\0`)
 }, 20000)
+
+it.skipIf(!supported)('a witnessed pre-exec shell in a spaced path holds until that same process executes the engine', async () => {
+  const p = await fixture(true, true), pane = await paneLaunch(p, '/bin/sh', true)
+  await vi.waitFor(() => expect(existsSync(p.waiting)).toBe(true), { timeout: 8000 })
+  const pid = Number(readFileSync(p.waiting, 'utf8')), waiting = await replacement(p, pane, pid)
+  await expect(waiting.prove()).rejects.toThrow('current Cursor image could not be proven')
+  writeFileSync(p.gate, '')
+  await vi.waitFor(() => expect(existsSync(p.marker)).toBe(true), { timeout: 8000 })
+  expect(JSON.parse(readFileSync(p.marker, 'utf8')).pid).toBe(pid)
+  const started = await replacement(p, pane, pid)
+  expect((await started.prove()).key).toContain(`\0${pid}\0`)
+}, 20000)
+
+for (const name of ['sh', 'bash', 'zsh', 'dash', 'tcsh']) {
+  const binary = resolveBinaryOnPath(name)
+  it.skipIf(!supported || !binary)(`${name} keeps the witnessed engine as the original pane child`, async () => {
+    const p = await fixture(), pane = await paneLaunch(p, binary!)
+    await vi.waitFor(() => expect(existsSync(p.marker)).toBe(true), { timeout: 8000 })
+    const pid = JSON.parse(readFileSync(p.marker, 'utf8')).pid
+    const candidate = await replacement(p, pane, pid)
+    expect((await candidate.prove()).key).toContain(`\0${pid}\0`)
+  }, 15000)
+}
+
+it.skipIf(!supported)('an exited witness cannot be adopted by a manually started replacement', async () => {
+  const p = await fixture(), pane = await paneLaunch(p)
+  await vi.waitFor(() => expect(existsSync(p.marker)).toBe(true), { timeout: 8000 })
+  const pid = JSON.parse(readFileSync(p.marker, 'utf8')).pid, original = await replacement(p, pane, pid)
+  await original.prove()
+  process.kill(pid, 'SIGTERM')
+  await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5000 })
+  await expect(original.prove()).rejects.toThrow()
+  await tmux!.run('respawn-pane', '-k', '-t', pane, process.execPath, p.engine)
+  await vi.waitFor(() => expect(JSON.parse(readFileSync(p.marker, 'utf8')).pid).not.toBe(pid), { timeout: 8000 })
+  const manual = await replacement(p, pane, JSON.parse(readFileSync(p.marker, 'utf8')).pid)
+  await expect(manual.prove()).rejects.toThrow('process differs from the recorded exec')
+}, 25000)
 
 it.skipIf(!supported)('the fixed handoff ignores inherited startup files and exported functions', async () => {
   const p = await fixture(), startup = join(p.directory, 'startup.sh'), marker = join(p.directory, 'inherited-code')

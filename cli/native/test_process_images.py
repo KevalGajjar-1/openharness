@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,10 @@ static unsigned births, paths, commands, lists;
 static int scenario(const char *name) {
     const char *value = getenv("PROBE_FIXTURE_CASE");
     return value && strcmp(value, name) == 0;
+}
+static int entry_case(void) {
+    const char *value = getenv("PROBE_FIXTURE_CASE");
+    return value && !strncmp(value, "entry-", 6);
 }
 int fixture_fstatfs(int fd, struct statfs *value) {
     (void)fd;
@@ -63,6 +68,8 @@ int fixture_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int si
     info->pbi_start_tvsec = scenario("bad-start") ? 0 : 1770000000;
     info->pbi_start_tvusec = scenario("pid-reused") ? ++births : 123456;
     info->pbi_ppid = pid == 7 ? 1 : 7;
+    info->pbi_flags = scenario("entry-32") ? 0 : PROC_FLAG_LP64;
+    if (scenario("width-changed") && ++births > 1) info->pbi_flags = 0;
     info->pbi_status = pid == 8 && scenario("zombie-child") ? SZOMB : SRUN;
     if (info->pbi_status == SZOMB && !arg) { errno = ESRCH; return 0; }
     info->pbi_nfiles = scenario("fd-capacity-grew") && lists ? 64 : 32;
@@ -91,6 +98,38 @@ int fixture_sysctl(int *name, unsigned int count, void *buffer, size_t *size, vo
     if (scenario("command-denied")) { errno = EPERM; return -1; }
     if (scenario("command-full")) { memset(buffer, 0, *size); return 0; }
     unsigned char *out = buffer;
+    if (entry_case()) {
+        const char *entry = "/fixture/cursor-agent/versions/1/index.js";
+        const char *args[8] = { "node", entry, "argument" };
+        int argc = 3;
+        if (scenario("entry-empty-zero")) { args[0] = ""; args[1] = "node"; args[2] = entry; }
+        if (scenario("entry-spaced-zero")) args[0] = "node /fixture/node";
+        if (scenario("entry-rewritten-zero")) args[0] = "a rewritten process title";
+        if (scenario("entry-rewritten-gap")) args[1] = "";
+        if (scenario("entry-eval")) args[1] = "--eval";
+        if (scenario("entry-preload")) args[1] = "--require";
+        if (scenario("entry-alias")) args[0] = "/fixture/agent";
+        if (scenario("entry-options")) { args[1] = "--no-warnings"; args[2] = "--"; args[3] = entry; argc = 4; }
+        memset(out, 0, *size);
+        memcpy(out, &argc, sizeof(argc));
+        const char *length = getenv("PROBE_FIXTURE_PATH_LENGTH");
+        size_t path_length = length ? (size_t)atoi(length) : 13;
+        memset(out + sizeof(argc), 'x', path_length);
+        out[sizeof(argc)] = '/';
+        size_t align = scenario("entry-32") ? 4 : 8;
+        size_t at = sizeof(argc) + ((path_length + 1 + align - 1) / align) * align;
+        if (scenario("entry-bad-padding")) out[at - 1] = 'x';
+        for (int index = 0; index < argc; index++) {
+            size_t length = strlen(args[index]) + 1;
+            memcpy(out + at, args[index], length); at += length;
+        }
+        if (scenario("entry-truncated")) { *size = at - 1; return 0; }
+        /* Empty/missing argv cannot be replaced with these misleading bytes. */
+        const char environment[] = "node\0/fixture/cursor-agent/versions/1/index.js\0PRIVATE_FIXTURE_SECRET=never-output\0";
+        memcpy(out + at, environment, sizeof(environment));
+        *size = at + sizeof(environment);
+        return 0;
+    }
     int argc = 1;
     memcpy(out, &argc, sizeof(argc));
     const char data[] = "/fixture/probe\0\0fixture\0FIXTURE_SECRET=never-output\0";
@@ -106,7 +145,7 @@ int fixture_proc_pidpath(int pid, void *buffer, uint32_t size) {
     const char *value = scenario("relative-path") ? "relative"
         : scenario("exec-changed") && paths == 2 ? "/changed"
         : scenario("raw-path") ? "/raw/quote\" line\n slash\\ byte\xff"
-        : "/fixture/probe";
+        : entry_case() ? "/fixture/node" : "/fixture/probe";
     size_t length = strlen(value);
     if (length >= size) return 0;
     memcpy(buffer, value, length + 1);
@@ -319,9 +358,52 @@ class ProcessImagesTest(unittest.TestCase):
         for case in ['denied', 'short-info', 'pid-mismatch', 'pid-reused', 'exec-changed',
                      'missing-second-path', 'truncated-path', 'relative-path', 'bad-start',
                      'short-fds', 'full-fds', 'fd-changed', 'fd-denied', 'fd-capacity-grew',
-                     'children-full', 'children-denied', 'command-denied', 'command-full', 'command-changed']:
+                     'children-full', 'children-denied', 'command-denied', 'command-full', 'command-changed', 'width-changed']:
             with self.subTest(case=case):
                 self.control([7], parent=7, stub=True, case=case, okay=False)
+
+    def test_entry_digest_uses_exact_padding_for_both_pointer_widths(self):
+        expected = hashlib.sha256(b'/fixture/cursor-agent/versions/1/index.js').hexdigest()
+        for case in ['entry-32', 'entry-64', 'entry-alias', 'entry-options']:
+            for length in range(8, 24):
+                with self.subTest(case=case, path_length=length):
+                    result = command([str(self.stub), '--identity', '2000', '0', '7'], env={
+                        **os.environ, 'PROBE_FIXTURE_CASE': case, 'PROBE_FIXTURE_PATH_LENGTH': str(length)})
+                    row = json.loads(result.stdout.splitlines()[1])
+                    self.assertEqual(row['directEntryDigest'], expected)
+                    self.assertNotIn('PRIVATE_FIXTURE_SECRET', result.stdout.decode())
+
+    def test_uncertain_entry_boundaries_never_shift_into_arguments_or_environment(self):
+        for case in ['entry-empty-zero', 'entry-spaced-zero', 'entry-rewritten-zero', 'entry-rewritten-gap',
+                     'entry-eval', 'entry-preload', 'entry-bad-padding', 'entry-truncated']:
+            with self.subTest(case=case):
+                [row] = self.control([7], stub=True, case=case, descriptors=False)
+                self.assertIsNone(row['directEntryDigest'])
+                self.assertNotIn('PRIVATE_FIXTURE_SECRET', json.dumps(row))
+
+    def test_real_node_entry_rejects_empty_spaced_or_rewritten_argv_zero(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node, 'The pinned Node toolchain is required')
+        vendor = self.root / 'cursor-agent/versions/1/index.js'
+        vendor.parent.mkdir(parents=True)
+        source = 'console.log("ready");process.stdin.resume();'
+        vendor.write_text(source)
+        unrelated = self.root / 'node'
+        unrelated.write_text(source)
+        rewritten = self.root / 'rewritten.js'
+        rewritten.write_text('process.title="node /fixture/cursor-agent/versions/1/index.js";' + source)
+        cases = [([node, str(vendor)], str(vendor)), (['agent', str(vendor)], str(vendor)),
+                 (['', 'node', str(vendor)], None), (['node ' + str(vendor), str(unrelated)], None),
+                 ([node, str(rewritten)], None)]
+        for argv, entry in cases:
+            with self.subTest(argv_zero=argv[0]):
+                child = self.launch(argv, executable=node, cwd=self.root, env={
+                    'HOME': str(self.root), 'PATH': '/usr/bin:/bin', 'PRIVATE_FIXTURE_SECRET': 'never-output'})
+                self.wait_ready(child)
+                [row] = self.control([child.pid], descriptors=False)
+                expected = hashlib.sha256(entry.encode()).hexdigest() if entry else None
+                self.assertEqual(row['directEntryDigest'], expected)
+                self.assertNotIn('PRIVATE_FIXTURE_SECRET', json.dumps(row))
 
     def test_identity_does_not_require_descriptors_but_retains_every_process_fence(self):
         for case in ['short-fds', 'full-fds', 'fd-changed', 'fd-denied', 'fd-capacity-grew']:

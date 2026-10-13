@@ -129,11 +129,44 @@ approved the writer-only delta over `7f0af2d58`, conditional on those completed
 checks. Implementation and review ran approximately 11:20–12:00 UTC on October
 13, with validation overlapping; merge and publication remain zero.
 
-This is still inactive machinery. Replacement proof must reject pre-exec/held
-shells and engines no longer occupying the original pane. Exact receipt/control,
-current Registry binding and pane ownership must all remain valid before rearm
-enables input. Replacement proof, live controller composition and final installed
-client acceptance remain required before the PR can land.
+Replacement recovery now proves only the recorded kernel boot/PID/birth in its
+original live tmux pane, including the older-tmux daemon-owner wrapper. The current
+engine must be the original pane root's direct child. A final paired probe retains
+both incarnations, the full original pane command and the exact receipt/control
+fences. Captured callbacks cannot be replaced during a wait. Replies expire after
+three seconds; timed-out work retains its actual read slot until settlement, and
+an expired setup cannot consume a slot it never started using.
+
+An exec witness alone does not prove that the engine started. Pre-exec shells and
+launchers remain held. For Node-based Cursor, the native probe supplies only an
+optional digest of the current direct entry; neither argv nor environment text is
+emitted on macOS. Its original opaque command identity is unchanged. The parser
+uses XNU's exact target-pointer alignment, including the removed executable-path
+prefix, instead of skipping NULs into an empty argv0 or environment. Unknown,
+rewritten or unsupported boundaries omit the digest. Display text can supply
+bounded complete-path candidates, including spaces, but only the native digest
+can authorize one. The final paired observation must preserve that digest too.
+
+This replacement-proof checkpoint passes types and 180 cases across six files
+(`20261013T124842.949501Z-29666`, 5.2 and 29.3 seconds), including architecture,
+the unchanged native-control golden, original Stop/Continue, a held shell that
+execs Node in the same incarnation, rejection of a manually started successor,
+the older-tmux wrapper, spaced paths and sh/bash/zsh/dash/tcsh. All five shells
+were available. The 21 native protocol/packaging/private-process cases pass
+(`20261013T124038.743602Z-97125`, 3.9 seconds); the final stricter spaced-argv0
+case is also covered by the subsequent native mutation baseline. All 18 deliberate
+recovery faults fail by assertion after passing baselines
+(`20261013T125001.878288Z-35774`, 25.1 seconds). The intermediate failed receipt
+retains a test callback type error; its passing process checks were not reported
+as a passing aggregate.
+
+Independent review approved the replacement-proof delta over `a6ca7856f`,
+conditional on the now-completed validation. Review corrected bounded reply
+settlement, the older-tmux wrapper, mutable callbacks, complete spaced paths and
+setup-expiry capacity loss. Implementation/review ran approximately 12:00–12:52
+UTC on October 13, with validation overlapping. Merge and publication remain
+zero. This remains inactive machinery: controller composition and final installed
+client acceptance are still required before the PR can land.
 
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input
