@@ -1,5 +1,38 @@
 # Durable native hook delivery
 
+October 13 input checkpoint: the inactive native input path now separates physical
+delivery from generation execution. It never acknowledges a request by prompt
+text, clears a composer from a hook, or retries a possibly dispatched paste/Enter.
+Accepted messages retain their original owner and caller authority through an
+outage, with a visible hold and no expiry. Shared writer reservations keep their
+acquired epochs between attempts; unavailable capacity can recover without
+renewing an epoch revoked by Cancel.
+
+Individual cancellation revokes logical preparation and device waiters immediately.
+Actual reads and pane commands retain their capacity until they settle. Every paste
+and Enter rechecks the original native proof and Agent Messages' sender authority.
+Unreadable screens, missing composers and multiline human drafts hold input. The
+current Cursor source clears its controlled prompt after normal submission; the
+tests observe that empty composer for the next message. A retained older echo is
+ambiguous and stays held rather than being cleared by text equality.
+
+Receipt `20261013T061644.504418Z-80039` passes types and 272 focused tests, including
+the real terminal adapter with private subprocess fixtures, at 100% statements,
+branches, functions and lines in all four changed core files. Earlier type and
+coverage failures remain failed receipts. `20261013T061921.319183Z-88269` passes
+all nine new input and ten existing writer mutation oracles by assertion. The
+retained-epoch mutation now checks the original ticket directly: per-request
+revocation also prevents the old composition from writing, so that test alone no
+longer detects removal of the shared epoch guard. No golden was changed.
+
+Independent review approved these input corrections conditional on those completed
+checks. This is scoped approval; the input factory is not active in main. Atomic
+history/input/task/recap activation, durable physical Cancel and explicit rearm,
+private installed-client acceptance and final PR gates remain required. Native
+activation must also fence delayed question/model control and retire the original
+queued input on explicit Cancel/rearm. Implementation and review ran approximately
+06:00–06:20 UTC with validation overlapping; merge and publication remain zero.
+
 October 13 resume checkpoint: current main `6f0a3e6e2` is integrated in
 `8ab5998dc`. The draft remains unfinished. Recovery now fixes its presentation
 baseline from the confirmed process journal before this core admits a new

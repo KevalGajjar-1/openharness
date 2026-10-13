@@ -17,18 +17,21 @@ import { adaptSlashCommand } from '../lib/goalCommand.js'
 import { sid } from '../lib/log.js'
 import type { LiveEvent } from '../engines/kit/events.js'
 import type { RegisteredSession } from '../lib/registry.js'
-import { SessionInputController, type SessionInputDelivery, type SessionInputDeps } from '../lib/sessionInput.js'
+import { SessionInputController, type NativeSessionInputPort, type SessionInputDelivery, type SessionInputDeps } from '../lib/sessionInput.js'
+import { createNativeInput, type NativeInputAdmission } from './turns/nativeInput.js'
+import { outsideConsumers } from './turns/funnel.js'
 import { passingHold } from '../lib/messageHolds.js'
 import type { ScreenReader } from '../lib/screenReader.js'
 import type { SubmissionReader } from '../lib/submissionReader.js'
 import type { ScreenReading } from '../engines/facets/screen.js'
-import { TERMINAL_LEASE_REFUSED, terminalActionNotStarted, type TerminalActionResult, type TerminalWrite } from '../lib/terminalTypes.js'
+import { TERMINAL_LEASE_REFUSED, TerminalWriteHeld, terminalActionNotStarted, type TerminalActionResult, type TerminalWrite } from '../lib/terminalTypes.js'
 import type { TerminalControl } from './terminals/control.js'
 import { launchBound } from './engines/sessionBinding.js'
 
 type Frame = { type: string; agentId?: string; dbSessionId?: string; payload: Record<string, unknown> }
 
 export interface InputDeps {
+  native?: NativeInputAdmission
   readScreen: ScreenReader
   /** Claude Code's and Codex's reading of a prompt typed into their pane, from their worker (core/engines/submissions.ts). */
   submission: SubmissionReader
@@ -74,7 +77,7 @@ export interface InputDeps {
  */
 export function messageWriter({ readScreen, resolve, terminal: { captureTerminal, validateTerminal, submitTerminalAction, writeTicket }, promptTyped }: Pick<InputDeps, 'resolve' | 'terminal' | 'promptTyped' | 'readScreen'>) {
   return async (id: string, text: string, hold?: (session: RegisteredSession, screen: ScreenReading | null) => string | null,
-    write?: TerminalWrite): Promise<TerminalActionResult> => {
+    write?: TerminalWrite, requireComposer = false): Promise<TerminalActionResult> => {
     const found = resolve(id)
     if (!found) return terminalActionNotStarted('terminal agent is unavailable')
     const session = structuredClone(found)
@@ -111,7 +114,7 @@ export function messageWriter({ readScreen, resolve, terminal: { captureTerminal
           // the reading's fence refuses.
           const next = await readScreen(launchBound(session, resolve(id)), await captureTerminal(id))
           if (!allowed()) return 'terminal control revoked'
-          const before = next ? next.messageHold : 'screen_unreadable'
+          const before = next ? next.messageHold ?? (requireComposer && !next.pane.idle && !next.pane.draft ? 'screen_unreadable' : null) : 'screen_unreadable'
           if (before === 'popup_open') return null
           if (!before || !passingHold(before) || tries >= ENTER_CHECK_TRIES) return before
           await new Promise((settle) => setTimeout(settle, ENTER_CHECK_RETRY_MS))
@@ -129,11 +132,13 @@ const ENTER_CHECK_RETRY_MS = 250
 export function sessionInputDeps(
   deps: InputDeps,
   deviceInput: () => Pick<AutonomousDeviceInput, 'legacyWrite'> & Partial<Pick<AutonomousDeviceInput, 'writes'>>,
+  native?: NativeSessionInputPort,
 ): SessionInputDeps {
   const { resolve, terminal, deliveries, device, clients, agentIdFor, commandcode, emit } = deps
   const { captureTerminal, validateTerminal, keyTerminalAction } = terminal
   const writeMessage = messageWriter(deps)
   return {
+    native,
     readScreen: deps.readScreen,
     submission: deps.submission,
     getSession: (id) => resolve(id),
@@ -214,7 +219,31 @@ export function deviceInputDeps(
 
 export function createInput(deps: InputDeps) {
   const { resolve, terminal: { pinTerminalControl } } = deps
-  const input: SessionInputController = new SessionInputController(sessionInputDeps(deps, () => deviceInput))
+  const nativeWriter = messageWriter(deps)
+  const nativeNotify = outsideConsumers({ prefix: 'native-input' })
+  const nativeInput = deps.native && createNativeInput({
+    admission: { ...deps.native, prepare: async original => {
+      const check = () => {
+        if (input.controlHeld(original.agentId)) throw new TerminalWriteHeld('Waiting for the current terminal control interaction.')
+      }
+      check()
+      const permit = await deps.native!.prepare(original)
+      return { verify: () => { permit.verify(); check() } }
+    } },
+    resolve,
+    reserve: id => deviceInput.writes.reserve(id),
+    run: (id, write, operation, signal) => deviceInput.legacyWrite(id, operation, write, signal),
+    canWrite: id => !id.startsWith('team:') || deps.deliveries.canWrite(id),
+    write: (id, text, write) => nativeWriter(id, text, (_session, screen) =>
+      !screen ? 'Waiting for the native composer to be readable.'
+        : screen.pane.draft ? 'A draft is present in the native composer. Send or clear it there before this queued message.'
+          : screen.messageHold ?? (!screen.pane.idle ? 'Waiting for the native composer to be ready.' : screen.teamHold), write, true),
+    delivery: event => {
+      nativeNotify('devices', () => deps.device()?.delivery(event))
+      nativeNotify('deliveries', () => deps.deliveries.settled(event))
+    },
+  })
+  const input: SessionInputController = new SessionInputController(sessionInputDeps(deps, () => deviceInput, nativeInput))
   const deviceInput: AutonomousDeviceInput = new AutonomousDeviceInput(deviceInputDeps(deps, () => input))
   const acquireTerminalControl = (id: string, opts?: { forAnswer?: boolean }): (() => void) | null => {
     const agentId = resolve(id)?.agentId ?? id
@@ -246,7 +275,7 @@ export function createInput(deps: InputDeps) {
     input.submit(record?.agentId ?? sessionId, adapted, deliveryId)
   }
   const messageRequest = createMessageRequest(submitAgent, deps.typed)
-  return { input, deviceInput, acquireTerminalControl, submitAgent, messageRequest }
+  return { input, deviceInput, nativeInput, acquireTerminalControl, submitAgent, messageRequest }
 }
 
 /**

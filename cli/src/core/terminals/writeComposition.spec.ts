@@ -33,8 +33,9 @@ const record = (): RegisteredSession => ({
 beforeEach(() => { vi.useFakeTimers(); assumeTmuxVersion({ major: 3, minor: 7 }) })
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); resetTmuxVersionCache() })
 
-function setup(options: { now?: () => number } = {}) {
+function setup(options: { now?: () => number; native?: boolean } = {}) {
   const row = record(), calls: string[] = [], callbacks = new Map<string, () => void>()
+  if (options.native) row.engine = 'cursor'
   let pause = '', onCommand = (_command: string) => {}
   const complete = (command: string, done: () => void) => {
     onCommand(command)
@@ -59,11 +60,12 @@ function setup(options: { now?: () => number } = {}) {
   // The process/pane readings are fixed; all control, lease routing, paste, key
   // and Enter implementations run unchanged down to execFile/spawn above.
   vi.spyOn(backend, 'validate').mockResolvedValue({ state: 'alive' })
-  const capture = vi.spyOn(backend, 'capture').mockResolvedValue({ state: 'succeeded', value: pane })
+  const capture = vi.spyOn(backend, 'capture').mockResolvedValue({ state: 'succeeded', value: options.native ? '→\n' : pane })
   const coordinator = new TerminalBackendCoordinator([backend], ['tmux'])
   const terminal = createTerminalControl({ resolve: () => row, terminals: coordinator, writer: createTerminalWriter(options) })
   const readScreen = vi.fn(readInlineScreen), promptTyped = vi.fn(), notifications = vi.fn()
   const deps: InputDeps = { resolve: () => row, byAgent: () => row, terminal, readScreen, promptTyped, submission: inlineSubmission,
+    ...(options.native ? { native: { owns: () => true, prepare: async () => ({ verify() {} }), blocksControl: () => false, held: vi.fn() } } : {}),
     deliveries: { settled: vi.fn(), canWrite: () => true },
     device: () => ({ delivery: notifications, inputDispatched: vi.fn(), inputStatus: vi.fn(), agentGone: vi.fn() }),
     clients: { send: vi.fn(), sendCommander: vi.fn() }, agentIdFor: () => row.agentId, commandcode: () => undefined, emit: vi.fn() }
@@ -75,6 +77,28 @@ function setup(options: { now?: () => number } = {}) {
     pause: (command: string) => { pause = command }, finish: (command: string) => { callbacks.get(command)!(); callbacks.delete(command) },
     onCommand: (callback: typeof onCommand) => { onCommand = callback } }
 }
+
+it.each(['unavailable', 'empty'] as const)('holds the real native tmux Enter when its screen becomes %s after paste', async fault => {
+  const run = setup({ native: true })
+  run.onCommand(command => {
+    if (command === 'paste-buffer') run.capture.mockResolvedValue(fault === 'empty'
+      ? { state: 'succeeded', value: '' } : { state: 'failed', reason: 'unreadable' })
+  })
+  run.input.submitAgent('agent', 'only once', 'native-one')
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(run.calls).toEqual(['paste-buffer'])
+  expect(run.deps.deliveries.settled).toHaveBeenLastCalledWith({ sessionId: 'agent', deliveryId: 'native-one', state: 'unknown', reason: 'dispatch_ambiguous' })
+  run.input.nativeInput!.close()
+})
+
+it('sends consecutive native messages through the observed empty composer without a clearing key', async () => {
+  const run = setup({ native: true })
+  run.input.submitAgent('agent', 'first', 'native-one'); await vi.advanceTimersByTimeAsync(0)
+  run.input.submitAgent('agent', 'second', 'native-two'); await vi.advanceTimersByTimeAsync(0)
+  expect(run.calls).toEqual(['paste-buffer', 'Enter', 'paste-buffer', 'Enter'])
+  expect(run.deps.deliveries.settled).toHaveBeenLastCalledWith({ sessionId: 'agent', deliveryId: 'native-two', state: 'delivered' })
+  run.input.nativeInput!.close()
+})
 
 it.each(['before paste', 'before Enter'] as const)('interrupts a message stalled in its worker %s and never resumes its old write', async phase => {
   const run = setup(), screen = held<Awaited<ReturnType<InputDeps['readScreen']>>>()

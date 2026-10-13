@@ -10,6 +10,61 @@ const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve()
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
+it('aborts one running preparation without interrupting queued epochs or releasing its actual allocation', async () => {
+  const writer = createTerminalWriter({ maxPreparing: 1 }), preparation = held(), abort = new AbortController()
+  let allowed!: () => boolean
+  const effect = vi.fn(async () => {})
+  const original = writer.run('a', writer.ticket('a'), async write => {
+    allowed = write.allowed; await preparation.promise; await write.dispatch(effect)
+  }, abort.signal)
+  const refused = expect(original).rejects.toThrow('cancelled before completion')
+  const epoch = writer.ticket('a')
+  abort.abort(); await refused
+  expect(allowed()).toBe(false)
+  expect(epoch.allowed()).toBe(true)
+  await expect(writer.run('a', epoch, effect)).rejects.toThrow('capacity')
+  preparation.resolve(); await flush()
+  expect(effect).not.toHaveBeenCalled()
+  await expect(writer.run('a', epoch, effect)).resolves.toBeUndefined()
+})
+
+it('removes an aborted queued request and ignores abort after a completed run', async () => {
+  const writer = createTerminalWriter(), preparation = held(), abort = new AbortController(), effect = vi.fn(async () => {})
+  const active = writer.run('a', writer.ticket('a'), () => preparation.promise)
+  const queued = writer.run('a', writer.ticket('a'), effect, abort.signal)
+  const refused = expect(queued).rejects.toThrow('cancelled before completion')
+  abort.abort(); await refused
+  preparation.resolve(); await active
+  expect(effect).not.toHaveBeenCalled()
+  await expect(writer.run('a', writer.ticket('a'), effect, abort.signal)).rejects.toThrow('cancelled before completion')
+  const completed = new AbortController()
+  await writer.run('a', writer.ticket('a'), effect, completed.signal)
+  completed.abort()
+  expect(effect).toHaveBeenCalledOnce()
+})
+
+it('keeps an aborted physical write leased until it really settles', async () => {
+  const writer = createTerminalWriter(), physical = held(), abort = new AbortController(), effect = vi.fn(async () => {})
+  const active = writer.run('a', writer.ticket('a'), write => write.dispatch(() => physical.promise), abort.signal)
+  const refused = expect(active).rejects.toThrow('cancelled before completion')
+  abort.abort(); await refused
+  const next = writer.run('a', writer.ticket('a'), write => write.dispatch(effect))
+  await flush(); expect(effect).not.toHaveBeenCalled()
+  physical.resolve(); await next
+  expect(effect).toHaveBeenCalledOnce()
+})
+
+it('retains a queued epoch against eviction until its last reservation releases', async () => {
+  const writer = createTerminalWriter({ maxLanes: 1 }), first = writer.reserve('a')!, second = writer.reserve('a')!
+  expect(writer.reserve('other')).toBeUndefined()
+  first.release(); first.release()
+  expect(first.write.allowed()).toBe(false)
+  expect(second.write.allowed()).toBe(true)
+  expect(writer.ticket('other').allowed()).toBe(false)
+  second.release()
+  expect(writer.reserve('other')!.write.allowed()).toBe(true)
+})
+
 it('revokes preparation immediately without letting its late cleanup free the replacement owner', async () => {
   const writer = createTerminalWriter(), preparation = held(), replacement = held(), calls: string[] = []
   const original = writer.ticket('a')

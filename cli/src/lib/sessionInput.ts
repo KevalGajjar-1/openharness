@@ -102,7 +102,18 @@ interface InputState {
   ambiguousDispatch: boolean
 }
 
+/** The native-generation path reports physical delivery only. Its lifecycle
+ * never enters the legacy text-matching, composer-clear or Enter-retry path. */
+export interface NativeSessionInputPort {
+  owns(id: string): boolean
+  submit(id: string, content: string, deliveryId?: string): void
+  blocksControl(id: string, forAnswer: boolean): boolean
+  cancelDelivery(deliveryId: string): boolean
+  forget(id: string): void
+}
+
 export interface SessionInputDeps {
+  native?: NativeSessionInputPort
   write?: (id: string) => TerminalWrite | undefined
   readScreen: ScreenReader
   /** The reading of a typed prompt by the engines whose worker reads it (Claude Code, Codex): the pane after
@@ -228,6 +239,7 @@ export class SessionInputController {
   }
 
   setTurnOpen(sessionId: string, open: boolean): void {
+    if (this.deps.native?.owns(sessionId)) return
     this.state(sessionId).turnOpen = open
   }
 
@@ -244,6 +256,7 @@ export class SessionInputController {
 
   /** Revoke queued work only; a paste already in progress cannot be recalled. */
   cancelDelivery(deliveryId: string): boolean {
+    if (this.deps.native?.cancelDelivery(deliveryId)) return true
     for (const [sessionId, state] of this.states) {
       const index = state.queue.findIndex((item) => item.deliveryId === deliveryId)
       if (index >= 0) {
@@ -261,6 +274,7 @@ export class SessionInputController {
   }
 
   submit(sessionId: string, content: string, deliveryId?: string): void {
+    if (this.deps.native?.owns(sessionId)) { this.deps.native.submit(sessionId, content, deliveryId); return }
     const session = this.controlSession(sessionId)
     if (!session) {
       this.delivery(sessionId, deliveryId, 'rejected', 'agent_gone')
@@ -305,6 +319,7 @@ export class SessionInputController {
    * settling turn, or queued messages all still refuse.
    */
   acquireControl(sessionId: string, opts?: { forAnswer?: boolean }): (() => void) | null {
+    if (this.deps.native?.owns(sessionId) && this.deps.native.blocksControl(sessionId, !!opts?.forAnswer)) return null
     const session = this.controlSession(sessionId)
     if (!session) return null
     const state = this.state(sessionId)
@@ -323,7 +338,11 @@ export class SessionInputController {
     }
   }
 
+  /** Native preparation shares the same reservation as question/model keys. */
+  controlHeld(id: string): boolean { return this.states.get(id)?.controlLocked === true }
+
   onTurnStarted(sessionId: string, userMessage: string): void {
+    if (this.deps.native?.owns(sessionId)) return
     const state = this.state(sessionId)
     const session = this.controlSession(sessionId)
     // An exact echo of the typed prompt needs no reading. Anything else is, for an engine whose worker
@@ -405,6 +424,7 @@ export class SessionInputController {
   }
 
   onTurnEnded(sessionId: string): void {
+    if (this.deps.native?.owns(sessionId)) return
     const state = this.state(sessionId)
     if (!state.dispatching) this.finishDelivery(sessionId, state, 'unknown', 'turn_ended_without_start')
     state.turnOpen = false
@@ -432,6 +452,7 @@ export class SessionInputController {
   }
 
   cancel(sessionId: string): void {
+    if (this.deps.native?.owns(sessionId)) return
     const session = this.controlSession(sessionId)
     if (!session) return
     void this.deps.validateRuntime(session).then(async (valid) => {
@@ -450,6 +471,7 @@ export class SessionInputController {
   }
 
   async cancelConfirmed(sessionId: string): Promise<boolean> {
+    if (this.deps.native?.owns(sessionId)) return false
     const session = this.controlSession(sessionId)
     if (!session || !await this.deps.validateRuntime(session)) return false
     const result = await this.deps.sendKey(session.agentId, 'C-c')
@@ -466,6 +488,7 @@ export class SessionInputController {
   }
 
   forget(sessionId: string): void {
+    this.deps.native?.forget(sessionId)
     const state = this.states.get(sessionId)
     if (state?.timer) clearTimeout(state.timer)
     if (state?.settleTimer) clearTimeout(state.settleTimer)

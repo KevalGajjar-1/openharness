@@ -112,18 +112,31 @@ export class AutonomousDeviceInput {
   /** Legacy writes run unchanged unless a Device write currently owns this same pane.
    * This also covers a local validation that began before Device acquired the existing control lock.
    */
-  legacyWrite<T>(id: string, operation: (write: TerminalWrite) => Promise<T>, authority?: TerminalWrite): Promise<T> {
+  legacyWrite<T>(id: string, operation: (write: TerminalWrite) => Promise<T>, authority?: TerminalWrite, signal?: AbortSignal): Promise<T> {
     id = this.deps.getSession(id)?.agentId ?? id
     const write = authority ?? this.deps.write?.(id) ?? this.writes.ticket(id)
     const writer = this.writer(id)
     const run = async () => {
       const owner = {}
       writer.legacy.add(owner)
-      try { return await this.writes.run(id, write, operation) }
+      try { return await this.writes.run(id, write, operation, signal) }
       finally { writer.legacy.delete(owner) }
     }
     if (!writer.held) return run()
-    return new Promise<T>((resolve, reject) => writer.waiters.push(() => { void run().then(resolve, reject) }))
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => {
+        const index = writer.waiters.indexOf(waiting)
+        if (index >= 0) writer.waiters.splice(index, 1)
+        reject(new TerminalWriteHeld('Terminal write cancelled before acquiring the device writer.'))
+      }
+      const waiting = () => {
+        signal?.removeEventListener('abort', abort)
+        void run().then(resolve, reject)
+      }
+      if (signal?.aborted) { abort(); return }
+      signal?.addEventListener('abort', abort, { once: true })
+      writer.waiters.push(waiting)
+    })
   }
   interruptWrite<T>(id: string, operation: (write: TerminalWrite) => Promise<T>): Promise<T> {
     id = this.deps.getSession(id)?.agentId ?? id

@@ -64,6 +64,42 @@ function fixture(engine: 'claude' | 'codex' | 'commandcode' = 'codex') {
 
 afterEach(() => vi.useRealTimers())
 
+it.each(['already aborted', 'waiting'] as const)('cancels a legacy write %s behind a device without waiting for the device owner', async phase => {
+  vi.useFakeTimers()
+  let finish!: () => void
+  const controller = makeDevice({ inject: () => new Promise<boolean>(resolve => { finish = () => resolve(true) }) })
+  controller.submit('agent', 'device', 'device-one')
+  await vi.advanceTimersByTimeAsync(0)
+  const abort = new AbortController(), effect = vi.fn(async () => {})
+  if (phase === 'already aborted') abort.abort()
+  const queued = controller.legacyWrite('agent', effect, undefined, abort.signal)
+  let settled = false
+  void queued.catch(() => { settled = true })
+  const refused = expect(queued).rejects.toThrow('cancelled before acquiring')
+  abort.abort(); await vi.advanceTimersByTimeAsync(0)
+  expect(settled).toBe(true)
+  await refused
+  expect(effect).not.toHaveBeenCalled()
+  finish(); await vi.advanceTimersByTimeAsync(0)
+  expect(effect).not.toHaveBeenCalled()
+  controller.forget('agent')
+})
+
+it('detaches request cancellation once a device waiter enters its own writer run', async () => {
+  vi.useFakeTimers()
+  let finish!: () => void
+  const controller = makeDevice({ inject: () => new Promise<boolean>(resolve => { finish = () => resolve(true) }) })
+  controller.submit('agent', 'device', 'device-one')
+  await vi.advanceTimersByTimeAsync(0)
+  const abort = new AbortController(), effect = vi.fn(async () => {})
+  const queued = controller.legacyWrite('agent', effect, undefined, abort.signal)
+  finish(); await vi.advanceTimersByTimeAsync(0)
+  await queued
+  abort.abort()
+  expect(effect).toHaveBeenCalledOnce()
+  controller.forget('agent')
+})
+
 describe('in-flight input through the Autonomous Device contract', () => {
   it.each(['harness-use', 'Harness-only voice'])('%s delivers B before A ends, preserving retry and focus guards', async caller => {
     vi.useFakeTimers()
