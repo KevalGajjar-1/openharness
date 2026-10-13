@@ -449,6 +449,28 @@ int main(void) {
         printf("runs tab-20 %d\n", cs_runs(&F));
     }
 
+    // a tab of ten panes where only the ninth works: it still leads the tab's Overview card (every pane is ranked)
+    {
+        static pod_model_t M;
+        pod_model_reset(&M);
+        pod_model_agents_begin(&M);
+        static char ids[10][8], *idp[10];
+        for (int i = 0; i < 10; i++) { snprintf(ids[i], sizeof ids[i], "c%d", i); idp[i] = ids[i]; pod_model_agent(&M, ids[i], ids[i], "claude", "mac"); }
+        pod_model_agents_end(&M);
+        cable_swarm_t sw;
+        memset(&sw, 0, sizeof sw);
+        snprintf(sw.id, SWARM_ID_MAX, "ten");
+        snprintf(sw.name, CABLE_NAME_MAX, "Ten");
+        sw.panes = sw.agents = 10;
+        const char *const *lists[1] = {(const char *const *)idp};
+        uint8_t cnt[1] = {10};
+        pod_model_swarms(&M, &sw, lists, cnt, 1, "ten", NULL, 0);
+        pod_model_link(&M, true);
+        pod_model_turn(&M, "c8", "activity", "Editing", 12, 100000u);
+        pod_model_clock(&M, 100000u);
+        CHECK(cs_card_lead(&M, 1) == pod_model_find(&M, "c8"));
+    }
+
     // ---- Agent, Recap, Talk, Inbox, Toast, Update (Task 10) ----
     {
         static pod_model_t M;

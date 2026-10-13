@@ -57,7 +57,7 @@ void cs_view_overview(pod_out_frame_t *, const pod_nav_t *, pod_model_t *, uint3
 // Overview cards. cs_card_lead: the agent that speaks for cover c (0 = Recent, else tab c - 1), among its first CS_CARD_AGENTS:
 // the first working, else asking, failed, done, idle; NULL with none. cs_card_loop: the pet loop a card draws for it (WORKING,
 // ASKING, else IDLE, drawn still).
-enum { CS_CARD_AGENTS = 8 };
+enum { CS_CARD_AGENTS = POD_PANES_MAX };   // every pane of a tab (Recent holds at most POD_RECENT_MAX)
 // The card grid Overview and Tab share: 2 x 2 cards of CS_CARD_W x CS_CARD_H from (CS_CARD_MARGIN, CS_CARD_TOP), CS_CARD_GAP apart;
 // a card's art is centred in its CS_CARD_ART_Y .. + CS_CARD_ART_H band.
 enum { CS_CARD_W = 338, CS_CARD_H = 296, CS_CARD_GAP = 12, CS_CARD_MARGIN = 16, CS_CARD_TOP = CS_BAR_H + 14, CS_CARD_ART_Y = 74,

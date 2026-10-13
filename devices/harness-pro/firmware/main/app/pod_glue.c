@@ -209,11 +209,12 @@ static bool scrolls(const pod_ui_t *u)
         return (f->view == POD_V_TAB && f->tab == POD_TAB_RECENT) || f->view == POD_V_INBOX || f->view == POD_V_AGENT || f->view == POD_V_RECAP;
     return f->view == POD_V_TABS || f->view == POD_V_TAB || f->view == POD_V_RECAP || f->view == POD_V_INBOX;
 }
-// Console Tab (not Recent): its cards page on a vertical swipe, from anywhere but the bar and the bottom zone (their own swipes).
+// Console Tab (not Recent): its cards page on a vertical swipe, from anywhere but the bar and the bottom zone (their own swipes;
+// the caller checks the zone, whose flag is cleared by then).
 static bool card_page(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
-    return u->nav.skin == POD_SKIN_CONSOLE && f && f->view == POD_V_TAB && f->tab != POD_TAB_RECENT && !u->bar && !u->edge;
+    return u->nav.skin == POD_SKIN_CONSOLE && f && f->view == POD_V_TAB && f->tab != POD_TAB_RECENT && !u->bar;
 }
 // Whether a vertical drag on this screen scrolls the host's terminal pane (the scroll sink): Recap in both skins, and in Console the
 // Agent screen too, as on the round. The bar and the bottom zone keep their own swipes (u->bar, u->edge), so a drag there does not.
@@ -419,7 +420,9 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
         // swipe up (BACK) or sideways (panes), decided on the lift by which direction dominates.
         const bool console = u->nav.skin == POD_SKIN_CONSOLE;
         u->sw_ok = !u->hands_free && swipes(u) && (console || y < POD_TRANSPORT_Y);
-        u->edge = !u->hands_free && console && u->nav.depth > 1 && y >= POD_BOTTOM_Y && top(u)->view != POD_V_TALK;
+        const pod_view_t tv = top(u)->view;
+        u->edge = !u->hands_free && console && u->nav.depth > 1 && tv != POD_V_TALK &&
+                  y >= (tv == POD_V_TAB || tv == POD_V_INBOX ? POD_LIST_BOTTOM_Y : POD_BOTTOM_Y);
         u->sw_on = false;
         u->sw_vx = 0;
         u->sw_last_x = x;
@@ -539,6 +542,7 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
             return pod_nav_act(&u->nav, &u->model, POD_A_INBOX, 0, now_ms);
         }
     }
+    const bool from_edge = u->edge;   // the contact began in the bottom zone (for card paging below, after the flag is cleared)
     if (was && u->edge) {   // Console: a swipe up from the bottom zone goes back one level (the sideways case falls through)
         int dx = x - u->start_x, dy = y - u->start_y;
         u->edge = false;
@@ -555,11 +559,12 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
             return pod_nav_act(&u->nav, &u->model, POD_A_INBOX, 0, now_ms);
         }
     }
-    if (was && card_page(u)) {   // Console Tab: a swipe up shows the next page of the tab's cards, a swipe down the previous one
+    if (was && !from_edge && card_page(u)) {   // Console Tab: a swipe up shows the next page of the tab's cards, a swipe down the previous one
         int dx = x - u->start_x, dy = y - u->start_y, last = cs_tab_pages(&u->nav, &u->model) - 1, at = top(u)->scroll;
+        at = at < 0 ? 0 : at > last ? last : at;   // the page the view shows (the tab may have shrunk under the frame's scroll)
         if (iabs(dy) >= POD_SW_MIN_PX && iabs(dy) * 2 > iabs(dx) * 3) {
             int want = at + (dy < 0 ? 1 : -1);
-            if (want >= 0 && want <= last) { pod_nav_act(&u->nav, &u->model, POD_A_SCROLL, want - at, now_ms); *changed = true; }
+            if (want >= 0 && want <= last) { pod_nav_act(&u->nav, &u->model, POD_A_SCROLL, want - top(u)->scroll, now_ms); *changed = true; }   // to the page itself
             return none;
         }
     }

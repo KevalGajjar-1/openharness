@@ -696,11 +696,11 @@ static void bottom_up_goes_back(void) {
         static const pod_view_t want[] = {POD_V_AGENT, POD_V_RECAP, POD_V_TAB, POD_V_TAB, POD_V_INBOX};
         CHECK(top()->view == want[k]);
         render(1000);
-        int depth = U.nav.depth;
-        t_(true, 360, 690, 1000);
-        t_(true, 360, 640, 1040);
+        int depth = U.nav.depth, y0 = k >= 2 ? POD_LIST_BOTTOM_Y + 10 : 690;   // Tab, Recent and the Inbox: below their content
+        t_(true, 360, y0, 1000);
+        t_(true, 360, y0 - 50, 1040);
         CHECK(U.nav.depth == depth);   // nothing until the lift
-        t_(false, 360, 570, 1080);
+        t_(false, 360, y0 - 120, 1080);
         CHECK(U.nav.depth == depth - 1);
         if (k == 1) CHECK(sc_events == 0);
     }
@@ -1030,6 +1030,7 @@ static void agent_screen_wakes(void) {
 
 // Console Tab cards: a tab of six agents is two pages of four. A swipe up (>= 60 px, |dy| > 1.5 |dx|) shows the next page, a swipe
 // down the previous one, clamped; a short or slanted drag and a tap do not page; sideways still steps tabs; Recent's rows still scroll.
+static void N_scroll(int v) { U.nav.stack[U.nav.depth - 1].scroll = (int16_t)v; }
 static void tab_cards_page(void) {
     fresh(POD_SKIN_CONSOLE);
     pod_model_agents_begin(&U.model);
@@ -1067,11 +1068,39 @@ static void tab_cards_page(void) {
     int tab = top()->tab;
     swipe(560, 300, 200, 310, 2700);
     CHECK(top()->view == POD_V_TAB && top()->tab != tab);
-    // Recent keeps its row scroll
+    // the bottom card row reaches into the old bottom zone: a swipe up from it (y 650) pages, it does not go back
+    act(POD_A_TABS, 0);
+    act(POD_A_OPEN_TAB, 0);
+    CHECK(top()->view == POD_V_TAB && top()->tab == 0);
+    N_scroll(0);
+    render(3000);
+    int depth = U.nav.depth;
+    swipe(360, 650, 360, 450, 3000);
+    CHECK(U.nav.depth == depth && top()->scroll == 1);
+    swipe(360, 650, 360, 712, 3200);   // a swipe down from there (62 px) pages back
+    CHECK(U.nav.depth == depth && top()->scroll == 0);
+    // below the cards (y >= 692) a swipe up still goes back
+    swipe(360, 710, 360, 450, 3400);
+    CHECK(U.nav.depth == depth - 1);
+    // a scroll left past the last page (the tab shrank) pages back from the page it shows
+    act(POD_A_OPEN_TAB, 0);
+    N_scroll(5);
+    render(3600);
+    swipe(360, 300, 360, 520, 3600);
+    CHECK(top()->scroll == 0);
+    // Recent keeps its row scroll, and its sixth row (y 596..700) starts a scroll rather than going back
     fresh(POD_SKIN_CONSOLE);
+    pod_model_agents_begin(&U.model);
+    static const char *const r8[] = {"r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"};
+    for (int i = 0; i < 8; i++) pod_model_agent(&U.model, r8[i], r8[i], "claude", "mac");
+    pod_model_agents_end(&U.model);
+    for (int i = 0; i < 8; i++) pod_model_turn(&U.model, r8[i], "activity", "Editing", 10, 900u + (uint32_t)i);
     act(POD_A_OPEN_TAB, POD_TAB_RECENT);
     render(1000);
-    CHECK(top()->tab == POD_TAB_RECENT && top()->scroll == 0);
+    CHECK(top()->tab == POD_TAB_RECENT && top()->scroll == 0 && pod_scroll_max(&U.nav, &U.model) == 2);
+    depth = U.nav.depth;
+    t_(true, 360, 660, 1000); t_(true, 360, 560, 1050); t_(true, 360, 450, 1100); t_(false, 360, 450, 1150);
+    CHECK(U.nav.depth == depth && top()->scroll > 0);
 }
 
 int main(void) {
