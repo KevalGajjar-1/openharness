@@ -1,5 +1,6 @@
 import { validateDraft, type HubDraft } from '@/lib/community/drafts';
 import { communityLimits } from '@/lib/community/contract';
+import { outsideResources } from '@/lib/community/outputCheck';
 import type { SourceFile } from '@/lib/community/types';
 
 const skippedFolders = ['node_modules', 'build', 'dist', 'target', 'vendor', '__pycache__'];
@@ -18,6 +19,9 @@ function base64(bytes: Uint8Array): string {
   for (let at = 0; at < bytes.length; at += 0x8000) raw += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   return btoa(raw);
 }
+
+/** index.html first, then by name. */
+const topPageOrder = (a: SourceFile, b: SourceFile) => a.path === 'index.html' ? -1 : b.path === 'index.html' ? 1 : a.path.localeCompare(b.path);
 
 /** A file's size as sent, known before reading it: base64 for binary, at least its characters for text. */
 const sentSize = (file: File, encoded: boolean) => encoded ? Math.ceil(file.size / 3) * 4 : file.size;
@@ -47,9 +51,12 @@ export async function readProjectFolder(selected: Iterable<File>, preferredViewe
     if (size > communityLimits.projectBytes) throw new Error(`Keep the project under 6 MB as sent. ${sentNote}`);
     files.push({ path, content, ...(encoded ? { encoding: 'base64' as const } : {}) });
   }
-  // The page already chosen, or else preview.html. Any other page is offered, never assumed: an app's
-  // index.html usually needs files the Hub's sandbox cannot load.
-  const viewer = [preferredViewer, 'preview.html'].map(name => files.find(f => f.path === name && f.path.endsWith('.html') && !f.encoding)).find(Boolean);
+  // The page already chosen, or else preview.html, or else a top-level page (index.html first) that runs
+  // on its own. Any other page is offered, never assumed: an app's index.html usually needs files the
+  // Hub's sandbox cannot load, while a one-file game shows as it is.
+  const page = (f: SourceFile) => f.path.endsWith('.html') && !f.encoding;
+  const viewer = [preferredViewer, 'preview.html'].map(name => files.find(f => f.path === name && page(f))).find(Boolean)
+    ?? files.filter(f => page(f) && !f.path.includes('/')).sort(topPageOrder).find(f => !outsideResources(f.content).length);
   if (!files.length) throw new Error('This folder has no portable project files.');
   return { files, viewerPath: viewer?.path ?? preferredViewer, origin };
 }

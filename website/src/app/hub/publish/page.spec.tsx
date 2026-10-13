@@ -78,6 +78,15 @@ describe('explicit publication', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /I have permission/ }));
     expect(screen.getByRole('button', { name: 'Publish harness' })).toBeEnabled();
   });
+  it('shows a one-file game as the output without asking for a preview.html', async () => {
+    render(<PublishPage />); await act(async () => {});
+    const game = '<canvas></canvas><script>requestAnimationFrame(function loop(){requestAnimationFrame(loop)})</script>';
+    const folder = [['index.html', game], ['notes.md', '# Snake']].map(([path, text]) => Object.assign(new File([text], path), { webkitRelativePath: `project/${path}`, text: async () => text }));
+    fireEvent.change(screen.getByLabelText('Choose project folder'), { target: { files: folder } });
+    expect(await screen.findByTitle('Publication preview')).toBeInTheDocument();
+    expect(screen.queryByText(/The Hub shows what a session made/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your output loads/)).not.toBeInTheDocument();
+  });
   it('still knows a fork\'s original output after a reload or a sign-in', async () => {
     vi.mocked(readDraft).mockResolvedValueOnce({ ...project, originalOutput: project.files[0].content } as never);
     render(<PublishPage />);
