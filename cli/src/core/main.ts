@@ -2120,7 +2120,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     nameOf: id => installedDsh(id)?.manifest.name, account: () => ({ privateGrid: backend.gridName() }) })
   const prepareNativeLaunch = createNativeLaunchPreparer({
     installations: createNativeInstallations({ directory: join(env.ADAPTER_DATA_DIR, 'native-installations') }),
-    inspect: (engine, source) => inspectNativeLaunch(engine, source, {
+    inspect: (engine, source, options) => inspectNativeLaunch(engine, source, {
+      ...options,
       confirmHome: (engine, home) => { confirmHomes({ [sessionStoreContracts[engine].sessions.moved.variable]: home }) },
     }),
   })

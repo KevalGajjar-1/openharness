@@ -96,6 +96,18 @@ validation overlapped. Merge and publication remain zero. Replacement proof,
 known-not-dispatched handling, rearm composition and activation remain excluded
 from this approval and are still required before the PR can land.
 
+A pre-exec process witness now belongs to that same exclusive dispatch claim.
+Only its original successful publisher can continue to execution; reading an
+identical witness, including after uncertain directory sync, grants no execution
+permission. Publication retains the original open inode through link cleanup,
+directory sync and final verification. Recovery gets only the recorded kernel
+boot ID, PID and precise birth, and must separately prove the current engine
+image. Confirmation binds the witness checksum or explicit absence, so removing,
+inserting or changing a witness cannot silently preserve a successful result.
+The reserved launch token also survives asynchronous executable installation.
+The storage and token slice is independently reviewed; the launch-owned writer,
+replacement proof and live controller integration are still pending.
+
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input
 before a service wait and checks the reply's generation identity, input digest

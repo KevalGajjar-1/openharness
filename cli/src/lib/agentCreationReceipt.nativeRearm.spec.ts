@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { AgentCreationReceipts, creationFingerprint, type AgentCreationOutcome } from './agentCreationReceipt.js'
 
 const faults = vi.hoisted(() => ({ linked: false, failDirectory: false, beforeLink: undefined as (() => void) | undefined,
-  inspect: undefined as ((path: string) => void) | undefined, captureResult: undefined as (() => void) | undefined }))
+  inspect: undefined as ((path: string) => void) | undefined, captureResult: undefined as (() => void) | undefined,
+  directorySync: undefined as (() => void) | undefined }))
 vi.mock('../engines/kit/nativeHookFiles.js', async original => {
   const actual = await original<typeof import('../engines/kit/nativeHookFiles.js')>()
   return { ...actual, inspectHookFile: (...args: Parameters<typeof actual.inspectHookFile>) => {
@@ -17,9 +18,10 @@ vi.mock('../engines/kit/nativeHookFiles.js', async original => {
 vi.mock('node:fs', async original => {
   const actual = await original<typeof import('node:fs')>()
   return { ...actual, linkSync: (...args: Parameters<typeof actual.linkSync>) => {
-    if (String(args[1]).endsWith('.confirmation')) { faults.beforeLink?.(); faults.linked = true }
+    if (/\.(confirmation|process)$/.test(String(args[1]))) { faults.beforeLink?.(); faults.linked = true }
     return actual.linkSync(...args)
   }, fsyncSync: (fd: number) => {
+    if (actual.fstatSync(fd).isDirectory()) faults.directorySync?.()
     if (faults.linked && faults.failDirectory && actual.fstatSync(fd).isDirectory()) throw Error('fixture parent sync unavailable')
     actual.fsyncSync(fd)
   }, lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
@@ -27,13 +29,14 @@ vi.mock('node:fs', async original => {
   } }
 })
 const roots: string[] = []
-afterEach(() => { faults.linked = false; faults.failDirectory = false; faults.beforeLink = undefined; faults.inspect = undefined; faults.captureResult = undefined
+afterEach(() => { faults.linked = false; faults.failDirectory = false; faults.beforeLink = undefined; faults.inspect = undefined; faults.captureResult = undefined; faults.directorySync = undefined
   vi.useRealTimers(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 const id = 'native-rearm-request-original'
 const request = { kind: 'native-rearm', creationId: id, operation: 'resume', agentId: 'original-agent', launchToken: 'original-launch-token' }
 const fingerprint = creationFingerprint({ operation: 'resume', agentId: request.agentId })
 const outcome = { state: 'created' as const, agentId: request.agentId, resumed: true }
 const held = { service: 'native', detail: 'Waiting for the original replacement.' }
+const processOwner = { boot: 'linux:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', pid: 234, birth: '123456' }
 const fence = () => ({ verify: vi.fn(), current: vi.fn() })
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'native-rearm-receipt-'))); roots.push(root)
@@ -223,4 +226,153 @@ it('preserves the original receipt route when an ancestor is replaced during pub
   }
   try { expect(confirm).toThrow() }
   finally { rmSync(moved, { recursive: true, force: true }) }
+})
+
+it('only the original witness publisher may continue to exec, while recovery gets read-only process proof', async () => {
+  const { receipts, directory, file } = await uncertain(), expected = { fingerprint, request }
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(true)
+  const bytes = readFileSync(file('process'), 'utf8')
+  for (const recovered of [receipts, new AgentCreationReceipts(directory)]) {
+    const proof = recovered.readNativeRelaunchProcess(id, expected)
+    expect(proof.process).toEqual(processOwner); proof.verify()
+    expect(recovered.status(id)).toEqual({ state: 'unconfirmed' })
+    expect(recovered.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
+    expect(recovered.recordNativeRelaunchProcess(id, expected, { ...processOwner, pid: 235 }, fence())).toBe(false)
+  }
+  expect(readFileSync(file('process'), 'utf8')).toBe(bytes)
+  expect(() => receipts.readNativeRelaunchProcess(id, { fingerprint: 'b'.repeat(64), request })).toThrow('CREATION_CONFLICT')
+})
+
+it('a failed witness sync cannot become execution authority even for the exact original process', async () => {
+  const { receipts, file } = await uncertain(), expected = { fingerprint, request }
+  faults.failDirectory = true
+  expect(() => receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toThrow('CREATION_STORAGE_FAILED')
+  const bytes = readFileSync(file('process'), 'utf8')
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
+  expect(() => receipts.readNativeRelaunchProcess(id, expected)).toThrow()
+  faults.failDirectory = false
+  expect(receipts.readNativeRelaunchProcess(id, expected).process).toEqual(processOwner)
+  expect(receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())).toBe(false)
+  expect(readFileSync(file('process'), 'utf8')).toBe(bytes)
+})
+
+it.each(['boot', 'pid', 'birth', 'extra'] as const)('refuses malformed %s process witnesses', async kind => {
+  const { receipts, file } = await uncertain(), owner = { ...processOwner }
+  if (kind === 'boot') owner.boot = 'approximate-boot'
+  if (kind === 'pid') owner.pid = 1
+  if (kind === 'birth') owner.birth = 'rounded time'
+  if (kind === 'extra') Object.assign(owner, { argv: [] })
+  expect(() => receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, owner, fence())).toThrow('CREATION_CONFLICT')
+  expect(fs.existsSync(file('process'))).toBe(false)
+})
+
+it.each(['intent', 'claim', 'result', 'process', 'birth', 'version'] as const)('retains a process witness hold after its %s evidence changes', async kind => {
+  const { receipts, directory, file } = await uncertain(), expected = { fingerprint, request }
+  receipts.recordNativeRelaunchProcess(id, expected, processOwner, fence())
+  const proof = receipts.readNativeRelaunchProcess(id, expected)
+  if (kind === 'intent') rmSync(file())
+  if (kind === 'claim') rmSync(file('claim'))
+  if (kind === 'result') {
+    const value = JSON.parse(readFileSync(file('result'), 'utf8')); value.outcome = { state: 'failed', error: 'NATIVE_REARM_NOT_DISPATCHED' }
+    writeFileSync(file('result'), JSON.stringify(value))
+  }
+  if (kind === 'process') {
+    const value = JSON.parse(readFileSync(file('process'), 'utf8')); value.token = 'foreign-claim'
+    writeFileSync(file('process'), JSON.stringify(value))
+  }
+  if (kind === 'birth' || kind === 'version') {
+    const value = JSON.parse(readFileSync(file('process'), 'utf8'))
+    if (kind === 'birth') value.process.birth = '123457'
+    else value.version = 2
+    writeFileSync(file('process'), JSON.stringify(value))
+  }
+  expect(proof.verify).toThrow()
+  for (const recovered of [receipts, new AgentCreationReceipts(directory)]) {
+    expect(() => recovered.status(id)).toThrow('CREATION_STORAGE_FAILED')
+    expect(() => recovered.cancelIntent(id)).toThrow('CREATION_STORAGE_FAILED')
+    expect(() => recovered.runIntent(id, fingerprint, request, held, vi.fn())).toThrow('CREATION_STORAGE_FAILED')
+    expect(() => recovered.readNativeRelaunchProcess(id, expected)).toThrow()
+  }
+})
+
+it('an orphan process witness prevents a fresh request even after its other parts disappear', async () => {
+  const { receipts, directory, file } = await uncertain()
+  receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())
+  for (const part of ['', 'claim', 'result']) rmSync(file(part))
+  const recovered = new AgentCreationReceipts(directory)
+  expect(() => recovered.status(id)).toThrow('CREATION_STORAGE_FAILED')
+  expect(() => recovered.runIntent(id, fingerprint, request, held, vi.fn())).toThrow('CREATION_STORAGE_FAILED')
+  expect(fs.existsSync(file())).toBe(false)
+  expect(() => recovered.run(id, fingerprint, vi.fn())).toThrow('CREATION_STORAGE_FAILED')
+  expect(fs.existsSync(file())).toBe(false)
+})
+
+it('never adopts a replacement of its own process witness during publication sync', async () => {
+  const { receipts, file } = await uncertain()
+  faults.directorySync = () => {
+    if (!faults.linked) return
+    faults.directorySync = undefined
+    const bytes = readFileSync(file('process'))
+    renameSync(file('process'), file('previous'))
+    writeFileSync(file('process'), bytes, { mode: 0o600 })
+  }
+  expect(() => receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toThrow()
+  expect(readFileSync(file('process'), 'utf8')).toBe(readFileSync(file('previous'), 'utf8'))
+  expect(receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())).toBe(false)
+})
+
+it.each(['remove', 'replace', 'corrupt'] as const)('holds a %s process witness during confirmation sync', async kind => {
+  const { receipts, file, confirm } = await uncertain()
+  receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())
+  faults.linked = false
+  faults.directorySync = () => {
+    if (!faults.linked) return
+    faults.directorySync = undefined
+    const bytes = readFileSync(file('process'))
+    renameSync(file('process'), file('previous'))
+    if (kind !== 'remove') writeFileSync(file('process'), kind === 'replace' ? bytes : 'null', { mode: 0o600 })
+  }
+  expect(confirm).toThrow()
+})
+
+it.each(['status', 'cancel', 'run'] as const)('retains the process witness through confirmed %s durability checks', async operation => {
+  const { receipts, file, confirm } = await uncertain()
+  receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())
+  confirm()
+  faults.directorySync = () => {
+    faults.directorySync = undefined
+    const bytes = readFileSync(file('process'))
+    renameSync(file('process'), file('previous'))
+    writeFileSync(file('process'), bytes, { mode: 0o600 })
+  }
+  const call = operation === 'status' ? () => receipts.status(id) : operation === 'cancel' ? () => receipts.cancelIntent(id)
+    : () => receipts.runIntent(id, fingerprint, request, held, vi.fn())
+  expect(call).toThrow()
+})
+
+it.each(['remove', 'change', 'insert'] as const)('a later %s cannot change which process a success confirmed', async kind => {
+  const { receipts, directory, file, confirm } = await uncertain()
+  receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, fence())
+  const original = readFileSync(file('process'), 'utf8')
+  if (kind === 'insert') rmSync(file('process'))
+  confirm()
+  if (kind === 'remove') rmSync(file('process'))
+  else {
+    const value = JSON.parse(original)
+    if (kind === 'change') {
+      value.process.pid++
+      value.checksum = creationFingerprint({ fingerprint: value.fingerprint, token: value.token, process: value.process })
+    }
+    writeFileSync(file('process'), JSON.stringify(value), { mode: 0o600 })
+  }
+  expect(() => new AgentCreationReceipts(directory).status(id)).toThrow('CREATION_STORAGE_FAILED')
+})
+
+it('checks local revocation after the final file proof before the pre-exec witness publication', async () => {
+  const { receipts, file } = await uncertain(), authority = fence()
+  let revoked = false
+  authority.verify.mockImplementation(() => { faults.inspect = () => { revoked = true } })
+  authority.current.mockImplementation(() => { if (revoked) throw Error('original launch revoked') })
+  expect(() => receipts.recordNativeRelaunchProcess(id, { fingerprint, request }, processOwner, authority)).toThrow()
+  expect(faults.linked).toBe(false); expect(fs.existsSync(file('process'))).toBe(false)
 })

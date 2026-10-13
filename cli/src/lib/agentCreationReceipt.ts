@@ -36,6 +36,12 @@ export interface CreationConfirmationFence {
   /** Disk-free original owner, deadline and shutdown check, last at publication. */
   current(): void
 }
+export interface NativeRelaunchProcess {
+  boot: string
+  pid: number
+  birth: string
+}
+export type NativeRelaunchRequest = Pick<NativeRelaunchConfirmation, 'fingerprint' | 'request'>
 
 /** An undispatched request can be recovered. A claimed request cannot: even a
  * dead owner may have left a live child, or changed a project before it died. */
@@ -48,6 +54,8 @@ type IntentReceipt = {
 } | { version: 2; cancelled: true }
 type IntentClaim = { fingerprint: string; token: string; kind: 'dispatch' | 'cancel' }
 type IntentResult = { fingerprint: string; token: string; outcome: AgentCreationOutcome }
+type IntentProcess = { fingerprint: string; token: string; process: NativeRelaunchProcess; checksum: string }
+type IntentConfirmation = IntentResult & { process: string | null }
 
 type Receipt = {
   version: 1
@@ -67,6 +75,19 @@ function nativeRelaunchRequest(id: string, request: Record<string, unknown>): bo
   return request.kind === 'native-rearm' && request.creationId === id && validCreationId(request.launchToken)
     && typeof request.agentId === 'string' && request.agentId.length > 0 && request.agentId.length <= 200
     && (request.operation === 'restart' || request.operation === 'resume')
+}
+
+function validRelaunchProcess(value: NativeRelaunchProcess | undefined): value is NativeRelaunchProcess {
+  return !!value && Object.keys(value).sort().join(',') === 'birth,boot,pid'
+    && typeof value.boot === 'string' && /^(linux|darwin):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.boot)
+    && Number.isSafeInteger(value.pid) && value.pid > 1 && value.pid <= 0x7fffffff
+    && typeof value.birth === 'string' && value.birth.length <= 40
+    && (value.boot.startsWith('linux:') ? /^[1-9]\d*$/.test(value.birth) : /^[1-9]\d*:\d{1,6}$/.test(value.birth))
+}
+
+function validIntentProcess(value: IntentProcess): boolean {
+  return Object.keys(value).sort().join(',') === 'checksum,fingerprint,process,token' && validRelaunchProcess(value.process)
+    && value.checksum === creationFingerprint({ fingerprint: value.fingerprint, token: value.token, process: value.process })
 }
 
 export class AgentCreationReceiptError extends Error {
@@ -331,16 +352,21 @@ export class AgentCreationReceipts {
     }
     const file = this.intentFile(id, 'confirmation'), routes = hookPreparationRoutes([file])
     const original = inspectHookFile(this.file(id), 0o600), claimed = inspectHookFile(this.intentFile(id, 'claim'), 0o600)
+    const observedProcess = this.readIntentPart<IntentProcess>(this.intentFile(id, 'process'))
+    const process = inspectHookFile(this.intentFile(id, 'process'), 0o600)
     const result = inspectHookFile(this.intentFile(id, 'result'), 0o600), before = inspectHookFile(file, 0o600)
-    const completed: IntentResult = { fingerprint: expected.fingerprint, token: claim.token, outcome: expected.outcome }
+    const completed: IntentConfirmation = { fingerprint: expected.fingerprint, token: claim.token, outcome: expected.outcome,
+      process: observedProcess?.checksum ?? null }
     const same = (content: string | null, value: unknown) => content !== null && creationFingerprint(JSON.parse(content)) === creationFingerprint(value)
     const capturedResult = result.content === null ? null : JSON.parse(result.content) as IntentResult | null
     if (!same(original.content, receipt) || !same(claimed.content, claim)
+      || observedProcess && (!validIntentProcess(observedProcess) || observedProcess.fingerprint !== claim.fingerprint || observedProcess.token !== claim.token)
+      || creationFingerprint(process.content === null ? null : JSON.parse(process.content)) !== creationFingerprint(observedProcess)
       || result.content !== null && (!capturedResult || capturedResult.fingerprint !== claim.fingerprint || capturedResult.token !== claim.token
         || !validOutcome(capturedResult.outcome) || capturedResult.outcome.state !== 'unconfirmed'
           && creationFingerprint(capturedResult.outcome) !== creationFingerprint(expected.outcome))
       || before.content !== null && !same(before.content, completed)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
-    const retained = () => { original.verify(); claimed.verify(); result.verify(); routes.verify() }
+    const retained = () => { original.verify(); claimed.verify(); result.verify(); process.verify(); routes.verify() }
     const fence = () => { authority.verify(); retained(); before.verify(); authority.current() }
     fence()
     if (before.content === null) this.publish(file, completed, true, fence)
@@ -355,6 +381,65 @@ export class AgentCreationReceipts {
     const answer = this.intentStatus(id, final, false)
     published.verify(); retained(); authority.current()
     return answer
+  }
+
+  /** Only the original successful publisher may continue to exec. A matching
+   * pre-existing witness, including one left by failed fsync, is never another
+   * execution permit. The shell keeps this exact incarnation when it execs. */
+  recordNativeRelaunchProcess(id: string, input: NativeRelaunchRequest, process: NativeRelaunchProcess,
+    authority: CreationConfirmationFence,
+  ): boolean {
+    const owner = structuredClone(process), source = this.nativeRelaunchDispatch(id, input)
+    if (!validRelaunchProcess(owner) || source.status.state !== 'unconfirmed') throw new AgentCreationReceiptError('CREATION_CONFLICT')
+    const value = { fingerprint: source.receipt.fingerprint, token: source.claim.token, process: owner }
+    const completed: IntentProcess = { ...value, checksum: creationFingerprint(value) }
+    const file = this.intentFile(id, 'process'), before = inspectHookFile(file, 0o600)
+    if (before.content !== null) return false
+    const fence = () => { authority.verify(); source.verify(); before.verify(); authority.current() }
+    let published: ReturnType<typeof inspectHookFile> | undefined
+    if (!this.publish(file, completed, true, fence, proof => { published = proof })) return false
+    if (!published) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    const proof = this.readNativeRelaunchProcess(id, input)
+    if (creationFingerprint(proof.process) !== creationFingerprint(owner)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    authority.verify(); source.verify(); proof.verify(); published.verify(); authority.current()
+    return true
+  }
+
+  /** A witness proves which process was handed the command, not that exec or
+   * startup completed. Recovery must separately prove its current native image. */
+  readNativeRelaunchProcess(id: string, input: NativeRelaunchRequest): { process: NativeRelaunchProcess; verify(): void } {
+    const source = this.nativeRelaunchDispatch(id, input)
+    const part = this.readIntentPart<IntentProcess>(this.intentFile(id, 'process'))
+    if (!part || part.fingerprint !== source.claim.fingerprint || part.token !== source.claim.token || !validIntentProcess(part)) {
+      throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    }
+    const proof = inspectNativeControlFile(this.intentFile(id, 'process'), this.directory)
+    if (creationFingerprint(JSON.parse(proof.content!)) !== creationFingerprint(part)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    proof.confirm(source.verify)
+    const verify = () => { source.verify(); proof.verify() }
+    verify()
+    return { process: Object.freeze({ ...part.process }), verify }
+  }
+
+  private nativeRelaunchDispatch(id: string, input: NativeRelaunchRequest) {
+    const expected = structuredClone(input), receipt = this.read(id)
+    if (!nativeRelaunchRequest(id, expected.request) || receipt?.version !== 2 || 'cancelled' in receipt
+      || receipt.fingerprint !== expected.fingerprint || creationFingerprint(receipt.request) !== creationFingerprint(expected.request)) {
+      throw new AgentCreationReceiptError('CREATION_CONFLICT')
+    }
+    const claim = this.claim(id), status = this.intentStatus(id, receipt, false)
+    if (!claim || claim.kind !== 'dispatch' || status.state !== 'unconfirmed' && status.state !== 'created') {
+      throw new AgentCreationReceiptError('CREATION_CONFLICT')
+    }
+    const primary = inspectNativeControlFile(this.file(id), this.directory)
+    const claimed = inspectNativeControlFile(this.intentFile(id, 'claim'), this.directory)
+    const result = inspectHookFile(this.intentFile(id, 'result'), 0o600)
+    const confirmation = inspectHookFile(this.intentFile(id, 'confirmation'), 0o600)
+    if (creationFingerprint(JSON.parse(primary.content!)) !== creationFingerprint(receipt)
+      || creationFingerprint(JSON.parse(claimed.content!)) !== creationFingerprint(claim)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    const verify = () => { primary.verify(); claimed.verify(); result.verify(); confirmation.verify(); this.intentStatus(id, receipt, false) }
+    verify()
+    return { receipt, claim, status: this.intentStatus(id, receipt, false), verify }
   }
 
   /** Streaming recovery never loads an unbounded directory into the core. Old
@@ -380,7 +465,7 @@ export class AgentCreationReceipts {
     }
   }
 
-  private intentFile(id: string, part: 'claim' | 'result' | 'confirmation'): string { return `${this.file(id)}.${part}` }
+  private intentFile(id: string, part: 'claim' | 'result' | 'confirmation' | 'process'): string { return `${this.file(id)}.${part}` }
 
   private readIntentPart<T>(file: string): T | null {
     try {
@@ -403,9 +488,10 @@ export class AgentCreationReceipts {
 
   private intentStatus(id: string, receipt: IntentReceipt, live = this.inFlight.has(id)): AgentCreationStatus {
     const known = this.intentResults.get(id)
-    const confirmed = this.readIntentPart<IntentResult>(this.intentFile(id, 'confirmation'))
+    const confirmed = this.readIntentPart<IntentConfirmation>(this.intentFile(id, 'confirmation'))
+    const process = this.readIntentPart<IntentProcess>(this.intentFile(id, 'process'))
     if ('cancelled' in receipt) {
-      if (known || confirmed || this.claim(id) || this.readIntentPart(this.intentFile(id, 'result'))) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+      if (known || confirmed || process || this.claim(id) || this.readIntentPart(this.intentFile(id, 'result'))) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
       return { state: 'cancelled' }
     }
     const claim = this.claim(id)
@@ -416,12 +502,12 @@ export class AgentCreationReceipts {
       throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     }
     if (!claim) {
-      if (result || confirmed) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+      if (result || confirmed || process) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
       return { state: 'pending', held: this.readHold(id, receipt) }
     }
     if (claim.fingerprint !== receipt.fingerprint) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     if (claim.kind === 'cancel') {
-      if (result || confirmed) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+      if (result || confirmed || process) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
       return { state: 'cancelled' }
     }
     if (result) {
@@ -430,20 +516,27 @@ export class AgentCreationReceipts {
         throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
       }
     }
+    if (process && (!nativeRelaunchRequest(id, receipt.request) || process.fingerprint !== claim.fingerprint || process.token !== claim.token
+      || !validIntentProcess(process) || result?.outcome.state === 'failed' || known?.outcome.state === 'failed')) {
+      throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+    }
     if (confirmed) {
       if (!nativeRelaunchRequest(id, receipt.request) || confirmed.fingerprint !== claim.fingerprint || confirmed.token !== claim.token
         || confirmed.outcome?.state !== 'created' || confirmed.outcome.agentId !== receipt.request.agentId
         || typeof confirmed.outcome.resumed !== 'boolean' || Object.keys(confirmed.outcome).sort().join(',') !== 'agentId,resumed,state'
+        || confirmed.process !== (process?.checksum ?? null)
         || [result, known].some(previous => previous && previous.outcome.state !== 'unconfirmed'
           && creationFingerprint(previous.outcome) !== creationFingerprint(confirmed.outcome))) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
       const original = inspectHookFile(this.file(id), 0o600), claimed = inspectHookFile(this.intentFile(id, 'claim'), 0o600)
       const outcome = inspectHookFile(this.intentFile(id, 'result'), 0o600)
+      const launched = inspectHookFile(this.intentFile(id, 'process'), 0o600)
       const proof = inspectNativeControlFile(this.intentFile(id, 'confirmation'), this.directory)
       if (creationFingerprint(JSON.parse(original.content!)) !== creationFingerprint(receipt)
         || creationFingerprint(JSON.parse(claimed.content!)) !== creationFingerprint(claim)
         || creationFingerprint(outcome.content === null ? null : JSON.parse(outcome.content)) !== creationFingerprint(result)
+        || creationFingerprint(launched.content === null ? null : JSON.parse(launched.content)) !== creationFingerprint(process)
         || creationFingerprint(JSON.parse(proof.content!)) !== creationFingerprint(confirmed)) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
-      const verify = () => { original.verify(); claimed.verify(); outcome.verify() }
+      const verify = () => { original.verify(); claimed.verify(); outcome.verify(); launched.verify() }
       proof.confirm(verify); verify(); proof.verify()
       return confirmed.outcome
     }
@@ -452,27 +545,39 @@ export class AgentCreationReceipts {
     return { state: live ? 'pending' : 'unconfirmed' }
   }
 
-  private publish(file: string, value: unknown, existingDirectory = false, beforeCommit?: () => void): boolean {
+  private publish(file: string, value: unknown, existingDirectory = false, beforeCommit?: () => void,
+    retain?: (proof: ReturnType<typeof inspectHookFile>) => void,
+  ): boolean {
     const bytes = JSON.stringify(value)
     if (Buffer.byteLength(bytes) > 262_144) throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     const temporary = `${file}.${randomUUID()}.tmp`
-    let opened = false
+    let opened = false, fd: number | undefined
     try {
       if (existingDirectory) secureStateDirectory(this.directory, false)
       this.ensureDirectory()
-      const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+      fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       opened = true
-      try { writeFileSync(fd, bytes); fsyncSync(fd) } finally { closeSync(fd) }
+      writeFileSync(fd, bytes); fsyncSync(fd)
       beforeCommit?.()
       try { linkSync(temporary, file) }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
         throw error
       }
+      if (retain) {
+        // Removing the staging hard link changes ctime. Capture only afterwards,
+        // while the original descriptor still proves which inode we published.
+        rmSync(temporary); opened = false
+        const proof = inspectHookFile(file, 0o600), info = fstatSync(fd, { bigint: true })
+        if (proof.content !== bytes || proof.stamp !== `${info.dev}:${info.ino}:${info.uid}:${info.mode}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`) {
+          throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
+        }
+        retain(proof)
+      }
       this.syncDirectory()
       return true
     } catch { throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED') }
-    finally { if (opened) rmSync(temporary, { force: true }) }
+    finally { try { if (fd !== undefined) closeSync(fd) } finally { if (opened) rmSync(temporary, { force: true }) } }
   }
 
   private readHold(id: string, receipt: Extract<IntentReceipt, { checksum: string }>): CreationHold {
@@ -566,7 +671,7 @@ export class AgentCreationReceipts {
       }
       const outcome = value.version === 1 ? value.outcome : undefined
       if (completedIntent || this.readIntentPart(this.intentFile(id, 'claim')) || this.readIntentPart(this.intentFile(id, 'result'))
-        || this.readIntentPart(this.intentFile(id, 'confirmation'))) {
+        || this.readIntentPart(this.intentFile(id, 'confirmation')) || this.readIntentPart(this.intentFile(id, 'process'))) {
         throw new Error('Legacy receipt has conflicting intent evidence')
       }
       if (value.version !== 1 || !/^[a-f0-9]{64}$/.test(value.fingerprint ?? '') || !outcome ||
@@ -581,7 +686,7 @@ export class AgentCreationReceipts {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !completedIntent
         && !this.readIntentPart(this.intentFile(id, 'claim')) && !this.readIntentPart(this.intentFile(id, 'result'))
-        && !this.readIntentPart(this.intentFile(id, 'confirmation'))) return null
+        && !this.readIntentPart(this.intentFile(id, 'confirmation')) && !this.readIntentPart(this.intentFile(id, 'process'))) return null
       throw new AgentCreationReceiptError('CREATION_STORAGE_FAILED')
     }
   }
