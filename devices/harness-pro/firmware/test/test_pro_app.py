@@ -2537,7 +2537,9 @@ static void console_hold_cancel_keeps_the_recording(void) {
     ucontact(true, 360, 600, &c);
     CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
 }
-static void console_tile_hold_refused_returns_to_the_tab(void) {
+// The hold to talk is the agent screens' own: a long still press on a Tab tile never asks the recorder, and its lift
+// opens the agent as a tap does.
+static void console_tile_long_press_is_a_tap(void) {
     setup();
     pod_ui_set_skin(&U, POD_SKIN_CONSOLE);
     render();
@@ -2547,14 +2549,12 @@ static void console_tile_hold_refused_returns_to_the_tab(void) {
     for (int i = 0; i < U.frame.hit_count; i++) if (U.frame.hits[i].action == POD_A_OPEN_AGENT) { tile = &U.frame.hits[i]; break; }
     CHECK(tile);
     const int x = tile->x + tile->w / 2, y = tile->y + tile->h / 2;
-    V.refuse = true;
     bool c;
     ucontact(true, x, y, &c);
-    for (int i = 0; i < 30 && !R.begins; i++) ucontact(true, x, y, &c);
-    CHECK(R.begins == 1 && !V.open);
-    CHECK(top() == POD_V_TAB && !pod_ui_talking(&U) && U.notice_on);   // not left on the Agent screen it opened
+    for (int i = 0; i < 60; i++) ucontact(true, x, y, &c);
+    CHECK(R.begins == 0 && !V.open && top() == POD_V_TAB && !pod_ui_talking(&U) && !U.notice_on);
     ucontact(false, x, y, &c);
-    CHECK(top() == POD_V_TAB);
+    CHECK(top() == POD_V_AGENT && R.begins == 0 && !pod_ui_talking(&U));
 }
 
 int main(int argc, char **argv) {
@@ -2603,7 +2603,7 @@ int main(int argc, char **argv) {
         {"update_gate", update_gate}, {"ota_failed_returns", ota_failed_returns}, {"ota_keeps_awake", ota_keeps_awake},
         {"ota_notifications_quiet", ota_notifications_quiet}, {"updated_notice", updated_notice},
         {"console_hold_fires_on_the_touch_path", console_hold_fires_on_the_touch_path}, {"console_hold_cancel_keeps_the_recording", console_hold_cancel_keeps_the_recording},
-        {"console_tile_hold_refused_returns_to_the_tab", console_tile_hold_refused_returns_to_the_tab},
+        {"console_tile_long_press_is_a_tap", console_tile_long_press_is_a_tap},
     };
     for (unsigned i = 0; i < sizeof tests / sizeof tests[0]; i++)
         if (argc == 1 || !strcmp(argv[1], tests[i].name)) { tests[i].run(); printf("PASS %s\n", tests[i].name); }

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app/pod_glue.h"
+#include "pod/console/cs.h"
 
 static int checks;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); abort(); } checks++; } while (0)
@@ -107,8 +108,9 @@ static void drift_cancels(void) {
     t_(true, MID_X, MID_Y, 1000);
     t_(true, MID_X, MID_Y + 30, 1200);
     CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
-    t_(false, MID_X, MID_Y + 30, 1600);
-    CHECK(top()->view == POD_V_AGENT);
+    t_(true, MID_X, MID_Y + 60, 1550);
+    t_(false, MID_X, MID_Y + 60, 1600);
+    CHECK(sc_events > 0 && top()->view == POD_V_AGENT);   // the drag scrolls the host's pane, as on the round
     // Recap: the same contact scrolls the host's pane, and no recording starts.
     fresh(POD_SKIN_CONSOLE);
     to_agent(0, 2);
@@ -118,7 +120,7 @@ static void drift_cancels(void) {
     CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE);
     t_(true, MID_X, MID_Y - 60, 1550);
     t_(false, MID_X, MID_Y - 60, 1600);
-    CHECK(sc_events == 0 && top()->view == POD_V_RECAP);   // v3: Console's Recap does not scroll the host terminal
+    CHECK(sc_events > 0 && top()->view == POD_V_RECAP);   // the host's pane scrolls; the summary itself does not
     // A contact lifted before the deadline is a tap/no hold: a late tick does nothing.
     fresh(POD_SKIN_CONSOLE);
     to_agent(0, 0);
@@ -143,8 +145,9 @@ static void bar_swipe(pod_skin_t skin) {
     (void)o;
     if (skin == POD_SKIN_CLASSIC) { CHECK(U.nav.depth == depth); return; }
     (void)depth;
-    CHECK(U.nav.depth == 1 && top()->view == POD_V_TABS);   // v3: home (Overview), and no crumb tap on top of it
+    CHECK(U.nav.depth == depth + 1 && top()->view == POD_V_INBOX);   // the Inbox (notifications), and no crumb tap on top of it
     // 79 px is not enough; mostly sideways is not a swipe-down (a crumb tap would pop however far its arg says).
+    act(POD_A_TABS, 0);
     to_agent(0, 0);
     render(1200);
     CHECK(U.nav.depth == 3);
@@ -170,28 +173,18 @@ static void tab_gestures(pod_skin_t skin) {
     CHECK(top()->view == POD_V_TAB && top()->tab == 1);
     t_(true, 200, MID_Y, 2000); t_(true, 300, MID_Y, 2050); t_(false, 400, MID_Y, 2100);
     CHECK(top()->tab == 0);
-    // A hold on a tile talks to that tile's agent.
+    // A long still press on a tile is no hold (the hold is the agent screens' own): no voice, and its lift opens the agent as a tap.
     render(3000);
     const pod_hit_t *tile = NULL;
     for (int i = 0; i < U.frame.hit_count; i++) if (U.frame.hits[i].action == POD_A_OPEN_AGENT && !strcmp(U.frame.hits[i].id, "a2")) tile = &U.frame.hits[i];
     CHECK(tile);
     int cx = tile->x + tile->w / 2, cy = tile->y + tile->h / 2;
     t_(true, cx, cy, 3000);
-    pod_out_t o = pod_ui_tick(&U, 3400);
-    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a2") && top()->view == POD_V_TALK);
-    CHECK(t_(false, cx, cy, 3500).fx == POD_FX_NONE);
-    render(3600);
-    CHECK(tap_(cx, cy, 3700).fx == POD_FX_VOICE_END);
-    // v2: sliding from a tile hold does not cancel.
-    fresh(skin);
-    to_tab(0);
-    render(1000);
-    for (int i = 0; i < U.frame.hit_count; i++) if (U.frame.hits[i].action == POD_A_OPEN_AGENT && !strcmp(U.frame.hits[i].id, "a2")) tile = &U.frame.hits[i];
-    cx = tile->x + tile->w / 2; cy = tile->y + tile->h / 2;
-    t_(true, cx, cy, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN);
-    CHECK(t_(true, cx, cy + 130, 1500).fx == POD_FX_NONE && top()->view == POD_V_TALK);
-    CHECK(t_(false, cx, cy + 130, 1600).fx == POD_FX_NONE && top()->view == POD_V_TALK);
+    CHECK(!U.hold_armed);
+    CHECK(pod_ui_tick(&U, 3400).fx == POD_FX_NONE && top()->view == POD_V_TAB);
+    for (uint32_t t = 3404; t <= 4500; t += 4) CHECK(t_(true, cx, cy, t).fx == POD_FX_NONE && top()->view == POD_V_TAB);
+    pod_out_t o = t_(false, cx, cy, 4600);
+    CHECK(o.fx == POD_FX_AGENT_OPEN && !strcmp(o.agent, "a2") && top()->view == POD_V_AGENT && !pod_ui_talking(&U) && !U.hands_free);
     // A tap on a tile still opens it.
     fresh(skin);
     to_tab(0);
@@ -254,7 +247,7 @@ static void offline(void) {
     CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_NONE);
     CHECK(U.notice_on && !strcmp(U.notice, "That machine is offline") && top()->view == POD_V_AGENT);
     CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
-    // On a Tab tile too, and the agent is not opened.
+    // A Tab tile holds nothing, offline or not: no notice.
     fresh(POD_SKIN_CONSOLE);
     to_tab(0);
     ((pod_agent_t *)pod_model_find(&U.model, "a2"))->state = POD_OFFLINE;
@@ -263,9 +256,7 @@ static void offline(void) {
     for (int i = 0; i < U.frame.hit_count; i++) if (U.frame.hits[i].action == POD_A_OPEN_AGENT && !strcmp(U.frame.hits[i].id, "a2")) tile = &U.frame.hits[i];
     CHECK(tile);
     t_(true, tile->x + tile->w / 2, tile->y + tile->h / 2, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_NONE && U.notice_on && top()->view == POD_V_TAB);
-    t_(false, tile->x + tile->w / 2, tile->y + tile->h / 2, 1500);
-    CHECK(top()->view == POD_V_TAB);
+    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_NONE && !U.notice_on && top()->view == POD_V_TAB);
 }
 
 static void skin_switch_mid_hold(void) {
@@ -314,7 +305,15 @@ static void hold_fires_on_held_samples(void) {
     CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK);
     CHECK(t_(true, MID_X, MID_Y, 1404).fx == POD_FX_NONE);   // once
     CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE);
-    // A tile hold too, and a move inside the slop keeps it armed.
+    // A move inside the slop keeps it armed.
+    fresh(POD_SKIN_CONSOLE);
+    to_agent(0, 0);
+    render(1000);
+    t_(true, MID_X, MID_Y, 1000);
+    CHECK(t_(true, MID_X + 5, MID_Y, 1200).fx == POD_FX_NONE);
+    o = t_(true, MID_X + 5, MID_Y, 1400);
+    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK);
+    // A Tab tile's still samples never begin voice: the hold is the agent screens' own.
     fresh(POD_SKIN_CONSOLE);
     to_tab(0);
     render(1000);
@@ -322,9 +321,7 @@ static void hold_fires_on_held_samples(void) {
     CHECK(tile);
     int cx = tile->x + tile->w / 2, cy = tile->y + tile->h / 2;
     t_(true, cx, cy, 1000);
-    CHECK(t_(true, cx + 5, cy, 1200).fx == POD_FX_NONE);
-    o = t_(true, cx + 5, cy, 1400);
-    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a2") && top()->view == POD_V_TALK);
+    for (uint32_t t = 1004; t <= 2000; t += 4) CHECK(t_(true, cx, cy, t).fx == POD_FX_NONE && top()->view == POD_V_TAB);
 }
 
 // H2 (v2): a contact cancelled after the hold fired (an untrusted sample, a second finger, the glass turning, sleep) no
@@ -347,17 +344,6 @@ static void hold_cancel_keeps_recording(void) {
     t_(true, MID_X, MID_Y, 1000);
     CHECK(pod_ui_touch_cancel(&U).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
     CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE);   // the cancelled contact never talks
-    // From a tile: back on the Tab.
-    fresh(POD_SKIN_CONSOLE);
-    to_tab(0);
-    render(1000);
-    const pod_hit_t *tile = tile_of("a2");
-    t_(true, tile->x + tile->w / 2, tile->y + tile->h / 2, 1000);
-    CHECK(t_(true, tile->x + tile->w / 2, tile->y + tile->h / 2, 1400).fx == POD_FX_VOICE_BEGIN);
-    o = pod_ui_touch_cancel(&U);
-    CHECK(o.fx == POD_FX_NONE && top()->view == POD_V_TALK && U.hold_tile);
-    pod_ui_talk_over(&U);   // the app ended the recording: a tile's hold goes back to the Tab
-    CHECK(top()->view == POD_V_TAB && !U.hands_free);
     // A refused start (the glue already left Talk): the cancel has no recording to abort.
     fresh(POD_SKIN_CONSOLE);
     to_agent(0, 0);
@@ -450,7 +436,6 @@ static void working_bars_wake(void) {
     CHECK(pod_ui_wake_ms(&U, 330) > 66);
 }
 
-// H3: Recent rows open an agent (OPEN_AGENT) like Tab tiles do, but the hold is only for a tab's own tiles.
 // v3 Task 4: the Console equaliser and spinner step at 66 ms and the voice wave at 100 ms; Classic keeps its 33 ms.
 static void animation_rates(void) {
     uint32_t most = 0;
@@ -476,6 +461,7 @@ static void animation_rates(void) {
     CHECK(most == 100);   // the wave steps at 100 ms: neither the pet's 33 nor the 66 ms beat
 }
 
+// H3: Recent rows open an agent (OPEN_AGENT) like Tab tiles do, and like them they do not hold: a long still press is a tap.
 static void recent_rows_do_not_hold(void) {
     fresh(POD_SKIN_CONSOLE);
     act(POD_A_OPEN_TAB, POD_TAB_RECENT);
@@ -485,8 +471,11 @@ static void recent_rows_do_not_hold(void) {
     CHECK(row && row->y < 200);
     int x = row->x + row->w / 2, y = row->y + row->h / 2;
     t_(true, x, y, 1000);
-    CHECK(t_(true, x, y, 1400).fx == POD_FX_NONE && top()->view == POD_V_TAB && top()->tab == POD_TAB_RECENT && !U.notice_on);
-    CHECK(t_(false, x, y, 1500).fx == POD_FX_AGENT_OPEN);   // still a tap
+    CHECK(!U.hold_armed);
+    for (uint32_t t = 1004; t <= 2000; t += 4) CHECK(t_(true, x, y, t).fx == POD_FX_NONE && top()->view == POD_V_TAB && top()->tab == POD_TAB_RECENT);
+    CHECK(pod_ui_tick(&U, 2000).fx == POD_FX_NONE && !U.notice_on);
+    pod_out_t o = t_(false, x, y, 2100);   // still a tap
+    CHECK(o.fx == POD_FX_AGENT_OPEN && top()->view != POD_V_TAB && !pod_ui_talking(&U));
 }
 
 // M9: voice on an asking agent stays refused, so the hold does not arm there (no notice either).
@@ -539,18 +528,8 @@ static void hold_stays_with_its_target(void) {
     CHECK(t_(true, 5, 713, 2400).fx == POD_FX_NONE && top()->view == POD_V_TAB);
 }
 
-// L11: a tile hold that opened the agent and then lost its start (the gate refused it) goes back to the Tab.
-static void refused_tile_hold_returns_to_the_tab(void) {
-    fresh(POD_SKIN_CONSOLE);
-    to_tab(0);
-    render(1000);
-    const pod_hit_t *tile = tile_of("a2");
-    t_(true, tile->x + tile->w / 2, tile->y + tile->h / 2, 1000);
-    CHECK(t_(true, tile->x + tile->w / 2, tile->y + tile->h / 2, 1400).fx == POD_FX_VOICE_BEGIN);
-    pod_ui_talk_over(&U);   // what pro_app does when the recorder refuses
-    CHECK(top()->view == POD_V_TAB && !U.hold_voice);
-    CHECK(t_(false, tile->x + tile->w / 2, tile->y + tile->h / 2, 1500).fx == POD_FX_NONE && top()->view == POD_V_TAB);
-    // On an agent screen the hold is the agent's own: it stays there.
+// L11: a refused start (the gate refused the recording) leaves the hold's agent screen where it was.
+static void refused_hold_stays_on_the_agent(void) {
     fresh(POD_SKIN_CONSOLE);
     to_agent(0, 0);
     render(1000);
@@ -558,6 +537,14 @@ static void refused_tile_hold_returns_to_the_tab(void) {
     CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
     pod_ui_talk_over(&U);
     CHECK(top()->view == POD_V_AGENT);
+    fresh(POD_SKIN_CONSOLE);   // and on a Recap
+    to_agent(0, 2);
+    CHECK(top()->view == POD_V_RECAP);
+    render(1000);
+    t_(true, MID_X, MID_Y, 1000);
+    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
+    pod_ui_talk_over(&U);
+    CHECK(top()->view == POD_V_RECAP);
 }
 
 // ---- v3 gestures -------------------------------------------------------------------------------------------
@@ -578,19 +565,20 @@ static void swipe(int x0, int y0, int x1, int y1, uint32_t t) {
     t_(false, x1, y1, t + 80);
 }
 
-// Console Inbox: a sideways swipe either way goes back one level (v1 swipe rules); a vertical drag scrolls and stays; Classic is unchanged.
+// Console Inbox: a sideways swipe either way goes back; a vertical drag scrolls and stays; Classic is unchanged.
 static void inbox_swipe_goes_back(void) {
-    // a sideways swipe on the Inbox does nothing, either way
-    for (int k = 0; k < 2; k++) {
+    // a sideways swipe on the Inbox goes back to the screen it was opened from, either way
+    for (int k = 0; k < 4; k++) {
         fresh(POD_SKIN_CONSOLE);
+        if (k >= 2) to_agent(0, 0);
         act(POD_A_INBOX, 0);
-        CHECK(top()->view == POD_V_INBOX);
+        CHECK(top()->view == POD_V_INBOX && U.nav.depth == (k >= 2 ? 4 : 2));
         render(1000);
-        int depth = U.nav.depth;
-        if (k == 0) swipe(560, 300, 200, 310, 1000); else swipe(200, 300, 560, 310, 1000);
-        CHECK(U.nav.depth == depth && top()->view == POD_V_INBOX);
+        if (k % 2 == 0) swipe(560, 300, 200, 310, 1000); else swipe(200, 300, 560, 310, 1000);
+        if (k < 2) CHECK(U.nav.depth == 1 && top()->view == POD_V_TABS);
+        else CHECK(U.nav.depth == 3 && top()->view == POD_V_AGENT);
     }
-    // a swipe up from the bottom zone still goes back; a swipe down from the bar still goes home
+    // a swipe up from the bottom zone still goes back; a swipe down from the bar does nothing (the Inbox is already open)
     fresh(POD_SKIN_CONSOLE);
     act(POD_A_INBOX, 0);
     render(1000);
@@ -603,7 +591,7 @@ static void inbox_swipe_goes_back(void) {
     t_(true, 360, 20, 1000);
     t_(true, 360, 70, 1050);
     t_(false, 360, 110, 1100);
-    CHECK(U.nav.depth == 1 && top()->view == POD_V_TABS);
+    CHECK(U.nav.depth == 2 && top()->view == POD_V_INBOX);
     fresh(POD_SKIN_CONSOLE);   // too short (59 px) and too steep: nothing
     act(POD_A_INBOX, 0);
     render(1000);
@@ -623,13 +611,15 @@ static void inbox_swipe_goes_back(void) {
     int before = top()->scroll;
     swipe(360, 600, 360, 150, 3000);
     CHECK(U.nav.depth == depth && top()->view == POD_V_INBOX && top()->scroll > before);
-    // Classic: the Inbox keeps its own behaviour (a sideways swipe does not go back)
-    fresh(POD_SKIN_CLASSIC);
-    act(POD_A_INBOX, 0);
-    render(1000);
-    depth = U.nav.depth;
-    swipe(560, 300, 200, 310, 1000);
-    CHECK(U.nav.depth == depth);
+    // Classic: the Inbox keeps its own behaviour (a sideways swipe, either way, neither goes back nor home)
+    for (int k = 0; k < 2; k++) {
+        fresh(POD_SKIN_CLASSIC);
+        act(POD_A_INBOX, 0);
+        render(1000);
+        depth = U.nav.depth;
+        if (k == 0) swipe(560, 300, 200, 310, 1000); else swipe(200, 300, 560, 310, 1000);
+        CHECK(U.nav.depth == depth && depth > 1 && top()->view == POD_V_INBOX);
+    }
 }
 
 // Console Recent is one of the tabs: a sideways swipe steps Recent -> tab 0 -> ... -> last -> Recent; a vertical drag scrolls; Classic unchanged.
@@ -760,16 +750,18 @@ static void bottom_start_sideways_is_a_pane_swipe(void) {
     CHECK(top()->view == POD_V_TALK && U.nav.depth == 3);
 }
 
-static void bar_down_goes_home(void) {
-    for (int k = 0; k < 2; k++) {
+static void bar_down_opens_inbox(void) {
+    // from an agent (and a tab, and Recent) a swipe down from the bar opens the Inbox on top; on the Inbox it does nothing
+    for (int k = 0; k < 4; k++) {
         fresh(POD_SKIN_CONSOLE);
-        if (k == 0) to_agent(0, 0); else act(POD_A_INBOX, 0);
+        if (k == 0) to_agent(0, 0); else if (k == 1) to_tab(0); else if (k == 2) act(POD_A_OPEN_TAB, POD_TAB_RECENT); else act(POD_A_INBOX, 0);
         render(1000);
-        CHECK(U.nav.depth >= 2);
+        int depth = U.nav.depth;
+        CHECK(depth >= 2);
         t_(true, 360, 20, 1000);
         t_(true, 360, 70, 1040);
         t_(false, 360, 140, 1080);
-        CHECK(U.nav.depth == 1 && top()->view == POD_V_TABS);
+        CHECK(top()->view == POD_V_INBOX && U.nav.depth == (k == 3 ? depth : depth + 1));
     }
 }
 
@@ -789,14 +781,14 @@ static void toast_and_edges(void) {
     CHECK(pod_ui_notify(&U, "a3", true, 1000));
     render(1000);
     CHECK(U.ban_on && pod_ui_wake_ms(&U, 1000) <= 33);
-    // A bar swipe down while a toast is up still goes home.
+    // A bar swipe down while a toast is up still opens the Inbox.
     fresh(POD_SKIN_CONSOLE);
     to_agent(0, 0);
     CHECK(pod_ui_notify(&U, "a3", true, 1000));
     render(1000);
     CHECK(U.ban_on);
     t_(true, 360, 20, 1100); t_(true, 360, 70, 1140); t_(false, 360, 140, 1180);
-    CHECK(U.nav.depth == 1);
+    CHECK(U.nav.depth == 4 && top()->view == POD_V_INBOX);
 }
 
 
@@ -972,9 +964,19 @@ static void wake_rates(void) {
         uint32_t n = wakes_in(2000, 10000, &mn);
         CHECK(n >= 10000 / 66 && n <= 10000 / 66 + 40);
     }
-    for (int k = 0; k < 4; k++) {   // nobody works: Overview, Tab, Recent and Inbox wake once a second
+    {   // nobody works but Delta asks: Overview's Docs card plays the ask pet, at its own steps and never faster than 66 ms
         fresh(POD_SKIN_CONSOLE);
         calm();
+        render(1000);
+        CHECK(pod_ui_pet_on_screen(&U));
+        uint32_t n = wakes_in(2000, 10000, &mn);
+        CHECK(n > 10 && n <= 10000 / 66 + 1 && mn >= 1);
+    }
+    for (int k = 0; k < 4; k++) {   // nobody works or asks: Overview (its pets rest, drawn still), Tab, Recent and Inbox wake once a second
+        fresh(POD_SKIN_CONSOLE);
+        calm();
+        pod_model_question_close(&U.model, "a4");
+        pod_model_turn(&U.model, "a4", "done", NULL, 0, 30);
         if (k == 1) to_tab(1);
         else if (k == 2) act(POD_A_OPEN_TAB, POD_TAB_RECENT);
         else if (k == 3) act(POD_A_INBOX, 0);
@@ -1026,11 +1028,57 @@ static void agent_screen_wakes(void) {
     CHECK(n == 10 && mn == 1000);
 }
 
+// Console Tab cards: a tab of six agents is two pages of four. A swipe up (>= 60 px, |dy| > 1.5 |dx|) shows the next page, a swipe
+// down the previous one, clamped; a short or slanted drag and a tap do not page; sideways still steps tabs; Recent's rows still scroll.
+static void tab_cards_page(void) {
+    fresh(POD_SKIN_CONSOLE);
+    pod_model_agents_begin(&U.model);
+    static const char *const ids[] = {"a1", "a2", "a3", "a4", "a5", "a6"};
+    for (int i = 0; i < 6; i++) pod_model_agent(&U.model, ids[i], ids[i], "claude", "mac");
+    pod_model_agents_end(&U.model);
+    const char *const *l[2] = {ids, ids};
+    uint8_t cnt[2] = {6, 1};
+    cable_swarm_t it[2] = {{"s1", "Build", 6, 6}, {"s2", "Docs", 1, 1}};
+    pod_model_swarms(&U.model, it, l, cnt, 2, "s1", NULL, 0);
+    to_tab(0);
+    render(1000);
+    CHECK(top()->view == POD_V_TAB && top()->scroll == 0 && cs_tab_pages(&U.nav, &U.model) == 2);
+    swipe(360, 500, 360, 300, 1000);   // up: the next page
+    CHECK(top()->view == POD_V_TAB && top()->scroll == 1);
+    render(1200);
+    swipe(360, 300, 360, 520, 1300);   // down: the previous page
+    CHECK(top()->scroll == 0);
+    swipe(360, 300, 360, 520, 1400);   // down on the first page: stays
+    CHECK(top()->scroll == 0);
+    swipe(360, 500, 360, 300, 1500);
+    swipe(360, 500, 360, 300, 1700);   // up on the last page: stays on it
+    CHECK(top()->scroll == 1 && top()->view == POD_V_TAB);
+    swipe(360, 500, 360, 445, 1900);   // 55 px: not a swipe
+    CHECK(top()->scroll == 1);
+    swipe(300, 500, 420, 400, 2100);   // slanted (|dy| < 1.5 |dx|): not a page, not a tab step either
+    CHECK(top()->scroll == 1 && top()->view == POD_V_TAB);
+    render(2300);
+    const pod_hit_t *c = find(POD_A_OPEN_AGENT);   // a tap on page 2's first card opens a5
+    CHECK(c && !strcmp(c->id, "a5"));
+    CHECK(tap_(c->x + c->w / 2, c->y + c->h / 2, 2400).fx == POD_FX_AGENT_OPEN && !strcmp(top()->agent, "a5"));
+    // sideways steps tabs, as before
+    act(POD_A_BACK, 0);
+    render(2600);
+    int tab = top()->tab;
+    swipe(560, 300, 200, 310, 2700);
+    CHECK(top()->view == POD_V_TAB && top()->tab != tab);
+    // Recent keeps its row scroll
+    fresh(POD_SKIN_CONSOLE);
+    act(POD_A_OPEN_TAB, POD_TAB_RECENT);
+    render(1000);
+    CHECK(top()->tab == POD_TAB_RECENT && top()->scroll == 0);
+}
+
 int main(void) {
     overview_pages();
     bottom_up_goes_back();
     bottom_start_sideways_is_a_pane_swipe();
-    bar_down_goes_home();
+    bar_down_opens_inbox();
     toast_and_edges();
     hold_agent(POD_SKIN_CONSOLE);
     hold_agent(POD_SKIN_CLASSIC);
@@ -1054,6 +1102,7 @@ int main(void) {
     recent_rows_do_not_hold();
     overview_down_opens_inbox();
     inbox_swipe_goes_back();
+    tab_cards_page();
     recent_swipe_steps_tabs();
     overview_scroll_follows_tab_removal();
     hold_not_in_bar();
@@ -1063,7 +1112,7 @@ int main(void) {
     agent_screen_wakes();
     asking_agents_do_not_hold();
     hold_stays_with_its_target();
-    refused_tile_hold_returns_to_the_tab();
+    refused_hold_stays_on_the_agent();
     printf("test_cs_glue: %d checks ok\n", checks);
     return 0;
 }

@@ -35,6 +35,8 @@ uint32_t pod_view_next_ms(const pod_nav_t *nav, const pod_model_t *m, uint32_t n
 {
     const pod_frame_t *top = nav->depth ? &nav->stack[nav->depth - 1] : NULL;
     switch (top ? top->view : POD_V_TABS) {
+    case POD_V_TABS:
+    case POD_V_TAB: return nav->skin == POD_SKIN_CONSOLE ? cs_cards_next_ms(nav, m, now_ms) : POD_PET_STEP_MS;   // Console: the cards' pets
     case POD_V_AGENT: return pod_view_agent_next_ms(nav, m, now_ms);
     case POD_V_RECAP: return pod_view_recap_next_ms(nav, m, now_ms);
     case POD_V_TALK: {

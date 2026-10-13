@@ -84,9 +84,8 @@ typedef struct {
     bool scroll_reversed, scroll_begun;
     uint32_t down_ms;
     // Console hold to talk: armed at a DOWN that may talk, fired by the first still sample at or after hold_due_ms (pod_ui_touch, on the touch task); hold_voice is a recording
-    // under way for this contact; hold_tile: it opened the agent from a Tab tile first. bar: the
-    // contact began in the command bar below the root.
-    bool hold_armed, hold_fired, hold_voice, hold_tile, bar;
+    // under way for this contact. bar: the contact began in the command bar below the root.
+    bool hold_armed, hold_fired, hold_voice, bar;
     bool hands_free;   // Console: the hold started a recording that outlives the finger; the next new tap sends it (cleared by END, ABORT, talk_over, a skin switch)
     uint32_t hold_due_ms;
     uint8_t hold_depth;

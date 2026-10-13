@@ -414,8 +414,6 @@ int main(int argc, char **argv)
         cs_badge(&S, 520, 96, "cursor"); cs_badge(&S, 560, 96, "kilo");
         cs_working_mark(&S, 28, 140, now);
         cs_logo(&S, 100, 130, 36, "claude"); cs_logo(&S, 150, 130, 44, "codex");
-        const char *const keys[] = {"hold", "\xe2\x86\x90 \xe2\x86\x92", "\xe2\x86\x91"}, *const labels[] = {"talk", "panes", "back"};
-        cs_hints(&F, keys, labels, 3);
     } else if (!strncmp(screen, "chrome", 6)) {   // the status bar and the transport alone: chrome or chrome:talk
         pod_status(&F, "Firmware", true, 0);
         pod_transport(&F, strstr(screen, "talk") != NULL);
