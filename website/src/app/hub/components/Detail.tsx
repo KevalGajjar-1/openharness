@@ -28,6 +28,6 @@ export default function Detail({ id, initial, initialComments = false }: { id: s
         onClose={() => setPanel('log')} onRetry={() => void page.load()} onRemove={comment => void page.removeComment(comment)} onPost={page.postComment} />
     </div>
     {!!social.forks && <Forks id={id} count={social.forks} />}
-    {social.mine && <div className={styles.manage}><button disabled={busy} onClick={unpublish}>Unpublish this harness</button></div>}
+    {social.mine && <div className={styles.manage}><Link href={`/hub/publish?edit=${id}`}>Edit this harness</Link><button disabled={busy} onClick={unpublish}>Unpublish this harness</button></div>}
   </main></>;
 }

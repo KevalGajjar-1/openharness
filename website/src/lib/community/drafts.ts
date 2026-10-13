@@ -4,9 +4,10 @@ import type { HarnessSnapshot } from './types';
 
 /**
  * `originalOutput` is kept only by the review page, to tell a fork's new output from the one it arrived with;
- * `english`, where the draft stands with its English translation.
+ * `english`, where the draft stands with its English translation; `updateId`, the author's publication
+ * it is saved over.
  */
-export type HubDraft = Partial<HarnessSnapshot> & { version?: number; clientId?: string; contextNote?: string; originalOutput?: string; english?: EnglishState };
+export type HubDraft = Partial<HarnessSnapshot> & { version?: number; clientId?: string; contextNote?: string; originalOutput?: string; english?: EnglishState; updateId?: string };
 export const draftDatabase = 'harness.hub.drafts';
 
 export function validateDraft(value: unknown): HubDraft {

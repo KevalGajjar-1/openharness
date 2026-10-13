@@ -4,7 +4,7 @@ export const feedSorts = ['newest', 'popular'] as const
 export type FeedSort = typeof feedSorts[number]
 
 /** What a feed card reads: never the files or the cover's bytes. */
-const feedSelect = { id: true, title: true, description: true, category: true, engine: true, harnessId: true, authorId: true, authorName: true, forkedFrom: true, createdAt: true } as const
+const feedSelect = { id: true, title: true, description: true, category: true, engine: true, harnessId: true, authorId: true, authorName: true, forkedFrom: true, createdAt: true, updatedAt: true } as const
 const feedPageSize = 30
 
 type FeedWhere = NonNullable<Parameters<typeof prisma.communityHarness.findMany>[0]>['where']

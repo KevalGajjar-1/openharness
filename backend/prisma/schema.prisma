@@ -26,6 +26,8 @@ model CommunityHarness {
   credits       Json     @default("[]")
   deletedAt     DateTime?
   createdAt     DateTime @default(now())
+  // Set when its author edits it (routes/communityEdit.ts); never on publishing.
+  updatedAt     DateTime?
 
   @@index([autonomousEnv, deletedAt, createdAt])
   @@index([autonomousEnv, authorId])
