@@ -23,9 +23,19 @@ mutations = [
     ('late responses decorate another generation', control, 'content.get(generation.id) ?? EMPTY_NATIVE_CONTENT', 'EMPTY_NATIVE_CONTENT',
      spec, 'recovers a completed generation quietly'),
     ('HTTP read and notification omit retained content', 'src/hookServer.ts',
-     'source = Object.freeze({ ...retained, observations, verify })',
-     'source = Object.freeze({ ...retained, observations: Object.freeze([]), verify })',
+     'source = Object.freeze({ ...retained, observations, recoveredFactIds: context.recoveredFactIds, verify })',
+     'source = Object.freeze({ ...retained, observations: Object.freeze([]), recoveredFactIds: context.recoveredFactIds, verify })',
      'src/hookServer.nativeProtocol.spec.ts', 'retains the exact native response'),
+    ('first live facts are treated as recovered', control, 'recovered: state.recovered,', 'recovered: true,',
+     spec, 'does not hide the first live generation'),
+    ('a late response repeats recovered completion', control, "ended: prior.some(fact => fact.kind === 'stopped' || fact.kind === 'cancelled')",
+     'ended: false', spec, 'keeps a recovered Stop quiet'),
+    ('first live starts are hidden', control, "started: prior.some(fact => fact.kind === 'activity' || fact.kind === 'stopped')",
+     'started: true', spec, 'does not hide the first live generation'),
+    ('HTTP recovery loses its fixed baseline', 'src/hookServer.ts',
+     'observations, recoveredFactIds: context.recoveredFactIds, verify',
+     'observations, recoveredFactIds: Object.freeze([]), verify',
+     'src/hookServer.nativeProtocol.spec.ts', 'keeps an interrupted generation write pending'),
 ]
 environment = {**os.environ, 'TZ': 'UTC', 'TMPDIR': '/tmp'}
 for key in list(environment):

@@ -22,6 +22,9 @@ export interface NativeGenerationSource {
   /** A complete, durably confirmed view. A truncated prefix is not a source. */
   readonly facts: readonly NativeGenerationFact[]
   readonly frontier?: NativeGenerationFrontier
+  /** Exact facts already retained when this core opened the process journal,
+   * including pending intakes. Presentation provenance only, never authority. */
+  readonly recoveredFactIds?: readonly string[]
   /** A barrier survives even when no generation was known at Cancel. It applies
    * across conversation rebindings within the original process incarnation. */
   readonly cancellations?: readonly NativeGenerationCancellation[]

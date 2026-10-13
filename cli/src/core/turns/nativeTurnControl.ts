@@ -4,11 +4,15 @@ import { createHash } from 'node:crypto'
 import { createNativeGenerations, type NativeGeneration, type NativeGenerationOwner,
   type NativeGenerationSource, type NativeGenerationView } from './nativeGenerations.js'
 import { EMPTY_NATIVE_CONTENT, nativeGenerationContent, type NativeGenerationContent } from './nativeGenerationContent.js'
+import { MAX_RETAINED_GENERATION_FACTS } from '../../engines/kit/nativeGenerationCancellation.js'
 
 export interface NativeTurn {
   readonly owner: NativeGenerationOwner
   readonly generation: NativeGeneration
   readonly content: NativeGenerationContent
+  /** Native facts retained before this core first admitted a delivery. A late
+   * response cannot turn a recovered Stop into another live completion. */
+  readonly recovery: { readonly started: boolean; readonly ended: boolean }
   /** Idempotent presentation identity. It never grants a physical effect. */
   readonly version: string
 }
@@ -16,12 +20,16 @@ export interface NativeTurnState {
   readonly owner: NativeGenerationOwner
   readonly selection: NativeGenerationView['selection']
   readonly turns: readonly NativeTurn[]
-  /** The first reconstructed state is always quiet, including terminal facts. */
+  /** Every fact in this publication belonged to the fixed recovery baseline.
+   * Mixed publications use each turn's recovery flags for lifecycle events. */
   readonly recovered: boolean
   readonly cancelRequested: boolean
 }
 export interface NativeTurnControlDeps {
   owner: NativeGenerationOwner
+  /** Captured from the confirmed journal before admitting this core's first
+   * delivery, never inferred from the first successful asynchronous read. */
+  recoveredFactIds: readonly string[]
   /** Includes binding and any durable explicit rearm relation. A new PID alone
    * must never make this true for a cancelled incarnation's replacement. */
   current(): boolean
@@ -39,15 +47,18 @@ export interface NativeTurnControlDeps {
 const scope = (owner: NativeGenerationOwner) => JSON.stringify([owner.agentId, owner.sessionId, owner.processKey])
 function unavailable(reason: string): never { throw Error(`Waiting for native turn control: ${reason}.`) }
 
-export function createNativeTurnControl({ owner, current, read, publish, revoke, held,
+export function createNativeTurnControl({ owner, recoveredFactIds, current, read, publish, revoke, held,
   now = () => performance.now(), readWaitMs = 5000, retryMs = 1000,
 }: NativeTurnControlDeps) {
   if (!Number.isFinite(readWaitMs) || readWaitMs <= 0 || readWaitMs > 5000
     || !Number.isFinite(retryMs) || retryMs <= 0 || retryMs > 60_000) unavailable('the retry or read deadline is invalid')
+  if (!Array.isArray(recoveredFactIds) || recoveredFactIds.length > MAX_RETAINED_GENERATION_FACTS
+    || recoveredFactIds.some(id => typeof id !== 'string' || !id.length || id.length > 200)) unavailable('the recovery baseline is invalid')
+  const recovered = new Set(recoveredFactIds)
   const original = Object.freeze({ ...owner }), identity = scope(original)
-  let revision = 0, closed = false, pending = true, cancelled = false, published = false, dirty = false
+  let revision = 0, closed = false, pending = true, cancelled = false, dirty = false
   let running: Promise<void> | undefined, retry: ReturnType<typeof setTimeout> | undefined
-  type Inspection = { view: NativeGenerationView; turns: readonly NativeTurn[]; verify(): void }
+  type Inspection = { view: NativeGenerationView; turns: readonly NativeTurn[]; recovered: boolean; verify(): void }
   let reading: { version: number; result: Promise<Inspection>; check(): void; reject(error: Error): void } | undefined
   const live = () => !closed && current()
   const check = (version: number) => { if (!live() || version !== revision) unavailable('the original control revision changed') }
@@ -94,17 +105,22 @@ export function createNativeTurnControl({ owner, current, read, publish, revoke,
       if (scope(source.owner) !== identity) unavailable('the source belongs to another owner')
       // Copy native content before the scalar projection's await as well.
       const content = nativeGenerationContent(source)
+      const baseline = source.facts.filter(fact => recovered.has(fact.id)).map(fact => ({ ...fact }))
+      const allRecovered = source.facts.every(fact => recovered.has(fact.id))
       const view = await createNativeGenerations({ owner: original, current: () => live() && version === revision,
         read: async () => source }).inspect()
       const verify = () => { checkRead(); view.verify(); checkRead() }
       verify()
       if (view.selection === 'cancelled' && !cancelled) { cancelled = true; revokeEffects() }
       const turns = Object.freeze(view.generations.map(generation => {
-        const fields = { owner: original, generation, content: content.get(generation.id) ?? EMPTY_NATIVE_CONTENT }
+        const prior = baseline.filter(fact => fact.generationId === generation.id)
+        const fields = { owner: original, generation, content: content.get(generation.id) ?? EMPTY_NATIVE_CONTENT,
+          recovery: Object.freeze({ started: prior.some(fact => fact.kind === 'activity' || fact.kind === 'stopped'),
+            ended: prior.some(fact => fact.kind === 'stopped' || fact.kind === 'cancelled') }) }
         return Object.freeze({ ...fields, version: createHash('sha256').update(JSON.stringify(fields)).digest('hex') })
       }))
       verify()
-      return { view, turns, verify }
+      return { view, turns, recovered: allRecovered, verify }
     })().then(value => { settle(); resolve(value) }, error => { settle(); reject(error) })
     return result
   }
@@ -123,9 +139,8 @@ export function createNativeTurnControl({ owner, current, read, publish, revoke,
         const state = await inspect(version)
         state.verify()
         publish(Object.freeze({ owner: original, selection: cancelled ? 'cancelled' : state.view.selection, turns: state.turns,
-          recovered: !published, cancelRequested: cancelled }), state.verify)
+          recovered: state.recovered, cancelRequested: cancelled }), state.verify)
         state.verify()
-        published = true
       } catch (error) {
         if (live() && version === revision) hold(error instanceof Error ? error.message : String(error))
         dirty = true

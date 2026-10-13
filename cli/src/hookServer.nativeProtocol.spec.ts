@@ -141,12 +141,14 @@ it('retains a native Stop before binding and restores its source before releasin
   expect(events.indexOf('generation')).toBeLessThan(events.indexOf('claim'))
   expect(registered).toHaveBeenCalledOnce(); expect(legacyStop).not.toHaveBeenCalled(); expect(held).not.toHaveBeenCalled()
   expect(sources.at(-1)!.source.owner).toEqual({ agentId, sessionId, processKey: key })
+  expect(sources.at(-1)!.source.recoveredFactIds).toEqual([])
   await close()
   const recovered: NativeGenerationSource[] = []
   const restart = await fixture({ onNativeGenerations: (_entry, source) => recovered.push(source) })
   restart.started.startRecovery()
   await vi.waitFor(() => expect(restart.started.recoveryReady(registry.byAgent(agentId)!)).toBe(true), { timeout: 5_000 })
   expect(recovered.at(-1)!.facts).toEqual(sources.at(-1)!.source.facts)
+  expect(recovered.at(-1)!.recoveredFactIds).toEqual(recovered.at(-1)!.facts.map(fact => fact.id))
   expect(restart.registered).not.toHaveBeenCalled(); expect(restart.stopped).not.toHaveBeenCalled()
 }, 25_000)
 
@@ -452,7 +454,20 @@ it('keeps an interrupted generation write pending and reconstructs it from its o
   await restarted.settle(raw)
   expect(records().filter(record => record.event.kind === 'generation')).toHaveLength(1)
   await vi.waitFor(() => expect(observed).toHaveBeenCalled(), { timeout: 5_000 })
+  const recovered = observed.mock.calls.at(-1)![1] as NativeGenerationSource
+  expect(recovered.recoveredFactIds).toEqual(recovered.facts.map(fact => fact.id))
   expect(restarted.registered).toHaveBeenCalledOnce()
+  const nextId = 'fixture-after-recovery-activity'
+  const next = JSON.stringify(cursorBody({ hookEvent: 'preToolUse', generationId: 'generation-two' }))
+  await vi.waitFor(async () => {
+    const result = await restarted.post(next, { 'x-harness-hook-delivery-id': nextId })
+    expect(result).toEqual({ status: 200, body: nativeHookAcknowledgement({ ...delivery, id: nextId },
+      { name: 'registration', path: '/api/hook/session-start', body: next }, 'complete') })
+  }, { timeout: 8_000, interval: 100 })
+  const latest = observed.mock.calls.at(-1)![1] as NativeGenerationSource
+  expect(latest.facts).toHaveLength(2)
+  expect(latest.recoveredFactIds).toEqual(recovered.recoveredFactIds)
+  expect(latest.recoveredFactIds).not.toContain(latest.facts.find(fact => fact.generationId === 'generation-two')!.id)
 }, 25_000)
 
 it('preserves an interrupted Stop intake when later activity makes its generation running', async () => {

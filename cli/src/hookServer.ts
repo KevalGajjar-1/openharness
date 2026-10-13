@@ -411,7 +411,7 @@ export function startHookServer(
     await (opened ?? nativeStorage)?.close()
   })().catch(error => { closingStorage = undefined; throw error })
   type DurableProcess = { key: string; journal: Journal; restored: Set<string>; claims: Map<string, NativeHookClaim>;
-    ready: boolean; confirming: number; owner?: NativeHookOwner }
+    ready: boolean; confirming: number; recoveredFactIds: readonly string[]; owner?: NativeHookOwner }
   const durableProcesses = new Map<string, DurableProcess>()
   const openingProcesses = new Map<string, Promise<DurableProcess>>()
   const nativeKeys = new Map<string, string>()
@@ -463,9 +463,20 @@ export function startHookServer(
       if (!current()) throw new IdentityReadUnavailable('the original native process changed while opening storage')
       const journal = await opened.effects(key, current)
       try {
+        // Fix presentation provenance before this core can retain a new intake.
+        // A first live hook may beat SessionStart and the recovery timer alike.
+        const initial = await journal.snapshot()
+        const recoveredFactIds = Object.freeze([...new Set([...initial.generations.keys(),
+          ...[...initial.deliveries.values()].flatMap(delivery => {
+            const fact = nativeHookGeneration(delivery.intake)
+            return fact ? [fact.id] : []
+          })])])
+        await initial.confirm()
+        initial.verify()
         native?.verify()
         if (!current()) throw new IdentityReadUnavailable('the original native process changed during allocation')
         const context = { key, journal, restored: new Set<string>(), claims: new Map<string, NativeHookClaim>(), ready: false, confirming: 0,
+          recoveredFactIds,
           ...(native ? { owner: { key: native.key, evidence: native.evidence } } : {}) }
         durableProcesses.set(key, context)
         return context
@@ -576,7 +587,7 @@ export function startHookServer(
           throw new IdentityReadUnavailable('the native generation binding changed')
         }
       }
-      source = Object.freeze({ ...retained, observations, verify })
+      source = Object.freeze({ ...retained, observations, recoveredFactIds: context.recoveredFactIds, verify })
       publicationGuard?.(source)
       verify()
       if (publish) handlers.onNativeGenerations!(structuredClone(owner), source, pending)

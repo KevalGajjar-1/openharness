@@ -11,7 +11,8 @@ function setup(inputs: Array<Record<string, unknown>> = [{}], overrides: Partial
   const verify = vi.fn(() => { if (!proof) throw Error('fixture native evidence expired') })
   source = { ...source, verify }
   const read = vi.fn(async (_owner: NativeGenerationOwner) => source), publish = vi.fn(), revoke = vi.fn(), held = vi.fn()
-  const control = createNativeTurnControl({ owner, current: () => alive, read, publish, revoke, held, ...overrides })
+  const control = createNativeTurnControl({ owner, recoveredFactIds: source.facts.map(fact => fact.id),
+    current: () => alive, read, publish, revoke, held, ...overrides })
   controls.push(control)
   const observe = (pending = false) => control.observe(source, pending)
   const update = (inputs: Array<Record<string, unknown>>) => { source = { ...contentFixture(inputs).source, verify } }
@@ -41,6 +42,56 @@ it('recovers a completed generation quietly without waiting for text, then fills
   expect(permit.turn.version).toBe(state.turns[0].version)
   expect(() => permit.verify()).not.toThrow()
   expect(t.revoke).toHaveBeenCalledTimes(2)
+})
+
+it('does not hide the first live generation when activity beats SessionStart', async () => {
+  const t = setup([{}], { ...{ recoveredFactIds: [] } })
+  t.observe(); await t.control.refresh()
+  expect(t.publish.mock.calls[0][0]).toMatchObject({ recovered: false, turns: [
+    { generation: { id: 'generation-one', running: true }, recovery: { started: false, ended: false } },
+  ] })
+})
+
+it('keeps the recovery baseline when activity arrives during the initial read', async () => {
+  const t = setup([], { ...{ recoveredFactIds: [] } })
+  let finish!: (source: NativeGenerationSource) => void
+  t.read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  t.observe()
+  t.update([{}])
+  finish(t.source())
+  await t.control.refresh()
+  expect(t.publish.mock.calls[0][0]).toMatchObject({ recovered: false, turns: [
+    { recovery: { started: false, ended: false } },
+  ] })
+})
+
+it('distinguishes a recovered start from a live completion in the same first publication', async () => {
+  const prior = contentFixture([{}]).source
+  const t = setup([{}, { hookEvent: 'stop', status: 'completed' }], {
+    ...{ recoveredFactIds: prior.facts.map(fact => fact.id) },
+  })
+  t.observe(); await t.control.refresh()
+  expect(t.publish.mock.calls[0][0]).toMatchObject({ recovered: false, turns: [
+    { generation: { terminal: 'completed' }, recovery: { started: true, ended: false } },
+  ] })
+})
+
+it('copies the recovery baseline and keeps a recovered Stop quiet when its response arrives later', async () => {
+  const baseline = contentFixture([{ hookEvent: 'stop', status: 'completed' }]).source.facts.map(fact => fact.id)
+  const t = setup([{ hookEvent: 'stop', status: 'completed' }, { responseText: 'Late answer.' }], { recoveredFactIds: baseline })
+  baseline.length = 0
+  t.observe(); await t.control.refresh()
+  expect(t.publish.mock.calls[0][0]).toMatchObject({ recovered: false, turns: [
+    { recovery: { started: true, ended: true }, content: { response: { state: 'available', text: 'Late answer.' } } },
+  ] })
+})
+
+it.each([
+  { name: 'missing', ids: undefined }, { name: 'oversized', ids: Array(4609).fill('id') },
+  { name: 'empty identity', ids: [''] }, { name: 'non-text identity', ids: [42] },
+  { name: 'long identity', ids: ['x'.repeat(201)] },
+])('refuses an invalid recovery baseline: $name', ({ ids }) => {
+  expect(() => setup([], { recoveredFactIds: ids as string[] })).toThrow('recovery baseline is invalid')
 })
 
 it('publishes the same immutable identities on repeated recovery and never chooses response arrival order', async () => {

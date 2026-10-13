@@ -1,5 +1,37 @@
 # Durable native hook delivery
 
+October 13 resume checkpoint: current main `6f0a3e6e2` is integrated in
+`8ab5998dc`. The draft remains unfinished. Recovery now fixes its presentation
+baseline from the confirmed process journal before this core admits a new
+delivery, including native facts still represented only by pending intakes.
+Each generation distinguishes a recovered start and recovered end. The first
+live hook is no longer hidden merely because it beat SessionStart or the first
+asynchronous read; a late response cannot repeat a recovered completion.
+
+Three regressions fail by assertion on the former controller in receipt
+`20261013T053034.829769Z-11348`. The corrected types and 176 focused cases pass
+with 100% controller/content coverage in `20261013T053438.270313Z-30445`.
+That aggregate is **failed**: 52 of 54 private HTTP cases pass, while two fail
+on an unsealed receipt namespace and a changed directory route. A bounded
+comparison of just those two cases passes against both the former and corrected
+HookServer (9.5 and 9.7 seconds); it does not establish their original cause.
+The earlier sandbox-denied cleanup receipt remains failed too.
+Receipt `20261013T054236.311900Z-58833` passes the pending-intake recovery followed
+by a genuinely new fact, and all twelve control/content/recovery wiring mutants
+fail by assertion (26.7 seconds together). The journal golden is unchanged.
+Independent review approved this correction conditional on the now-passing
+pending-intake case; this is not whole-PR approval or final HTTP acceptance.
+
+Implementation and review of this correction ran approximately 05:29–05:43 UTC,
+with validation overlapping; merge and publication remain zero. The resumed
+private Stop acceptance still fails with the verified macOS process helper
+(`20261013T052456.406905Z-82664`). Its first attempt lacked that helper and failed
+before launch, so it did not exercise completion. Native activation must require
+the explicit recovery baseline, separate history and native execution from input
+delivery, and complete the Cancel/rearm and generation-scoped consumer boundaries
+below. The raw two-request client is legacy compatibility coverage; healthy
+native acceptance must execute the command installed by current Cursor settings.
+
 October 12 pause checkpoint: the owner requested the finished idle Close/Stop
 safety correction be landed as [#1251](https://github.com/autonomous-ai/openharness/pull/1251),
 then further daemon work paused. This draft (#1172) remains unfinished and must
