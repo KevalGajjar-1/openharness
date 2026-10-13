@@ -11,9 +11,10 @@
 #endif
 #define HT_WIDTH HT_FACE_PX
 #define HT_HEIGHT HT_FACE_PX
-// A pet scene alone can take 40 runs, beside the status bar and the transport. Scenes live in PSRAM
+// A pet scene alone can take 40 runs, beside the status bar and the transport, and a Console screen takes more. Scenes live in PSRAM
 // (EXT_RAM_BSS_ATTR where they are declared) for this.
-#define HT_RUNS 128
+#define HT_RUNS 192
+#define POD_CLASSIC_RUNS 128   // Classic's own budget (HT_RUNS before Console): its layouts and golden hashes depend on it
 #define HT_TEXT_BYTES 128
 #define HT_DAMAGE_MAX 24
 
@@ -58,6 +59,8 @@ ht_rect_t ht_run_bounds(const ht_run_t *run);
 // equivalent or "[U+XXXX]". Bounded, no allocation; false means the destination was truncated. Source and
 // destination must differ.
 bool ht_display_text(char *dst, size_t capacity, const char *src);
+// The same for a Console face: its atlas marks (… → ← ↑ ↓ ▲ ◆ ✓) stay as they are. console == false is ht_display_text.
+bool ht_display_text_ex(char *dst, size_t capacity, const char *src, bool console);
 void ht_damage(const ht_scene_t *before, const ht_scene_t *after, ht_damage_t *out);
 // Output is RGB565 in the ST7703 framebuffer's own (little-endian, unswapped) order. Buffer holds
 // region.w * region.h.

@@ -1,7 +1,7 @@
 // The Agent screen: for an agent that is working, asking, or idle with nothing to recap. The pet as album art, the name,
 // "Tab . Machine" and a state chip, then by state the live bar and the activity, or the question box.
 // Also the helpers this screen, Recap and Talking share (pod_view_shared.h).
-#include "pod_view_shared.h"
+#include "pod/pod_view_shared.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -165,7 +165,8 @@ uint32_t pod_view_agent_next_ms(const pod_nav_t *nav, const pod_model_t *m, uint
     if (!a) return POD_PET_STEP_MS;
     pod_state_t st = pod_model_eff(m, a);
     uint32_t ms = pod_pet_next_step_ms(a->engine, scene_for(st), now_ms, 0);
-    return st == POD_WORKING && ms > POD_PET_STEP_MS ? POD_PET_STEP_MS : ms;
+    uint32_t cap = nav->skin == POD_SKIN_CONSOLE ? POD_CS_ANIM_MS : POD_PET_STEP_MS;   // Console: the equaliser and the spinner step at 66 ms
+    return st == POD_WORKING && ms > cap ? cap : ms;
 }
 
 // End a row with "…" that fits the width (drops whole codepoints to make room). For text the model had to cut.
@@ -259,7 +260,9 @@ void pod_view_agent(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t 
             char rows[ACT_ROWS][POD_ROW_MAX];
             // Rows between the head and the transport; the previous steps (at most two lines reserved) share them.
             const int top = BODY_Y + shift, avail = imin(ACT_ROWS, (POD_TRANSPORT_Y - 6 - top) / ACT_PITCH);
-            const int reserve = imin(a->step_count, 2);
+            // Classic shows the last three steps since the turn began or its question closed (the model keeps six for Console).
+            const int steps = imin(imin(a->step_count, a->fresh_steps), 3);
+            const int reserve = imin(steps, 2);
             // The footer's word (a->verb) is the pill's; the body is always the progress sentence.
             int n = pod_wrap(a->activity, &ht_pro_24, BAR_W, avail - reserve, rows);
             if (a->activity_cut && a->activity[0] && n > 0) ellipsize(rows[n - 1], BAR_W);
@@ -267,7 +270,7 @@ void pod_view_agent(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t 
                 ht_pro_text(s, BAR_X, top + i * ACT_PITCH, BAR_W, &ht_pro_24, C(0x111111), rows[i]);
             // What the agent did before, newest first, one grey line each (ht_pro_text ends a long one with an ellipsis):
             // the tools it started (`turn.activity` `step`) and the sentences it wrote, in the order they came.
-            for (int i = 0; i < a->step_count && n + i < avail; i++) {
+            for (int i = 0; i < steps && n + i < avail; i++) {
                 const char *step = a->steps[i];
                 ht_pro_text(s, BAR_X, top + (n + i) * ACT_PITCH, imin(ht_pro_width(&ht_pro_24, step), BAR_W), &ht_pro_24, C(0x7b7d84), step);
             }

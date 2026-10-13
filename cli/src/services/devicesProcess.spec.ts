@@ -187,6 +187,12 @@ describe('the core\'s doors, across the link', () => {
     expect(await api.agents.activityText('a1')).toBe('Reading')
     f.answer('activityText', { text: null })
     expect(await api.agents.activityText('a1')).toBeNull()
+    f.answer('usageFresh', { usage: { totalTokens: 5, inputTokens: 3, updatedAt: '2026-10-12T00:00:00.000Z' } })
+    expect(await api.usageFresh!('a1')).toMatchObject({ inputTokens: 3 })
+    f.answer('usageFresh', { usage: 'junk' })
+    expect(await api.usageFresh!('a1')).toBeNull()
+    f.answer('usageFresh', new Error('the core went away'))
+    expect(await api.usageFresh!('a1')).toBeNull()
     f.answer('activitySnapshot', { activity: { text: 'Working', elapsedSeconds: 931 } })
     expect(await api.agents.activitySnapshot!('a1')).toEqual({ text: 'Working', elapsedSeconds: 931 })
     // An older core does not know the query, or has no timer to give: the footer alone is still the footer.

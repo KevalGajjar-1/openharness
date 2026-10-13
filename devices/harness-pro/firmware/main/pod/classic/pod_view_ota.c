@@ -4,7 +4,7 @@
 // "Restarting...", "<new> is installed". The font has no arrow and no U+2026 (its glyphs stop at U+00FF: a "…" would draw "?"), so Restarting keeps "..." and the
 // arrow is drawn like the other glyph-free icons. Run counts are constant per screen (the bar's fill keeps its
 // slot at 0 %).
-#include "pod_view.h"
+#include "pod/pod_view.h"
 #include "pro_canvas.h"
 
 #include <stdio.h>

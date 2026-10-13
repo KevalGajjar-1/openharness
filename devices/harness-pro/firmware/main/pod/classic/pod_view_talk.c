@@ -1,8 +1,8 @@
 // The Listening screen (mockup pro-listen.html, owner 2026-10-10): the agent's name as the title and, centred between
 // the title bar and the controls, the engine's listening pet, or with no pet ("N2") the word Listening in soft green
 // with a light passing over its letters and three thin arcs each side drifting in toward it. The big button sends.
-#include "pod_view_shared.h"
-#include "pod_draw.h"
+#include "pod/pod_view_shared.h"
+#include "pod/pod_draw.h"
 #include "theme.h"
 
 #include <string.h>

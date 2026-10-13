@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "pod/console/cs.h"
 #include "pro_canvas.h"
 
 static void set_id(char *dst, const char *src) { strncpy(dst, src ? src : "", ID_MAX - 1); dst[ID_MAX - 1] = 0; }
@@ -30,7 +31,8 @@ void pod_ui_render(pod_ui_t *u, ht_scene_t *scene, uint32_t now_ms)
     pod_model_clock(&u->model, now_ms);
     if (u->ota) {   // the update owns the glass: no stack, no banner, no notice pill
         u->frame.banner = false;
-        pod_view_ota(&u->frame, u->ota_from, u->ota_to, u->ota_pct, u->ota_restarting);
+        if (u->nav.skin == POD_SKIN_CONSOLE) cs_view_ota(&u->frame, u->ota_from, u->ota_to, u->ota_pct, u->ota_restarting);
+        else pod_view_ota(&u->frame, u->ota_from, u->ota_to, u->ota_pct, u->ota_restarting);
         u->seen_revision = u->model.revision;
         u->dirty = false;
         return;
@@ -42,7 +44,10 @@ void pod_ui_render(pod_ui_t *u, ht_scene_t *scene, uint32_t now_ms)
     if (u->ban_on && !(ban = pod_model_unread_find(&u->model, u->ban_agent))) u->ban_on = false;
     u->frame.banner = ban && u->model.linked && !pod_ui_talking(u);
     pod_render(&u->frame, &u->nav, &u->model, now_ms);
-    if (u->frame.banner) pod_banner(&u->frame, &u->model, ban, now_ms);   // over everything, with the hit on top
+    if (u->frame.banner) {   // over everything, with the hit on top
+        if (u->nav.skin == POD_SKIN_CONSOLE) cs_toast(&u->frame, &u->model, ban, now_ms);
+        else pod_banner(&u->frame, &u->model, ban, now_ms);
+    }
     if (u->notice_on && (int32_t)(now_ms - u->notice_until) >= 0) u->notice_on = false;
     if (u->notice_on && u->model.linked) {
         // Two runs: the dark pill and its white line. Present or absent is a different state, each constant.
@@ -141,6 +146,23 @@ pod_out_t pod_ui_turn(pod_ui_t *u, const char *id, const char *kind, const char 
     return synced(u);
 }
 
+pod_out_t pod_ui_turn_stats(pod_ui_t *u, const char *id, int32_t passed, int32_t failed, int32_t commits, int32_t tokens_in, int32_t tokens_out)
+{
+    pod_model_turn_stats(&u->model, id, passed, failed, commits, tokens_in, tokens_out);
+    return synced(u);
+}
+
+pod_out_t pod_ui_set_skin(pod_ui_t *u, pod_skin_t skin)
+{
+    u->hands_free = false;   // a skin switch discards a hands-free recording: the cancel aborts it
+    const pod_out_t cancelled = pod_ui_touch_cancel(u);   // a contact or hold under way belongs to the old screen
+    pod_nav_init(&u->nav);
+    u->nav.skin = skin;
+    u->dirty = true;
+    const pod_out_t o = synced(u);
+    return cancelled.fx != POD_FX_NONE ? cancelled : o;   // an ABORT the cancel produced is not lost
+}
+
 pod_out_t pod_ui_sent(pod_ui_t *u, const char *id, uint32_t now_ms)
 {
     pod_model_sent(&u->model, id, now_ms);
@@ -181,7 +203,10 @@ static int iabs(int v) { return v < 0 ? -v : v; }
 static bool scrolls(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
-    return f && (f->view == POD_V_TABS || f->view == POD_V_TAB || f->view == POD_V_RECAP || f->view == POD_V_INBOX);
+    if (!f) return false;
+    if (u->nav.skin == POD_SKIN_CONSOLE)   // v3: Overview pages sideways and Recap's summary does not scroll (nor the host's pane)
+        return f->view == POD_V_TAB || f->view == POD_V_INBOX;
+    return f->view == POD_V_TABS || f->view == POD_V_TAB || f->view == POD_V_RECAP || f->view == POD_V_INBOX;
 }
 // A horizontal swipe on the Agent, Recap and Talking screens steps panes, as on the round dial (swipe left = next, right =
 // previous): travel >= POD_SW_MIN_PX, |dx| > 1.5 |dy|, released within POD_SW_MS or leaving at POD_SW_FLICK px/s.
@@ -192,7 +217,23 @@ static bool scrolls(const pod_ui_t *u)
 static bool swipes(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
-    return f && (f->view == POD_V_AGENT || f->view == POD_V_RECAP || f->view == POD_V_TALK);
+    return f && (f->view == POD_V_AGENT || f->view == POD_V_RECAP || f->view == POD_V_TALK ||
+                 ((f->view == POD_V_TAB || f->view == POD_V_TABS || f->view == POD_V_INBOX) && u->nav.skin == POD_SKIN_CONSOLE));   // Console: the tab view steps tabs, Overview pages, the Inbox goes back
+}
+// Console hold to talk: on an agent screen, or on a Tab tile (the agent under the finger). Not in the command bar (crumbs, chips), not
+// on Recent's rows (they open an agent; the hold is for a tab's own tiles), not on an agent that asks (voice stays refused
+// there, so the hold does not arm and no notice fires). Returns the agent id the hold would talk to, or NULL.
+static const char *hold_target(const pod_ui_t *u)
+{
+    const pod_frame_t *f = top(u);
+    if (u->nav.skin != POD_SKIN_CONSOLE || !f || u->ban_touch) return NULL;
+    if (u->start_y < POD_BAR_H) return NULL;   // nothing in the command bar holds
+    if (u->hit_valid && (u->hit.action == POD_A_BACK || u->hit.action == POD_A_ATTENTION || u->hit.action == POD_A_INBOX)) return NULL;
+    const char *id;
+    if (f->view == POD_V_TAB) id = u->hit_valid && u->hit.action == POD_A_OPEN_AGENT && f->tab != POD_TAB_RECENT && u->hit.id[0] ? u->hit.id : NULL;
+    else id = f->view == POD_V_AGENT || f->view == POD_V_RECAP ? f->agent : NULL;
+    const pod_agent_t *a = id ? pod_model_find(&u->model, id) : NULL;
+    return a && pod_model_eff(&u->model, a) != POD_ASKING ? id : NULL;
 }
 static bool wide(int dx, int dy) { return iabs(dx) * 2 > iabs(dy) * 3; }
 static bool inside(const pod_hit_t *h, int x, int y)
@@ -226,16 +267,16 @@ static bool scroll_rows(pod_ui_t *u, int travel_px, uint32_t now_ms)
 static bool pg_on(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
-    return f && f->view == POD_V_TABS && pod_tabs_pages(&u->model) > 1;
+    return f && f->view == POD_V_TABS && u->nav.skin != POD_SKIN_CONSOLE && pod_tabs_pages_of(&u->nav, &u->model) > 1;   // Console pages with a swipe: no drag, no settle
 }
 static int pg_page(const pod_ui_t *u)   // the resting page, from the frame
 {
-    int p = top(u)->scroll / 2, last = pod_tabs_pages(&u->model) - 1;
+    int p = top(u)->scroll / 2, last = pod_tabs_pages_of(&u->nav, &u->model) - 1;
     return p < 0 ? 0 : p > last ? last : p;
 }
 static int pg_band(const pod_ui_t *u, int raw)
 {
-    int end = (pod_tabs_pages(&u->model) - 1) * pod_tabs_pitch();
+    int end = (pod_tabs_pages_of(&u->nav, &u->model) - 1) * pod_tabs_pitch();
     return raw < 0 ? raw / 3 : raw > end ? end + (raw - end) / 3 : raw;
 }
 static int pg_ease(const pod_ui_t *u, uint32_t dt)   // ease-out cubic from pg_from to pg_to
@@ -256,14 +297,14 @@ static int pg_offset(pod_ui_t *u, uint32_t now_ms)
 }
 static int pg_nearest(const pod_ui_t *u, int off)
 {
-    int last = pod_tabs_pages(&u->model) - 1, pitch = pod_tabs_pitch();
+    int last = pod_tabs_pages_of(&u->nav, &u->model) - 1, pitch = pod_tabs_pitch();
     int p = off <= 0 ? 0 : (off + pitch / 2) / pitch;
     return p > last ? last : p;
 }
 // The finger is up (or the contact was cancelled: no velocity): pick the page and start settling onto it.
 static void pg_release(pod_ui_t *u, uint32_t now_ms, bool cancelled)
 {
-    int pitch = pod_tabs_pitch(), last = pod_tabs_pages(&u->model) - 1;
+    int pitch = pod_tabs_pitch(), last = pod_tabs_pages_of(&u->nav, &u->model) - 1;
     int off = pg_band(u, u->pg_base - u->pg_dy), from = pg_nearest(u, u->pg_base);
     int target = pg_nearest(u, off);
     int vel = (cancelled || (int32_t)(now_ms - u->pg_last_ms) > 100) ? 0 : u->pg_vel;   // a finger that rested has no flick
@@ -305,6 +346,48 @@ static pod_out_t banner_open(pod_ui_t *u, uint32_t now_ms)
     return o;
 }
 
+// The Console hold's deadline passed with the finger still: talk to the agent (a Tab tile opens it first). An offline
+// machine gets the notice instead. The contact is the hold's from here on, tap or not. It runs from the touch samples
+// (pod_ui_touch), the one task that also ends or aborts the recording, so a begin can never be overtaken by its end.
+static pod_out_t hold_fire(pod_ui_t *u, uint32_t now_ms)
+{
+    pod_out_t none;
+    memset(&none, 0, sizeof none);
+    u->hold_armed = false;
+    const pod_frame_t *t = top(u);
+    const bool tile = t && t->view == POD_V_TAB;
+    const char *now_id = tile ? u->hit.id : t ? t->agent : "";
+    if (!t || u->nav.depth != u->hold_depth || t->view != u->hold_view || strcmp(now_id, u->hold_agent) || (tile && !u->hit_valid))
+        return none;   // the screen or the agent changed under the finger since the DOWN: not this hold's any more
+    u->hold_fired = true;
+    u->hit_valid = false;
+    char id[ID_MAX];
+    pod_copy_str(id, sizeof id, u->hold_agent);
+    const pod_agent_t *ag = pod_model_find(&u->model, id);
+    if (!ag || pod_model_eff(&u->model, ag) == POD_ASKING) return none;
+    if (ag->state == POD_OFFLINE) {
+        pod_ui_notice(u, "That machine is offline", now_ms);
+        return none;
+    }
+    if (tile) {
+        const pod_agent_t *l[POD_AGENTS_MAX];
+        int cnt = pod_nav_list(&u->nav, &u->model, l, POD_AGENTS_MAX), at = -1;
+        for (int i = 0; i < cnt && at < 0; i++) if (!strcmp(l[i]->id, id)) at = i;
+        if (at < 0 || pod_nav_act(&u->nav, &u->model, POD_A_OPEN_AGENT, at, now_ms).fx != POD_FX_AGENT_OPEN) return none;
+        u->hold_tile = true;   // the host is not told agent.open: voice.start names the agent
+    }
+    pod_out_t o = pod_nav_act(&u->nav, &u->model, POD_A_TALK, 0, now_ms);
+    if (o.fx != POD_FX_VOICE_BEGIN) {
+        if (tile) pod_nav_act(&u->nav, &u->model, POD_A_BACK, 0, now_ms);
+        u->dirty = true;
+        return none;
+    }
+    u->hold_voice = true;
+    u->hands_free = true;   // the lift of this contact does nothing; a later tap sends
+    u->dirty = true;
+    return o;
+}
+
 pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bool *changed)
 {
     pod_out_t none;
@@ -320,12 +403,21 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
         u->touched = true;
         u->last_touch_ms = now_ms;
         u->cancelled = u->dragging = u->hit_valid = u->ban_touch = false;
+        memset(&u->hit, 0, sizeof u->hit);   // a DOWN on nothing carries nothing over from the last contact
+        if (u->hands_free && !pod_ui_talking(u)) u->hands_free = u->hold_voice = u->hold_tile = false;   // Talk ended some other way
+        u->hold_armed = u->hold_fired = false;
+        if (!u->hands_free) u->hold_voice = u->hold_tile = false;   // a hands-free recording keeps its owner for this tap
+        u->bar = !u->hands_free && u->nav.skin == POD_SKIN_CONSOLE && u->nav.depth > 1 && y < POD_BAR_H && top(u)->view != POD_V_TALK;
         u->start_x = x;
         u->start_y = y;
         u->anchor_y = y;
         u->scroll_px = 0;
         u->pg_dy = u->pg_vel = 0;
-        u->sw_ok = swipes(u) && y < POD_TRANSPORT_Y;
+        // Console has no transport line: a contact from anywhere may swipe sideways. One that starts in the bottom zone is a
+        // swipe up (BACK) or sideways (panes), decided on the lift by which direction dominates.
+        const bool console = u->nav.skin == POD_SKIN_CONSOLE;
+        u->sw_ok = !u->hands_free && swipes(u) && (console || y < POD_TRANSPORT_Y);
+        u->edge = !u->hands_free && console && u->nav.depth > 1 && y >= POD_BOTTOM_Y && top(u)->view != POD_V_TALK;
         u->sw_on = false;
         u->sw_vx = 0;
         u->sw_last_x = x;
@@ -346,15 +438,36 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
                 u->hit_valid = true;
                 break;
             }
+        if (u->hands_free && pod_ui_talking(u)) {   // the send tap is the whole screen's, even before Talk is drawn (u->frame is the old screen's)
+            memset(&u->hit, 0, sizeof u->hit);
+            u->hit.w = POD_W;
+            u->hit.h = POD_W;
+            u->hit.action = POD_A_TALK;
+            u->hit_valid = true;
+        }
         if (u->hit_valid && u->hit.action == POD_A_BANNER) {   // the banner takes the whole contact: no scroll, no swipe, no tap through it
             u->ban_touch = true;
             u->sw_ok = false;
             if (u->pg_mode == POD_PG_DRAG && pg_on(u)) pg_release(u, now_ms, false);   // a grid caught mid-settle lets go
         }
+        const char *target = hold_target(u);
+        if (target) {   // the hold belongs to this screen and this agent: if either changes before it fires, it does not
+            u->hold_armed = true;
+            u->hold_due_ms = now_ms + POD_HOLD_MS;
+            u->hold_depth = u->nav.depth;
+            u->hold_view = top(u)->view;
+            pod_copy_str(u->hold_agent, sizeof u->hold_agent, target);
+        }
         return none;
     }
     if (down) {
         if (!u->down || u->cancelled || u->ban_touch) return none;
+        if (u->hold_armed && (iabs(x - u->start_x) > POD_TAP_SLOP || iabs(y - u->start_y) > POD_TAP_SLOP)) u->hold_armed = false;
+        if (u->hold_armed && (int32_t)(now_ms - u->hold_due_ms) >= 0) {   // the still finger's sample that finds the deadline passed
+            pod_out_t held = hold_fire(u, now_ms);
+            if (u->hold_fired) { *changed = true; return held; }
+        }
+        if (u->hold_fired) return none;   // after the hold the contact only waits for its lift: never a scroll, a swipe or a tap
         if (iabs(x - u->start_x) > POD_TAP_SLOP || iabs(y - u->start_y) > POD_TAP_SLOP) u->hit_valid = false;
         if (u->sw_ok) {
             if ((int32_t)(now_ms - u->sw_last_ms) > 0) {
@@ -378,7 +491,7 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
                 }
                 if (dy != u->pg_dy) { u->pg_dy = dy; *changed = true; }
             }
-        } else if (scrolls(u) && !u->sw_on && (u->dragging || iabs(y - u->start_y) > POD_TAP_SLOP)) {
+        } else if (scrolls(u) && !u->sw_on && !u->bar && !u->edge && (u->dragging || iabs(y - u->start_y) > POD_TAP_SLOP)) {
             // The first step carries the travel since the DOWN; each later one the travel since the last.
             int dy = y - u->anchor_y;
             u->dragging = true;
@@ -399,6 +512,12 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
     bool was = u->down && !u->cancelled;
     if (u->down) { u->touched = true; u->last_touch_ms = now_ms; }
     u->down = false;
+    u->hold_armed = false;
+    if (u->hold_fired) {   // the hold already took this contact: its lift does nothing (a recording stays open, hands free)
+        u->hold_fired = false;
+        if (!u->hold_voice) u->hold_tile = false;
+        return none;
+    }
     if (u->scroll_begun) {   // the lift carries the rest of the travel and the speed it left at
         ht_scroll_end(&u->scroll, x, y, now_ms);
         u->scroll_begun = false;
@@ -412,6 +531,29 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
         if (u->ban_on && iabs(dx) <= POD_TAP_SLOP && iabs(dy) <= POD_TAP_SLOP && inside(&u->hit, x, y)) return banner_open(u, now_ms);
         return none;
     }
+    if (was && u->bar) {   // Console: a swipe down from the command bar goes home, to Overview (and is not a crumb tap)
+        int dx = x - u->start_x, dy = y - u->start_y;
+        if (dy >= POD_BAR_SWIPE && iabs(dy) * 2 > iabs(dx) * 3) {
+            *changed = true;
+            return pod_nav_act(&u->nav, &u->model, POD_A_TABS, 0, now_ms);
+        }
+    }
+    if (was && u->edge) {   // Console: a swipe up from the bottom zone goes back one level (the sideways case falls through)
+        int dx = x - u->start_x, dy = y - u->start_y;
+        u->edge = false;
+        const pod_frame_t *t = top(u);
+        if (dy <= -POD_EDGE_SWIPE && iabs(dy) * 2 > iabs(dx) * 3 && t && t->view != POD_V_TALK) {
+            *changed = true;
+            return pod_nav_act(&u->nav, &u->model, POD_A_BACK, 1, now_ms);
+        }
+    }
+    if (was && u->nav.skin == POD_SKIN_CONSOLE && top(u)->view == POD_V_TABS) {   // Console Overview: a swipe down, from anywhere, opens the Inbox
+        int dx = x - u->start_x, dy = y - u->start_y;
+        if (dy >= POD_BAR_SWIPE && iabs(dy) * 2 > iabs(dx) * 3) {
+            *changed = true;
+            return pod_nav_act(&u->nav, &u->model, POD_A_INBOX, 0, now_ms);
+        }
+    }
     if (was && u->pg_mode == POD_PG_DRAG && pg_on(u)) {   // dragged, or caught while settling: settle onto a page
         pg_release(u, now_ms, false);
         *changed = true;
@@ -424,6 +566,11 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
         if (iabs(dx) >= POD_SW_MIN_PX && wide(dx, dy) && fast) {
             u->sw_ok = u->sw_on = false;
             *changed = true;
+            if (u->nav.skin == POD_SKIN_CONSOLE && top(u)->view == POD_V_TABS) {   // Overview: a page (two grid rows) a swipe
+                int last = pod_tabs_pages_of(&u->nav, &u->model) - 1, want = pg_page(u) + (dx < 0 ? 1 : -1);
+                if (want >= 0 && want <= last) pod_nav_act(&u->nav, &u->model, POD_A_SCROLL, want * 2 - top(u)->scroll, now_ms);   // to the page itself, whatever the frame's scroll holds
+                return none;
+            }
             return pod_nav_act(&u->nav, &u->model, dx < 0 ? POD_A_NEXT : POD_A_PREV, 0, now_ms);
         }
     }
@@ -438,6 +585,9 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
     } else if (u->hit.id[0] && u->hit.action == POD_A_OPEN_NOTIF) {
         arg = -1;
         for (int i = 0; i < u->model.unread_count; i++) if (!strcmp(u->model.unread[i].agent, u->hit.id)) { arg = i; break; }
+    } else if (u->hit.id[0] && u->hit.action == POD_A_FOLLOW) {
+        arg = -1;
+        for (int i = 0; i < u->model.agent_count; i++) if (!strcmp(u->model.agents[i].id, u->hit.id)) { arg = i; break; }
     } else if (u->hit.id[0] && u->hit.action == POD_A_OPEN_TAB) {
         arg = -1;
         for (int i = 0; i < u->model.tab_count; i++) if (!strcmp(u->model.tabs[i].id, u->hit.id)) { arg = i; break; }
@@ -446,24 +596,57 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
     if (u->hit.action == POD_A_TALK && u->nav.depth) {   // an agent of an offline machine cannot be talked to: say why
         const pod_agent_t *ag = pod_model_find(&u->model, top(u)->agent);
         if (ag && ag->state == POD_OFFLINE) {
+            pod_out_t o = none;   // the machine went away under an open recording: discard it, send nothing
+            if (pod_ui_talking(u)) {
+                o.fx = POD_FX_VOICE_ABORT;
+                pod_copy_str(o.agent, sizeof o.agent, top(u)->agent);
+                pod_ui_talk_over(u);
+            }
             pod_ui_notice(u, "That machine is offline", now_ms);
             *changed = true;
-            return none;
+            return o;
         }
     }
     pod_out_t out = pod_nav_act(&u->nav, &u->model, u->hit.action, arg, now_ms);
     *changed = true;
+    if (u->hands_free && out.fx == POD_FX_VOICE_END) u->hands_free = u->hold_voice = u->hold_tile = false;   // sent
     return out;
 }
 
-void pod_ui_touch_cancel(pod_ui_t *u)
+pod_out_t pod_ui_touch_cancel(pod_ui_t *u)
 {
+    pod_out_t none;
+    memset(&none, 0, sizeof none);
     if (u->down && !u->cancelled && u->pg_mode == POD_PG_DRAG && pg_on(u)) pg_release(u, u->pg_last_ms, true);
     if (u->scroll_begun) { ht_scroll_cancel(&u->scroll); u->scroll_begun = false; }
     u->down = false;
     u->cancelled = true;
     u->hit_valid = false;
     u->ban_touch = false;
+    // The hold fired and a recording may be open: the finger is gone, so end it (and Talk, back to the Tab for a tile's hold).
+    pod_out_t o = none;
+    if (u->hands_free && pod_ui_talking(u)) {   // hands free: the recording does not depend on this contact
+        u->hold_armed = u->hold_fired = u->bar = false;
+        return none;
+    }
+    if (u->hold_voice && pod_ui_talking(u)) {
+        o.fx = POD_FX_VOICE_ABORT;
+        pod_copy_str(o.agent, sizeof o.agent, top(u)->agent);
+        pod_nav_talk_over(&u->nav);
+        if (u->hold_tile) pod_nav_act(&u->nav, &u->model, POD_A_BACK, 0, u->down_ms);
+        u->dirty = true;
+    }
+    u->hold_armed = u->hold_fired = u->hold_voice = u->hold_tile = u->bar = u->hands_free = false;
+    return o;
+}
+
+// Fires the hold for a deadline passed outside a touch sample (tests; the device reaches it through pod_ui_touch only).
+pod_out_t pod_ui_tick(pod_ui_t *u, uint32_t now_ms)
+{
+    pod_out_t none;
+    memset(&none, 0, sizeof none);
+    if (!u->hold_armed || !u->down || u->cancelled || (int32_t)(now_ms - u->hold_due_ms) < 0) return none;
+    return hold_fire(u, now_ms);
 }
 
 // ---- voice and clock ---------------------------------------------------------------------------------------
@@ -477,6 +660,11 @@ bool pod_ui_talking(const pod_ui_t *u)
 void pod_ui_talk_over(pod_ui_t *u)
 {
     pod_nav_talk_over(&u->nav);   // back on the screen TALK came from, same stack; no ABORT: nothing records
+    if (u->hold_voice && u->hold_tile) {   // a tile's hold opened the agent for this recording: without one, back to the Tab
+        pod_nav_act(&u->nav, &u->model, POD_A_BACK, 0, u->down_ms);
+        u->dirty = true;
+    }
+    u->hold_voice = u->hands_free = false;
 }
 
 void pod_ui_unsend(pod_ui_t *u, uint32_t now_ms)
@@ -488,21 +676,41 @@ void pod_ui_unsend(pod_ui_t *u, uint32_t now_ms)
 bool pod_ui_pet_on_screen(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
-    return u->model.linked && f && (f->view == POD_V_AGENT || f->view == POD_V_RECAP || f->view == POD_V_TALK);
+    if (!u->model.linked || !f) return false;
+    if (u->nav.skin == POD_SKIN_CONSOLE) {   // Console draws the hero pet on Agent and Recap (nothing when the agent has left the roster) and the listening pet on Talk
+        if (f->view == POD_V_TALK) return true;
+        return (f->view == POD_V_AGENT || f->view == POD_V_RECAP) && pod_model_find(&u->model, f->agent);
+    }
+    return f->view == POD_V_AGENT || f->view == POD_V_RECAP || f->view == POD_V_TALK;
 }
 
-// The clock's period while the screen animates on a fixed beat: 300 ms while the Tabs grid shows a Playing ribbon; 150 ms
-// while an agent works on Tab (the equaliser is three rects, cheap to redraw); else a second (the elapsed clocks).
+// The clock's period while the screen animates on a fixed beat: 300 ms while the Classic Tabs grid shows a Playing ribbon; 150 ms
+// while an agent works on Tab (Console: 66 ms while a row on screen works, its bars move; the equaliser is three rects, cheap to redraw); else a second (the elapsed clocks).
 static uint32_t unit_ms(const pod_ui_t *u, uint32_t now_ms)
 {
-    if (u->pg_mode == POD_PG_ANIM) return POD_PG_STEP_MS;
+    if (u->pg_mode == POD_PG_ANIM && u->nav.skin != POD_SKIN_CONSOLE) return POD_PG_STEP_MS;   // Console's pages switch at once
     const pod_frame_t *f = top(u);
-    if (u->model.linked && f && f->view == POD_V_TABS && u->pg_mode == POD_PG_IDLE && pod_tabs_ribbon(&u->model, pg_page(u)))
+    if (u->model.linked && f && f->view == POD_V_TABS && u->nav.skin != POD_SKIN_CONSOLE && u->pg_mode == POD_PG_IDLE && pod_tabs_ribbon(&u->model, pg_page(u)))
         return POD_TABS_BAR_MS;   // the Playing ribbon's bars: three tiny rects
-    if (u->model.linked && f && (f->view == POD_V_TAB))
+    if (u->model.linked && f && f->view == POD_V_TAB && u->nav.skin == POD_SKIN_CONSOLE) {   // Tab and Recent: the rows on screen
+        const pod_agent_t *l[POD_AGENTS_MAX];
+        int n = pod_nav_list(&u->nav, &u->model, l, POD_AGENTS_MAX), max = n > CS_ROWS_MAX ? n - CS_ROWS_MAX : 0;
+        int first = f->scroll < 0 ? 0 : f->scroll > max ? max : f->scroll;
+        for (int i = first; i < n && i < first + CS_ROWS_MAX; i++)
+            if (pod_model_eff(&u->model, l[i]) == POD_WORKING) return POD_CS_ANIM_MS;
+    } else if (u->model.linked && f && f->view == POD_V_TAB)
         for (int i = 0; i < u->model.agent_count; i++)
             if (pod_model_state(&u->model, &u->model.agents[i], now_ms) == POD_WORKING) return 150;
     return 1000;
+}
+
+// Whether the Console command bar draws its working mark: someone runs and the update screen does not own the glass.
+static bool bar_mark(const pod_ui_t *u)
+{
+    if (u->nav.skin != POD_SKIN_CONSOLE || u->ota) return false;
+    int running;
+    cs_counts(&u->model, &running, NULL);
+    return running > 0;
 }
 
 // Milliseconds to the next edge: the pet's own next step (the screen says which pet, scene and extra animation) while
@@ -524,6 +732,11 @@ static uint32_t edge_ms(const pod_ui_t *u, uint32_t now_ms)
         int32_t left = (int32_t)(u->ban_until - now_ms);
         if (left < 1) left = 1;
         if ((uint32_t)left < edge) edge = (uint32_t)left;
+        if (u->nav.skin == POD_SKIN_CONSOLE && edge > 33 && u->model.linked && !pod_ui_talking(u) && !u->ota) edge = 33;   // the toast's timer line shrinks (only while it is drawn)
+    }
+    if (bar_mark(u)) {   // the bar's working mark: a new height every POD_CS_ANIM_MS on every Console screen, only while someone runs
+        uint32_t beat = POD_CS_ANIM_MS - now_ms % POD_CS_ANIM_MS;
+        if (edge > beat) edge = beat;
     }
     return edge;
 }

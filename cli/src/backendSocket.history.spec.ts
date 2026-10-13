@@ -5,6 +5,7 @@ import { BackendSocket } from './backendSocket.js'
 import { dispatchDown, relaySocket } from './testing/relaySocket.js'
 import { codexMessagesToEvents, windowCodexLines } from './engines/codex/normalizer.js'
 import { messagesToEvents, subagentStatsFromRawLines, windowRawLines } from './lib/normalize.js'
+import { withoutOutputTail } from './lib/cardUpdate.js'
 import { registry } from './lib/registry.js'
 import { stoppedAgents } from './lib/stoppedAgents.js'
 import { tailFile } from './lib/transcriptTail.js'
@@ -99,7 +100,7 @@ describe.each([
         const old = window(lines, { limit, before })
         const events = toEvents(old.window)
         if (before && events[events.length - 1]?.type === 'done') events.pop()
-        expect(reply.events, `limit ${limit}, page ${page}`).toEqual(JSON.parse(JSON.stringify(events)))
+        expect(reply.events, `limit ${limit}, page ${page}`).toEqual(JSON.parse(JSON.stringify(events.map(withoutOutputTail))))
         expect({ hasMore: reply.hasMore, oldestCursor: reply.oldestCursor }).toEqual({ hasMore: old.hasMore, oldestCursor: old.oldestCursor })
         if (!old.hasMore || !old.oldestCursor) break
         before = old.oldestCursor
@@ -109,7 +110,7 @@ describe.each([
 
   it('answers a request with no limit with the whole thread, in the reply it always had', async () => {
     const reply = await ask('session_get', { sessionId, before: 'ignored without a limit' })
-    expect(reply.events).toEqual(JSON.parse(JSON.stringify(toEvents(await tailFile(file, Infinity)))))
+    expect(reply.events).toEqual(JSON.parse(JSON.stringify(toEvents(await tailFile(file, Infinity)).map(withoutOutputTail))))
     expect(reply).not.toHaveProperty('hasMore')
     expect(reply).not.toHaveProperty('oldestCursor')
   })

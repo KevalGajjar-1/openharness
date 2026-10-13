@@ -1,6 +1,6 @@
 // The Recap screen: a small cover, the name and status, then the whole recap as plain wrapped text, scrolled by a
 // vertical drag when it is longer than the space.
-#include "pod_view_shared.h"
+#include "pod/pod_view_shared.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,30 +29,48 @@ static int body_y(const pod_agent_t *a)
     return cap_top - 9;   // a 32 px cell's capitals start 9 px in
 }
 static int body_rows(const pod_agent_t *a) { return (POD_TRANSPORT_Y - 8 - body_y(a)) / ht_pro_32.height; }
-static int layout(const pod_agent_t *a)
+// The recap's sentences joined with spaces; returns the bytes written (cap includes the NUL).
+int pod_recap_join(const pod_agent_t *a, char *out, size_t cap)
 {
-    static EXT_RAM_BSS_ATTR char joined[POD_RECAP_BYTES + POD_RECAP_LINES + 4];
     size_t n = 0;
     for (int i = 0; i < a->recap_lines; i++) {
         size_t len = strlen(a->recap + a->line_at[i]);
-        if (n + len + 2 > sizeof joined) break;
-        if (n) joined[n++] = ' ';
-        memcpy(joined + n, a->recap + a->line_at[i], len);
+        if (n + len + 2 > cap) break;
+        if (n) out[n++] = ' ';
+        memcpy(out + n, a->recap + a->line_at[i], len);
         n += len;
     }
-    joined[n] = 0;
-    // At most RECAP_WORDS words (split on ASCII whitespace, which never occurs inside a UTF-8 sequence); more ends with "...".
+    out[n] = 0;
+    return (int)n;
+}
+// At most RECAP_WORDS words (split on ASCII whitespace, which never occurs inside a UTF-8 sequence); more ends with "...".
+// out may be recap itself; cap leaves room for the dots.
+int pod_recap_cut(const char *recap, char *out, size_t cap)
+{
+    if (!cap) return 0;
+    size_t n = strlen(recap);
+    if (n + 4 > cap) n = cap > 4 ? cap - 4 : 0;
+    memmove(out, recap, n);
+    out[n] = 0;
     int words = 0;
     for (size_t i = 0; i < n;) {
-        while (i < n && (joined[i] == ' ' || joined[i] == '\n' || joined[i] == '\t' || joined[i] == '\r')) i++;
+        while (i < n && (out[i] == ' ' || out[i] == '\n' || out[i] == '\t' || out[i] == '\r')) i++;
         if (i >= n) break;
         if (++words > RECAP_WORDS) {
-            while (i && (joined[i - 1] == ' ' || joined[i - 1] == '\n' || joined[i - 1] == '\t' || joined[i - 1] == '\r')) i--;
-            memcpy(joined + i, "...", 4);
+            while (i && (out[i - 1] == ' ' || out[i - 1] == '\n' || out[i - 1] == '\t' || out[i - 1] == '\r')) i--;
+            if (i + 4 > cap) break;
+            memcpy(out + i, "...", 4);
             break;
         }
-        while (i < n && joined[i] != ' ' && joined[i] != '\n' && joined[i] != '\t' && joined[i] != '\r') i++;
+        while (i < n && out[i] != ' ' && out[i] != '\n' && out[i] != '\t' && out[i] != '\r') i++;
     }
+    return (int)strlen(out);
+}
+static int layout(const pod_agent_t *a)
+{
+    static EXT_RAM_BSS_ATTR char joined[POD_RECAP_BYTES + POD_RECAP_LINES + 4];
+    pod_recap_join(a, joined, sizeof joined);
+    pod_recap_cut(joined, joined, sizeof joined);
     return pod_wrap(joined, &ht_pro_32, BODY_W, ROWS_ALL, pod_recap_rows);
 }
 static bool shows_recap(const pod_model_t *m, const pod_agent_t *a)
@@ -94,7 +112,8 @@ uint32_t pod_view_recap_next_ms(const pod_nav_t *nav, const pod_model_t *m, uint
     if (!a) return POD_PET_STEP_MS;
     bool working = pod_model_eff(m, a) == POD_WORKING;
     uint32_t ms = pod_pet_next_step_ms(a->engine, working ? POD_SCENE_WORK : POD_SCENE_REST, now_ms, 0);
-    return working && ms > POD_PET_STEP_MS ? POD_PET_STEP_MS : ms;
+    uint32_t cap = nav->skin == POD_SKIN_CONSOLE ? POD_CS_ANIM_MS : POD_PET_STEP_MS;
+    return working && ms > cap ? cap : ms;
 }
 
 void pod_view_recap(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t *m, uint32_t now_ms)

@@ -13,8 +13,8 @@
 // When the frame is short of runs the dots go first, then the marks, then the cards of a cover, the least visible covers
 // first (at rest: the last covers first) and the selected one last. The ribbon stays; only while the grid moves, as the very
 // last resort, the ribbons of the least visible covers go.
-#include "pod_view.h"
-#include "pod_view_shared.h"
+#include "pod/pod_view.h"
+#include "pod/pod_view_shared.h"
 #include "pro_canvas.h"
 
 #include <stdio.h>
@@ -238,7 +238,7 @@ void pod_view_tabs(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t *
             for (;;) {
                 int total = base;
                 for (int k = 0; k < n; k++) total += (int)(total_cover_runs(m, sl[k].c, sl[k].detail) + ribbon_runs(&sl[k].cap, sl[k].detail));
-                if (total <= HT_RUNS) goto fitted;
+                if (total <= POD_CLASSIC_RUNS) goto fitted;
                 int pick = -1;
                 for (int i = 0; i < n; i++) {
                     bool has = st == 3 ? ribbon_runs(&sl[i].cap, sl[i].detail) > 0 : st == 2 ? !(sl[i].detail & BARE) : (sl[i].detail & stage[st]) != 0;

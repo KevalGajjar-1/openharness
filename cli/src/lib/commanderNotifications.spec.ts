@@ -36,11 +36,11 @@ describe('one completed-result decision for desktop and device', () => {
       turn[0], { type: 'tool_start', payload: { id: 't', tool: 'Read', input: { path: '/work/file' } } },
       turn[1], turn[2],
     ], 's')
-    expect(device.map(f => f.payload.kind)).toEqual(['processing', 'tool'])
-    expect(device[1].payload).toEqual({ kind: 'tool', text: 'Read', recap: '/work/file', color: '#61afef', detail: 'path: /work/file' })
+    expect(device.map(f => f.payload.kind)).toEqual(['turn_started', 'processing', 'tool', 'reply_text'])   // turn_started, reply_text: local-only, device-only
+    expect(device[2].payload).toEqual({ kind: 'tool', text: 'Read', recap: '/work/file', color: '#61afef', detail: 'path: /work/file' })
     await vi.runAllTimersAsync()
-    expect(device.map(f => f.payload.kind)).toEqual(['processing', 'tool', 'done', 'summary'])
-    expect(desktop).toHaveLength(1)
+    expect(device.map(f => f.payload.kind)).toEqual(['turn_started', 'processing', 'tool', 'reply_text', 'done', 'summary'])
+    expect(desktop).toHaveLength(1)   // sendWeb never sees the local-only card
     expect(desktop[0].payload.notification).toEqual(device.at(-1)?.payload.notification)
     expect(desktop[0].agentId).toBe('agent')
     expect(desktop[0].payload.notification.kind).toBe('done')

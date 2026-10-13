@@ -1,6 +1,6 @@
 // The Inbox (the unread notifications as the Tab list's rows) and the notification banner (a card that drops under the
 // status bar when a turn ends). Both read model->unread; the bell that opens the Inbox is in pod_chrome.c.
-#include "pod_view_shared.h"
+#include "pod/pod_view_shared.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,7 +77,7 @@ void pod_view_inbox(pod_out_frame_t *f, const pod_nav_t *nav, const pod_model_t 
     }
     int first = imax(0, imin(fr->scroll, n - ROWS_MAX));
     int shown = imin(ROWS_MAX, n - first);
-    int budget = HT_RUNS - s->count - 4 - pod_spare_runs(f);
+    int budget = POD_CLASSIC_RUNS - s->count - 4 - pod_spare_runs(f);
     for (; shown > 0; shown--) {
         unsigned runs = 0;
         for (int i = 0; i < shown; i++) runs += row_runs(m, &m->unread[first + i]);

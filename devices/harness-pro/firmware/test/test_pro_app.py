@@ -143,6 +143,7 @@ bool pro_voice_waiting(void) { return V.waiting; }
 void pro_voice_close(void) { V.open = V.pending = V.waiting = false; }
 void pro_voice_link_lost(void) { CHECK(LOCK_DEPTH == 0); V.lost++; V.open = V.pending = V.waiting = false; }
 void pro_voice_tick(uint32_t t) { (void)t; }
+unsigned pro_rec_level(void) { return 0; }
 
 static pro_touch_t TCH;
 // What a performed effect looks like as the pod_out_t SRC's replays compare.
@@ -272,6 +273,18 @@ static void to_talk(void) {
     tap(POD_A_OPEN_AGENT, 0);
     expect(tap(POD_A_TALK, 0), POD_FX_VOICE_BEGIN, "a1");
     CHECK(top() == POD_V_TALK);
+}
+
+// The orphan window: an abort landed after the touch task left Talk but before pro_voice_begin claimed the recording.
+// The voice is open with no Talk screen and nothing sent: the next tick discards it, sending nothing.
+static void orphan_recording_is_discarded(void) {
+    to_talk();
+    pod_ui_talk_over(&U);
+    CHECK(!pod_ui_talking(&U));
+    const int aborts = R.end_abort, sends = R.end_send;
+    V.open = true; V.pending = false; V.waiting = false;
+    pro_app_tick();
+    CHECK(!V.open && R.end_abort == aborts + 1 && R.end_send == sends);
 }
 
 static void tabs_button_from_everywhere(void) {
@@ -906,6 +919,33 @@ static void screen_turn_switch(void) {
     CHECK(!pro_app_apply_turn());                       // the request was consumed
     pro_app_request_turn(def);                          // and back, with no finger down: nothing is swallowed
     CHECK(pro_app_apply_turn() && pro_turn_get() == def && pro_app_test_take_force_frame());
+    CHECK(pro_app_touch(true, 360, 360));
+    pro_app_touch_cancel();
+}
+
+// The skin switch is applied like the turn, between frames. Mid-voice it ends the voice (discarded), swallows the held
+// contact, resets nav to its root and repaints the whole glass.
+static void skin_switch_mid_voice(void) {
+    to_talk();
+    V.open = true;                                      // the recorder is open for a1
+    R.end_abort = 0;
+    (void)pro_app_test_take_force_frame();
+    CHECK(!pro_app_apply_skin());                       // nothing asked, nothing done
+    pro_app_request_skin(0);                            // the skin it already has: no switch, no repaint
+    CHECK(!pro_app_apply_skin() && !pro_app_test_take_force_frame() && U.nav.depth == 3);
+    CHECK(pro_app_touch(true, 360, 360));               // a finger down ...
+    pro_app_request_skin(1);
+    CHECK(U.nav.skin == POD_SKIN_CLASSIC);              // ... the switch waits for the frame
+    CHECK(pro_app_apply_skin());
+    CHECK(R.end_abort == 1 && !V.open);                 // the voice was discarded, not sent
+    CHECK(U.nav.skin == POD_SKIN_CONSOLE && U.nav.depth == 1 && top() == POD_V_TABS && !pod_ui_talking(&U));
+    CHECK(pro_app_test_take_force_frame());
+    CHECK(!pro_app_touch(true, 360, 360));              // the held contact is swallowed
+    CHECK(pro_app_touch(true, 360, 360));               // the next one is a contact again
+    pro_app_touch_cancel();
+    CHECK(!pro_app_apply_skin());                       // consumed
+    pro_app_request_skin(0);                            // and back, nothing held: nothing is swallowed
+    CHECK(pro_app_apply_skin() && U.nav.skin == POD_SKIN_CLASSIC && pro_app_test_take_force_frame());
     CHECK(pro_app_touch(true, 360, 360));
     pro_app_touch_cancel();
 }
@@ -2001,6 +2041,46 @@ static void side_button(void) {
     pro_app_wake();
 }
 
+// Console: the side button goes back one level, and does nothing at the root. A recording is still discarded.
+static void side_button_console(void) {
+    setup();
+    pod_ui_set_skin(&U, POD_SKIN_CONSOLE);
+    render();
+    tap(POD_A_OPEN_TAB, 0);
+    tap(POD_A_OPEN_AGENT, 0);
+    CHECK(top() == POD_V_AGENT && U.nav.depth == 3);
+    pro_app_button_press();
+    CHECK(top() == POD_V_TAB && U.nav.depth == 2 && LOCK_DEPTH == 0);
+    pro_app_button_press();
+    CHECK(top() == POD_V_TABS && U.nav.depth == 1);
+    pro_app_button_press();
+    CHECK(top() == POD_V_TABS && U.nav.depth == 1 && LOCK_DEPTH == 0);
+    pod_ui_set_skin(&U, POD_SKIN_CLASSIC);
+}
+
+// Console hands free: the hold opens the recording, the lift keeps it, a cancel keeps it, the side button discards it.
+static void side_button_discards_hands_free(void) {
+    setup();
+    pod_ui_set_skin(&U, POD_SKIN_CONSOLE);
+    render();
+    tap(POD_A_OPEN_TAB, 0);
+    tap(POD_A_OPEN_AGENT, 0);
+    bool c;
+    ucontact(true, 360, 400, &c);
+    now += 450;
+    expect(ucontact(true, 360, 400, &c), POD_FX_VOICE_BEGIN, "a1");
+    CHECK(top() == POD_V_TALK);
+    expect(ucontact(false, 360, 400, &c), POD_FX_NONE, NULL);   // the lift does nothing
+    CHECK(top() == POD_V_TALK && R.end_abort == 0 && R.end_send == 0);
+    ucontact(true, 360, 400, &c);                                // a second contact, cancelled: still recording
+    pro_app_touch_cancel();
+    CHECK(top() == POD_V_TALK);
+    memset(&R, 0, sizeof R);
+    pro_app_button_press();
+    CHECK(R.end_abort == 1 && top() != POD_V_TALK && !pod_ui_talking(&U) && !U.hands_free && LOCK_DEPTH == 0);
+    pod_ui_set_skin(&U, POD_SKIN_CLASSIC);
+}
+
 // L3: a question that arrives with no link is not taken (the cable drops everything but welcome/ping then, and the app
 // does not trust a late callback either).
 static void question_needs_the_link(void) {
@@ -2395,6 +2475,88 @@ static void updated_notice(void) {
     WAS_UPDATED = false;
 }
 
+// H1/H2/L11: the Console hold runs on the touch path. The still finger's samples find the deadline (no render, no tick), so
+// the begin and the end or abort share the touch task; a contact cancelled after the hold ends the recording with it.
+static void console_agent_for_hold(void) {
+    setup();
+    pod_ui_set_skin(&U, POD_SKIN_CONSOLE);
+    render();
+    tap(POD_A_OPEN_TAB, 0);
+    tap(POD_A_OPEN_AGENT, 0);
+    CHECK(top() == POD_V_AGENT && !pod_ui_talking(&U));
+}
+// DOWN, then still samples 16 ms apart until the recorder is asked; returns the sample's index (the DOWN is 0), or -1.
+static int hold_until_begin(void) {
+    bool c;
+    ucontact(true, 360, 400, &c);
+    for (int i = 1; i <= 60; i++) {
+        ucontact(true, 360, 400, &c);
+        if (R.begins) return i;
+    }
+    return -1;
+}
+static void console_hold_fires_on_the_touch_path(void) {
+    console_agent_for_hold();
+    const int at = hold_until_begin();
+    CHECK(at == 25);   // 25 * 16 ms = 400 ms: the first sample at the deadline, with no pro_app_tick and no render between
+    CHECK(V.open && !strcmp(V.agent, "a1") && pod_ui_talking(&U) && LOCK_DEPTH == 0);
+    bool c;
+    expect(ucontact(false, 360, 400, &c), POD_FX_NONE, NULL);   // v2: the lift does nothing, the recording stays open
+    CHECK(V.open && R.end_send == 0 && pod_ui_talking(&U));
+    render();                                                    // the Talk frame, whose full-screen hit is topmost
+    ucontact(true, 20, 20, &c);                                  // a new tap anywhere (here over the bar) sends
+    ucontact(false, 20, 20, &c);
+    CHECK(R.end_send == 1 && V.waiting);
+    // A tick while the finger is still down never starts it: a tap-length contact does not talk.
+    console_agent_for_hold();
+    ucontact(true, 360, 400, &c);
+    now += 1000;
+    pro_app_tick();
+    CHECK(R.begins == 0 && !V.open && top() == POD_V_AGENT);
+}
+// v2: a contact cancel no longer ends a hands-free recording (it was: abort); the side button / tap end it.
+static void console_hold_cancel_keeps_the_recording(void) {
+    console_agent_for_hold();
+    CHECK(hold_until_begin() == 25 && V.open);
+    memset(&R, 0, sizeof R);
+    pro_app_touch_cancel();   // a second finger, an untrusted sample, the glass turning or sleep
+    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U) && LOCK_DEPTH == 0);
+    bool c;
+    ucontact(false, 360, 400, &c);
+    CHECK(R.end_send == 0 && V.open);
+    // The finger task's own rule: an untrusted sample mid-hold.
+    console_agent_for_hold();
+    CHECK(hold_until_begin() == 25 && V.open);
+    memset(&R, 0, sizeof R);
+    pro_touch_feed(&TCH, PRO_TOUCH_BAD, 360, 400);
+    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
+    // A slide down 200 px while the hold is still down does nothing either.
+    console_agent_for_hold();
+    CHECK(hold_until_begin() == 25 && V.open);
+    memset(&R, 0, sizeof R);
+    ucontact(true, 360, 600, &c);
+    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
+}
+static void console_tile_hold_refused_returns_to_the_tab(void) {
+    setup();
+    pod_ui_set_skin(&U, POD_SKIN_CONSOLE);
+    render();
+    tap(POD_A_OPEN_TAB, 0);
+    render();
+    const pod_hit_t *tile = NULL;
+    for (int i = 0; i < U.frame.hit_count; i++) if (U.frame.hits[i].action == POD_A_OPEN_AGENT) { tile = &U.frame.hits[i]; break; }
+    CHECK(tile);
+    const int x = tile->x + tile->w / 2, y = tile->y + tile->h / 2;
+    V.refuse = true;
+    bool c;
+    ucontact(true, x, y, &c);
+    for (int i = 0; i < 30 && !R.begins; i++) ucontact(true, x, y, &c);
+    CHECK(R.begins == 1 && !V.open);
+    CHECK(top() == POD_V_TAB && !pod_ui_talking(&U) && U.notice_on);   // not left on the Agent screen it opened
+    ucontact(false, x, y, &c);
+    CHECK(top() == POD_V_TAB);
+}
+
 int main(int argc, char **argv) {
     static const struct { const char *name; void (*run)(void); } tests[] = {
         {"journey", journey}, {"tabs_button_from_everywhere", tabs_button_from_everywhere}, {"recap_drag_scrolls", recap_drag_scrolls},
@@ -2411,12 +2573,12 @@ int main(int argc, char **argv) {
         {"grid_caught_while_settling", grid_caught_while_settling}, {"one_page_does_not_move", one_page_does_not_move},
         {"tap_cover_opens_tab", tap_cover_opens_tab},
         {"release_off_the_hit_cancels", release_off_the_hit_cancels},
-        {"panel_turn", panel_turn}, {"screen_turn_switch", screen_turn_switch}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, {"ribbon_wakes", ribbon_wakes},
+        {"panel_turn", panel_turn}, {"screen_turn_switch", screen_turn_switch}, {"skin_switch_mid_voice", skin_switch_mid_voice}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, {"ribbon_wakes", ribbon_wakes},
         {"roster_after_swarms_rebuilds_tabs", roster_after_swarms_rebuilds_tabs},
         {"moved_agent_reaches_the_model", moved_agent_reaches_the_model},
         {"recap_flips_to_agent_when_work_starts", recap_flips_to_agent_when_work_starts},
         {"library_fills_other_tabs", library_fills_other_tabs}, {"sweep_schedule", sweep_schedule},
-        {"notice_shows_three_seconds", notice_shows_three_seconds}, {"link_drop_keeps_the_stack", link_drop_keeps_the_stack},
+        {"notice_shows_three_seconds", notice_shows_three_seconds}, {"link_drop_keeps_the_stack", link_drop_keeps_the_stack}, {"orphan_recording_is_discarded", orphan_recording_is_discarded}, {"side_button_discards_hands_free", side_button_discards_hands_free},
         {"send_before_recorder_started", send_before_recorder_started}, {"cap_leaves_talking", cap_leaves_talking},
         {"tap_resolves_by_id", tap_resolves_by_id}, {"utf8_cuts", utf8_cuts}, {"clock_wrap", clock_wrap}, {"equaliser_wakes_fast", equaliser_wakes_fast}, {"small_cable_stack", small_cable_stack},
         {"activity_text_is_stable_through_the_real_cadence", activity_text_is_stable_through_the_real_cadence},
@@ -2434,12 +2596,14 @@ int main(int argc, char **argv) {
         {"pro_app_test_turn_gates", pro_app_test_turn_gates}, {"pro_app_test_summary_and_question", pro_app_test_summary_and_question},
         {"pro_app_test_sweep_retries", pro_app_test_sweep_retries}, {"pro_app_test_voice_gate", pro_app_test_voice_gate},
         {"pro_app_test_voice_paths", pro_app_test_voice_paths}, {"pro_app_test_touch_rules", pro_app_test_touch_rules},
-        {"pro_app_test_roster_and_swarms", pro_app_test_roster_and_swarms}, {"side_button", side_button}, {"question_needs_the_link", question_needs_the_link},
+        {"pro_app_test_roster_and_swarms", pro_app_test_roster_and_swarms}, {"side_button", side_button}, {"side_button_console", side_button_console}, {"question_needs_the_link", question_needs_the_link},
         {"notify_banner_beep_and_expiry", notify_banner_beep_and_expiry}, {"notify_tap_opens_and_swipe_dismisses", notify_tap_opens_and_swipe_dismisses},
         {"notify_never_over_talk", notify_never_over_talk}, {"notify_replace_seen_and_read", notify_replace_seen_and_read},
         {"ota_screen_and_touch", ota_screen_and_touch}, {"voice_refused_while_updating", voice_refused_while_updating},
         {"update_gate", update_gate}, {"ota_failed_returns", ota_failed_returns}, {"ota_keeps_awake", ota_keeps_awake},
         {"ota_notifications_quiet", ota_notifications_quiet}, {"updated_notice", updated_notice},
+        {"console_hold_fires_on_the_touch_path", console_hold_fires_on_the_touch_path}, {"console_hold_cancel_keeps_the_recording", console_hold_cancel_keeps_the_recording},
+        {"console_tile_hold_refused_returns_to_the_tab", console_tile_hold_refused_returns_to_the_tab},
     };
     for (unsigned i = 0; i < sizeof tests / sizeof tests[0]; i++)
         if (argc == 1 || !strcmp(argv[1], tests[i].name)) { tests[i].run(); printf("PASS %s\n", tests[i].name); }
@@ -2489,7 +2653,7 @@ with tempfile.TemporaryDirectory(prefix="harness-pro-app-") as directory:
     subprocess.run([sys.executable, str(FW / "scripts" / "gen_fonts.py"), *font_args, "--out", str(fonts)], check=True)
     source = directory / "pro_app_test.c"
     source.write_text(code)
-    modules = sorted(POD.glob("*.c")) + [APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c", DISP / "scroll.c",
+    modules = sorted(POD.glob("*.c")) + sorted(POD.glob("*/*.c")) + [APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c", DISP / "scroll.c",
                                          DISP / "pro_canvas.c", DISP / "terminal.c", DISP / "pro_turn.c", fonts]
     for label, extra in (("upright", []), ("turned 180", ["-DPOD_PANEL_TURN=180"])):
         # The callbacks run on the cable_link task's 6 KB stack, the touch task's contact path on 10 KB: no frame of

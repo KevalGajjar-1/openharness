@@ -28,7 +28,7 @@ typedef enum { POD_IDLE, POD_WORKING, POD_ASKING, POD_DONE, POD_OFFLINE } pod_st
 // The footer's spinner word (turn.activity `text`, "Infusing..." with its dots dropped): its own field, so it and the
 // progress sentence (`action`, in activity[]) never overwrite each other.
 #define POD_VERB_BYTES 64
-#define POD_STEPS_MAX  3
+#define POD_STEPS_MAX  6
 #define POD_STEP_BYTES 160
 
 typedef struct {
@@ -39,7 +39,14 @@ typedef struct {
     char activity[POD_ACTIVITY_BYTES], question[320], recap[POD_RECAP_BYTES];
     char verb[POD_VERB_BYTES];
     char steps[POD_STEPS_MAX][POD_STEP_BYTES];   // this turn's tools and previous activity sentences, newest first (cut on a codepoint)
+    uint16_t step_at_s[POD_STEPS_MAX];   // seconds into the turn each step arrived (steps[] order); 0xFFFF = unknown (no turn start seen)
     uint8_t step_count;
+    uint8_t fresh_steps;                 // the newest steps[] that came after the last question (Classic draws only these: it never showed older ones)
+    int16_t step_total;                  // steps pushed this turn (not cut by the list's cap or by done), -1 when no turn.started was seen
+    bool turn_started;                   // a turn.started began the current turn (step times are measured from since_ms)
+    bool failed;                         // the last turn ended in turn.error; the next turn.started clears it (state stays IDLE)
+    int32_t tests_passed, tests_failed, commits;   // turn.stats of the last turn, -1 unknown; cleared by turn.started
+    int32_t tokens_in, tokens_out;                 // same, from turn.stats tokensIn / tokensOut
     bool activity_cut;                   // the cable text was longer than activity[]: the view ends it with an ellipsis
     bool recap_cut;                      // the text ends mid-thought (the source was cut, or too long to keep): the view ends it with "..."
     uint8_t recap_lines;                 // recap[] holds that many NUL-terminated lines, back to back
@@ -77,8 +84,10 @@ typedef struct {
 #define POD_UNREAD_MAX  16
 #define POD_UNREAD_TEXT 240
 #define POD_TOKEN_MAX   64
+typedef enum { POD_UNREAD_FINISHED, POD_UNREAD_FAILED } pod_unread_kind_t;
 typedef struct {
     char agent[ID_MAX], name[CABLE_NAME_MAX], token[POD_TOKEN_MAX], text[POD_UNREAD_TEXT];
+    pod_unread_kind_t kind;              // FAILED when the agent's last turn ended in an error
     uint32_t at_ms;
     int32_t elapsed_s;                   // the turn's length, -1 unknown
 } pod_unread_t;
@@ -137,6 +146,8 @@ void pod_model_library_status(pod_model_t *, const char *id, const char *status,
 // step (text = a tool the turn started, "Read · file.c"), done, error.
 // An empty text never blanks the line it feeds.
 void pod_model_turn(pod_model_t *, const char *id, const char *kind, const char *text, int elapsed_s, uint32_t now_ms);
+// turn.stats: the last turn's test and commit counts (-1 leaves a field unknown). Unknown agents are ignored.
+void pod_model_turn_stats(pod_model_t *, const char *id, int32_t passed, int32_t failed, int32_t commits, int32_t tokens_in, int32_t tokens_out);
 void pod_model_question(pod_model_t *, const char *id, const char *text);
 void pod_model_question_close(pod_model_t *, const char *id);
 void pod_model_recap(pod_model_t *, const char *id, const char *recap, bool restore);

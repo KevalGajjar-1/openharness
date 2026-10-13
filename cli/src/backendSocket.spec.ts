@@ -755,6 +755,21 @@ describe('BackendSocket outbound queue', () => {
     await socket.stop()
   })
 
+  it('gives a shell result card to the devices tee and never to the relay', async () => {
+    const socket = relaySocket('token')
+    const tee = vi.fn()
+    socket.onOutboundCommander = tee
+    socket.connect()
+    wsMock.instances[0].open()
+    const relayed = vi.fn()
+    vi.spyOn(socket as unknown as { toGateway(what: string, call: (g: unknown) => void): void }, 'toGateway')
+      .mockImplementation((_what, call) => call({ commander: relayed }))
+    socket.sendCommander({ type: 'commander_event', agentId: 's1', dbSessionId: 's1', payload: { kind: 'tool_end', id: 't1', outputTail: 'x' } })
+    expect(tee).toHaveBeenCalledTimes(1)
+    expect(relayed).not.toHaveBeenCalled()
+    await socket.stop()
+  })
+
   it('sends a frame though the orchestrator watching the frames cannot read its state', async () => {
     // A full disk: reading the orchestrator's state makes its folder, and that threw out of every send,
     // so a turn's end never reached a window (e2e/diskfull.e2e.ts).
