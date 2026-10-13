@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
 import { rememberHubReturn } from '@/lib/community/session';
+import { webAppPath } from '@/lib/webApp';
 import { SearchField, type SearchFieldProps } from './SearchField';
 import { useSignedIn } from './useSignedIn';
 import styles from '../community.module.css';
@@ -9,8 +10,8 @@ import styles from '../community.module.css';
 /** One way out to the app: sign in (and come back) while signed out, open it once signed in. */
 function AccountLink({ signedIn }: { signedIn: boolean | null }) {
   if (signedIn === null) return null;
-  if (!signedIn) return <a href="/" onClick={rememberHubReturn}>Sign in</a>;
-  return <a href="/" className={styles.openApp}>Open Harness <ArrowUpRight /></a>;
+  if (!signedIn) return <a href={webAppPath} onClick={rememberHubReturn}>Sign in</a>;
+  return <a href={webAppPath} className={styles.openApp}>Open Harness <ArrowUpRight /></a>;
 }
 
 export type HubTab = 'explore' | 'following' | 'yours';
@@ -34,5 +35,5 @@ export function Header({ tab, search }: { tab?: HubTab; search?: SearchFieldProp
 }
 
 export function SignIn({ action = 'join the conversation' }: { action?: string }) {
-  return <p className={styles.signin}><a href="/" onClick={rememberHubReturn}>Sign in to Harness</a> to {action}. You’ll return here afterward.</p>;
+  return <p className={styles.signin}><a href={webAppPath} onClick={rememberHubReturn}>Sign in to Harness</a> to {action}. You’ll return here afterward.</p>;
 }

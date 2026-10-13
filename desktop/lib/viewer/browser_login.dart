@@ -49,6 +49,11 @@ class BrowserLogin implements SignInClient, PhoneSignInClient {
   static String _callbackPath(Uri location) =>
       _isLoopback(location) ? '/callback' : '/auth/callback';
 
+  // The hosted workspace lives at /web (its origin's / opens the Hub, owner 2026-10-13); a local
+  // build serves the app at its root.
+  static String _workspacePath(Uri location) =>
+      _isLoopback(location) ? '/' : '/web';
+
   @override
   Future<CliAuthStatus> checkStatus() =>
       _checking ??= _checkStatus().whenComplete(() {
@@ -62,7 +67,7 @@ class BrowserLogin implements SignInClient, PhoneSignInClient {
       final raw = browser.transaction;
       browser.transaction = null;
       // Remove the one-use code before any API call or application telemetry.
-      browser.replaceLocation('/');
+      browser.replaceLocation(_workspacePath(uri));
       try {
         final saved = raw == null ? null : jsonDecode(raw);
         final now = _clock().millisecondsSinceEpoch;

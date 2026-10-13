@@ -10,7 +10,8 @@ retired; only the host routes below were kept.
 
 | Route | What |
 |---|---|
-| `/`, `/s/:id`, `/auth/callback`, `/callback` | The Flutter app (`public/harness-web/index.html`, via `rewrites()` in `next.config.js`) |
+| `/` | Redirects (307) to `/hub`, the front door (owner, 2026-10-13). An `hn view` link (`/?machine=…&agent=…`) still opens the Flutter viewer here |
+| `/web`, `/s/:id`, `/auth/callback`, `/callback` | The Flutter app (`public/harness-web/index.html`, via `rewrites()` in `next.config.js`); `/web` is the workspace, where sign-in returns (`src/lib/webApp.ts`) |
 | `/download` (and `/install` → it) | Install page: CLI command and desktop downloads |
 | `/app` | The phone app's download code: an iPhone or iPad is redirected to the App Store and an Android device to Google Play, by user agent (`src/lib/phoneApp.ts`); anything else gets both stores |
 | `/pair` | Phone setup guidance — the mobile app and the desktop "add phone" dialog link here |
