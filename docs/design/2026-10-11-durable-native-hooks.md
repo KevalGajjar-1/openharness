@@ -71,6 +71,31 @@ Receipt/rearm composition and activation remain excluded from that approval.
 Implementation and review ran approximately 09:40–10:17 UTC on October 13, with
 validation overlapping; merge and publication remain zero.
 
+Native rearm now has a narrowly scoped creation-receipt confirmation. Recovery
+can refine only an existing native rearm dispatch into its exact created outcome;
+it never receives another process-launch callback. The original immutable intent,
+claim and result remain intact, with a separately synced confirmation naming that
+same claim. A late uncertain result preserves confirmed success; contradictory
+results remain visible as storage failures. Status, cancellation and retries all
+validate the combined evidence, including retries whose original five-second
+reply expired while their effect was still occupied. Such a retry cannot adopt
+a different request's coherent receipt under the same ID. Final publication checks
+retain the original file routes and end with local revocation authority.
+
+This receipt checkpoint passes types and 174 cases across creation receipts,
+launch handlers, the core API and architecture
+(`20261013T103915.702063Z-87704`, 38.1 seconds), and all nine deliberate wiring
+faults fail assertions after a passing baseline
+(`20261013T104025.053306Z-98888`, 22.5 seconds). The earlier failed receipt remains
+failed; it exposed contradictory-result and cancelled-tombstone bypasses.
+Independent review approved this slice over `f659a337b` after also correcting
+the result-capture race, stale in-flight replies and foreign receipt substitution.
+The current-main merge is included in the passing type/API/architecture checks.
+Implementation and review ran approximately 10:19–10:41 UTC on October 13;
+validation overlapped. Merge and publication remain zero. Replacement proof,
+known-not-dispatched handling, rearm composition and activation remain excluded
+from this approval and are still required before the PR can land.
+
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input
 before a service wait and checks the reply's generation identity, input digest
