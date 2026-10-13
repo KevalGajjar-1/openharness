@@ -219,7 +219,7 @@ void main() {
     },
   );
 
-  testWidgets('tabs carry Agent Messages, and its actions reach the tab', (
+  testWidgets('tabs carry Show Agent Messages and nothing to turn on', (
     tester,
   ) async {
     final app = _App();
@@ -230,13 +230,17 @@ void main() {
     final tab = app.activeSwarmId;
     Map row() => (updates().last['tabs'] as List).single as Map;
 
-    // Traffic alone rebuilds no workspace; it reaches the tab only while on,
-    // since a tab that is off says nothing about agents messaging.
+    // The row says only that the tab has a log: no flag, no color, no
+    // traffic. The tab's 💬 was easy to hit by mistake and turned the tab
+    // off, failing a waiting message (owner, 2026-10-12).
     app.agentMessages.handleEvent({'tabId': tab, 'messageId': 'm0000001'});
     await tester.idle();
-    expect(row()['agentMessages'], isFalse);
-    expect(row()['agentMessagesFlowing'], isFalse);
-    expect(updates().last['activeAgentMessages'], isFalse);
+    expect(row()['canShowAgentMessages'], isTrue);
+    expect(row().containsKey('agentMessages'), isFalse);
+    expect(row().containsKey('agentMessagesFlowing'), isFalse);
+    expect(updates().last['canShowAgentMessages'], isTrue);
+    expect(updates().last.containsKey('activeAgentMessages'), isFalse);
+    expect(updates().last.containsKey('agentMessagesInk'), isFalse);
 
     Future<void> native(String method) =>
         tester.binding.defaultBinaryMessenger.handlePlatformMessage(
@@ -246,22 +250,14 @@ void main() {
           ),
           (_) {},
         );
-    // 💬 or the tab's menu turns it on for that tab.
+    // An old on/off action does nothing: nothing asks the backend, and no
+    // notice or dialog opens.
+    final reads = api.reads;
     unawaited(native('toggleAgentMessages'));
     await tester.pumpAndSettle();
-    expect(api.writes, [(tab, true)]);
-    expect(row()['agentMessages'], isTrue);
-    expect(row()['agentMessagesFlowing'], isTrue);
-    expect(updates().last['activeAgentMessages'], isTrue);
-
-    // A refused turn off goes back, and says so where the click was.
-    api.writeError = StateError('offline');
-    unawaited(native('toggleAgentMessages'));
-    await tester.pumpAndSettle();
-    expect(app.agentMessages.isOn(tab), isTrue);
-    expect(row()['agentMessages'], isTrue);
-    expect(find.textContaining('could not be turned off'), findsOneWidget);
-    api.writeError = null;
+    expect(api.reads, reads);
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.textContaining('Agent Messages'), findsNothing);
 
     // Show Agent Messages opens the tab's log.
     unawaited(native('showAgentMessages'));
@@ -271,16 +267,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Before · Agent Messages'), findsNothing);
 
-    await tester.pump(const Duration(seconds: 61));
-    await tester.idle();
-    expect(row()['agentMessagesFlowing'], isFalse);
-
-    // An older CLI or backend: no 💬, no menu row.
+    // An older CLI or backend: no log to show.
     api.unsupported = true;
     await app.agentMessages.refresh();
     await tester.idle();
-    expect(row().containsKey('agentMessages'), isFalse);
-    expect(updates().last['activeAgentMessages'], isNull);
+    expect(row().containsKey('canShowAgentMessages'), isFalse);
+    expect(updates().last['canShowAgentMessages'], isFalse);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -291,8 +283,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.agentMessagesOffered(app.activeSwarmId), isFalse);
     final row = (updates().last['tabs'] as List).single as Map;
-    expect(row.containsKey('agentMessages'), isFalse);
-    expect(updates().last['activeAgentMessages'], isNull);
+    expect(row.containsKey('canShowAgentMessages'), isFalse);
+    expect(updates().last['canShowAgentMessages'], isFalse);
     unawaited(
       tester.binding.defaultBinaryMessenger.handlePlatformMessage(
         'harness/swarm_tabs',

@@ -15,6 +15,24 @@ export const hooks: HookContract = {
     timeout: 5,
     // Agent Messages: a teammate's message reaches a working agent at its next tool call (kit/messagesHook.ts).
     inbox: { event: 'PostToolUse' },
+    // Harness's agent commands (facets/hooks.ts HarnessAllowance) need the daemon, which Codex's sandbox cannot
+    // reach: measured with `codex sandbox` (codex-cli 0.162.1), neither 127.0.0.1:18473 nor the daemon's socket
+    // answered. An `allow` rule runs a command outside the sandbox on its first try, without asking, when every
+    // command in it matches one (codex-rs core/src/exec_policy.rs, `Skip { bypass_sandbox }`, 0.162.1). Codex reads
+    // every `.rules` file in its `rules` folder and ranks forbidden over prompt over allow, so the person's own rules
+    // still win. A list in a pattern is a choice of words: one rule a spelling covers every verb.
+    // Codex also matches an absolute program path by its last part, so `/any/folder/harness ps` met the `harness`
+    // rule: a script an agent wrote in its own folder ran outside the sandbox (the review of #1232, codex-rs
+    // execpolicy/src/policy.rs `match_host_executable_rules`). `host_executable` keeps that to the launcher, whose path
+    // then meets the `harness` rule and the person's own rules for `harness` alike (codex-cli 0.107 and later).
+    allow: {
+      file: 'rules/harness.rules',
+      rules: [
+        'host_executable(name="harness", paths=["{launcher}"])',
+        'prefix_rule(pattern=["harness", {verbs}], decision="allow")',
+        'prefix_rule(pattern=["{node}", "{cli}", {verbs}], decision="allow")',
+      ],
+    },
     commandNamesHome: true,
     upToDate: { command: 'first', matcher: true },
     messages: {

@@ -2,12 +2,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { readDraft, saveDraft, type HubDraft } from '@/lib/community/drafts';
 import { communityCategories, communityEngines } from '@/lib/community/contract';
+import { arrivedEnglish, noEnglish, type EnglishState } from '@/lib/community/translation';
 import type { HarnessSnapshot } from '@/lib/community/types';
 
-/** `originalOutput` is the fork's output as it arrived: kept here to compare against, never published. */
-export type PublishDraft = Omit<HarnessSnapshot, 'harnessName' | 'credits'> & { contextNote: string; originalOutput?: string };
+/**
+ * `originalOutput` is the fork's output as it arrived: kept here to compare against, never published.
+ * `english` is where the draft stands with its translation, never published either.
+ */
+export type PublishDraft = Omit<HarnessSnapshot, 'harnessName' | 'credits'> & { contextNote: string; originalOutput?: string; english: EnglishState };
 
-const fresh: PublishDraft = { title: '', description: '', category: 'Apps', engine: 'Codex', files: [], viewerPath: 'preview.html', conversation: [{ role: 'user', text: '' }], contextNote: '' };
+const fresh: PublishDraft = { title: '', description: '', category: 'Apps', engine: 'Codex', files: [], viewerPath: 'preview.html', conversation: [{ role: 'user', text: '' }], contextNote: '', english: noEnglish };
 
 /** A handed-off or imported bundle, kept within what the form can show and the Hub accepts. */
 function fromBundle(bundle: HubDraft): PublishDraft {
@@ -18,6 +22,7 @@ function fromBundle(bundle: HubDraft): PublishDraft {
     harnessId: bundle.harnessId, files: bundle.files || [], viewerPath: bundle.viewerPath || 'preview.html',
     conversation: bundle.conversation?.length ? bundle.conversation : fresh.conversation,
     forkedFrom: bundle.forkedFrom, cover: bundle.cover, contextNote: bundle.contextNote || '', originalOutput: bundle.originalOutput,
+    english: arrivedEnglish(bundle.english),
   };
 }
 

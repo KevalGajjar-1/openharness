@@ -73,7 +73,7 @@ class _DeskApi extends ApiClient {
     return _json(doc!);
   }
 
-  /// Agent Messages' flags are read once the desk is; this proxy has none.
+  /// Agent Messages is asked about once the desk is; this proxy has none.
   @override
   Future<Map<String, dynamic>?> readAgentMessageTabs() async => null;
 }

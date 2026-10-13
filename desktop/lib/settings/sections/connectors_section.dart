@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -10,6 +12,7 @@ import '../../shared/widgets/app_icon_button.dart';
 import '../../shared/widgets/section_scaffold.dart';
 import '../../shared/widgets/toolbar_pill.dart';
 import '../../state/app_state.dart';
+import '../../widgets/restart_agent_action.dart';
 
 /// Settings ▸ Connectors: connect a service once on this computer, and every
 /// local agent (Claude Code, Codex, OpenCode) gets it. The same list and
@@ -130,6 +133,42 @@ class _ConnectorsSectionState extends State<ConnectorsSection> {
             style: theme.textTheme.bodySmall?.copyWith(
               color: _controller.error != null ? theme.colorScheme.error : theme.colorScheme.primary,
             ),
+          ),
+        ],
+        // Agents read their tools when they start: one already running gets a connection made since
+        // only on a restart. Always here, for the focused pane's harness: Settings closes onto that
+        // pane, and the restart runs there, where it can be watched.
+        if (_controller.focusedRestartable case final target?) ...[
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Restart "${target.agent.displayName}" to use the new tools from your connectors.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                key: const ValueKey('connectors-restart'),
+                icon: const Icon(AppIcons.rotateCw, size: AppIcons.inlineSize),
+                label: const Text('Restart'),
+                onPressed: () {
+                  final navigator = Navigator.of(context);
+                  navigator.pop();
+                  unawaited(
+                    restartHarness(
+                      navigator.context,
+                      widget.notifier,
+                      target.machineId,
+                      target.agent.id,
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         ],
         const SizedBox(height: 8),

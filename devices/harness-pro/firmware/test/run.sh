@@ -37,7 +37,7 @@ build_obj() {   # build_obj <limit-bytes> <source>...
 }
 cable_task=("$pod/pod_model.c" "$pod/pod_nav.c")
 [[ -f "$fw/main/app/pod_glue.c" ]] && cable_task+=("$fw/main/app/pod_glue.c")
-render_task=("$pod/pod_draw.c" "$pod/pod_pet.c" "$pod/pod_chrome.c" "$pod"/pod_view*.c)
+render_task=("$pod/pod_draw.c" "$pod/pod_pet.c" "$pod/pod_view.c" "$pod"/classic/*.c "$pod"/console/*.c)
 other=()
 for f in "$pod"/*.c; do
     case " ${cable_task[*]} ${render_task[*]} " in *" $f "*) ;; *) other+=("$f") ;; esac
@@ -53,11 +53,28 @@ for t in "$here"/test_pod_*.c; do
     "$out/$name"
 done
 
+cc "${cflags[@]}" -o "$out/test_cs_views" "$here/test_cs_views.c" "${objs[@]}"
+"$out/test_cs_views"
+cc "${cflags[@]}" -o "$out/test_cs_glue" "$here/test_cs_glue.c" "${objs[@]}"
+"$out/test_cs_glue"
+
+# Skins: the Console stub paints the whole canvas #08090A; pod_render --skin console is the entry the golden uses.
+cc "${cflags[@]}" -o "$out/pod_render" "$here/pod_render.c" "${objs[@]}"
+"$out/pod_render" --skin console tabs "$out/console.ppm" >/dev/null
+px="$(dd if="$out/console.ppm" bs=1 skip=$(( 15 + (690 * 720 + 10) * 3 )) count=3 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+# #08090A through RGB565 and back to the PPM's 8 bits is 080808.
+[[ "$px" == "080808" ]] || { echo "run.sh: console pixel (10,690) is $px, want 080808 (#08090A in RGB565)" >&2; exit 1; }
+echo "console skin: pixel (10,690) = #08090A"
+
+# Console render time: every screen within 85% of its pre-change host time (test_cs_perf.sh; opt-in: runs only with CS_PERF=1, since absolute host microseconds are flaky on CI machines).
+bash "$here/test_cs_perf.sh"
+
 # pro_frame: the strip and turn math against a fake 720 x 720 panel, upright and with the 180 degree turn. Same objects
-# as the Pod tests (terminal.c, pro_canvas.c, the fonts); the turn rules are display/pro_turn.h, shared with the panel.
+# as the Pod tests (terminal.c, pro_canvas.c, the fonts); the turn rules are display/pro_turn.h/.c, shared with the panel.
 cc "${cflags[@]}" -Wframe-larger-than=2048 -I"$fw/test/host_esp" -c -o "$out/pro_frame.o" "$disp/pro_frame.c"
 for turn in "" "-DPOD_PANEL_TURN=180"; do
-    cc "${cflags[@]}" $turn -I"$fw/test/host_esp" -o "$out/test_pro_frame" "$fw/test/test_pro_frame.c" "$out/pro_frame.o" "${objs[@]}"
+    cc "${cflags[@]}" $turn -c -o "$out/pro_turn.o" "$disp/pro_turn.c"   # the flag's default is the build flag
+    cc "${cflags[@]}" $turn -I"$fw/test/host_esp" -o "$out/test_pro_frame" "$fw/test/test_pro_frame.c" "$out/pro_frame.o" "$out/pro_turn.o" "${objs[@]}"
     "$out/test_pro_frame"
 done
 
@@ -101,6 +118,8 @@ cc "${cc_flags[@]}" -I"$fw/main/sys" -o "$out/test_fw_update" "$here/test_fw_upd
 python3 "$here/test_pro_app.py"
 
 python3 "$here/test_pro_hello.py"
+
+python3 "$here/test_logos.py"
 
 # The voice path: pro_app's gate and effects over the real audio/pro_voice.c state machine, with the recorder, the
 # cable and the clock as host fakes (the 9 replays of the round firmware plus the link-drop and timer cases).

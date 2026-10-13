@@ -18,7 +18,9 @@ export interface AgentMessagesDirectory {
   revision: number
   /** The owner's machines by id, with the name a person gave each: what a message's header says it came from. */
   machines: { machineId: string; name: string | null }[]
-  tabs: { id: string; name: string; enabled: boolean; panes: { machineId: string; agentId: string }[] }[]
+  /** `named`: the person named the tab. The windows label any other tab themselves (`code`, a project), so its stored
+   *  name (`New Tab`, a folder) is not what the person sees, and an agent's note calls it "this tab". */
+  tabs: { id: string; name: string; named: boolean; enabled: boolean; panes: { machineId: string; agentId: string }[] }[]
 }
 
 /** Every tab on the desk, with its owned panes and whether Agent Messages is on in it. */
@@ -35,7 +37,7 @@ export async function readAgentMessages(userId: string): Promise<AgentMessagesDi
     machines: machines.map(m => ({ machineId: m.machineId, name: m.name ?? null })),
     // A shared harness someone else owns is shown on the desk but never takes part: only the owner's machines.
     tabs: parseTabs(desk?.tabs).map(tab => ({
-      id: tab.id, name: tab.name, enabled: on.has(tab.id),
+      id: tab.id, name: tab.name, named: tab.nameIsCustom === true, enabled: on.has(tab.id),
       panes: tab.panes.filter(p => owned.has(p.machineId)).map(p => ({ machineId: p.machineId, agentId: p.agentId })),
     })),
   }

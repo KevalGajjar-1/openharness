@@ -1,4 +1,5 @@
 #include "pod/pod_nav.h"
+#include "pod/pod_view.h"
 
 #include <string.h>
 
@@ -134,7 +135,34 @@ pod_out_t pod_nav_act(pod_nav_t *n, pod_model_t *m, pod_action_t a, int arg, uin
     case POD_A_PREV:
     case POD_A_NEXT:
         if (is_agent_view(f->view)) return step(n, m, a == POD_A_NEXT ? 1 : -1);
+        if (n->skin == POD_SKIN_CONSOLE && f->view == POD_V_TAB) {   // the tab cycle is Recent, tab 0 .. last, wrapping; Recent sits first
+            int cnt = m->tab_count + 1, at = f->tab == POD_TAB_RECENT ? 0 : f->tab + 1;
+            if (f->tab != POD_TAB_RECENT && (f->tab < 0 || f->tab >= m->tab_count)) break;
+            int t = (at + (a == POD_A_NEXT ? 1 : -1) + cnt) % cnt - 1;   // -1 is Recent
+            memset(f, 0, sizeof *f);
+            f->view = POD_V_TAB;
+            if (t < 0) f->tab = POD_TAB_RECENT;
+            else { f->tab = (int8_t)t; set_id(f->tab_id, m->tabs[t].id); }
+        }
         break;
+    case POD_A_FOLLOW:
+        if (arg >= 0 && arg < m->agent_count && pod_nav_follow(n, m, m->agents[arg].id, now_ms))
+            return out_fx(POD_FX_AGENT_OPEN, m->agents[arg].id);
+        break;
+    case POD_A_ATTENTION: {   // the ▲ chip counts every asking agent: walk them all, in model order, from after the open one
+        if (f->view == POD_V_TALK) break;
+        int at = -1, cnt = m->agent_count;
+        if (is_agent_view(f->view)) for (int i = 0; i < cnt; i++) if (!strcmp(m->agents[i].id, f->agent)) { at = i; break; }
+        for (int k = 1; k <= cnt; k++) {
+            const pod_agent_t *c = &m->agents[(at + k + cnt) % cnt];
+            if (pod_model_eff(m, c) != POD_ASKING || !strcmp(c->id, f->agent)) continue;
+            char id[ID_MAX];
+            set_id(id, c->id);
+            if (pod_nav_follow(n, m, id, now_ms)) return out_fx(POD_FX_AGENT_OPEN, id);
+            break;
+        }
+        break;
+    }
     case POD_A_TALK:
         if (f->view == POD_V_AGENT || f->view == POD_V_RECAP) {
             const pod_agent_t *talk_to = pod_model_find(m, f->agent);
@@ -158,14 +186,15 @@ pod_out_t pod_nav_act(pod_nav_t *n, pod_model_t *m, pod_action_t a, int arg, uin
     case POD_A_TABS: {
         bool from_agent = a != POD_A_BACK;
         // TABS pops to the root; BACK and PANES pop one frame (an agent screen's parent is its tab's list).
-        uint8_t to = a == POD_A_TABS ? 1 : n->depth > 1 ? (uint8_t)(n->depth - 1) : 1;
+        int up = a == POD_A_BACK && arg > 1 ? arg : 1;   // BACK's arg: levels to pop
+        uint8_t to = a == POD_A_TABS ? 1 : n->depth > up ? (uint8_t)(n->depth - up) : 1;
         if (f->view == POD_V_TALK) {
             pod_out_t o = out_fx(POD_FX_VOICE_ABORT, f->agent);
             n->sending = false;
             n->depth = to;
             return o;
         }
-        if (from_agent && !is_agent_view(f->view)) break;
+        if (from_agent && !is_agent_view(f->view) && !(a == POD_A_TABS && n->skin == POD_SKIN_CONSOLE)) break;   // Console: TABS is home from any screen
         n->depth = to;
         break;
     }
@@ -237,6 +266,10 @@ void pod_nav_flip_recaps(pod_nav_t *n, const pod_model_t *m) {
 
 pod_out_t pod_nav_sync(pod_nav_t *n, const pod_model_t *m) {
     if (!n->depth) { pod_nav_init(n); return out_none(); }
+    if (n->skin == POD_SKIN_CONSOLE && n->stack[0].view == POD_V_TABS) {   // Overview pages two rows at a time: tabs that went away take their pages with them
+        int last = (pod_tabs_pages_of(n, m) - 1) * 2;
+        if (n->stack[0].scroll > last) n->stack[0].scroll = (int16_t)(last < 0 ? 0 : last);
+    }
     uint8_t keep = n->depth;
     for (uint8_t i = 1; i < n->depth; i++) {
         pod_frame_t *f = &n->stack[i];

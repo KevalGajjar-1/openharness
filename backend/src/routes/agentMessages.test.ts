@@ -17,7 +17,7 @@ import { errorHandler } from '../middlewares/errorHandler.js'
 
 describe('Agent Messages per tab', () => {
   let app: FastifyInstance
-  const tab = { id: 'app', name: 'App', panes: [{ machineId: 'shared', agentId: 'observer' }, { machineId: 'm1', agentId: 'lead' }, { machineId: 'm2', agentId: 'api' }] }
+  const tab = { id: 'app', name: 'App', nameIsCustom: true, panes: [{ machineId: 'shared', agentId: 'observer' }, { machineId: 'm1', agentId: 'lead' }, { machineId: 'm2', agentId: 'api' }] }
   const other = { id: 'notes', name: 'Notes', panes: [{ machineId: 'm1', agentId: 'writer' }] }
   const auth = { authorization: 'Bearer fixture' }
   beforeEach(async () => {
@@ -47,8 +47,8 @@ describe('Agent Messages per tab', () => {
     const result = await read()
     expect(result.statusCode).toBe(200)
     expect(result.json().data).toEqual({ revision: 8, machines: [{ machineId: 'm1', name: 'studio' }, { machineId: 'm2', name: null }], tabs: [
-      { id: 'app', name: 'App', enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm2', agentId: 'api' }] },
-      { id: 'notes', name: 'Notes', enabled: false, panes: [{ machineId: 'm1', agentId: 'writer' }] },
+      { id: 'app', name: 'App', named: true, enabled: false, panes: [{ machineId: 'm1', agentId: 'lead' }, { machineId: 'm2', agentId: 'api' }] },
+      { id: 'notes', name: 'Notes', named: false, enabled: false, panes: [{ machineId: 'm1', agentId: 'writer' }] },
     ] })
     expect(mocks.prisma.agentMessageTab.findMany).toHaveBeenCalledWith({ where: { userId: 'owner' }, select: { userId: true, tabId: true, enabled: true } })
   })

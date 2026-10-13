@@ -36,6 +36,8 @@ FILES = ('harness-tui', 'cli.mjs', 'notify.mjs')
 LIMIT = 64 * 1024 * 1024
 DOWNLOAD_CHUNK = 1024 * 1024
 RESTART_REQUIRED = Path('/run/harness-os-restart-required')
+DAEMON_UNIT = 'harness-daemon.service'
+DAEMON_STATUS = 'http://127.0.0.1:18473/api/status'
 KEEP_ON = 'Keep the computer on and plugged in until the system update finishes.'
 SYSTEM_LOCK = Path('/run/lock/hn-os.lock')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
@@ -498,13 +500,48 @@ def select(folder):
     sync_directory(STATE)
 
 
+def runtime_pids():
+    """The process serving the agent runtime, and harness-daemon.service's main process.
+
+    Either is None: nothing answers on the runtime's port, or the unit runs nothing.
+    """
+    try:
+        with urlopen(Request(DAEMON_STATUS), timeout=3) as response:
+            serving = json.loads(response.read(65536)).get('pid')
+    except (OSError, ValueError, AttributeError):
+        serving = None
+    main = run('systemctl', '--user', 'show', DAEMON_UNIT, '--property=MainPID', '--value', timeout=10)
+    return (serving if type(serving) is int and serving > 0 else None,
+            int(main) if main.isdigit() and int(main) > 0 else None)
+
+
 def restart(cli_changed):
     if cli_changed:
-        run('systemctl', '--user', 'restart', 'harness-daemon.service', timeout=180)
+        # Restarting the unit replaces only its own daemon. One serving beside it (an older CLI's
+        # sign-in restarted the daemon outside systemd) keeps the port: the unit's new core then fails
+        # until systemd gives up, and the old CLI goes on serving. Stop that one first, as `harness
+        # stop` stops any daemon: with signals, which the agents in tmux outlive.
+        serving, main = runtime_pids()
+        if serving is not None and serving != main:
+            run('/usr/bin/harness', 'stop', timeout=90)
+        run('systemctl', '--user', 'restart', DAEMON_UNIT, timeout=180)
+        # wait-runtime accepts whichever daemon answers. Activation needs the unit's own.
         run('/usr/lib/harness-os/wait-runtime')
+        serving, main = runtime_pids()
+        if serving is None or serving != main:
+            raise ValueError(f'The agent runtime is not running under {DAEMON_UNIT}.')
     # The terminal surface is separate from the processes that own agent PTYs.
     run('systemctl', '--user', 'restart', 'hn-screen.service')
     run('systemctl', '--user', 'is-active', '--quiet', 'hn-screen.service')
+
+
+def in_screen(pid):
+    """Whether this client runs in hn-screen.service: the OS screen, not SSH or this command."""
+    try:
+        return any(line.split(':', 2)[-1].endswith('/hn-screen.service')
+                   for line in (PROC / str(pid) / 'cgroup').read_text().splitlines())
+    except OSError:
+        return False
 
 
 def capture_view():
@@ -514,15 +551,7 @@ def capture_view():
                    '#{client_pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{client_tty}', timeout=3)
         for row in rows.splitlines():
             parts = row.split('\t')
-            if len(parts) != 5 or not parts[0].isdigit():
-                continue
-            groups = Path('/proc') / parts[0] / 'cgroup'
-            try:
-                belongs = any(line.split(':', 2)[-1].endswith('/hn-screen.service')
-                              for line in groups.read_text().splitlines())
-            except OSError:
-                continue
-            if not belongs:
+            if len(parts) != 5 or not parts[0].isdigit() or not in_screen(parts[0]):
                 continue
             if all(re.fullmatch(pattern, value) for pattern, value in
                    zip([r'\$\d+', r'@\d+', r'%\d+', r'/dev/pts/\d+'], parts[1:])):
@@ -556,17 +585,20 @@ def restore_view(view):
 
 
 def screen_ready(target):
-    """Wait for an attached client executing the selected binary, not just foot."""
+    """Wait for the screen's own client executing the selected binary, not just foot."""
     deadline = time.monotonic() + 30
     observed = {}
     while time.monotonic() < deadline:
         try:
-            # list-clients deliberately includes the backing tmux connections.
-            # hn-list-clients identifies hn's own rendering clients instead.
-            clients = run('/usr/bin/hn', 'hn-list-clients', '-F', '#{client_pid}', timeout=3)
+            # hn-list-clients names hn's rendering clients, but has no rows when an hn started
+            # elsewhere first (over SSH, before anyone logged in at the screen): the screen's client
+            # then serves its own socket, and every update was judged failed and rolled back
+            # (2026-10-12, 2026-10-13). list-clients names it either way, beside the backing tmux
+            # connections and this command's own client; the screen's cgroup tells them apart.
+            clients = run('/usr/bin/hn', 'list-clients', '-F', '#{client_pid}', timeout=3)
             for pid in clients.splitlines():
-                if pid.isdigit():
-                    executable = Path('/proc') / pid / 'exe'
+                if pid.isdigit() and in_screen(pid):
+                    executable = PROC / pid / 'exe'
                     observed[pid] = str(executable.resolve())
                     if executable.samefile(target / 'harness-tui'):
                         write(STATE / 'screen.json', {'pid': int(pid), 'executable': observed[pid], 'target': str(target)})

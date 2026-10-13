@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { defaultFeedView, type FeedView } from '@/lib/community/feed';
+import { defaultFeedView, inFeedOrder, type FeedView } from '@/lib/community/feed';
 import { starterHarnesses } from '@/lib/community/starters';
 import type { HarnessSummary } from '@/lib/community/types';
 import { FeedCard, FeedSkeleton } from './FeedCard';
@@ -26,12 +26,16 @@ type Props = { following?: boolean; mine?: boolean; initialView?: FeedView };
 
 export default function Feed({ following = false, mine = false, initialView = defaultFeedView }: Props) {
   const search = useFeedView(initialView), { view } = search;
-  const { posts, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like } = useFeed({ following, mine, ...view });
+  const { posts, order, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like } = useFeed({ following, mine, ...view });
   const narrowed = !!(view.query || view.category);
   // Starters follow the last page: drawn sooner, every page loaded while scrolling would land above
   // them. A narrowed view or a failed page shows them at once: there is nothing to scroll past.
   const starters = !settled || mine || (cursor && !narrowed && !error) ? [] : following ? starterHarnesses.filter(item => follows.includes(item.authorId)) : starterHarnesses;
-  const visible = [...posts, ...starters.filter(item => matches(item, view))];
+  // A popular feed's server ranks the starters among publications by likes, so they are drawn where it
+  // put them; otherwise (or from an older backend) they follow the publications as above.
+  const visible = order
+    ? inFeedOrder(order, [...posts, ...starterHarnesses.filter(item => matches(item, view))])
+    : [...posts, ...starters.filter(item => matches(item, view))];
   return <><Header tab={mine ? 'yours' : following ? 'following' : 'explore'} search={{ value: search.query, onChange: search.setQuery, onClear: search.clear }} />
     <main className={`${styles.wrap} ${styles.feed}`}>
       {mine && <div className={styles.feedIntro}><h1>Your harnesses</h1><p>See what people like, join the conversation, and share your next version.</p></div>}

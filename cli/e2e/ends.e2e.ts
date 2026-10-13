@@ -144,6 +144,32 @@ describe('how an agent\'s life ends', () => {
     client.close()
   })
 
+  it.each(engines)('%s: a queued Close keeps its intent while native history is held, then recovers', async engine => {
+    const d = await fresh()
+    const client = await LocalClient.connect(d)
+    const agent = await create(d, client, engine, `close-held-${engine}`)
+    await turn(client, agent.id, 'Keep this conversation through recovery')
+    expect(await close(client, agent, 'after_task')).toMatchObject({ deferred: true })
+    const paths = transcriptsOf(d, agent.sessionId)
+    expect(paths).toHaveLength(1)
+    const file = paths[0], original = readFileSync(file, 'utf8')
+    const lines = original.split('\n'), first = JSON.parse(lines[0])
+    if (engine === 'codex') first.payload.id = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
+    else first.sessionId = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
+    lines[0] = JSON.stringify(first)
+    writeFileSync(file, lines.join('\n'))
+    // More than two idle checks: the same durable request must keep waiting.
+    await new Promise(resolve => setTimeout(resolve, 12_000))
+    expect(await row(client, agent.id)).toMatchObject({ status: 'active', sessionId: agent.sessionId,
+      closePlan: { state: 'waiting' } })
+    expect(client.frames.filter(frame => frame.type === 'agent_deleted' && frame.payload?.agentId === agent.id)).toHaveLength(0)
+    expect((await d.tmux.run('list-panes', '-a', '-F', '#{pane_id}')).trim().split('\n')).toContain(agent.tmuxPane)
+    writeFileSync(file, original)
+    await stopped(client, agent.id, 60_000)
+    expect(readFileSync(file, 'utf8')).toContain('Keep this conversation through recovery')
+    client.close()
+  })
+
   it.each(engines)('%s: closed after its task, it finishes the turn, then closes on its own', async (engine) => {
     const d = await fresh()
     const client = await LocalClient.connect(d)

@@ -81,7 +81,8 @@ void main() {
         name: 'Example-Q4_K_M',
         quant: 'Q4_K_M',
       ).displayName,
-      'Example-Q4_K_M',
+      // Its file's quant comes off the name and is said once, as every other's is.
+      'Example · Q4_K_M',
     );
     expect(
       const LocalModel(id: 'a', name: 'Example', quant: '').displayName,

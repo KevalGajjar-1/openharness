@@ -149,14 +149,18 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          expect(find.text('Done').hitTestable(), findsOneWidget);
-          expect(find.byType(PhonePairQr).hitTestable(), findsOneWidget);
+          // The code is the dialog: up at once, and whole, at every size.
+          final code = find.byType(PhonePairQr);
+          await tester.ensureVisible(code);
+          await tester.pumpAndSettle();
+          expect(code.hitTestable(), findsOneWidget);
+          expect(find.text('Scan with the Harness app.'), findsOneWidget);
+          final close = find.byKey(const ValueKey('add-phone-close'));
+          await tester.ensureVisible(close);
+          await tester.pumpAndSettle();
+          expect(close.hitTestable(), findsOneWidget);
           await capture('add-phone');
-          // The way to the account's devices stays reachable at every size.
-          final manage = find.byKey(const ValueKey('add-phone-manage-devices'));
-          await tester.ensureVisible(manage);
-          expect(manage.hitTestable(), findsOneWidget);
-          await tester.tap(find.text('Done'));
+          await tester.tap(close);
           await tester.pumpAndSettle();
         }
 

@@ -2244,6 +2244,96 @@ describe('lastOpenedAt: when an app last opened the agent, on the daemon clock',
   })
 })
 
+describe('who started it', () => {
+  beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'adapter-startedby-')) })
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true })
+    delete process.env.ADAPTER_DATA_DIR
+    delete process.env.CLAUDE_PROJECTS_DIR
+    delete process.env.CODEX_HOME
+    delete process.env.CURSOR_HOME
+  })
+
+  it('keeps a harness another agent started as one, on the row, on disk and after a reload; the person\'s has none', async () => {
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const byAgent = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%5' }], cwd: '/tmp/w', startedBy: 'agent' })!
+    const byPerson = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%6' }], cwd: '/tmp/w', startedBy: null })!
+    expect(byAgent.startedBy).toBe('agent')
+    expect(byPerson).not.toHaveProperty('startedBy')
+    expect(strictPersistedRow(JSON.parse(JSON.stringify(byAgent)))?.startedBy).toBe('agent')
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(byAgent.agentId)?.startedBy).toBe('agent')
+    expect(reloaded.byAgent(byPerson.agentId)).not.toHaveProperty('startedBy')
+  })
+
+  it('survives the hook that rebuilds the row, so a restart keeps the pull request line', async () => {
+    const transcriptPath = join(dataDir, 'session-started.jsonl')
+    writeFileSync(transcriptPath, '{}\n')
+    const { registry } = await loadRegistryModule()
+    registry.load()
+    const pending = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%8' }], cwd: '/tmp/demo', startedBy: 'agent' })!
+    const bound = registry.register({ sessionId: 'session-started', transcriptPath, tmuxPane: '%8', cwd: '/tmp/demo' })
+    expect(bound?.entry.agentId).toBe(pending.agentId)
+    expect(bound?.entry.startedBy).toBe('agent')
+    expect(registry.byAgent(pending.agentId)?.startedBy).toBe('agent')
+  })
+
+  it('keeps which harness here started it, beside startedBy, through a reload and the hook that rebuilds the row', async () => {
+    const transcriptPath = join(dataDir, 'session-child.jsonl')
+    writeFileSync(transcriptPath, '{}\n')
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const child = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%9' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    expect(child.parentAgentId).toBe('lead-1')
+    // Only beside startedBy: the person's harness has no starter, and neither has a malformed id.
+    expect(registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%10' }], cwd: '/tmp/w', parentAgentId: 'lead-1' })).not.toHaveProperty('parentAgentId')
+    expect(registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%11' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: '../x' })).not.toHaveProperty('parentAgentId')
+    const row = JSON.parse(JSON.stringify(child))
+    expect(strictPersistedRow(row)?.parentAgentId).toBe('lead-1')
+    expect(strictPersistedRow({ ...row, startedBy: undefined })).not.toHaveProperty('parentAgentId')
+    expect(strictPersistedRow({ ...row, parentAgentId: 7 })).not.toHaveProperty('parentAgentId')
+    const bound = registry.register({ sessionId: 'session-child', transcriptPath, tmuxPane: '%9', cwd: '/tmp/w' })
+    expect(bound?.entry.agentId).toBe(child.agentId)
+    expect(bound?.entry.parentAgentId).toBe('lead-1')
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(child.agentId)?.parentAgentId).toBe('lead-1')
+    writeFileSync(join(dataDir, 'registry.json'), JSON.stringify([{ ...row, parentAgentId: 'a b' }]), { mode: 0o600 })
+    const { registry: edited } = await loadRegistryModule()
+    edited.load()
+    expect(edited.byAgent(child.agentId)).toBeTruthy()
+    expect(edited.byAgent(child.agentId)).not.toHaveProperty('parentAgentId')
+  })
+
+  it('does not hand who started it to the shell its engine leaves behind under a new id', async () => {
+    const { registry } = await loadRegistryModule()
+    registry.load()
+    const child = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%12' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    // A new id with a starter is a new child to every window: it would open the person's shell beside the agent.
+    const shell = registry.releaseEngine(child.agentId, true)!
+    expect(shell.agentId).not.toBe(child.agentId)
+    expect(shell).not.toHaveProperty('parentAgentId')
+    // The same pane under its own id keeps it: that is still the harness the agent started.
+    const kept = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%13' }], cwd: '/tmp/w', startedBy: 'agent', parentAgentId: 'lead-1' })!
+    expect(registry.releaseEngine(kept.agentId)).toMatchObject({ agentId: kept.agentId, parentAgentId: 'lead-1' })
+  })
+
+  it('drops anything but another agent from a hand-edited row', async () => {
+    const { registry, strictPersistedRow } = await loadRegistryModule()
+    registry.load()
+    const entry = registry.openPendingAgent({ engine: 'claude', runtimes: [{ backend: 'tmux', paneId: '%7' }], cwd: '/tmp/w' })!
+    const row = JSON.parse(JSON.stringify(entry))
+    expect(strictPersistedRow({ ...row, startedBy: 'person' })).not.toHaveProperty('startedBy')
+    writeFileSync(join(dataDir, 'registry.json'), JSON.stringify([{ ...row, startedBy: 'someone' }]), { mode: 0o600 })
+    const { registry: reloaded } = await loadRegistryModule()
+    reloaded.load()
+    expect(reloaded.byAgent(entry.agentId)).toBeTruthy()
+    expect(reloaded.byAgent(entry.agentId)).not.toHaveProperty('startedBy')
+  })
+})
+
 describe('fork origin record', () => {
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'adapter-forkorigin-')) })
   afterEach(() => {

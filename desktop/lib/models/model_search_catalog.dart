@@ -276,8 +276,7 @@ class ModelSearchCatalog extends ChangeNotifier {
                 .where(
                   (local) =>
                       (local.downloaded || local.canStop) &&
-                      (local.name.toLowerCase() == model.id.toLowerCase() ||
-                          local.id.toLowerCase() == model.id.toLowerCase()),
+                      local.answersTo(model.id),
                 )
                 .toList() ??
             const <LocalModel>[];
@@ -301,12 +300,13 @@ class ModelSearchCatalog extends ChangeNotifier {
         discovered.add(
           ModelSearchEntry(
             id: id,
-            name: model.id,
+            // Shown without its quant, as hn shows it; found, and switched onto, by its id.
+            name: withoutQuant(model.id),
             source: section.own
                 ? 'On your machines'
                 : 'Shared · ${section.name}',
             node: owner?.machine?.machine.displayName ?? model.node,
-            searchAliases: [model.node, if (section.own) 'local'],
+            searchAliases: [model.id, model.node, if (section.own) 'local'],
             own: section.own,
             controller: owner,
             gridModel: gridModel,
@@ -358,11 +358,11 @@ class ModelSearchCatalog extends ChangeNotifier {
     // model on one machine need it to be told apart.
     final named = <String, int>{};
     for (final (:owner, :model) in local) {
-      final key = '${identityHashCode(owner)}:${model.name.toLowerCase()}';
+      final key = '${identityHashCode(owner)}:${model.shownName.toLowerCase()}';
       named[key] = (named[key] ?? 0) + 1;
     }
     bool twin(ModelManagerController owner, LocalModel model) =>
-        (named['${identityHashCode(owner)}:${model.name.toLowerCase()}'] ?? 0) >
+        (named['${identityHashCode(owner)}:${model.shownName.toLowerCase()}'] ?? 0) >
         1;
     final all = [
       for (final (:owner, :model) in local)
@@ -375,7 +375,7 @@ class ModelSearchCatalog extends ChangeNotifier {
           ),
           name: model.name.isEmpty || twin(owner, model)
               ? model.displayName
-              : model.name,
+              : model.shownName,
           source: 'Local',
           node: owner.machine?.machine.displayName,
           status: localStatus(model, controller: owner),
@@ -492,10 +492,15 @@ class ModelSearchCatalog extends ChangeNotifier {
     if (owners.length != 1) return ModelSearchSection.catalog.label;
     final owner = owners.single;
     final machine = owner.machine;
-    final memory = owner.memoryBytes;
+    // (An NVIDIA machine's models run in its card: its VRAM, not the machine's RAM.)
+    final memory = owner.headingMemory;
     return [
       'Get for ${machine == null || machine.isLocalMachine ? thisComputerName() : machine.machine.displayName}',
-      if (memory != null) gigabytesLabel(memory),
+      if (memory != null)
+        [
+          gigabytesLabel(memory.bytes),
+          if (memory.unit.isNotEmpty) memory.unit,
+        ].join(' '),
     ].join(' · ');
   }
 

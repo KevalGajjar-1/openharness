@@ -13,6 +13,9 @@ import { incompatibleHarnessEngine } from './compatibility.js'
 import { storeLaunchPort } from '../services/storeLaunch.js'
 import { forkRuntimeKey, harnessRuntimeDir, migrateHarnessInstructions, prepareHarnessLaunch } from './runtime.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
+import { HARNESS_INSTRUCTIONS, joinedInstructions } from '../lib/agentAttribution.js'
+import { env } from '../config/env.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 
 let root: string
 let ws: string
@@ -33,7 +36,7 @@ beforeEach(() => {
       agent: { instructions: 'AGENTS.md', skills: ['skills'], args: ['--add-dir', '${workspace}/input'],
         env: { TOOLCHAIN: '${dsh}/tools', OLD_SKILLS: '${workspace}/.claude/skills', OTHER_SKILLS: '${workspace}/.agents/skills', HARNESS_DSH: 'spoofed' } } } }
 })
-afterEach(() => rmSync(root, { recursive: true, force: true }))
+afterEach(() => { rmSync(root, { recursive: true, force: true }); signedOutForTest() })
 
 describe('portable harness adapters', () => {
   it('has a contract for every process engine, with no package allowlist', () => {
@@ -132,6 +135,8 @@ describe('session isolation and lifecycle', () => {
   })
 
   it('resumes and forks the original engine/content/env/args despite package changes, refreshing account facts', async () => {
+    // With what every harness is told once the account lets agents start agents (off by default), joined with its own.
+    setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { agentsStartAgents: true })
     const first = prepareHarnessLaunch(pkg, ws, 'claude', 'original', { privateGrid: 'old-grid' })
     pkg.manifest.engine = 'codex'
     pkg.manifest.agent!.args = ['--new-flag']
@@ -144,7 +149,8 @@ describe('session isolation and lifecycle', () => {
     const result = await buildLaunchOverrides(deps, 'claude', { dsh: pkg.id, cwd: ws, dshRuntime: 'original' }, 'registry-agent-id')
     expect(result.ok && result.overrides.env.HARNESS_CONTEXT_FILE).toBe(first.env.HARNESS_CONTEXT_FILE)
     expect(result.ok && result.overrides.env.HARNESS_PRIVATE_GRID).toBe('new-grid')
-    expect(result.ok && result.overrides.extraArgs).toEqual(first.args)
+    // Its own argv as it first launched, its context prompt and what every harness is told joined into one.
+    expect(result.ok && result.overrides.extraArgs).toEqual(joinedInstructions('claude', [...first.args, '--append-system-prompt', HARNESS_INSTRUCTIONS]))
     const fork = prepareHarnessLaunch(pkg, ws, 'claude', 'fork', {}, 'original')
     expect(fork.env.HARNESS_CONTEXT_FILE).not.toBe(first.env.HARNESS_CONTEXT_FILE)
     expect(readFileSync(fork.env.HARNESS_CONTEXT_FILE!, 'utf8')).toContain('# Make a drawing')

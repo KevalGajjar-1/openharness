@@ -104,7 +104,12 @@ ln -s /cache/tui-target tui/target
 HARNESS_OS_RUNTIME_DIR=/build/os/work/runtime-arm bash os/tools/build-runtime.sh
 IMG=/build/harness-orangepi4pro-debian12-$COMMIT.img
 bash $HERE/build-image.sh "$HARNESS_BASE" /build/os/work/runtime-arm "$IMG"
-xz -T0 -6 -c "$IMG" > "/out/${IMG##*/}.xz"
-cd /out && sha256sum "${IMG##*/}.xz" > "${IMG##*/}.xz.sha256"
-ls -la /out
+cp "$IMG" /out/
 '
+[[ $PHASES != base ]] || exit 0
+
+# Compress on the host: xz under arm64 emulation takes far longer.
+IMAGE=$(ls -t "$OUT"/harness-orangepi4pro-debian12-*.img | head -1)
+xz -T0 -6 -f "$IMAGE"
+(cd -- "$OUT" && shasum -a 256 "$(basename -- "$IMAGE").xz" > "$(basename -- "$IMAGE").xz.sha256")
+ls -la "$IMAGE.xz" "$IMAGE.xz.sha256"

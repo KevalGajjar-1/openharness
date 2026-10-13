@@ -15,6 +15,9 @@
 
 enum { POD_MEMBERS_MAX = 24 };   // == POD_PANES_MAX == SWARM_MEMBERS_MAX
 enum { POD_TAP_SLOP = 24 };
+// Console gestures: hold this long to talk; slide down this far after it to cancel; the command bar's height and the
+// travel of a swipe down from it.
+enum { POD_HOLD_MS = 400, POD_BAR_H = 72, POD_BAR_SWIPE = 80, POD_BOTTOM_Y = 620, POD_EDGE_SWIPE = 80 };
 enum { POD_PG_IDLE, POD_PG_DRAG, POD_PG_ANIM };
 enum { POD_PG_ANIM_MS = 170, POD_PG_STEP_MS = 16, POD_PG_FLICK = 300 };   // settle time; animation step; flick velocity, px/s (0.3 px/ms)      // px: farther than this from the DOWN and the contact is a drag, not a tap
 
@@ -56,6 +59,7 @@ typedef struct {
     // touch
     bool down, cancelled, dragging, hit_valid;
     int start_x, start_y, anchor_y;
+    bool edge;                   // Console: this contact began in the bottom zone (y >= POD_BOTTOM_Y) of a non-root, non-Talk screen: an up swipe goes back
     bool sw_ok, sw_on;           // a horizontal pane swipe may come from this contact / is under way (see swipes in pod_glue.c)
     int sw_vx, sw_last_x;        // finger velocity along x, px per second
     uint32_t sw_last_ms;
@@ -79,6 +83,15 @@ typedef struct {
     void *scroll_ctx;
     bool scroll_reversed, scroll_begun;
     uint32_t down_ms;
+    // Console hold to talk: armed at a DOWN that may talk, fired by the first still sample at or after hold_due_ms (pod_ui_touch, on the touch task); hold_voice is a recording
+    // under way for this contact; hold_tile: it opened the agent from a Tab tile first. bar: the
+    // contact began in the command bar below the root.
+    bool hold_armed, hold_fired, hold_voice, hold_tile, bar;
+    bool hands_free;   // Console: the hold started a recording that outlives the finger; the next new tap sends it (cleared by END, ABORT, talk_over, a skin switch)
+    uint32_t hold_due_ms;
+    uint8_t hold_depth;
+    pod_view_t hold_view;            // the screen (nav depth and view) and agent the hold was armed on: it fires only there
+    char hold_agent[ID_MAX];
     // Following the host (see pod_ui_focus): the last contact, and a focus whose agent the model does not know yet.
     bool touched;
     uint32_t last_touch_ms;
@@ -103,6 +116,10 @@ pod_out_t pod_ui_swarms(pod_ui_t *, const cable_swarm_t *items, int n, const cab
                         const char *selected, const cable_tile_t *tiles, int tile_count);
 pod_out_t pod_ui_status(pod_ui_t *, const char *id, const char *status, uint32_t now_ms);
 pod_out_t pod_ui_turn(pod_ui_t *, const char *id, const char *kind, const char *text, int elapsed_s, uint32_t now_ms);
+// turn.stats for an agent (-1 leaves a field unknown); unknown agents are ignored.
+pod_out_t pod_ui_turn_stats(pod_ui_t *, const char *id, int32_t passed, int32_t failed, int32_t commits, int32_t tokens_in, int32_t tokens_out);
+// Switch the interface and reset the nav to its root (no effect is emitted: the caller ended any voice first).
+pod_out_t pod_ui_set_skin(pod_ui_t *, pod_skin_t skin);
 pod_out_t pod_ui_question(pod_ui_t *, const char *id, const char *text);
 // The daemon took a recording for this agent (voice.result): Working now, before its turn starts (pod_model_sent).
 pod_out_t pod_ui_sent(pod_ui_t *, const char *id, uint32_t now_ms);
@@ -170,7 +187,10 @@ bool pod_ui_take_changed(pod_ui_t *);
 // Where Recap drags are reported (NULL: nowhere) and which way the person's setting reads them. Cheap: call before each contact.
 void pod_ui_scroll_sink(pod_ui_t *, ht_scroll_emit_t emit, void *ctx, bool reversed);
 pod_out_t pod_ui_touch(pod_ui_t *, bool down, int x, int y, uint32_t now_ms, bool *changed);
-void pod_ui_touch_cancel(pod_ui_t *);
+pod_out_t pod_ui_touch_cancel(pod_ui_t *);   // a recording the hold had open comes back as VOICE_ABORT: perform it
+// Fires the Console hold once its deadline has passed. The device never calls it: the hold fires from pod_ui_touch's held
+// samples, on the task that also ends the recording. Kept for tests that drive a deadline without a sample.
+pod_out_t pod_ui_tick(pod_ui_t *, uint32_t now_ms);
 
 // ---- voice and clock ---------------------------------------------------------------------------------------
 bool pod_ui_talking(const pod_ui_t *);

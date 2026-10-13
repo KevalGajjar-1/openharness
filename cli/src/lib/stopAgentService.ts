@@ -2,7 +2,7 @@
 import { externalResumePending } from './externalResume.js'
 import { captureResumeIdentity } from './captureResumeIdentity.js'
 import { isTerminalEngine } from '../engines/types.js'
-import { IdentityReadUnavailable } from '../engines/kit/identityScan.js'
+import { IdentityReadUnavailable, ObservedConversationUnavailable } from '../engines/kit/identityScan.js'
 import { controlTranscriptEvidence, engineKeepsTranscriptFile } from '../engines/transcriptBindings.js'
 import type { registry as liveRegistry, RegisteredSession } from './registry.js'
 import type { StoppedAgentStore } from './stoppedAgents.js'
@@ -48,6 +48,11 @@ export interface StopAgentOptions {
   checkpoint?(session: RegisteredSession, phase: 'before' | 'after'): Promise<void>
   /** Fresh proof that an unbound chat has never started and its composer is empty. */
   confirmUnusedConversation?(session: RegisteredSession): Promise<boolean>
+  /**
+   * A close of a harness still starting that waited for its first conversation in vain (closeAgentService.ts): when its
+   * conversation cannot be read, it is stopped without one, and this is called. Never for a conversation once bound.
+   */
+  withoutConversation?(): void
 }
 
 // Hooks rebuild registry objects. Compare stable values, never JavaScript object
@@ -93,7 +98,12 @@ export function createStopAgentService(deps: StopAgentServiceDeps) {
         return runtimeIdentity(current, !starting) === identity && (!conversation || current!.sessionId === conversation)
           && (binding === undefined || bindingIdentity(current!) === binding)
       }
-      const captured = await captureResumeIdentity({ ...live })
+      const captured = await captureResumeIdentity({ ...live }).catch((error: unknown) => {
+        if (!options.withoutConversation || conversation || live.transcriptPath || live.boundAt != null
+          || !(error instanceof IdentityReadUnavailable) || error instanceof ObservedConversationUnavailable) throw error
+        options.withoutConversation()
+        return { ...live }
+      })
       // Discovery or a hook may have updated this row while reading the native store.
       // A replacement process must never be stopped using an older snapshot.
       if (!sameTarget() || options.current?.() === false) {
@@ -163,15 +173,21 @@ export function createStopAgentService(deps: StopAgentServiceDeps) {
         }
         const panes = await Promise.allSettled(tmuxBackend
           ? s.runtimes.filter((runtime): runtime is TmuxRuntimeRef => runtime.backend === 'tmux')
-            .map(runtime => tmuxBackend.kill(runtime)) : [])
+            .map(runtime => tmuxBackend.kill(runtime, () => {
+              // tmux's notification gate can wait after the preceding check.
+              // Carry the original Close permission to the actual kill command.
+              verifyTranscript()
+              return sameTarget() && options.current?.() !== false
+            })) : [])
+        if (nativeIdentityError) throw nativeIdentityError
         if (panes.some(result => result.status !== 'fulfilled' || result.value.state !== 'succeeded')
           || (isTerminalEngine(s.engine) && !panes.length)) {
           throw new AgentStopError('Could not confirm that the harness stopped. Its saved conversation is safe. Try stopping again.')
         }
-        if (!sameTarget()) {
+        verifyTranscript()
+        if (!sameTarget() || options.current?.() === false) {
           throw new AgentStopError('The harness changed while pausing. Check its current state before trying again.')
         }
-        verifyTranscript()
         stoppedAgents.finishResume(sessionId)
         if (s.processIdentity) agentReconciler.suppress(s)
         // This publishes agent_deleted. It must follow confirmed termination, or a

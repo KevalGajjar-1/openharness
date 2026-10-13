@@ -574,8 +574,9 @@ static void pod_model_test_steps(void) {
     pod_model_turn(&M, "a1", "activity", "Running the tests", 6, 70);
     pod_model_turn(&M, "a1", "activity", "Fixing a failure", 7, 80);
     pod_model_turn(&M, "a1", "activity", "Running them again", 8, 90);
-    CHECK(a->step_count == POD_STEPS_MAX && !strcmp(a->steps[0], "Fixing a failure") &&
-          !strcmp(a->steps[1], "Running the tests") && !strcmp(a->steps[2], "Reading the model"));
+    CHECK(a->step_count == 4 && !strcmp(a->steps[0], "Fixing a failure") &&   // POD_STEPS_MAX is 6 now: nothing has fallen off yet
+          !strcmp(a->steps[1], "Running the tests") && !strcmp(a->steps[2], "Reading the model") &&
+          !strcmp(a->steps[3], "Editing pod_model.c now"));
     pod_model_turn(&M, "a1", "done", NULL, 0, 100);
     CHECK(a->step_count == 0 && a->verb[0] == 0 && a->activity[0] == 0);
     pod_model_turn(&M, "a1", "started", NULL, 0, 110);
@@ -587,11 +588,13 @@ static void pod_model_test_steps(void) {
     pod_model_turn(&M, "a1", "activity", "x y", 1, 150);
     pod_model_turn(&M, "a1", "activity", "y z", 1, 151);
     pod_model_question(&M, "a1", "Which?");
-    CHECK(a->step_count == 0);
+    CHECK(a->step_count == 1);                    // the steps survive a question (Console draws them under it)
+    pod_model_question_close(&M, "a1");
+    CHECK(a->step_count == 1);
 }
 
 // A tool step (turn.activity `step`) joins the same newest-first list, never touches the sentence or the verb, and an empty one
-// says nothing; a question still clears the list.
+// says nothing; a question keeps the list.
 static void pod_model_test_tool_steps(void) {
     fresh();
     pod_model_turn(&M, "a1", "started", NULL, 0, 10);
@@ -609,7 +612,7 @@ static void pod_model_test_tool_steps(void) {
     CHECK(a->step_count == 2 && !strcmp(a->steps[0], "Read \xc2\xb7 pod_model.c"));
     pod_model_question(&M, "a1", "Which?");
     pod_model_turn(&M, "a1", "step", "Edit \xc2\xb7 x.c", 6, 70);   // asking: no step lands
-    CHECK(a->step_count == 0 && a->state == POD_ASKING);
+    CHECK(a->step_count == 2 && a->state == POD_ASKING);   // the question kept the two, and the new one did not land
 }
 
 // The footer verb: trimmed like the dial's activity_text (dots, "…", spaces), UTF-8 safe, an empty read never blanks it, and
@@ -911,6 +914,109 @@ static void pod_model_test_unread(void) {
     CHECK(M.read_count == POD_READS_MAX && !strcmp(M.reads[0].agent, "q2"));
 }
 
+// Console's data: step times, six steps, a failed turn, the unread kind, and the turn stats.
+static void pod_model_test_console_data(void) {
+    fresh();
+    const pod_agent_t *a = pod_model_find(&M, "a1");
+    CHECK(a->failed == false && a->tests_passed == -1 && a->tests_failed == -1 && a->commits == -1 && a->tokens_in == -1 && a->tokens_out == -1);
+    pod_model_turn(&M, "a1", "started", NULL, 0, 1000);
+    pod_model_turn(&M, "a1", "step", "Read \xc2\xb7 a.c", 0, 3500);
+    pod_model_turn(&M, "a1", "step", "Edit \xc2\xb7 a.c", 0, 62000);
+    CHECK(a->step_count == 2 && a->step_at_s[0] == 61 && a->step_at_s[1] == 2);   // newest first, seconds since the start
+    for (int i = 0; i < 7; i++) {
+        char t[16];
+        snprintf(t, sizeof t, "Bash \xc2\xb7 %d", i);
+        pod_model_turn(&M, "a1", "step", t, 0, 63000 + (uint32_t)i * 1000);
+    }
+    CHECK(a->step_count == POD_STEPS_MAX && POD_STEPS_MAX == 6);   // 7 more steps: the oldest are gone
+    CHECK(!strcmp(a->steps[0], "Bash \xc2\xb7 6") && !strcmp(a->steps[5], "Bash \xc2\xb7 1") && a->step_at_s[5] == 63);
+    // A step that arrives with no turn start in the model (a library status made the agent Working) has no time.
+    pod_model_library_status(&M, "a2", "working", 5000);
+    pod_model_turn(&M, "a2", "step", "Read \xc2\xb7 b.c", 0, 9000);
+    const pod_agent_t *b = pod_model_find(&M, "a2");
+    CHECK(b->step_count == 1 && b->step_at_s[0] == 0xFFFF);
+
+    // Stats: stored per agent, an unknown id changes nothing, -1 leaves a field unknown, a new turn clears them.
+    unsigned rev = M.revision;
+    pod_model_turn_stats(&M, "zz", 1, 2, 3, 4, 5);
+    CHECK(M.revision == rev);
+    pod_model_turn_stats(&M, "a1", 44, 0, -1, -1, -1);
+    CHECK(a->tests_passed == 44 && a->tests_failed == 0 && a->commits == -1 && M.revision != rev);
+    rev = M.revision;
+    pod_model_turn_stats(&M, "a1", -1, -1, 1, 42900, 18500);
+    CHECK(a->tests_passed == 44 && a->commits == 1 && a->tokens_in == 42900 && a->tokens_out == 18500 && M.revision != rev);
+    rev = M.revision;
+    pod_model_turn_stats(&M, "a1", -1, -1, -1, 42900, 18500);
+    CHECK(M.revision == rev);
+    pod_model_turn(&M, "a1", "done", NULL, 0, 70000);
+    CHECK(a->tests_passed == 44 && !a->failed);
+    pod_model_turn(&M, "a1", "started", NULL, 0, 71000);
+    CHECK(a->tests_passed == -1 && a->tests_failed == -1 && a->commits == -1 && a->tokens_in == -1 && a->tokens_out == -1);
+
+    // A failed turn: IDLE, flagged, with a FAILED unread entry; the next start clears the flag.
+    pod_model_turn(&M, "a1", "error", NULL, 0, 72000);
+    CHECK(a->state == POD_IDLE && a->failed);
+    pod_model_unread_add(&M, "a1", "Alpha", "boom", 3, 72000);
+    CHECK(pod_model_unread_find(&M, "a1")->kind == POD_UNREAD_FAILED);
+    pod_model_turn(&M, "a1", "started", NULL, 0, 73000);
+    CHECK(!a->failed);
+    pod_model_turn(&M, "a1", "done", NULL, 0, 74000);
+    pod_model_unread_add(&M, "a1", "Alpha", "fine", 3, 74000);
+    CHECK(pod_model_unread_find(&M, "a1")->kind == POD_UNREAD_FINISHED);
+}
+
+// M7: the recap's step count is the turn's total, not the list's. M5: Classic's view sees only steps since the question.
+// L14: a turn that starts without turn.started clears the failed flag, and its step total is unknown.
+static void pod_model_test_step_total_and_fresh(void) {
+    fresh();
+    const pod_agent_t *a = pod_model_find(&M, "a1");
+    CHECK(a->step_total == -1);                                    // no turn seen
+    pod_model_turn(&M, "a1", "started", NULL, 0, 1000);
+    CHECK(a->step_total == 0);
+    for (int i = 0; i < 9; i++) {
+        char t[16];
+        snprintf(t, sizeof t, "Read %d", i);
+        pod_model_turn(&M, "a1", "step", t, 0, 2000 + (uint32_t)i * 100);
+    }
+    CHECK(a->step_count == POD_STEPS_MAX && a->step_total == 9 && a->fresh_steps == POD_STEPS_MAX);
+    pod_model_turn(&M, "a1", "done", NULL, 0, 4000);
+    CHECK(a->step_count == 0 && a->step_total == 9);               // done clears the list, not the total
+    pod_model_turn(&M, "a1", "started", NULL, 0, 5000);
+    CHECK(a->step_total == 0);
+    // A question keeps the steps (Console) but none counts as fresh; steps after the resume do, and only they.
+    pod_model_turn(&M, "a1", "step", "Read a", 0, 5100);
+    pod_model_turn(&M, "a1", "step", "Read b", 0, 5200);
+    pod_model_question(&M, "a1", "Proceed?");
+    CHECK(a->step_count == 2 && a->fresh_steps == 0);
+    pod_model_question_close(&M, "a1");
+    CHECK(a->step_count == 2 && a->fresh_steps == 0 && a->step_total == 2);
+    pod_model_turn(&M, "a1", "step", "Read c", 0, 5300);
+    CHECK(a->step_count == 3 && a->fresh_steps == 1 && a->step_total == 3);
+    pod_model_turn(&M, "a1", "step", "Read a", 0, 5400);           // a repeat of an older step moves it to the front, as fresh
+    CHECK(a->step_count == 3 && a->fresh_steps == 2 && !strcmp(a->steps[0], "Read a") && !strcmp(a->steps[2], "Read b"));
+    pod_model_turn(&M, "a1", "step", "Read c", 0, 5500);           // a repeat of a fresh one stays fresh
+    CHECK(a->step_count == 3 && a->fresh_steps == 2);
+
+    // L14: failed, then a new turn that starts through activity (no turn.started), then done: filed FINISHED.
+    pod_model_turn(&M, "a2", "started", NULL, 0, 6000);
+    pod_model_turn(&M, "a2", "error", NULL, 0, 6100);
+    const pod_agent_t *b = pod_model_find(&M, "a2");
+    CHECK(b->failed && b->state == POD_IDLE);
+    pod_model_turn(&M, "a2", "activity", "Retrying", 1, 6200);
+    CHECK(b->state == POD_WORKING && !b->failed && b->step_total == -1);
+    pod_model_turn(&M, "a2", "step", "Read x", 0, 6300);
+    CHECK(b->step_total == -1);                                    // the start was never seen: unknown, not 1
+    pod_model_turn(&M, "a2", "done", NULL, 0, 6400);
+    pod_model_unread_add(&M, "a2", "Beta", "fine", 3, 6400);
+    CHECK(pod_model_unread_find(&M, "a2")->kind == POD_UNREAD_FINISHED);
+    // A question closing mid-turn is not a new turn: failed and the total stay as they were.
+    pod_model_turn(&M, "a3", "started", NULL, 0, 7000);
+    pod_model_turn(&M, "a3", "step", "Read y", 0, 7100);
+    pod_model_question(&M, "a3", "?");
+    pod_model_question_close(&M, "a3");
+    CHECK(pod_model_find(&M, "a3")->step_total == 1);
+}
+
 int main(void) {
     pod_model_test_states();
     pod_model_test_stale_busy();
@@ -938,6 +1044,8 @@ int main(void) {
     pod_model_test_recent();
     pod_model_test_offline_members();
     pod_model_test_unread();
+    pod_model_test_console_data();
+    pod_model_test_step_total_and_fresh();
     printf("Pod model: PASS (%d checks)\n", checks);
     return 0;
 }

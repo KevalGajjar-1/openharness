@@ -12,6 +12,7 @@ import { basename, delimiter, isAbsolute, join, normalize, sep } from 'node:path
 import { env } from '../config/env.js'
 import { ENGINES, PROCESS_ENGINES, type AgentEngine } from '../engines/types.js'
 import { engineInstallPaths, engineInstallRecipe } from './engineInstall.js'
+import { currentUserShell } from './userShell.js'
 
 // Keep this historical import surface for callers, but never duplicate the
 // catalog here. `engines/types.ts` is the one iterable source of truth.
@@ -97,8 +98,8 @@ let interactivePathCache: { shell: string; daemonPath: string; value: string[] }
  */
 function interactivePathEntries(): string[] {
   if (process.env.NODE_ENV === 'test') return []
-  const shell = process.env.SHELL
-  if (!shell || !isAbsolute(shell)) return []
+  const shell = currentUserShell()
+  if (!shell) return []
   const daemonPath = process.env.PATH ?? ''
   if (interactivePathCache?.shell === shell && interactivePathCache.daemonPath === daemonPath) {
     return interactivePathCache.value
@@ -380,14 +381,14 @@ export function opencodeBin(): string {
 export async function opencodeBinAsync(): Promise<string> {
   const configured = env.OPENCODE_PATH
   if (configured) return configured
-  const ownPath = processPathEntries(), shell = process.env.SHELL, daemonPath = process.env.PATH ?? ''
+  const ownPath = processPathEntries(), shell = currentUserShell(), daemonPath = process.env.PATH ?? ''
   const installed = join(homedir(), '.opencode', 'bin', 'opencode')
   for (const entry of ownPath) {
     const file = join(entry, 'opencode')
     try { accessSync(file, constants.X_OK); return file } catch { /* next candidate */ }
   }
   let extra: string[] = []
-  if (process.env.NODE_ENV !== 'test' && shell && isAbsolute(shell)) {
+  if (process.env.NODE_ENV !== 'test' && shell) {
     if (interactivePathCache?.shell === shell && interactivePathCache.daemonPath === daemonPath && interactivePathCache.value.length) {
       extra = interactivePathCache.value
     } else {

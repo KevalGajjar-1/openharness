@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { rmSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { env } from '../config/env.js'
+import { agentSettingsPath } from './agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
 import { loadEngine } from '../engines/inProcess.js'
 import { buildLaunchOverrides, prepareLaunchOverrides, validateLaunchOverrides, type LaunchOverridesDeps } from './launchOverrides.js'
 import { DSH_SESSION_ENV } from '../dsh/launch.js'
 import { GRID_CONFLICTING_ENV_VARS, type GridLaunchOverride } from './gridLaunch.js'
 import { gridLaunchInProcess } from '../testing/gridLaunchInProcess.js'
+import { AGENT_ATTRIBUTION_LINE, HARNESS_INSTRUCTIONS } from './agentAttribution.js'
 
 const GRID: GridLaunchOverride = {
   networkId: 'grid-abc',
@@ -33,6 +38,11 @@ function deps(overrides: Partial<LaunchOverridesDeps> = {}) {
   }
   return { d, calls }
 }
+
+// A Claude Code or Codex launch is told how to use Harness (lib/agentAttribution.ts) once the account lets agents start
+// agents, and a harness another agent started adds its pull request line once the account has that on: both off by
+// default, so each relaunch below shows only what it is about. Each has its own describe, which turns it on.
+afterEach(() => { rmSync(agentSettingsPath(env.ADAPTER_DATA_DIR), { force: true }); signedOutForTest() })
 
 describe('buildLaunchOverrides — a relaunch comes back where the agent was', () => {
   it('awaits profile hook durability, holds an unavailable profile and checks ownership after completion', async () => {
@@ -321,6 +331,53 @@ describe('buildLaunchOverrides — a pane opened as a named agent comes back as 
   it('adds nothing for a general session, or for an engine with no contract on a hand-edited row', async () => {
     expect(await buildLaunchOverrides(deps().d, 'opencode', { agent: null }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
     expect(await buildLaunchOverrides(deps().d, 'claude', { agent: 'harness-compute' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+  })
+})
+
+describe('buildLaunchOverrides — a harness another agent started keeps its pull request line', () => {
+  const pr = (args: string[]) => JSON.parse(args[args.indexOf('--settings') + 1]!).attribution.pr as string
+  beforeEach(() => { setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { pullRequestLine: true }) })
+
+  it('appends it after everything else, on its own login and on a grid, read from the settings the relaunch reads', async () => {
+    const read = vi.fn((path: string) => path === '/workspace/.claude/settings.json' ? '{"attribution":{"pr":"Mine"}}' : null)
+    const own = await buildLaunchOverrides(deps({ readAttribution: read }).d, 'claude', { startedBy: 'agent', cwd: '/workspace' }, 'a')
+    expect(own.ok).toBe(true)
+    if (!own.ok) return
+    expect(own.overrides.extraArgs[0]).toBe('--settings')
+    expect(pr(own.overrides.extraArgs)).toBe(`Mine\n${AGENT_ATTRIBUTION_LINE}`)
+    expect(read).toHaveBeenCalledWith('/workspace/.claude/settings.local.json')
+    const grid = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'codex', { startedBy: 'agent', gridLaunch: GRID, cwd: null }, 'a')
+    expect(grid.ok).toBe(true)
+    if (!grid.ok) return
+    expect(grid.overrides.extraArgs.at(-2)).toBe('-c')
+    expect(grid.overrides.extraArgs.at(-1)).toMatch(/^developer_instructions=".*Started by another agent in \[Harness\]/)
+  })
+
+  it('adds nothing for the person\'s harness, or for an engine with no way to say it', async () => {
+    const read = vi.fn(() => null)
+    expect(await buildLaunchOverrides(deps({ readAttribution: read }).d, 'claude', { startedBy: null, cwd: '/w' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+    expect(await buildLaunchOverrides(deps({ readAttribution: read }).d, 'opencode', { startedBy: 'agent', cwd: '/w' }, 'a')).toMatchObject({ ok: true, overrides: { extraArgs: [] } })
+    expect(read).not.toHaveBeenCalled()
+  })
+})
+
+describe('buildLaunchOverrides — every harness is told how to use Harness', () => {
+  it('on every relaunch, beside its grid\'s own prompt for Claude Code and in the one instructions value for Codex', async () => {
+    setAgentSettingsForTest(env.ADAPTER_DATA_DIR, { agentsStartAgents: true, pullRequestLine: true })
+    const own = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'claude', { startedBy: null, cwd: '/w' }, 'a')
+    expect(own).toMatchObject({ ok: true, overrides: { extraArgs: ['--append-system-prompt', HARNESS_INSTRUCTIONS] } })
+    const grid = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'claude', { startedBy: 'agent', gridLaunch: GRID, cwd: null }, 'a')
+    expect(grid.ok).toBe(true)
+    if (!grid.ok) return
+    const args = grid.overrides.extraArgs
+    expect(args.filter((arg) => arg === '--append-system-prompt')).toHaveLength(1)
+    expect(args[args.indexOf('--append-system-prompt') + 1]).toMatch(new RegExp(`\\n\\n${HARNESS_INSTRUCTIONS.slice(0, 30)}`))
+    const codex = await buildLaunchOverrides(deps({ readAttribution: () => null }).d, 'codex', { startedBy: 'agent', cwd: null }, 'a')
+    expect(codex.ok).toBe(true)
+    if (!codex.ok) return
+    expect(codex.overrides.extraArgs.filter((arg) => arg.startsWith('developer_instructions='))).toHaveLength(1)
+    expect(codex.overrides.extraArgs.at(-1)).toContain('You are running in Harness')
+    expect(codex.overrides.extraArgs.at(-1)).toContain('Started by another agent in [Harness]')
   })
 })
 

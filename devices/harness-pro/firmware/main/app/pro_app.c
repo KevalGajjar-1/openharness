@@ -16,10 +16,12 @@
 #include "app/pro_touch.h"
 #include "app/pro_voice.h"
 #include "audio/audio_capture.h"
+#include "audio/pro_recorder.h"
 #include "cable/pro_cable.h"
 #include "pro_app_api.h"
 #include "pro_display.h"
 #include "pro_frame.h"
+#include "pro_turn.h"
 #include "sys/config_store.h"
 #include "sys/fw_update.h"
 #include "sys/ram_telemetry.h"
@@ -48,7 +50,7 @@ static const char *TAG = "pro";
 #define SWEEP_RETRY_MS 1000         // a request that could not be sent
 #define SWEEP_STALL_MS 3000         // a request nobody answered
 
-// Pod's model, scenes and tables. All in PSRAM: the model alone is ~130 KB, two scenes of 128 runs ~53 KB (R18).
+// Pod's model, scenes and tables. All in PSRAM: the model alone is ~130 KB, two scenes of 192 runs ~80 KB (R18).
 static EXT_RAM_BSS_ATTR pod_ui_t s_pod;
 static EXT_RAM_BSS_ATTR ht_scene_t s_scene[2];
 static EXT_RAM_BSS_ATTR pod_roster_row_t s_rows[POD_AGENTS_MAX];   // not on the 6 KB cable_link stack (P9)
@@ -79,6 +81,9 @@ static scroll_ev_t s_sq[SCROLL_MAX];
 static int s_sqn;
 
 static atomic_bool s_asleep, s_force_frame;
+// A finger held across a turn: its next samples arrive on the new axes, at the mirrored spot. The rest of that
+// contact is swallowed (pro_app_touch answers false once, and pro_touch keeps swallowing until the finger lifts).
+static atomic_bool s_turn_swallow;
 static atomic_bool s_updating, s_painted;   // a firmware image is being written (mirrors pod_ui_updating, readable without the lock); the first frame is out
 static char s_ota_from[24], s_ota_to[24];   // the update screen's versions, set at its begin
 static char s_updated[24];                  // "Updated to X": set by pro_app_note_update, shown (3 s) once the cable is up
@@ -464,6 +469,14 @@ void pro_app_turn(const char *id, const char *kind, const char *text, int elapse
     leave();
 }
 
+void pro_app_turn_stats(const char *id, int tests_passed, int tests_failed, int commits, int tokens_in, int tokens_out)
+{
+    if (!id_ok(id)) return;
+    pro_app_lock();
+    settle(pod_ui_turn_stats(&s_pod, id, tests_passed, tests_failed, commits, tokens_in, tokens_out));
+    leave();
+}
+
 void pro_app_summary(const char *id, const char *text, const char *recap, const char *full, bool restore, bool notify)
 {
     if (!id_ok(id)) return;
@@ -665,13 +678,17 @@ static void flush_scroll(void)
 static void cancel_locked(void)
 {
     pod_ui_scroll_sink(&s_pod, scroll_emit, NULL, false);
-    pod_ui_touch_cancel(&s_pod);   // a cancelled drag ends with a zero UP (P4)
-    settle((pod_out_t){0});
+    settle(pod_ui_touch_cancel(&s_pod));   // a cancelled drag ends with a zero UP (P4); a recording the hold opened is aborted
 }
 
 bool pro_app_touch(bool down, int x, int y)
 {
     pro_app_lock();
+    if (atomic_exchange(&s_turn_swallow, false)) {   // the finger that was down when the glass turned
+        leave();
+        flush_scroll();
+        return false;
+    }
     if (pro_app_asleep()) {
         // The screen went to sleep halfway through this contact (a power key, say). Nothing is delivered; the
         // caller swallows the rest of the contact.
@@ -746,7 +763,11 @@ void pro_app_button_press(void)
     pro_app_lock();
     pod_out_t out = {0};
     if (pod_ui_talking(&s_pod)) out = pod_nav_act(&s_pod.nav, &s_pod.model, POD_A_TABS, 0, ms());
-    while (s_pod.nav.depth > 1) (void)pod_nav_act(&s_pod.nav, &s_pod.model, POD_A_BACK, 0, ms());
+    if (s_pod.nav.skin == POD_SKIN_CONSOLE) {   // Console: back one level, nothing at the root
+        if (s_pod.nav.depth > 1) out = pod_nav_act(&s_pod.nav, &s_pod.model, POD_A_BACK, 0, ms());
+    } else {
+        while (s_pod.nav.depth > 1) (void)pod_nav_act(&s_pod.nav, &s_pod.model, POD_A_BACK, 0, ms());
+    }
     change();
     settle(out);
     leave();
@@ -778,6 +799,9 @@ void pro_app_tick(void)
         pod_ui_talk_over(&s_pod);
         change();
     }
+    // A cross-task abort (link lost, side button, nav sync) can land between leave() and pro_voice_begin claiming
+    // s_open, leaving a recording with no Talk screen. A voice with neither Talk nor a sent clip is that orphan.
+    const bool orphan = pro_voice_open() && !pro_voice_waiting() && !pod_ui_talking(&s_pod);
     if (!pro_app_asleep() && pod_ui_clock_tick(&s_pod, now)) change();
     // R15: the library sweep (pod_glue.h). The request is pinned by its id; a request nobody answered is retried
     // after 3 s, one that could not be sent after 1 s.
@@ -795,6 +819,7 @@ void pro_app_tick(void)
         }
     }
     leave();
+    if (orphan) pro_voice_end(false);   // no lock held: it may notify pro_app and send on the cable
 }
 
 uint32_t pro_app_next_wake_ms(void)
@@ -813,6 +838,7 @@ bool pro_app_take_scene(ht_scene_t *scene)
     if (s_dirty) {   // R9; the hits stay in s_pod.frame for the touch task
         s_dirty = false;
         ht_scene_clear(scene, ht_rgb(HT_THEME_CANVAS));
+        s_pod.frame.mic_level = (int)pro_rec_level();   // the Console voice wave
         pod_ui_render(&s_pod, scene, ms());
         fresh = true;
     }
@@ -854,6 +880,8 @@ static void render_task(void *arg)
     for (;;) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         pro_app_tick();
+        pro_app_apply_turn();
+        pro_app_apply_skin();
         const bool fresh = pro_app_take_scene(&s_scene[front ^ 1]);
         uint32_t wake_ms = pro_app_next_wake_ms();
         const int64_t wake_at = esp_timer_get_time() + (int64_t)wake_ms * 1000;
@@ -896,6 +924,57 @@ static void render_task(void *arg)
 }
 
 void pro_app_set_brightness(uint8_t level) { pro_display_set_brightness(level); }
+
+// The cable task asks; the render task switches at the top of its next frame, so no frame is half one way.
+static atomic_int s_turn_req = -1;   // -1: nothing asked, else the wanted flag
+
+void pro_app_request_turn(bool turned)
+{
+    atomic_store(&s_turn_req, turned ? 1 : 0);
+    if (s_renderer) xTaskNotifyGive(s_renderer);
+}
+
+bool pro_app_apply_turn(void)
+{
+    const int want = atomic_exchange(&s_turn_req, -1);
+    if (want < 0 || (want != 0) == pro_turn_get()) return false;
+    pro_app_lock();
+    const bool held = s_pod.down;         // a contact began on the old axes
+    pro_app_unlock();
+    pro_turn_set(want != 0);
+    atomic_store(&s_force_frame, true);   // every pixel moved: the next awake frame paints the whole glass (as a wake does)
+    if (held) atomic_store(&s_turn_swallow, true);
+    pro_app_touch_cancel();
+    return true;
+}
+
+static atomic_int s_skin_req = -1;   // -1: nothing asked, else the wanted pod_skin_t
+
+void pro_app_request_skin(int skin)
+{
+    atomic_store(&s_skin_req, skin == POD_SKIN_CONSOLE ? POD_SKIN_CONSOLE : POD_SKIN_CLASSIC);
+    if (s_renderer) xTaskNotifyGive(s_renderer);
+}
+
+bool pro_app_apply_skin(void)
+{
+    const int want = atomic_exchange(&s_skin_req, -1);
+    if (want < 0) return false;
+    pro_app_lock();
+    const bool same = (int)s_pod.nav.skin == want;
+    const bool held = s_pod.down;         // a contact began on the old skin's screen
+    pro_app_unlock();
+    if (same) return false;
+    if (pro_voice_open()) pro_voice_end(false);   // no lock held: it may notify pro_app and send on the cable
+    pro_app_lock();
+    settle(pod_ui_set_skin(&s_pod, (pod_skin_t)want));
+    change();
+    pro_app_unlock();
+    atomic_store(&s_force_frame, true);   // the whole glass is repainted
+    if (held) atomic_store(&s_turn_swallow, true);
+    pro_app_touch_cancel();
+    return true;
+}
 
 void pro_app_start(void)
 {
@@ -1009,6 +1088,8 @@ bool pro_app_test_take_dirty(void)
     return dirty;
 }
 
+bool pro_app_test_take_force_frame(void) { return atomic_exchange(&s_force_frame, false); }
+
 void pro_app_test_reset(void)
 {
     if (!s_lock) s_lock = xSemaphoreCreateRecursiveMutex();
@@ -1030,6 +1111,8 @@ void pro_app_test_reset(void)
     s_lib_pending = false;
     atomic_store(&s_asleep, false);
     atomic_store(&s_force_frame, false);
+    atomic_store(&s_turn_req, -1);
+    atomic_store(&s_skin_req, -1);
     atomic_store(&s_updating, false);
     s_updated[0] = 0;
 }

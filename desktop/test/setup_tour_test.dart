@@ -11,8 +11,6 @@ import 'package:harness/widgets/setup_tour.dart';
 const _macTitles = [
   'All your machines,\none window.',
   'All your agents,\nside by side.',
-  '⌘P finds\nany harness.',
-  '⌘N starts\na new harness.',
   'Sessions that\nkeep going.',
   'Your agents\nin your pocket.',
   'The Harness\ndevice.',
@@ -21,8 +19,6 @@ const _macTitles = [
 const _kickers = [
   'WELCOME TO HARNESS',
   'EVERY AGENT',
-  'KEYBOARD FIRST',
-  'KEYBOARD FIRST',
   'ALWAYS THERE',
   'ON THE GO',
   'ON YOUR DESK',
@@ -85,11 +81,11 @@ Future<void> _nextSlide(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('seven slides in the approved order, each with the tagline', (
+  testWidgets('five slides in the approved order, each with the tagline', (
     tester,
   ) async {
     await _mount(tester);
-    for (var i = 0; i < 7; i++) {
+    for (var i = 0; i < _macTitles.length; i++) {
       expect(_shownTitle(tester), _macTitles[i], reason: 'slide ${i + 1}');
       expect(find.text(_kickers[i]).last, findsWidgets);
       expect(find.text(tourTagline), findsOneWidget);
@@ -107,7 +103,9 @@ void main() {
     );
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('Linux names its own chords and its computer', (tester) async {
+  testWidgets('Linux names its computer in setup and the artwork', (
+    tester,
+  ) async {
     final progress = ValueNotifier(SetupProgress.starting);
     addTearDown(progress.dispose);
     await _mount(tester, progress: progress);
@@ -115,17 +113,12 @@ void main() {
       tester.widget<Text>(_line).data,
       'Setting up Harness on this computer',
     );
-    await tester.tap(find.byKey(const ValueKey('tour-dot-2')));
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(_shownTitle(tester), 'Alt+Shift+P finds\nany harness.');
-    await tester.tap(_next);
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(_shownTitle(tester), 'Alt+N starts\na new harness.');
+    expect(find.text('this computer'), findsOneWidget);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   testWidgets('advances every 6 s and loops', (tester) async {
     await _mount(tester);
-    for (var i = 1; i < 7; i++) {
+    for (var i = 1; i < _macTitles.length; i++) {
       await _nextSlide(tester);
       expect(_shownTitle(tester), _macTitles[i]);
     }
@@ -144,17 +137,17 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     expect(_shownTitle(tester), _macTitles[1]);
 
-    await tester.tap(find.byKey(const ValueKey('tour-dot-5')));
+    await tester.tap(find.byKey(const ValueKey('tour-dot-3')));
     await tester.pump(const Duration(milliseconds: 400));
-    expect(_shownTitle(tester), _macTitles[5]);
+    expect(_shownTitle(tester), _macTitles[3]);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pump(const Duration(milliseconds: 400));
-    expect(_shownTitle(tester), _macTitles[6]);
+    expect(_shownTitle(tester), _macTitles[4]);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.pump(const Duration(milliseconds: 400));
-    expect(_shownTitle(tester), _macTitles[4]);
+    expect(_shownTitle(tester), _macTitles[2]);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('one install line with the time left; ▸ unfolds the details', (
@@ -372,7 +365,7 @@ void main() {
       );
       tester.view.physicalSize = const Size(880, 560);
       await tester.pump();
-      for (var i = 0; i < 7; i++) {
+      for (var i = 0; i < _macTitles.length; i++) {
         await tester.tap(_next);
         await tester.pump(const Duration(milliseconds: 400));
         expect(tester.takeException(), isNull);

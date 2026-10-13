@@ -1,9 +1,19 @@
 /** Eager native launch control. Importing it neither probes a binary nor reads or writes a store. */
 import { opencodeBinAsync } from '../lib/engineBin.js'
-import { OPENCODE_SESSION_MODEL, OPENCODE_VERSION } from './opencode/contract.js'
+import { sqliteReadAll } from '../lib/sqliteRead.js'
+import { OPENCODE_SESSION_MODEL, OPENCODE_V2_TURN, OPENCODE_VERSION } from './opencode/contract.js'
 import { executableSnapshot, majorVersion, nativeVersionProbe, parseMajor, type NativeExecutableSnapshot, type VersionProbe } from './kit/nativeVersion.js'
 import { createSessionModelControl, type NativeApiRun, type NativeModelResult, type NativeSessionModel, type NativeModelAuthority } from './kit/nativeSessionModel.js'
 export { isOpencodeV2 } from './opencode/contract.js'
+
+/** Whether OpenCode 2 session [sessionId] is in a turn, read from [dbPath] (`OPENCODE_V2_TURN`). Null when
+ *  the store cannot be read. */
+export async function opencodeV2TurnOpen(dbPath: string, sessionId: string): Promise<boolean | null> {
+  if (!OPENCODE_SESSION_MODEL.id.test(sessionId)) return null
+  const result = await sqliteReadAll(dbPath, OPENCODE_V2_TURN.sql, [sessionId])
+  if (!result.ok) return null
+  return result.rows[0]?.type === OPENCODE_V2_TURN.opens
+}
 
 export type OpencodeVersionProbe = VersionProbe
 const versionMemo = new Map<string, number | null>()

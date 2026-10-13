@@ -1,5 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { draftDatabase, validateDraft } from '@/lib/community/drafts';
+
+/**
+ * The draft's JSON: a gzipped file from Desktop (opaque to Cloudflare's rules, which refuse raw
+ * `<script>` in a body), or the text field an older Desktop sends. Unpacking is bounded.
+ */
+async function draftText(field: FormDataEntryValue | null): Promise<string | null> {
+  if (typeof field === 'string') return field;
+  if (!field) return null;
+  try { return gunzipSync(Buffer.from(await field.arrayBuffer()), { maxOutputLength: 6_000_001 }).toString('utf8'); }
+  catch { return null; }
+}
 
 /** Native Share hands off a draft, never a publication or a credential. */
 export async function POST(request: Request): Promise<Response> {
@@ -16,8 +28,8 @@ export async function POST(request: Request): Promise<Response> {
     const bytes = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     const form = await new Response(bytes, { headers: { 'Content-Type': request.headers.get('Content-Type') || '' } }).formData();
-    const raw = form.get('draft');
-    if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > 6_000_000) return new Response('Invalid draft.', { status: 400 });
+    const raw = await draftText(form.get('draft'));
+    if (raw === null || new TextEncoder().encode(raw).length > 6_000_000) return new Response('Invalid draft.', { status: 400 });
     const draft = validateDraft(JSON.parse(raw));
     const id = randomUUID(), nonce = randomUUID();
     const payload = JSON.stringify(draft).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');

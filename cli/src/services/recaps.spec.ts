@@ -50,9 +50,9 @@ describe('the recaps', () => {
     expect(core.transcripts.lastTurn).toHaveBeenCalledWith('s1')
     expect(vi.mocked(core.clients.turnSummary).mock.calls[0][0]).toMatchObject({ type: 'turn_summary', agentId: 'a1', dbSessionId: 's1', payload: { summary, sessionId: 's1' } })
     const cards = vi.mocked(core.clients.turnCard).mock.calls.map(([frame]) => frame)
-    expect(cards.map((frame) => frame.payload.kind)).toEqual(['processing', 'done', 'summary'])
+    expect(cards.map((frame) => frame.payload.kind)).toEqual(['turn_started', 'processing', 'done', 'summary'])
     // The summary card carries the agent's name for a machine whose tile is not loaded.
-    expect(cards[2]).toMatchObject({ type: 'commander_event', agentId: 'a1', dbSessionId: 's1', name: 'app' })
+    expect(cards[3]).toMatchObject({ type: 'commander_event', agentId: 'a1', dbSessionId: 's1', name: 'app' })
     expect(recaps.port.recaps('s1')).toMatchObject({ busy: false, history: [summary], fullTexts: ['The fix is in. Tests pass.'] })
   })
 

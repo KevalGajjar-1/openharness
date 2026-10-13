@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { EngineInstallRecipe } from '../../lib/engineInstall.js'
+import { ENUMERATION_ATTEMPTS } from './nativeFiles.js'
 import { createNativeInstallations, NATIVE_INSTALL_WORKER } from './nativeInstall.js'
 
 const fixture = vi.hoisted(() => ({ failSync: false, argv: [] as string[], onSync: undefined as undefined | (() => number | void), onDirectoryOpen: undefined as undefined | (() => void) }))
@@ -36,11 +37,27 @@ beforeEach(() => {
   fixture.argv = [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(join(root, 'installed'))}, 'one\\n')`]
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks() })
+/** An ancestor of the claims that changes during every listing attempt (`ENUMERATION_ATTEMPTS`), then stops. */
+function keepChanging(times = ENUMERATION_ATTEMPTS): () => void {
+  return () => {
+    if (--times === 0) fixture.onDirectoryOpen = undefined
+    writeFileSync(join(root, `sibling-${times}`), 'changed during enumeration')
+  }
+}
 const controller = (dispatch = vi.fn()) => ({ dispatch, ...createNativeInstallations({ directory, node: () => process.execPath, dispatch }) })
 function complete(file = join(directory, '00000000.json'), code = 0): void {
   const text = readFileSync(file, 'utf8'), claim = JSON.parse(text)
   writeFileSync(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash(text), code, signal: null }), { mode: 0o600 })
 }
+
+it('looks again when an ancestor changes once during a listing, as a busy temporary folder does', async () => {
+  const install = controller()
+  fixture.onDirectoryOpen = keepChanging(1)
+  expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ complete: false })
+  expect(fixture.onDirectoryOpen).toBeUndefined()
+  expect(install.dispatch).toHaveBeenCalledTimes(1)
+  expect(existsSync(join(directory, '00000000.json'))).toBe(true)
+})
 
 it('does not reserve or dispatch after cancellation', async () => {
   const install = controller()
@@ -86,14 +103,53 @@ it('does not treat a dangling authority leaf as missing through a parent alias',
   expect(install.dispatch).not.toHaveBeenCalled()
 })
 
-it('holds a failed installation across different request IDs and a reconstructed core', async () => {
+it('refuses a failed installation to its own request in its output\'s words, and installs again for a new one', async () => {
   const install = controller()
   await install.ensure('opencode', recipe, environment, 'failed-request', () => true)
-  complete(undefined, 1)
-  expect(await controller().status('opencode', 'new-request', () => true)).toMatchObject({ complete: false })
-  expect(await controller().ensure('opencode', recipe, environment, 'new-request', () => true)).toMatchObject({ complete: false })
+  // What npm printed when a fresh computer could not reach its registry: the line that says what failed.
+  const file = join(directory, '00000000.json'), text = readFileSync(file, 'utf8'), claim = JSON.parse(text)
+  writeFileSync(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash(text), code: 1, signal: null, detail: [
+    'harness: engine is missing — installing it in this terminal', 'npm error code ENOTFOUND',
+    'npm error network request to https://registry.npmjs.org/opencode-ai failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org',
+    'npm error A complete log of this run can be found in: /fixture/_logs/debug-0.log',
+    'harness: the install failed, so the agent was not started. The command is above; fix it and create the agent again.',
+  ].join('\n') }), { mode: 0o600 })
+  const failed = { complete: false, failed: true,
+    detail: 'npm error network request to https://registry.npmjs.org/opencode-ai failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org' }
+  // Never run again for that request, across a reconstructed core, whether or not an executable appeared.
+  expect(await controller().ensure('opencode', recipe, environment, 'failed-request', () => true)).toEqual(failed)
+  expect(await controller().status('opencode', 'failed-request', () => true)).toEqual(failed)
+  // A new request is a new attempt: an executable that is there is used, and one that is not is installed again.
+  expect(await controller().status('opencode', 'new-request', () => true)).toBeNull()
+  const again = controller()
+  expect(await again.ensure('opencode', recipe, environment, 'new-request', () => true)).toMatchObject({ complete: false, running: true })
+  expect(again.dispatch).toHaveBeenCalledOnce()
   expect(await controller().status('codex', 'unrelated-request', () => true)).toBeNull()
   expect(install.dispatch).toHaveBeenCalledOnce()
+})
+
+it('stops saying an installer whose helper never settled is installing, without ever replaying it', async () => {
+  const install = controller()
+  expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ running: true })
+  expect(await controller().ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ running: true })
+  expect(await controller().status('opencode', 'other', () => true)).toMatchObject({ running: true })
+  // A reboot during the install: no result, ever, and the dispatch older than the helper's 20 minutes.
+  const witness = `${directory}.00000000.dispatch`, past = new Date(Date.now() - 30 * 60_000)
+  utimesSync(witness, past, past)
+  const stale = await controller().ensure('opencode', recipe, environment, 'request', () => true)
+  expect(stale).toEqual({ complete: false, detail: 'Waiting for the dispatched installer result. An uncertain dispatch is never repeated.' })
+  expect(await controller().status('opencode', 'other', () => true)).not.toHaveProperty('running')
+  expect(install.dispatch).toHaveBeenCalledOnce()
+})
+
+it('says how an installer that printed nothing ended', async () => {
+  const install = controller()
+  await install.ensure('opencode', recipe, environment, 'request', () => true)
+  const file = join(directory, '00000000.json'), text = readFileSync(file, 'utf8'), claim = JSON.parse(text)
+  writeFileSync(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash(text), code: null, signal: 'SIGKILL' }), { mode: 0o600 })
+  expect(await controller().ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ failed: true, detail: 'its installer was stopped (SIGKILL)' })
+  writeFileSync(`${file}.result`, JSON.stringify({ token: claim.token, claim: hash(text), code: 2, signal: null }), { mode: 0o600 })
+  expect(await controller().ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({ failed: true, detail: 'its installer exited with status 2' })
 })
 
 it('retains one durable installation across duplicate requests and a reconstructed core', async () => {
@@ -151,12 +207,9 @@ it('settles a durable non-dispatch cancellation through the ready-executable sta
   const witness = `${directory}.00000000.dispatch`
   fixture.onSync = () => { if (existsSync(witness)) fixture.failSync = true }
   const other = controller()
-  // Linux CI's parallel fixtures can change an ancestor during enumeration.
-  // That is a real hold; keep each disk fault armed until its stage is reached.
-  fixture.onDirectoryOpen = () => {
-    fixture.onDirectoryOpen = undefined
-    writeFileSync(join(root, 'sibling'), 'changed during inspection')
-  }
+  // An ancestor that changes during every look is a real hold; keep each disk fault armed until its
+  // stage is reached.
+  fixture.onDirectoryOpen = keepChanging()
   expect(await other.ensure('codex', recipe, environment, 'other', () => true)).toMatchObject({ complete: false })
   expect(fixture.onDirectoryOpen).toBeUndefined()
   expect(existsSync(witness)).toBe(false)
@@ -194,10 +247,7 @@ it('does not replay a dispatch whose reply was lost', async () => {
 
 it.each(['changed owner', 'foreign result', 'failed installer', 'unsafe result', 'orphan result', 'malformed result', 'contradictory result'])('holds %s without dispatch or a false completion', async kind => {
   const install = controller()
-  if (kind === 'failed installer') fixture.onDirectoryOpen = () => {
-    fixture.onDirectoryOpen = undefined
-    writeFileSync(join(root, 'sibling'), 'changed during enumeration')
-  }
+  if (kind === 'failed installer') fixture.onDirectoryOpen = keepChanging()
   if (kind === 'failed installer') {
     expect(await install.ensure('opencode', recipe, environment, 'request', () => true)).toMatchObject({
       complete: false, detail: 'Waiting to confirm durable engine installation ownership.',

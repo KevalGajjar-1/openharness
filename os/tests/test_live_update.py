@@ -941,5 +941,124 @@ class ScreenSelection(unittest.TestCase):
         run.assert_not_called()
 
 
+class RuntimeSupervision(unittest.TestCase):
+    """A CLI change takes effect only through harness-daemon.service's own daemon."""
+
+    SCREEN = [('systemctl', '--user', 'restart', 'hn-screen.service'),
+              ('systemctl', '--user', 'is-active', '--quiet', 'hn-screen.service')]
+
+    def restart(self, pids, cli_changed=True):
+        calls = []
+        with patch.object(update, 'run', side_effect=lambda *args, **kwargs: calls.append(args) or ''), \
+             patch.object(update, 'runtime_pids', side_effect=pids):
+            update.restart(cli_changed)
+        return calls
+
+    def test_the_units_daemon_is_restarted_and_must_serve_afterwards(self):
+        self.assertEqual(self.restart([(1347, 1347), (42916, 42916)]), [
+            ('systemctl', '--user', 'restart', 'harness-daemon.service'),
+            ('/usr/lib/harness-os/wait-runtime',), *self.SCREEN])
+
+    def test_a_daemon_serving_beside_the_unit_is_stopped_before_the_restart(self):
+        # 2026-10-12: a sign-in restarted the daemon outside systemd. Restarting the unit alone
+        # left that one serving the old CLI while the unit's new core failed on the taken port.
+        calls = self.restart([(2288, None), (42916, 42916)])
+        self.assertEqual(calls[:2], [('/usr/bin/harness', 'stop'), ('systemctl', '--user', 'restart', 'harness-daemon.service')])
+        self.assertEqual(self.restart([(2288, 1347), (42916, 42916)])[0], ('/usr/bin/harness', 'stop'))
+
+    def test_activation_fails_unless_the_units_own_daemon_answers(self):
+        for after in [(2288, None), (2288, 43000), (None, 43000), (None, None)]:
+            with self.subTest(after=after), self.assertRaisesRegex(ValueError, 'not running under harness-daemon.service'):
+                self.restart([(None, None), after])
+
+    def test_the_unit_bounds_a_stop_and_kills_only_its_main_process(self):
+        # The restart above waits for the old core to stop; systemd's default 90 s held an update
+        # for all of it (2026-10-13). A kill must still spare the agents in tmux.
+        unit = (Path(__file__).parents[1] / 'root/usr/lib/systemd/user/harness-daemon.service').read_text().splitlines()
+        self.assertIn('TimeoutStopSec=10', unit)
+        self.assertIn('KillMode=process', unit)
+
+    def test_an_hn_only_change_leaves_the_daemon_alone(self):
+        self.assertEqual(self.restart([], cli_changed=False), self.SCREEN)
+
+    def test_pids_come_from_the_runtime_and_systemd(self):
+        def ask(answer, main):
+            opened = patch.object(update, 'urlopen', side_effect=answer if isinstance(answer, Exception) else lambda *a, **k: Response(answer))
+            with opened, patch.object(update, 'run', return_value=main) as run:
+                pids = update.runtime_pids()
+            run.assert_called_once_with('systemctl', '--user', 'show', 'harness-daemon.service', '--property=MainPID', '--value', timeout=10)
+            return pids
+        self.assertEqual(ask(b'{"pid": 1347, "version": "0.3.80"}', '1347'), (1347, 1347))
+        self.assertEqual(ask(b'{"pid": 2288}', '0'), (2288, None))
+        self.assertEqual(ask(OSError('Connection refused'), '42916'), (None, 42916))
+        for odd in [b'not json', b'[1347]', b'{"pid": "1347"}', b'{"pid": true}', b'{"pid": 0}']:
+            with self.subTest(odd=odd):
+                self.assertEqual(ask(odd, ''), (None, None))
+
+
+class ScreenReadiness(unittest.TestCase):
+    """The new screen is the hn-screen.service client running the selected binary."""
+
+    SCREEN = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/hn-screen.service\n'
+    ELSEWHERE = '0::/user.slice/user-1000.slice/session-28.scope\n'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.proc, self.state = root / 'proc', root / 'state'
+        self.state.mkdir()
+        self.new, self.old = root / 'new', root / 'old'
+        for build in (self.new, self.old):
+            build.mkdir()
+            (build / 'harness-tui').write_bytes(b'\x7fELF')
+        for patcher in (patch.object(update, 'PROC', self.proc), patch.object(update, 'STATE', self.state),
+                        patch.object(update.time, 'sleep')):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        clock = iter(range(0, 1000, 5))
+        patcher = patch.object(update.time, 'monotonic', side_effect=lambda: next(clock))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def client(self, pid, cgroup, build):
+        (self.proc / str(pid)).mkdir(parents=True)
+        (self.proc / str(pid) / 'cgroup').write_text(cgroup)
+        (self.proc / str(pid) / 'exe').symlink_to(build / 'harness-tui')
+
+    def ready(self, listed):
+        with patch.object(update, 'run', return_value=listed) as run:
+            update.screen_ready(self.new)
+        run.assert_called_with('/usr/bin/hn', 'list-clients', '-F', '#{client_pid}', timeout=3)
+        return update.read(self.state / 'screen.json')
+
+    def test_the_screens_client_on_the_new_binary_is_ready(self):
+        # This command's own hn client runs the new binary too; it is not the screen.
+        self.client(7479, '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u31.service\n', self.new)
+        self.client(5559, self.SCREEN, self.new)
+        self.assertEqual(self.ready('7479\n5559\n')['pid'], 5559)
+
+    def test_ready_when_an_hn_started_over_ssh_holds_the_server(self):
+        # hn-list-clients had no rows here (2026-10-13): the screen's client served itself.
+        self.client(3576, self.SCREEN, self.new)
+        self.assertEqual(self.ready('3576\n')['pid'], 3576)
+
+    def test_never_ready_on_a_client_outside_the_screen_or_the_old_binary(self):
+        self.client(880, self.ELSEWHERE, self.new)
+        self.client(5559, self.SCREEN, self.old)
+        with self.assertRaisesRegex(ValueError, 'did not become ready'):
+            self.ready('880\n5559\nnot-a-pid\n')
+        failed = update.read(self.state / 'screen.json')
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['observed'], {'5559': str((self.old / 'harness-tui').resolve())})
+
+    def test_a_view_is_captured_only_from_the_screens_client(self):
+        self.client(880, self.ELSEWHERE, self.new)
+        self.client(5559, self.SCREEN, self.new)
+        rows = '880\t$9\t@9\t%9\t/dev/pts/0\n5559\t$1\t@2\t%3\t/dev/pts/2\n'
+        with patch.object(update, 'run', return_value=rows):
+            self.assertEqual(update.capture_view(), dict(session='$1', window='@2', pane='%3', tty='/dev/pts/2'))
+
+
 if __name__ == '__main__':
     unittest.main()

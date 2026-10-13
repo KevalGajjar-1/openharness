@@ -75,6 +75,8 @@ pub struct LocalModel {
     /// The app it runs in: `Ollama`, `LM Studio` or `llama.cpp` for one that app downloaded, `Grid`
     /// for Grid's own engine (absent from an older daemon).
     pub app: Option<String>,
+    /// The names the grid lists it under while it runs here (`servedAs`; absent from an older daemon).
+    pub served_as: Vec<String>,
 }
 
 impl LocalModel {
@@ -85,10 +87,21 @@ impl LocalModel {
             size: num(&v["sizeBytes"]), quant: text(&v["quant"]), recommended: v["recommended"] == true, can_start: v["canStart"] == true, can_stop: v["canStop"] == true,
             tok_s: num(&v["tokensPerSecond"]), requests: num(&v["requests"]), window_secs: num(&v["windowSeconds"]),
             context: num(&v["contextWindow"]), est_tok_s: num(&v["estTokS"]), params_b: num(&v["paramsB"]),
-            operation: Operation::parse(&v["operation"]), asleep: v["gridAsleep"] == true, app: text(&v["app"]), id,
+            operation: Operation::parse(&v["operation"]), asleep: v["gridAsleep"] == true, app: text(&v["app"]),
+            served_as: v["servedAs"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(), id,
         })
     }
     pub fn running(&self) -> bool { self.state == "running" }
+    /// Whether [id] — a grid's model, a harness's — is this model: its id, its name, or a name the grid
+    /// serves it under. A catalog model runs under its file's name (`Qwen3.8-27B-UD-Q4_K_M`), not the
+    /// catalog's (`Qwen3.8-27B`): matched by name alone, it was listed twice in Your models and a
+    /// harness could not be moved onto it from its own row.
+    pub fn answers_to(&self, id: &str) -> bool {
+        self.id.eq_ignore_ascii_case(id) || self.name.eq_ignore_ascii_case(id) || self.served_as.iter().any(|s| s.eq_ignore_ascii_case(id))
+    }
+    /// Its name as shown: without the quantization a file name ends in, which the Quant line says.
+    /// [name] stays whole — it is what the grid serves it as, and what a harness is matched to it by.
+    pub fn shown(&self) -> String { without_quant(&self.name).to_string() }
     pub fn downloaded(&self) -> bool { self.state == "downloaded" || self.running() }
     /// Running, parked while this computer's models rest: it answers again on the next message.
     pub fn resting(&self) -> bool { self.running() && self.asleep }
@@ -96,12 +109,30 @@ impl LocalModel {
     /// guessed from its size.
     pub fn quantization(&self) -> Option<String> {
         if let Some(q) = &self.quant { return Some(q.clone()) }
-        self.id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).find(|w| {
-            let u = w.to_ascii_uppercase();
-            let digit_after = |p: &str| u.strip_prefix(p).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
-            digit_after("IQ") || digit_after("Q") || digit_after("MXFP") || ["BF16", "FP16", "F16"].contains(&u.as_str())
-        }).map(str::to_ascii_uppercase)
+        quant_of(&self.id)
     }
+}
+
+/// The quantization a model's file name says (`…-Q4_K_M.gguf`): `Q4_K_M`.
+pub fn quant_of(name: &str) -> Option<String> {
+    name.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).find(|w| {
+        let u = w.to_ascii_uppercase();
+        let digit_after = |p: &str| u.strip_prefix(p).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        digit_after("IQ") || digit_after("Q") || digit_after("MXFP") || ["BF16", "FP16", "F16"].contains(&u.as_str())
+    }).map(str::to_ascii_uppercase)
+}
+
+/// [name] without the quantization its file name ends in: `Qwen3.8-27B-UD-Q4_K_M` is `Qwen3.8-27B`,
+/// `qwen3:4b-instruct-2507-q4_k_m` is `qwen3:4b-instruct-2507`. A name that is all quant stays.
+pub fn without_quant(name: &str) -> &str {
+    let quant = |rest: &str| {
+        let u = rest.to_ascii_uppercase();
+        let q = u.strip_prefix("UD-").or_else(|| u.strip_prefix("UD_")).unwrap_or(&u);
+        let digit_after = |p: &str| q.strip_prefix(p).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()) && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        digit_after("IQ") || digit_after("Q") || digit_after("MXFP") || ["BF16", "FP16", "F16"].contains(&q)
+    };
+    name.char_indices().filter(|&(i, c)| i > 0 && matches!(c, '-' | '_' | '.')).map(|(i, _)| i)
+        .find(|&i| quant(&name[i + 1..])).map_or(name, |i| &name[..i])
 }
 
 /// What `grid_fleet_models_list` answers: the models, the machine's memory and free disk, and
@@ -109,6 +140,9 @@ impl LocalModel {
 /// shared models are one Set up row (the desktop's); `grid_setup_error`: why the last Set up failed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot { pub models: Vec<LocalModel>, pub memory: Option<f64>, pub free_disk: Option<f64>, pub hardware: Option<String>, pub notice: Option<String>, pub busy: bool, pub supports_download: bool,
+    /// What the catalog fits models to, and whether that is an NVIDIA card's VRAM (`fitMemory: vram`)
+    /// with its cards' VRAM in all: [memory] is the machine's RAM, not what such a model runs in.
+    pub fit: Option<f64>, pub fit_vram: bool, pub gpu_memory: Option<f64>,
     pub grid_setup_needed: bool, pub grid_setup_error: Option<String> }
 
 /// None when there is no list — a daemon too old for it, or a reply that failed.
@@ -119,6 +153,7 @@ pub fn parse_local(reply: &Value) -> Option<Snapshot> {
         // A sentence beside the list, never a failure (an `error` fails the whole request).
         notice: text(&reply["notice"]), busy: reply["busy"] == true, supports_download: reply["supportsDownload"] == true,
         grid_setup_needed: reply["gridSetupNeeded"] == true, grid_setup_error: text(&reply["gridSetupError"]),
+        fit: num(&reply["fitBytes"]).filter(|m| *m > 0.0), fit_vram: reply["fitMemory"] == "vram", gpu_memory: num(&reply["gpuMemoryBytes"]).filter(|m| *m > 0.0),
     })
 }
 
@@ -198,14 +233,17 @@ pub fn section_words(s: &Section, asking: bool) -> Words {
 
 /// An API saved on this computer (`api_connections`) — its key stays in the daemon.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Api { pub id: String, pub name: String, pub base_url: String, pub header: String, pub prefix: String }
+pub struct Api { pub id: String, pub name: String, pub base_url: String, pub header: String, pub prefix: String, pub provider: String, pub key_env: String }
 
 impl Api {
     /// Coding agents send a custom endpoint only `Authorization: Bearer <key>`: only such an API
     /// lists models a harness can run on (the CLI's `servesModels`).
     pub fn serves_models(&self) -> bool { self.header.eq_ignore_ascii_case("authorization") && self.prefix.eq_ignore_ascii_case("bearer") }
-    pub fn host(&self) -> String { let rest = self.base_url.split_once("://").map(|(_, r)| r).unwrap_or(&self.base_url); rest.split(['/', '?', '#']).next().unwrap_or(rest).to_string() }
+    pub fn host(&self) -> String { host_of(&self.base_url) }
 }
+
+/// The host of [url]: `openrouter.ai` of `https://openrouter.ai/api/v1`.
+pub fn host_of(url: &str) -> String { let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url); rest.split(['/', '?', '#']).next().unwrap_or(rest).to_string() }
 
 /// One model an API lists: no key, only what the API says of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -217,9 +255,36 @@ pub fn parse_apis(reply: &Value) -> Result<Vec<Api>, String> {
     Ok(rows.iter().filter_map(|c| {
         let s = |k: &str, d: &str| c[k].as_str().unwrap_or(d).to_string();
         let id = text(&c["id"])?;
-        Some(Api { id, name: s("name", ""), base_url: s("baseUrl", ""), header: s("authHeader", "Authorization"), prefix: s("authPrefix", "Bearer") })
+        Some(Api { id, name: s("name", ""), base_url: s("baseUrl", ""), header: s("authHeader", "Authorization"), prefix: s("authPrefix", "Bearer"),
+            provider: s("provider", "custom"), key_env: s("keyEnv", "") })
     }).collect())
 }
+
+/// An API the daemon knows how to add (`api_connections`' `presets`): its name, where it answers and
+/// where its key is made. OpenAI and Anthropic are left out, as the desktop's Add leaves them out:
+/// their keys would stand in for the subscriptions above.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApiPreset { pub provider: String, pub name: String, pub base_url: String, pub key_url: String }
+
+pub fn parse_api_presets(reply: &Value) -> Vec<ApiPreset> {
+    reply["presets"].as_array().map(|rows| rows.iter().filter_map(|p| {
+        let provider = text(&p["provider"])?;
+        if matches!(provider.as_str(), "openai" | "anthropic") { return None }
+        Some(ApiPreset { provider, name: text(&p["name"])?, base_url: text(&p["baseUrl"]).unwrap_or_default(), key_url: text(&p["keyUrl"]).unwrap_or_default() })
+    }).collect()).unwrap_or_default()
+}
+
+/// Adding or editing a saved API, one dialog step at a time: a preset asks only its key, a Custom
+/// API its name, then its URL, then its key (the desktop's form, as hn's dialogs ask). `id`: the
+/// API being edited, whose key a blank answer keeps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApiDraft {
+    pub id: Option<String>, pub provider: String, pub name: String, pub base_url: String, pub key_url: String,
+    pub key_env: String, pub header: String, pub prefix: String, pub step: ApiStep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ApiStep { Name, Url, Key }
 
 pub fn parse_api_models(reply: &Value) -> Option<Vec<ApiModel>> {
     Some(reply["models"].as_array()?.iter().filter_map(|m| Some(ApiModel {
@@ -230,7 +295,17 @@ pub fn parse_api_models(reply: &Value) -> Option<Vec<ApiModel>> {
 /// An agent account's subscription, from the usage the status line reads (`usage_read`): how much
 /// of its tightest window is left.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sub { pub engine: String, pub title: String, pub account: String, pub left: Option<f64>, pub status: String, pub details: Vec<String> }
+pub struct Sub {
+    pub engine: String, pub title: String, pub account: String, pub left: Option<f64>, pub status: String, pub details: Vec<String>,
+    /// The machines this account's plan was read on, by name, this computer's first — what tells two plans apart, as the
+    /// status line does. (The account key itself is a hash: it says nothing to a person.)
+    pub machines: Vec<String>,
+}
+
+/// A machine as a person knows it: its name, never its id.
+fn machine_name(app: &App, id: &str) -> String {
+    app.fleet.machine(id).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Unnamed machine".into())
+}
 
 /// What is left of a window, as the desktop says it: never a positive remainder rounded to 0.
 fn left_of(used: f64) -> String { let left = (100.0 - used).clamp(0.0, 100.0); if left > 0.0 && left < 1.0 { "<1%".into() } else { format!("{}%", left.floor() as u32) } }
@@ -242,7 +317,12 @@ pub fn subscriptions(app: &App) -> Vec<Sub> {
     for m in machines {
         for u in &app.usage[m] {
             let account = u.account.clone().unwrap_or_default();
-            if out.iter().any(|s| s.engine == u.provider && s.account == account) { continue }
+            let name = machine_name(app, m);
+            // The same account on another machine is the same plan: one row, every machine it is on.
+            if let Some(seen) = out.iter_mut().find(|s| s.engine == u.provider && s.account == account) {
+                if !seen.machines.contains(&name) { seen.machines.push(name) }
+                continue;
+            }
             let tightest = u.windows.iter().max_by(|a, b| a.used.total_cmp(&b.used));
             let title = match u.provider.as_str() { "claude" => "Anthropic".to_string(), "codex" => "OpenAI".to_string(), p => engine_label(p).to_string() };
             out.push(Sub {
@@ -250,6 +330,7 @@ pub fn subscriptions(app: &App) -> Vec<Sub> {
                 left: tightest.map(|w| (100.0 - w.used).clamp(0.0, 100.0)),
                 status: tightest.map(|w| format!("{} left", left_of(w.used))).unwrap_or_else(|| "Usage unavailable".into()),
                 details: u.windows.iter().map(|w| format!("{} — {} left", w.label, left_of(w.used))).collect(),
+                machines: vec![name],
             });
         }
     }
@@ -345,6 +426,9 @@ pub struct Models {
     /// The picker keeps the harness it opened for, even if another client changes focus.
     pub selection: Option<crate::session_close::Identity>,
     pub selection_fixed: bool,
+    /// The pane focused when it opened: a harness there still starting (its terminal, until the
+    /// daemon sees the engine) becomes the selection once it is one.
+    selection_pane: Option<u64>,
     pub panel_generation: u64,
     pub switch_generation: u64,
     /// Each machine's local models, when they were last read, and a read out now.
@@ -362,6 +446,10 @@ pub struct Models {
     pub apis_at: Option<Instant>,
     pub api_models: HashMap<String, Result<Vec<ApiModel>, String>>,
     pub api_open: HashSet<String>,
+    /// What the daemon can add (its presets; none from one too old to save), and whether Add API is
+    /// showing them.
+    pub api_presets: Vec<ApiPreset>,
+    pub api_adding: bool,
     /// "More models": the whole catalog shown, not its first five.
     pub more: bool,
     /// A Set up asked of this computer's daemon and not yet answered; one that waits on a sign-in
@@ -454,7 +542,7 @@ pub fn target(app: &App) -> Option<Target> {
     };
     if app.models_view.selection_fixed {
         let selected = app.models_view.selection.as_ref()?;
-        if !selected.matches(app) { return None }
+        if !same_harness(app, selected) { return None }
         return of(selected.machine.clone(), selected.agent.clone());
     }
     if let Some(t) = crate::input::focused_agent(app).and_then(|(m, a)| of(m, a)) { return Some(t) }
@@ -498,7 +586,7 @@ fn up(app: &App, machine: &str) -> bool { app.fleet.machine(machine).is_some_and
 /// The own grid's listing of [m] once it serves — (section, the grid's id for it).
 fn served_in(grids: Option<&Grids>, m: &LocalModel) -> Option<(String, String)> {
     grids?.sections.iter().filter(|s| s.own).find_map(|s| s.models.iter()
-        .find(|x| x.offline.is_none() && (x.id.eq_ignore_ascii_case(&m.id) || x.id.eq_ignore_ascii_case(&m.name)))
+        .find(|x| x.offline.is_none() && m.answers_to(&x.id))
         .map(|x| (s.name.clone(), x.id.clone())))
 }
 
@@ -511,10 +599,9 @@ fn other_running(app: &App, m: &LocalModel) -> Option<LocalModel> {
 /// until they move to another (the desktop's `_harnessesOn`).
 fn harnesses_on(app: &App, m: &LocalModel, t: Option<&Target>) -> Vec<String> {
     let served = served_in(app.models_view.grids.get(&app.fleet.local_id), m).map(|(_, id)| id);
-    let names = [Some(&m.name), Some(&m.id), served.as_ref()];
     let mut out: Vec<String> = app.fleet.agents.values()
         .filter(|a| !t.is_some_and(|t| t.machine == a.machine_id && t.agent == a.id))
-        .filter(|a| !a.grid_model.is_empty() && names.iter().flatten().any(|n| n.eq_ignore_ascii_case(&a.grid_model)))
+        .filter(|a| !a.grid_model.is_empty() && (m.answers_to(&a.grid_model) || served.as_ref().is_some_and(|s| s.eq_ignore_ascii_case(&a.grid_model))))
         .map(|a| a.name.clone()).collect();
     out.sort();
     out
@@ -569,13 +656,13 @@ pub fn facts(app: &App, m: &LocalModel, t: Option<&Target>) -> Facts {
     let active = op.as_ref().is_some_and(Operation::active);
     let busy = v.busy(machine);
     let online = up(app, machine) && v.local.contains_key(machine);
-    let other = other_running(app, m).map(|o| o.name);
+    let other = other_running(app, m).map(|o| o.shown());
     let runs = t.is_some_and(|t| can_run(app, &t.engine));
     let served = served_in(v.grids.get(machine), m);
     let in_use = t.is_some_and(|t| m.running() && !t.grid_model.is_empty()
-        && (served.as_ref().is_some_and(|(_, id)| id.eq_ignore_ascii_case(&t.grid_model)) || m.id.eq_ignore_ascii_case(&t.grid_model) || m.name.eq_ignore_ascii_case(&t.grid_model)));
+        && (served.as_ref().is_some_and(|(_, id)| id.eq_ignore_ascii_case(&t.grid_model)) || m.answers_to(&t.grid_model)));
     let get = !m.downloaded() && m.can_start && !busy && online;
-    let names = |id: &str| m.id.eq_ignore_ascii_case(id) || m.name.eq_ignore_ascii_case(id) || served.as_ref().is_some_and(|(_, s)| s.eq_ignore_ascii_case(id));
+    let names = |id: &str| m.answers_to(id) || served.as_ref().is_some_and(|(_, s)| s.eq_ignore_ascii_case(id));
     Facts {
         switching: switching_for(app, t).is_some_and(|to| !to.is_empty() && names(to)),
         failed: op.as_ref().is_some_and(Operation::failed),
@@ -612,7 +699,16 @@ fn capital(s: &str) -> String { let mut c = s.chars(); c.next().map(|f| f.to_upp
 /// `Get for this Mac · 64 GB`: the downloads, and the memory they were chosen for.
 pub fn catalog_heading(snap: Option<&Snapshot>) -> String {
     let mut h = format!("Get for {}", this_computer());
-    if let Some(m) = snap.and_then(|s| s.memory) { h.push_str(&format!(" · {}", gb(m))) }
+    // (An NVIDIA machine's models run in its card: its VRAM, not the machine's RAM.)
+    match snap {
+        Some(s) if s.fit_vram => match (s.gpu_memory, s.fit) {
+            (Some(all), _) => h.push_str(&format!(" · {} VRAM", gb(all))),
+            (None, Some(room)) => h.push_str(&format!(" · {} VRAM for models", gb(room))),
+            _ => {}
+        },
+        Some(s) => if let Some(m) = s.memory { h.push_str(&format!(" · {}", gb(m))) },
+        None => {}
+    }
     h
 }
 
@@ -640,12 +736,18 @@ pub fn searched(picker: &Picker) -> &str {
 pub fn is_row(id: &str) -> bool { id.starts_with("mv:") }
 
 fn note(key: &str, words: &str, group: &str) -> Row {
-    Row::new(format!("mv:note:{key}"), words.to_string()).group(group.to_string()).lead(vec![span("  ", Style::default())]).extra("note")
+    Row::new(format!("mv:note:{key}"), words.to_string()).group(group.to_string()).extra("note")
 }
 
 /// The row that sets grid up here (the desktop's `model:grid-setup`), and the note over an empty
 /// Your models whose Enter goes to the models to get.
 const SET_UP: &str = "mv:setup";
+/// The APIs section's Add API row, the APIs it adds (`mv:apinew:<provider>`), and an opened API's Edit
+/// connection and Delete (`…:<id>`).
+const API_ADD: &str = "mv:apiadd";
+const API_NEW: &str = "mv:apinew:";
+const API_EDIT: &str = "mv:apiedit:";
+const API_DELETE: &str = "mv:apidel:";
 const NONE_YET: &str = "mv:note:none";
 
 /// Grid is not set up on this computer (or its Set up is under way): the view offers to set it up.
@@ -663,18 +765,16 @@ fn set_up_word(app: &App) -> &'static str {
 
 fn local_row(app: &App, m: &LocalModel, t: Option<&Target>, group: &str) -> Row {
     let f = facts(app, m, t);
+    // No mark before the name (owner, 2026-10-13: "remove these silly icons"): the word on the right
+    // says it — ✓ In use, Running, Downloaded, Get, Failed, a download's progress.
     let word = f.word(m);
-    // (No round marks: `✓` in use, `↻` busy, `✗` failed, `▶` running, `·` downloaded, `↓` to get.)
-    let (dot, color) = if f.in_use { ("✓ ", theme::accent()) } else if f.active || f.pending.is_some() { ("↻ ", theme::WARN) } else if f.failed { ("✗ ", theme::DANGER) }
-        else if m.running() { ("▶ ", theme::ONLINE) } else if m.downloaded() { ("· ", theme::SOFT) } else { ("↓ ", theme::MUTED) };
     // As the desktop's row: the name alone, then its size and speed (or the app it runs in) in
     // columns that line up, then the word — the word alone where the list is narrow. Its
     // quantization and app are in the preview, and found by a search.
     let quant = m.quantization().unwrap_or_default();
     let app_name = m.app.clone().unwrap_or_default();
-    Row::new(format!("mv:local:{}", m.id), m.name.clone()).group(group.to_string())
+    Row::new(format!("mv:local:{}", m.id), m.shown()).group(group.to_string())
         .extra(format!("{} {quant} {app_name} {word} local{}", m.id, if m.recommended { " recommended" } else { "" }))
-        .lead(vec![span(dot, fg(color))])
         .right(columns(&m.size.map(gb).unwrap_or_default(), &speed(m), &word))
         .right_narrow(word)
 }
@@ -692,10 +792,9 @@ fn grid_word(app: &App, x: &GridModel, t: Option<&Target>) -> String {
 
 fn grid_row(app: &App, s: &Section, x: &GridModel, t: Option<&Target>, group: &str) -> Row {
     let word = grid_word(app, x, t);
-    let (dot, color) = if word.starts_with('✓') { ("✓ ", theme::accent()) } else if x.offline.is_some() { ("· ", theme::MUTED) } else { ("◆ ", theme::TEAL) };
-    Row::new(format!("mv:grid:{}\t{}\t{}", s.name, x.node, x.id), x.id.clone()).group(group.to_string())
-        .extra(format!("{} {} {} {}", s.name, x.node, if s.own { "local" } else { "shared" }, word))
-        .lead(vec![span(dot, fg(color))])
+    // Shown without its quant, as Your models are; switched onto (and found by) the name it is served as.
+    Row::new(format!("mv:grid:{}\t{}\t{}", s.name, x.node, x.id), without_quant(&x.id).to_string()).group(group.to_string())
+        .extra(format!("{} {} {} {} {}", x.id, s.name, x.node, if s.own { "local" } else { "shared" }, word))
         .detail(vec![span(x.node.clone(), fg(theme::MUTED))])
         .right(word)
 }
@@ -709,20 +808,18 @@ fn sub_word(app: &App, sub: &Sub, t: Option<&Target>) -> String {
 const LOW_WATER: f64 = 20.0;
 
 
-/// A subscription's row, as the desktop's: the account (`Anthropic 315df1`), then how much of it is
-/// left (`20% remaining`) — the one figure worth a glance; Enter on it is the preview's to say. Its
-/// mark says it is in use (✓) or running low (!).
-fn sub_row(app: &App, sub: &Sub, t: Option<&Target>, group: &str, twin: bool) -> Row {
+/// A subscription's row: the plan's maker, the machines it is on (`Anthropic  studio, laptop`), then how
+/// much of it is left (`20% remaining`) — the one figure worth a glance; Enter on it is the preview's to
+/// say. [ordinal]: which of several plans of one maker
+/// on the same machines this is — the only case a machine's name cannot tell them apart.
+fn sub_row(app: &App, sub: &Sub, t: Option<&Target>, group: &str, ordinal: Option<usize>) -> Row {
     let word = sub_word(app, sub, t);
-    let low = sub.left.is_some_and(|l| l <= LOW_WATER);
-    let short: String = sub.account.chars().take(6).collect();
-    let label = if twin && !short.is_empty() { format!("{} · {short}", sub.title) } else { sub.title.clone() };
-    let (dot, color) = if word.starts_with('✓') { ("✓ ", if low { theme::WARN } else { theme::accent() }) } else if low { ("! ", theme::WARN) } else { ("◇ ", theme::SOFT) };
+    let label = ordinal.map_or_else(|| sub.title.clone(), |n| format!("{} {n}", sub.title));
+    let machines = sub.machines.join(", ");
     let left = sub.left.map(|l| format!("{} remaining", left_of(100.0 - l))).unwrap_or_else(|| sub.status.clone());
     Row::new(format!("mv:sub:{}\t{}", sub.engine, sub.account), label).group(group.to_string())
-        .extra(format!("{} {} subscription own login {word}", sub.engine, sub.account))
-        .lead(vec![span(dot, fg(color))])
-        .detail(vec![span(if twin { String::new() } else { short }, fg(theme::MUTED))])
+        .extra(format!("{} {machines} subscription own login {word}", sub.engine))
+        .detail(vec![span(machines, fg(theme::MUTED))])
         .right(left)
 }
 
@@ -748,17 +845,22 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
     // Subscriptions: every account's, as the desktop lists them — how much of it is left and whether
     // that is running low; the harness's own login says it is in use.
     let subs = subscriptions(app);
-    out.extend(subs.iter().map(|sub| sub_row(app, sub, t, SUBSCRIPTIONS, subs.iter().filter(|s| s.title == sub.title).count() > 1)));
+    out.extend(subs.iter().enumerate().map(|(i, sub)| {
+        // (Two plans of one maker on the same machines have only their order to tell them apart.)
+        let alike: Vec<usize> = subs.iter().enumerate().filter(|(_, s)| s.title == sub.title && s.machines == sub.machines).map(|(j, _)| j).collect();
+        let ordinal = (alike.len() > 1).then(|| alike.iter().position(|j| *j == i).unwrap_or(0) + 1);
+        sub_row(app, sub, t, SUBSCRIPTIONS, ordinal)
+    }));
 
     // APIs saved on this computer: each folds its models until Enter (or a search) opens it.
     match &v.apis {
         Some(Err(why)) if !searching => out.push(note("apis", why, APIS)),
-        Some(Ok(apis)) => for api in apis {
+        Some(Ok(apis)) => { for api in apis {
             let listed = v.api_models.get(&api.id);
-            let open = v.api_open.contains(&api.id) || searching;
+            let opened = v.api_open.contains(&api.id);
+            let open = opened || searching;
             let hint = match listed { _ if !api.serves_models() => "Tools".to_string(), Some(Ok(l)) if !l.is_empty() => format!("{} model{}", l.len(), if l.len() == 1 { "" } else { "s" }), None => "Loading…".into(), _ => "Tools".into() };
             out.push(Row::new(format!("mv:api:{}", api.id), api.name.clone()).group(APIS).extra(format!("{} api", api.host()))
-                .lead(vec![span(if open && api.serves_models() { "▾ " } else { "▸ " }, fg(theme::MUTED))])
                 .detail(vec![span(api.host(), fg(theme::MUTED))]).right(hint));
             if !open { continue }
             if let Some(Ok(models)) = listed {
@@ -769,12 +871,30 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
                     };
                     out.push(Row::new(format!("mv:apimodel:{}\t{}", api.id, m.id), m.id.clone()).group(APIS)
                         .extra(format!("{} {} api", api.name, m.name.clone().unwrap_or_default()))
-                        .lead(vec![span("  ", Style::default()), span(if word.starts_with('✓') { "✓ " } else { "· " }, fg(if word.starts_with('✓') { theme::accent() } else { theme::MUTED }))])
+                        .lead(vec![span("  ", Style::default())])
                         .detail(vec![span(m.context.map(|w| format!("{} context", context_label(w))).unwrap_or_default(), fg(theme::MUTED))])
                         .right(format!("{word:>9}")));
                 }
             }
-        },
+            // Opened by hand (not by a search): what can be done to the API itself, under its models.
+            if opened && !v.api_presets.is_empty() {
+                let action = |id: String, label: &str, words: &str| Row::new(id, label).group(APIS).extra(format!("{} {words} api", api.name))
+                    .lead(vec![span("  ", Style::default())]);
+                out.push(action(format!("{API_EDIT}{}", api.id), "Edit connection", "edit change key"));
+                out.push(action(format!("{API_DELETE}{}", api.id), "Delete", "delete remove"));
+            }
+        }
+        // Add API, last under them (and the only row when none is saved yet), and once opened the
+        // APIs it adds: the daemon's presets, then Custom API. Not offered by a daemon too old to save.
+        if !v.api_presets.is_empty() {
+            out.push(Row::new(API_ADD, "Add API").group(APIS).extra("add new api key connection"));
+            if v.api_adding {
+                let choice = |id: String, label: &str, detail: String| Row::new(id, label).group(APIS).extra(format!("add {label} api"))
+                    .lead(vec![span("  ", Style::default())]).detail(vec![span(detail, fg(theme::MUTED))]);
+                for p in &v.api_presets { out.push(choice(format!("{API_NEW}{}", p.provider), &p.name, host_of(&p.base_url))) }
+                out.push(choice(format!("{API_NEW}custom"), "Custom API", "any OpenAI-compatible API".into()));
+            }
+        } },
         _ => {}
     }
 
@@ -782,7 +902,7 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
     // or a shared model cannot be used before then, and listed beside "Set up" they read as if they could.
     if needs_set_up(app) {
         out.push(Row::new(SET_UP, "Set up local & shared models").group(YOUR_MODELS).extra("setup grid local shared download")
-            .lead(vec![span("+ ", fg(theme::accent()))]).right(set_up_word(app)));
+            .right(set_up_word(app)));
         return out;
     }
 
@@ -809,7 +929,7 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
             // (This computer's running ones are listed by their local names, above.)
             let here: Vec<&LocalModel> = s.models.iter().filter(|m| m.running()).collect();
             let theirs: Vec<Row> = v.grids.get(&machine).map(own).unwrap_or_default().into_iter()
-                .filter(|(_, x)| !here.iter().any(|m| x.id.eq_ignore_ascii_case(&m.id) || x.id.eq_ignore_ascii_case(&m.name)))
+                .filter(|(_, x)| !here.iter().any(|m| m.answers_to(&x.id)))
                 .map(|(s, x)| grid_row(app, &s, &x, t, YOUR_MODELS)).collect();
             // (Only with something below to get: Enter goes to it.)
             let to_get = s.models.iter().any(|m| !m.downloaded() && !m.can_stop);
@@ -829,7 +949,7 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
         out.extend(now.iter().chain(rest.iter().take(shown)).map(|m| local_row(app, m, t, &head)));
         if !searching && rest.len() > SHOWN_DOWNLOADS {
             let label = if v.more { "Show fewer".to_string() } else { format!("More models ({})", rest.len() - SHOWN_DOWNLOADS) };
-            out.push(Row::new("mv:more", label).group(head).extra("more models").lead(vec![span(if v.more { "− " } else { "+ " }, fg(theme::accent()))]));
+            out.push(Row::new("mv:more", label).group(head).extra("more models"));
         }
     }
 
@@ -846,7 +966,7 @@ pub fn rows(app: &App, query: &str) -> Vec<Row> {
                 if let Some(sentence) = &words.sentence { out.push(note(&format!("grid:{}", s.name), &format!("{} · {sentence}", s.name), SHARED)) }
                 if words.offer_wake {
                     out.push(Row::new(format!("mv:wake:{}", s.name), format!("Show models · {}", s.name)).group(SHARED).extra(format!("{} wake", s.name))
-                        .lead(vec![span("↻ ", fg(theme::accent()))]).right("usually 15–40 s"));
+                        .right("usually 15–40 s"));
                 }
             }
             for x in &s.models {
@@ -895,6 +1015,14 @@ pub enum Plan {
     SetUp,
     /// The cursor to row [0] (from the empty Your models' note to the first model to get).
     Select(String),
+    /// Add API: its list of APIs to add, shown or hidden.
+    ApiAdd,
+    /// The dialog that adds the API of [0] (a preset's provider, or `custom`).
+    ApiNew(String),
+    /// The dialog that edits the saved API [0].
+    ApiEdit(String),
+    /// The saved API [0] and its key, removed from this computer.
+    ApiRemove(String),
 }
 
 fn local_model(app: &App, id: &str) -> Option<LocalModel> { app.models_view.local.get(&app.fleet.local_id)?.models.iter().find(|m| m.id == id).cloned() }
@@ -929,6 +1057,13 @@ pub fn plan_enter(app: &App, id: &str) -> Plan {
     let v = &app.models_view;
     let say = |s: &str| Plan::Say(s.to_string());
     if id == "mv:more" { return Plan::More }
+    if id == API_ADD { return Plan::ApiAdd }
+    if let Some(provider) = id.strip_prefix(API_NEW) { return Plan::ApiNew(provider.to_string()) }
+    if let Some(key) = id.strip_prefix(API_EDIT) { return Plan::ApiEdit(key.to_string()) }
+    if let Some(key) = id.strip_prefix(API_DELETE) {
+        let name = saved_api(app, key).map(|a| a.name).unwrap_or_else(|| "this API".into());
+        return Plan::Arm(format!("Delete {name}? Its key leaves this computer. Enter · Esc"), Box::new(Plan::ApiRemove(key.to_string())));
+    }
     if id == SET_UP { return if v.setting_up { say("Setting up…") } else { Plan::SetUp } }
     if id == NONE_YET {
         let head = catalog_heading(v.local.get(&app.fleet.local_id));
@@ -963,7 +1098,7 @@ pub fn plan_enter(app: &App, id: &str) -> Plan {
     if let Some(u) = v.using.as_ref().filter(|u| u.model == m.id) { return Plan::Say(using_label(app, u)) }
     if f.active || f.pending.is_some() || f.busy { return say("Wait for the current model operation to finish.") }
     if let (true, Some(t), Some((grid, served))) = (f.use_running, t, f.served.clone()) {
-        return Plan::Retarget { machine: t.machine.clone(), payload: json!({ "agentId": t.agent, "gridModel": served, "gridName": grid }), name: m.name.clone() };
+        return Plan::Retarget { machine: t.machine.clone(), payload: json!({ "agentId": t.agent, "gridModel": served, "gridName": grid }), name: m.shown() };
     }
     if m.running() {
         return match t {
@@ -976,11 +1111,11 @@ pub fn plan_enter(app: &App, id: &str) -> Plan {
     // first when another harness answers with that one.
     let other = other_running(app, &m);
     let users = other.as_ref().map(|o| harnesses_on(app, o, t)).unwrap_or_default();
-    let stop_said = other.as_ref().and_then(|o| stop_words(&o.name, &users));
+    let stop_said = other.as_ref().and_then(|o| stop_words(&o.shown(), &users));
     if m.downloaded() {
         if f.use_start {
             let go = Plan::Use { model: m.id.clone(), download: false };
-            return match (&other, &stop_said) { (Some(o), Some(said)) => Plan::Arm(format!("Stop {}? {said} Enter · Esc", o.name), Box::new(go)), _ => go };
+            return match (&other, &stop_said) { (Some(o), Some(said)) => Plan::Arm(format!("Stop {}? {said} Enter · Esc", o.shown()), Box::new(go)), _ => go };
         }
         if let Some(o) = &f.other { return Plan::Say(format!("Stop {o} first: one local model runs at a time — ^S on it")) }
         return match t {
@@ -996,16 +1131,23 @@ pub fn plan_enter(app: &App, id: &str) -> Plan {
     let size = m.size.map(gb).map(|s| format!(" ({s})")).unwrap_or_default();
     let then = match (f.get_use, &f.other) { (true, Some(o)) => format!(", stop {o}, start it, move this harness onto it"), (true, None) => ", start it, move this harness onto it".into(), _ => String::new() };
     let said = stop_said.filter(|_| f.get_use).map(|s| format!(" {s}")).unwrap_or_default();
-    Plan::Arm(format!("Get {}{size}{then}?{said} Enter · Esc", m.name), Box::new(go))
+    Plan::Arm(format!("Get {}{size}{then}?{said} Enter · Esc", m.shown()), Box::new(go))
 }
 
 /// What ^S does on row [id]: stop a local model (asked first).
 pub fn plan_stop(app: &App, id: &str) -> Plan {
+    // A model another computer runs (shared with you, or on your other machines) stops there: said, not
+    // silently ignored — two ^S on one once read as a stop that never reached the grid.
+    if let Some(rest) = id.strip_prefix("mv:grid:") {
+        let mut parts = rest.splitn(3, '\t');
+        let (_, node, model) = (parts.next(), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        return Plan::Say(format!("{} runs on {node} — stop it there", without_quant(model)));
+    }
     let Some(m) = id.strip_prefix("mv:local:").and_then(|model| local_model(app, model)) else { return Plan::Nothing };
     let f = facts(app, &m, None);
     if f.busy { return Plan::Say("Wait for the current model operation to finish.".into()) }
     if !m.can_stop { return Plan::Say(if m.running() { "Other models share its engine — stop it from the desktop's Model Manager".into() } else { "It is not running".into() }) }
-    Plan::Arm(format!("^S again stops {} — the download is kept", m.name), Box::new(Plan::Act { model: m.id.clone(), action: "stop" }))
+    Plan::Arm(format!("^S again stops {} — the download is kept", m.shown()), Box::new(Plan::Act { model: m.id.clone(), action: "stop" }))
 }
 
 /// Enter (or ^S, [stop]) on row [id] of the view: planned, then done.
@@ -1019,8 +1161,16 @@ pub fn choose(app: &mut App, picker: &mut Picker, id: &str, stop: bool) {
     run(app, picker, plan, &key);
 }
 
+/// Whether [identity] is still the harness the view opened for. One that had no conversation yet and
+/// now has its first (a new harness is chatted with, or its engine reports its session late) is the
+/// same harness; any other change of conversation is not.
+fn same_harness(app: &App, identity: &crate::session_close::Identity) -> bool {
+    identity.matches(app) || identity.session.is_empty() && identity.connection_matches(app)
+        && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.created_at_wire == identity.created)
+}
+
 fn current_identity(app: &App, identity: &crate::session_close::Identity) -> bool {
-    identity.matches(app) && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.status != "stopped")
+    same_harness(app, identity) && app.fleet.agent(&identity.machine, &identity.agent).is_some_and(|a| a.status != "stopped")
 }
 
 fn selection_changed(app: &App) -> bool {
@@ -1065,6 +1215,166 @@ fn run(app: &mut App, picker: &mut Picker, plan: Plan, key: &str) {
         }
         Plan::SetUp => set_up(app),
         Plan::Select(id) => picker.select(&id),
+        Plan::ApiAdd => app.models_view.api_adding = !app.models_view.api_adding,
+        Plan::ApiNew(provider) => api_begin(app, &provider),
+        Plan::ApiEdit(key) => api_begin_edit(app, &key),
+        Plan::ApiRemove(key) => { picker.say("Deleting…"); api_remove(app, &key) }
+    }
+}
+
+// ── adding, editing and deleting a saved API ──────────────────────────────────────
+
+fn saved_api(app: &App, id: &str) -> Option<Api> { app.models_view.apis.as_ref()?.as_ref().ok()?.iter().find(|a| a.id == id).cloned() }
+
+/// Add API's [provider]: a preset asks only its key, under the preset's name (`OpenRouter 2` when one
+/// is saved by that name already, as the desktop names it); Custom API starts at its name.
+fn api_begin(app: &mut App, provider: &str) {
+    let draft = if provider == "custom" {
+        ApiDraft { id: None, provider: "custom".into(), name: String::new(), base_url: String::new(), key_url: String::new(), key_env: String::new(), header: String::new(), prefix: String::new(), step: ApiStep::Name }
+    } else {
+        let Some(p) = app.models_view.api_presets.iter().find(|p| p.provider == provider).cloned() else { return };
+        let taken = |n: &str| app.models_view.apis.as_ref().and_then(|a| a.as_ref().ok()).is_some_and(|l| l.iter().any(|a| a.name.eq_ignore_ascii_case(n)));
+        let (mut name, mut n) = (p.name.clone(), 2);
+        while taken(&name) { name = format!("{} {n}", p.name); n += 1 }
+        ApiDraft { id: None, provider: p.provider, name, base_url: p.base_url, key_url: p.key_url, key_env: String::new(), header: String::new(), prefix: String::new(), step: ApiStep::Key }
+    };
+    api_prompt(app, draft, "", "");
+}
+
+/// Edit connection: a preset's key alone; a Custom API's name, URL and key. Its key variable, header
+/// and prefix go back as they are (a save without them would put the defaults back).
+fn api_begin_edit(app: &mut App, id: &str) {
+    let Some(a) = saved_api(app, id) else { return };
+    let custom = a.provider == "custom" || !app.models_view.api_presets.iter().any(|p| p.provider == a.provider);
+    let key_url = app.models_view.api_presets.iter().find(|p| p.provider == a.provider).map(|p| p.key_url.clone()).unwrap_or_default();
+    let name = a.name.clone();
+    let draft = ApiDraft { id: Some(a.id), provider: a.provider, name: a.name, base_url: a.base_url, key_url, key_env: a.key_env, header: a.header, prefix: a.prefix,
+        step: if custom { ApiStep::Name } else { ApiStep::Key } };
+    api_prompt(app, draft, if custom { &name } else { "" }, "");
+}
+
+/// The dialog for [draft]'s step, [value] in its input and [error] under it.
+fn api_prompt(app: &mut App, draft: ApiDraft, value: &str, error: &str) {
+    let editing = draft.id.is_some();
+    let title = if editing { format!("Edit {}", draft.name) } else if draft.provider == "custom" { "Add Custom API".into() } else { format!("Add {}", draft.name) };
+    let (field, body) = match draft.step {
+        ApiStep::Name => ("Name", "Any OpenAI-compatible API. Harnesses can run on its models.".to_string()),
+        ApiStep::Url => ("URL", "Its base URL, for example https://api.example.com/v1".to_string()),
+        ApiStep::Key if editing => ("Key", "Leave it blank to keep the saved key.".to_string()),
+        ApiStep::Key => ("Key", [draft.base_url.clone(), if draft.key_url.is_empty() { String::new() } else { format!("Get a key: {}", draft.key_url) }, "The key stays on this computer.".into()]
+            .into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")),
+    };
+    let secret = draft.step == ApiStep::Key;
+    let mut p = crate::modal::Prompt::status(crate::modal::PromptKind::Api(Box::new(draft)), "", value);
+    (p.title, p.field, p.body, p.secret, p.error) = (title, field.into(), body, secret, error.into());
+    app.modal = Some(crate::modal::Modal::Prompt(p));
+}
+
+/// A step answered: the next one, the same again with what was wrong, or the save.
+pub fn api_answer(app: &mut App, mut draft: ApiDraft, value: String) {
+    match draft.step {
+        ApiStep::Name => {
+            if value.is_empty() { return api_prompt(app, draft, "", "Enter a name for this API.") }
+            draft.name = value;
+            draft.step = ApiStep::Url;
+            let url = draft.base_url.clone();
+            api_prompt(app, draft, &url, "");
+        }
+        ApiStep::Url => {
+            if let Some(why) = url_problem(&value) { return api_prompt(app, draft, &value, why) }
+            draft.base_url = value.trim_end_matches('/').to_string();
+            draft.step = ApiStep::Key;
+            api_prompt(app, draft, "", "");
+        }
+        ApiStep::Key => {
+            if draft.id.is_none() && value.is_empty() { return api_prompt(app, draft, "", "Paste the API key.") }
+            api_save(app, draft, value);
+        }
+    }
+}
+
+/// What is wrong with [text] as an API's URL (the desktop's `apiUrlProblem`); None when nothing.
+pub fn url_problem(text: &str) -> Option<&'static str> {
+    const FULL: &str = "Enter the full URL, starting with https://, for example https://openrouter.ai/api/v1.";
+    let v = text.trim();
+    if v.is_empty() { return Some("Enter the API's URL.") }
+    let Some((scheme, rest)) = v.split_once("://") else { return Some(FULL) };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") || v.contains(char::is_whitespace) { return Some(FULL) }
+    if authority.contains('@') { return Some("Take the username or password out of the URL. The key has its own field.") }
+    let host = match authority.rsplit_once(':') { Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h, _ => authority };
+    if host.is_empty() { return Some(FULL) }
+    if rest.contains(['?', '#']) { return Some("Take the ? or # part off the end of the URL.") }
+    None
+}
+
+/// Saved through this computer's daemon (`api_connections` save). The key goes only into that
+/// request: never into a line said, a log, or the prompt's history.
+fn api_save(app: &mut App, draft: ApiDraft, key: String) {
+    let machine = app.fleet.local_id.clone();
+    let mut connection = json!({ "provider": draft.provider, "name": draft.name, "baseUrl": draft.base_url });
+    if let Some(id) = &draft.id { connection["id"] = json!(id); connection["keyEnv"] = json!(draft.key_env); connection["authHeader"] = json!(draft.header); connection["authPrefix"] = json!(draft.prefix); }
+    if !key.is_empty() { connection["apiKey"] = json!(key) }
+    app.say(format!("Saving {}…", draft.name), theme::SOFT);
+    let (m, d, k) = (machine.clone(), draft.clone(), key.clone());
+    if !rpc(app, &machine, "api_connections", json!({ "action": "save", "connection": connection }), Duration::from_secs(20), move |app, reply| on_api_saved(app, &m, d, k, reply)) {
+        api_prompt(app, draft, &key, "This computer is not connected. Try again.");
+    }
+}
+
+/// Saved: the list again, the new API open under it, and the Models view back on it. Refused: the
+/// same step again, with what the daemon said (a name already used goes back to the name).
+pub fn on_api_saved(app: &mut App, machine: &str, draft: ApiDraft, key: String, reply: Result<Value, RpcError>) {
+    match reply {
+        Ok(r) => {
+            on_apis_from(app, machine, Ok(r));
+            let id = app.models_view.apis.as_ref().and_then(|a| a.as_ref().ok()).and_then(|l| l.iter().find(|a| a.name.eq_ignore_ascii_case(&draft.name)).map(|a| a.id.clone()));
+            app.models_view.api_adding = false;
+            if let Some(id) = &id {
+                app.models_view.api_open.insert(id.clone());
+                app.models_view.api_models.remove(id);
+                read_api_models(app, id);
+            }
+            app.say(format!("Saved {}", draft.name), theme::ONLINE);
+            back_to_models(app, id.map(|i| format!("mv:api:{i}")));
+        }
+        Err(e) => {
+            let why = why(&e);
+            if app.modal.is_some() { return app.say(why, theme::WARN) }
+            if draft.provider == "custom" && why.contains("name") { let name = draft.name.clone(); return api_prompt(app, ApiDraft { step: ApiStep::Name, ..draft }, &name, &why) }
+            api_prompt(app, ApiDraft { step: ApiStep::Key, ..draft }, &key, &why);
+        }
+    }
+}
+
+/// Deleted through the daemon (`api_connections` remove): the API, its key and its models go.
+fn api_remove(app: &mut App, id: &str) {
+    let machine = app.fleet.local_id.clone();
+    let name = saved_api(app, id).map(|a| a.name).unwrap_or_default();
+    let (m, key) = (machine.clone(), id.to_string());
+    if !rpc(app, &machine, "api_connections", json!({ "action": "remove", "id": id }), Duration::from_secs(20), move |app, reply| match reply {
+        Ok(r) => {
+            app.models_view.api_open.remove(&key);
+            app.models_view.api_models.remove(&key);
+            on_apis_from(app, &m, Ok(r));
+            app.say(format!("Deleted {name}"), theme::ONLINE);
+        }
+        Err(e) => app.say(why(&e), theme::WARN),
+    }) { app.say("This computer is not connected", theme::WARN) }
+}
+
+/// An API dialog put away (Esc, Cancel): back to the Models view, on the row it came from.
+pub fn api_cancelled(app: &mut App, draft: &ApiDraft) {
+    back_to_models(app, Some(match &draft.id { Some(id) => format!("mv:api:{id}"), None => format!("{API_NEW}{}", draft.provider) }));
+}
+
+/// The Models view again, with the cursor on [row] — unless something else is open by now.
+fn back_to_models(app: &mut App, row: Option<String>) {
+    if app.modal.is_some() { return }
+    crate::input::run(app, "models");
+    if let (Some(row), Some(crate::modal::Modal::Picker { kind: crate::modal::PickerKind::Models, picker })) = (row, app.modal.as_mut()) {
+        picker.selected_id = Some(row.clone());
+        picker.select(&row);
     }
 }
 
@@ -1387,12 +1697,21 @@ fn read_apis(app: &mut App) {
 }
 
 pub fn on_apis(app: &mut App, reply: Result<Value, RpcError>) {
-    let list = match reply { Ok(r) => parse_apis(&r), Err(e) => Err(if e.detail.is_empty() { "APIs are unavailable. Try again.".into() } else { e.detail.clone() }) };
+    let list = match reply {
+        Ok(r) => { app.models_view.api_presets = parse_api_presets(&r); parse_apis(&r) }
+        Err(e) => Err(if e.detail.is_empty() { "APIs are unavailable. Try again.".into() } else { e.detail.clone() }),
+    };
     let serving: Vec<String> = list.as_ref().map(|l| l.iter().filter(|a| a.serves_models()).map(|a| a.id.clone()).collect()).unwrap_or_default();
     app.models_view.apis = Some(list);
     app.models_view.apis_at = Some(Instant::now());
     for id in serving { if !app.models_view.api_models.contains_key(&id) { read_api_models(app, &id) } }
     crate::input::refill(app);
+}
+
+/// A save's or a remove's answer, which is the list again (`{ connections, presets }`): read as a list
+/// read is, for the computer it was asked of.
+fn on_apis_from(app: &mut App, machine: &str, reply: Result<Value, RpcError>) {
+    if machine == app.fleet.local_id { on_apis(app, reply) }
 }
 
 fn read_api_models(app: &mut App, id: &str) {
@@ -1556,10 +1875,10 @@ fn start_use(app: &mut App, model: &str, download: bool) {
     let supports = app.models_view.local.get(&app.fleet.local_id).is_some_and(|s| s.supports_download);
     // One local model runs at a time: the one running here stops first — after a download, so it
     // answers until this one is ready to start.
-    let stops = other_running(app, &m).map(|o| (o.id, o.name));
+    let stops = other_running(app, &m).map(|o| { let shown = o.shown(); (o.id, shown) });
     let step = match (&stops, download && supports) { (_, true) => Step::Get, (Some(_), false) => Step::Stop, (None, false) => if download { Step::Get } else { Step::Start } };
     let identity = app.fleet.agent(&t.machine, &t.agent).map(|a| crate::session_close::Identity::capture(app, a));
-    app.models_view.using = Some(Use { model: m.id.clone(), name: m.name.clone(), machine: t.machine, agent: t.agent, step, stops: stops.clone(), since: Instant::now(), identity });
+    app.models_view.using = Some(Use { model: m.id.clone(), name: m.shown(), machine: t.machine, agent: t.agent, step, stops: stops.clone(), since: Instant::now(), identity });
     app.models_view.ended = None;
     match (step, stops) {
         (Step::Stop, Some((other, _))) => act(app, &other, "stop"),
@@ -1609,15 +1928,21 @@ pub fn advance(app: &mut App) {
 /// The view opened: read what it shows now (what was read in the last 20 s of the grids is kept).
 pub fn open(app: &mut App) {
     reconcile_reads(app);
-    app.models_view.selection_fixed = false;
-    app.models_view.selection = target(app).and_then(|t| app.fleet.agent(&t.machine, &t.agent)).map(|a| crate::session_close::Identity::capture(app, a));
-    app.models_view.selection_fixed = true;
+    app.models_view.selection_pane = app.focused();
+    select(app);
     app.models_view.panel_generation = app.models_view.panel_generation.wrapping_add(1);
     let machine = app.fleet.local_id.clone();
     if machine.is_empty() || app.link(&machine).is_none() { return }
     if !app.models_view.reading.contains(&machine) { read_local(app, &machine) }
     if !app.models_view.grids_reading.contains(&machine) && due(app.models_view.grids_at.get(&machine), Duration::from_secs(20), Instant::now()) { read_grids(app, &machine) }
     read_apis(app);
+}
+
+/// Fix the harness the view acts on: the one [target] names now.
+fn select(app: &mut App) {
+    app.models_view.selection_fixed = false;
+    app.models_view.selection = target(app).and_then(|t| app.fleet.agent(&t.machine, &t.agent)).map(|a| crate::session_close::Identity::capture(app, a));
+    app.models_view.selection_fixed = true;
 }
 
 /// Whether the view is still reading what it shows (its spinner turns).
@@ -1628,7 +1953,14 @@ pub fn loading(app: &App) -> bool { !app.models_view.reading.is_empty() || !app.
 pub fn tick(app: &mut App) {
     reconcile_reads(app);
     let open = matches!(&app.modal, Some(crate::modal::Modal::Picker { kind: crate::modal::PickerKind::Models, .. }));
-    if !open { app.models_view.selection_fixed = false; app.models_view.selection = None; }
+    if !open { app.models_view.selection_fixed = false; app.models_view.selection = None; app.models_view.selection_pane = None; }
+    // Opened over a harness still starting: it is the one meant once its engine is seen, while that
+    // pane keeps the focus. (A selection already made is never replaced: "This session changed".)
+    if open && app.models_view.selection.is_none() && app.models_view.selection_pane.is_some() && app.focused() == app.models_view.selection_pane { select(app) }
+    // Its first conversation, once it has one, is the one it is held to from then on.
+    let first = app.models_view.selection.as_ref().filter(|s| s.session.is_empty() && same_harness(app, s))
+        .and_then(|s| app.fleet.agent(&s.machine, &s.agent)).map(|a| a.session_id.clone()).filter(|id| !id.is_empty());
+    if let (Some(session), Some(s)) = (first, app.models_view.selection.as_mut()) { s.session = session }
     follow(app);
     app.models_view.starts.retain(|_, at| at.elapsed() < START_CAP);
     if app.models_view.switching.as_ref().is_some_and(|s| switched(app, s)) { app.models_view.switching = None }
@@ -1746,7 +2078,7 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
         let status = if let Some(o) = f.op.as_ref().filter(|o| o.active()) { o.word() } else if let Some(p) = f.pending { p.to_string() } else if f.failed { "Failed · try again".into() }
             else if m.running() { "Running".into() } else if m.downloaded() { "Downloaded".into() } else { "Not downloaded".into() };
         let status = if f.switching { format!("{SWITCHING} this harness is moving onto it") } else if f.in_use { format!("{status} · this harness is on it") } else { status };
-        let mut out = vec![bold(m.name.clone()), Line::raw(status)];
+        let mut out = vec![bold(m.shown()), Line::raw(status)];
         // (A Use's end says why it failed itself.)
         if !v.ended.as_ref().is_some_and(|e| e.row == id) { out.extend(failed) }
         out.extend(use_lines(app, &m, id));
@@ -1756,7 +2088,12 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
         if let Some(size) = m.size {
             let free = snap.and_then(|s| s.free_disk).filter(|_| !m.downloaded()).map(|d| format!(" · {} free", gb(d))).unwrap_or_default();
             out.push(kv(if m.downloaded() { "Size" } else { "Download" }, format!("{}{free}", gb(size))));
-            if let Some(mem) = snap.and_then(|s| s.memory) { out.push(kv("Memory", format!("{} · {here} has {}", if size <= mem { "fits".to_string() } else { format!("needs {}", gb(size)) }, gb(mem)))) }
+            // (An NVIDIA machine's against the VRAM its card has for models — what is free on it and
+            // what our own running model holds, which a start of another frees — the catalog's fit.)
+            match snap {
+                Some(s) if s.fit_vram => if let Some(room) = s.fit { out.push(kv("VRAM", format!("{} · its GPU has {} for models", if size <= room { "fits".to_string() } else { format!("needs {}", gb(size)) }, gb(room)))) },
+                _ => if let Some(mem) = snap.and_then(|s| s.memory) { out.push(kv("Memory", format!("{} · {here} has {}", if size <= mem { "fits".to_string() } else { format!("needs {}", gb(size)) }, gb(mem)))) },
+            }
         }
         match (m.running().then_some(m.tok_s).flatten(), m.est_tok_s) {
             (Some(s), _) => out.push(kv("Speed", format!("{s:.1} tok/s"))),
@@ -1798,10 +2135,11 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
             "✓ In use" => format!("{status} · this harness is on it"),
             _ => status,
         };
-        let mut out = vec![bold(model.to_string()), Line::raw(status)];
+        let mut out = vec![bold(without_quant(model).to_string()), Line::raw(status)];
         out.extend(failed(model));
         out.push(Line::raw(""));
         out.push(kv("Machine", node.to_string()));
+        if let Some(q) = quant_of(model) { out.push(kv("Quant", q)) }
         out.push(kv("Source", if own { "On your machines".to_string() } else { format!("Shared · {grid}") }));
         let said = match plan_enter(app, id) { Plan::Retarget { .. } => "Enter moves this harness onto it.".to_string(), Plan::Arm(..) => "Enter twice moves this harness onto it anyway.".into(), Plan::Say(w) if w == NO_HARNESS => no_target_why(app), Plan::Say(w) => w, _ => String::new() };
         if !said.is_empty() { out.push(Line::raw("")); out.push(Line::from(span(said, fg(theme::accent())))) }
@@ -1825,6 +2163,7 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
         out.extend(failed(""));
         out.push(Line::raw(""));
         out.extend(sub.details.iter().take(3).map(|d| kv("Window", d.clone())));
+        out.push(kv(if sub.machines.len() > 1 { "Machines" } else { "Machine" }, sub.machines.join(", ")));
         out.push(kv("Agent", engine_label(&sub.engine).to_string()));
         out.push(kv("Source", "Subscription"));
         let said = match sub_payload(app, &sub, t) { Ok(_) => "Enter puts this harness back on its own login.".to_string(), Err(w) => w };
@@ -1842,8 +2181,47 @@ pub fn preview(app: &App, id: &str) -> Vec<Line<'static>> {
             Some(Err(e)) => out.push(warn(e.clone())),
             None => out.push(dim("Reading its models…")),
         }
-        if api.serves_models() { out.push(Line::raw("")); out.push(Line::from(span(if v.api_open.contains(&api.id) { "Enter folds its models." } else { "Enter shows its models." }, fg(theme::accent())))) }
+        // (Opened, it shows its models — when it lists any — and Edit connection and Delete.)
+        let open = v.api_open.contains(&api.id);
+        let said = match (api.serves_models(), open, v.api_presets.is_empty()) {
+            (true, false, _) => "Enter shows its models.",
+            (true, true, _) => "Enter folds its models.",
+            (false, false, false) => "Enter shows Edit connection and Delete.",
+            (false, true, false) => "Enter folds Edit connection and Delete.",
+            (false, _, true) => "",
+        };
+        if !said.is_empty() { out.push(Line::raw("")); out.push(Line::from(span(said, fg(theme::accent())))) }
         return out;
+    }
+    if id == API_ADD {
+        return vec![bold("Add an API key"), Line::raw(""),
+            Line::raw("OpenRouter or a Custom API: use its models to run a harness."),
+            Line::raw("fal.ai or Replicate: harness agents can call it as a tool."), Line::raw(""),
+            Line::raw("The key stays on this computer."), Line::raw(""),
+            Line::from(span(if v.api_adding { "Enter hides the APIs to add." } else { "Enter lists the APIs to add." }, fg(theme::accent())))];
+    }
+    if let Some(provider) = id.strip_prefix(API_NEW) {
+        if provider == "custom" {
+            return vec![bold("Custom API"), Line::raw("Any OpenAI-compatible API. Harnesses can run on its models."), Line::raw(""),
+                Line::from(span("Enter asks its name, URL and key.", fg(theme::accent())))];
+        }
+        let Some(p) = v.api_presets.iter().find(|p| p.provider == provider) else { return vec![] };
+        let mut out = vec![bold(p.name.clone()), Line::raw(p.base_url.clone())];
+        if !p.key_url.is_empty() { out.push(Line::raw("")); out.push(kv("Get key", p.key_url.clone())) }
+        out.push(Line::raw(""));
+        out.push(Line::from(span("Enter asks its key.", fg(theme::accent()))));
+        return out;
+    }
+    if let Some(key) = id.strip_prefix(API_EDIT) {
+        let Some(api) = saved_api(app, key) else { return vec![] };
+        let custom = api.provider == "custom" || !v.api_presets.iter().any(|p| p.provider == api.provider);
+        return vec![bold(format!("Edit {}", api.name)), Line::raw(api.base_url.clone()), Line::raw(""),
+            Line::from(span(if custom { "Enter changes its name, URL or key." } else { "Enter changes its key." }, fg(theme::accent())))];
+    }
+    if let Some(key) = id.strip_prefix(API_DELETE) {
+        let Some(api) = saved_api(app, key) else { return vec![] };
+        return vec![bold(format!("Delete {}", api.name)), Line::raw("Removes this saved connection and its key from this computer."), Line::raw(""),
+            Line::from(span("Enter asks first.", fg(theme::accent())))];
     }
     if let Some(rest) = id.strip_prefix("mv:apimodel:") {
         let Some((key, model)) = rest.split_once('\t') else { return vec![] };
@@ -1955,7 +2333,7 @@ mod tests {
     /// The harness's frame, its `grid` as given (`{}`: on its own login).
     fn frame(app: &mut App, grid: Value) {
         let key = ("local".to_string(), "a1".to_string());
-        let row = json!({ "id": "a1", "name": "fix-login", "engine": "claude", "selectedModel": "opus", "grid": grid });
+        let row = json!({ "id": "a1", "name": "fix-login", "engine": "claude", "sessionId": "s1", "selectedModel": "opus", "grid": grid });
         let a = crate::fleet::agent_from("local", &row, app.fleet.agents.get(&key));
         app.fleet.agents.insert(key, a);
     }
@@ -1971,6 +2349,38 @@ mod tests {
         on_grids(&mut app, "local", Ok(g));
         let mine: Vec<String> = super::rows(&app, "").into_iter().filter(|r| r.group.as_deref() == Some("Your models") && is_row(&r.id)).map(|r| r.id).collect();
         assert_eq!(mine, vec!["mv:local:qwen-35b".to_string(), "mv:local:gemma-12b".into(), "mv:grid:own-grid\tstudio\tbox-model".into(), "mv:grid:own-grid\tlap\taway-model".into()]);
+    }
+
+    /// A harness just opened reads as its terminal until the daemon sees the engine in it (OpenCode:
+    /// ~7 s). Models opened in that window takes the engine once it is seen — the same pane, never
+    /// another — instead of saying "focus a harness" until it is closed and opened again.
+    #[test]
+    fn models_opened_while_a_harness_starts_takes_it_once_its_engine_is_seen() {
+        let mut app = app();
+        let key = ("local".to_string(), "t1".to_string());
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "terminal" }), None));
+        app.panes.insert(2, crate::pane::Pane::new(2, "local", "t1", 75, 40));
+        app.rects = vec![(1, ratatui::layout::Rect::new(0, 0, 75, 40)), (2, ratatui::layout::Rect::new(75, 0, 75, 40))];
+        app.tabs[0].focus = Some(2);
+        app.modal = Some(crate::modal::Modal::Picker { kind: crate::modal::PickerKind::Models, picker: crate::picker::Picker::new("Models", "") });
+        open(&mut app);
+        assert!(target(&app).is_none(), "still a terminal");
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode" }), None));
+        tick(&mut app);
+        assert_eq!(target(&app).map(|t| t.agent).as_deref(), Some("t1"), "{}", no_target_why(&app));
+        // Its first conversation a moment later is the same harness; another one after it is not.
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_1" }), None));
+        assert_eq!(target(&app).map(|t| t.agent).as_deref(), Some("t1"), "{}", no_target_why(&app));
+        tick(&mut app);
+        app.fleet.agents.insert(key.clone(), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "opencode", "sessionId": "ses_2" }), None));
+        assert!(target(&app).is_none());
+        assert!(no_target_why(&app).contains("This session changed"), "{}", no_target_why(&app));
+        // Another pane focused meanwhile: not followed there.
+        app.fleet.agents.insert(key, crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "new", "engine": "terminal" }), None));
+        open(&mut app);
+        app.tabs[0].focus = Some(1);
+        tick(&mut app);
+        assert!(target(&app).is_none());
     }
 
     /// Which harness Enter moves: the focused pane's. A focused terminal is the one meant — never
@@ -2107,6 +2517,37 @@ mod tests {
     fn flash(p: &Picker) -> String { p.flash.as_ref().map(|f| f.0.clone()).unwrap_or_default() }
     fn text(lines: &[Line]) -> String { lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n") }
 
+    /// A subscription row names the machines its plan is on, never the account's hash; the same plan on two
+    /// machines is one row, and only two plans of one maker on the same machines are told apart by number.
+    #[test]
+    fn subscriptions_name_their_machines_and_not_their_account_keys() {
+        let mut app = app();
+        app.fleet.machines.push(Machine { shared: false, id: "m2".into(), name: "laptop".into(), local: false, status: "online".into(), reach: Reach::Ready });
+        let win = || vec![Window { label: "5h".into(), used: 10.0, resets: None }];
+        let claude = |account: &str| Usage { provider: "claude".into(), account: Some(account.into()), windows: win() };
+        let codex = |account: &str| Usage { provider: "codex".into(), account: Some(account.into()), windows: win() };
+        // The app() fixture has claude 7f0c on studio (local). The same account is on the laptop too, with a codex plan.
+        app.usage.insert("m2".into(), vec![claude("7f0c"), codex("aa11")]);
+        let text_of = |r: &Row| r.detail.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let rows = rows(&app, "");
+        let one = row(&rows, "mv:sub:claude\t7f0c");
+        assert_eq!((one.label.as_str(), text_of(one).as_str()), ("Anthropic", "studio, laptop"), "one plan, every machine it is on");
+        let alone = row(&rows, "mv:sub:codex\taa11");
+        assert_eq!((alone.label.as_str(), text_of(alone).as_str()), ("OpenAI", "laptop"));
+        for r in [one, alone] { assert!(![r.label.clone(), text_of(r), r.right.clone()].join(" ").contains("7f0c") && !r.label.contains("aa11"), "no account key shown") }
+        assert!(!rows.iter().any(|r| r.label.contains("this Mac") || text_of(r).contains("this Mac")), "machines are named, never 'this Mac'");
+        // A second Anthropic plan on the same two machines: only now do the plans need a number.
+        app.usage.get_mut("local").unwrap().push(claude("cc33"));
+        app.usage.get_mut("m2").unwrap().push(claude("cc33"));
+        let rows = super::rows(&app, "");
+        let labels: Vec<&str> = rows.iter().filter(|r| r.id.starts_with("mv:sub:claude")).map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Anthropic 1", "Anthropic 2"]);
+        assert!(rows.iter().filter(|r| r.id.starts_with("mv:sub:claude")).all(|r| text_of(r) == "studio, laptop"));
+        // The preview names them too.
+        let preview = text(&super::preview(&app, "mv:sub:claude\t7f0c"));
+        assert!(preview.contains("Machines") && preview.contains("studio, laptop"), "{preview}");
+    }
+
     /// The owner's flow, end to end on fake replies: the subscription runs low, so the focused
     /// harness is moved onto a local model that is not downloaded yet — Get (asked twice) →
     /// download → start → wait until the grid lists it → `agent_retarget {agentId, gridModel,
@@ -2116,11 +2557,11 @@ mod tests {
     fn the_focused_harness_moves_onto_a_local_model_and_back() {
         let mut app = loaded();
         let rows = rows(&app, "");
-        // The subscriptions first, as on the desktop: the harness's own login, how much is left, its
-        // mark saying it is in use (amber: running low).
+        // The subscriptions first, as on the desktop: the harness's own login and how much is left — no
+        // mark before its name (its preview and words say it is in use).
         assert_eq!(rows[0].group.as_deref(), Some("Subscriptions"));
         assert_eq!((rows[0].label.as_str(), rows[0].right.as_str()), ("Anthropic", "12% remaining"));
-        assert_eq!(rows[0].lead[0].content, "✓ ");
+        assert!(rows.iter().all(|r| r.lead.iter().all(|s| s.content.trim().is_empty())), "no row has a mark before its name");
         assert_eq!(in_use_row(&rows).as_deref(), Some("mv:sub:claude\t7f0c"));
         assert!(row(&rows, "mv:local:qwen-35b").right.ends_with("Get"));
 
@@ -2180,7 +2621,7 @@ mod tests {
         assert!(row(&rows, "mv:local:qwen-35b").right.ends_with("✓ In use"));
         assert!(pane_note(&app, "local", "a1").is_none());
         // (A subscription's row says how much is left; what Enter does is its preview's, and its mark's.)
-        assert!(rows[0].extra.ends_with("Use") && rows[0].lead[0].content != "✓ ", "its own login is a Use away: {}", rows[0].extra);
+        assert!(rows[0].extra.ends_with("Use") && !rows[0].extra.ends_with("✓ In use"), "its own login is a Use away: {}", rows[0].extra);
 
         // And back to the subscription.
         let before = app.models_view.sent.len();
@@ -2189,7 +2630,7 @@ mod tests {
         assert_eq!(last_sent(&app), ("local".into(), "agent_retarget".into(), json!({ "agentId": "a1", "clearGrid": true })));
         assert!(rows_of(&app)[0].extra.ends_with(SWITCHING));
         frame(&mut app, json!({}));
-        assert!(rows_of(&app)[0].extra.ends_with("✓ In use") && rows_of(&app)[0].lead[0].content == "✓ ");
+        assert!(rows_of(&app)[0].extra.ends_with("✓ In use") && rows_of(&app)[0].lead.is_empty());
     }
 
     fn rows_of(app: &App) -> Vec<Row> { rows(app, "") }
@@ -2959,5 +3400,280 @@ mod tests {
         let mut app = app();
         on_local(&mut app, "local", Ok(json!({ "models": [], "notice": "The model catalog is unavailable." })));
         assert_eq!(text(&preview(&app, "mv:note:notice")), "The model catalog is unavailable.");
+    }
+
+    /// The daemon's API list with its presets (OpenAI and Anthropic among them, which Add leaves out).
+    fn apis_reply(connections: Value) -> Value {
+        let preset = |provider: &str, name: &str, url: &str, key: &str| json!({ "provider": provider, "name": name, "baseUrl": url, "keyUrl": key, "keyEnv": "K", "authHeader": "Authorization", "authPrefix": "Bearer" });
+        json!({ "connections": connections, "presets": [
+            preset("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "https://openrouter.ai/settings/keys"),
+            preset("requesty", "Requesty", "https://router.requesty.ai/v1", "https://app.requesty.ai/api-keys"),
+            preset("fal", "fal.ai", "https://queue.fal.run", "https://fal.ai/dashboard/keys"),
+            preset("openai", "OpenAI", "https://api.openai.com/v1", "https://platform.openai.com/api-keys"),
+            preset("anthropic", "Anthropic", "https://api.anthropic.com/v1", "https://platform.claude.com/settings/keys"),
+        ] })
+    }
+
+    fn api_dialog(app: &App) -> (String, String, String, bool, String, ApiStep) {
+        let Some(crate::modal::Modal::Prompt(p)) = &app.modal else { panic!("no dialog: {:?}", app.modal.is_some()) };
+        let crate::modal::PromptKind::Api(d) = &p.kind else { panic!("not an API dialog") };
+        assert!(p.dialog());
+        (p.title.clone(), p.field.clone(), p.value.clone(), p.secret, p.error.clone(), d.step)
+    }
+
+    fn answer(app: &mut App, value: &str) {
+        let Some(crate::modal::Modal::Prompt(p)) = app.modal.take() else { panic!("no dialog") };
+        let crate::modal::PromptKind::Api(d) = p.kind else { panic!("not an API dialog") };
+        api_answer(app, *d, value.to_string());
+    }
+
+    /// Add API, last under the saved APIs (alone when none is saved), lists the daemon's presets but
+    /// OpenAI and Anthropic, then Custom API; a daemon too old to save offers no Add.
+    #[test]
+    fn add_api_lists_what_it_can_add() {
+        let mut app = loaded();
+        on_apis(&mut app, Ok(json!({ "connections": [] })));
+        assert!(!rows_of(&app).iter().any(|r| r.id == API_ADD), "no presets: an older daemon, no Add");
+        on_apis(&mut app, Ok(apis_reply(json!([]))));
+        let rows = rows_of(&app);
+        assert_eq!(row(&rows, API_ADD).group.as_deref(), Some(APIS));
+        assert!(!rows.iter().any(|r| r.id.starts_with(API_NEW)));
+        assert_eq!(plan_enter(&app, API_ADD), Plan::ApiAdd);
+        let mut picker = Picker::new("models", "");
+        choose(&mut app, &mut picker, API_ADD, false);
+        let added: Vec<String> = rows_of(&app).iter().filter(|r| r.id.starts_with(API_NEW)).map(|r| r.label.clone()).collect();
+        assert_eq!(added, ["OpenRouter", "Requesty", "fal.ai", "Custom API"]);
+        assert!(text(&preview(&app, "mv:apinew:openrouter")).contains("Get key  https://openrouter.ai/settings/keys"));
+    }
+
+    /// A preset asks only its key — masked, required — and saves through the daemon; the Models view
+    /// comes back on the new API, open, its models read.
+    #[test]
+    fn a_preset_is_added_with_its_key() {
+        let mut app = loaded();
+        on_apis(&mut app, Ok(apis_reply(json!([{ "id": "openrouter", "provider": "openrouter", "name": "OpenRouter", "baseUrl": "https://openrouter.ai/api/v1" }]))));
+        let mut picker = Picker::new("models", "");
+        choose(&mut app, &mut picker, "mv:apinew:openrouter", false);
+        let (title, field, _, secret, _, step) = api_dialog(&app);
+        assert_eq!((title.as_str(), field.as_str(), secret, step), ("Add OpenRouter 2", "Key", true, ApiStep::Key), "named as the desktop names a second one");
+        answer(&mut app, "");
+        assert_eq!(api_dialog(&app).4, "Paste the API key.");
+        answer(&mut app, "sk-test");
+        assert_eq!(last_sent(&app), ("local".into(), "api_connections".into(), json!({ "action": "save",
+            "connection": { "provider": "openrouter", "name": "OpenRouter 2", "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-test" } })));
+        assert!(!toast(&app).contains("sk-test"), "the key is never said");
+        let saved = apis_reply(json!([
+            { "id": "openrouter", "provider": "openrouter", "name": "OpenRouter", "baseUrl": "https://openrouter.ai/api/v1" },
+            { "id": "openrouter-2", "provider": "openrouter", "name": "OpenRouter 2", "baseUrl": "https://openrouter.ai/api/v1" }]));
+        let draft = ApiDraft { id: None, provider: "openrouter".into(), name: "OpenRouter 2".into(), base_url: "https://openrouter.ai/api/v1".into(), key_url: String::new(),
+            key_env: String::new(), header: String::new(), prefix: String::new(), step: ApiStep::Key };
+        on_api_saved(&mut app, "local", draft, "sk-test".into(), Ok(saved));
+        assert!(app.models_view.api_open.contains("openrouter-2"));
+        assert_eq!(last_sent(&app), ("local".into(), "api_connections".into(), json!({ "action": "models", "id": "openrouter-2" })));
+        assert!(toast(&app).contains("Saved OpenRouter 2"));
+    }
+
+    /// Custom API: its name, its URL (checked as the desktop checks it), then its key.
+    #[test]
+    fn a_custom_api_is_asked_its_name_url_and_key() {
+        let mut app = loaded();
+        on_apis(&mut app, Ok(apis_reply(json!([]))));
+        let mut picker = Picker::new("models", "");
+        choose(&mut app, &mut picker, "mv:apinew:custom", false);
+        assert_eq!(api_dialog(&app).5, ApiStep::Name);
+        answer(&mut app, "");
+        assert_eq!(api_dialog(&app).4, "Enter a name for this API.");
+        answer(&mut app, "DeepSeek");
+        let (title, field, _, secret, _, step) = api_dialog(&app);
+        assert_eq!((title.as_str(), field.as_str(), secret, step), ("Add Custom API", "URL", false, ApiStep::Url));
+        answer(&mut app, "api.deepseek.com");
+        assert!(api_dialog(&app).4.starts_with("Enter the full URL"));
+        answer(&mut app, "https://api.deepseek.com/v1/");
+        assert_eq!(api_dialog(&app).5, ApiStep::Key);
+        assert!(api_dialog(&app).3, "the key is masked");
+        answer(&mut app, "sk-ds");
+        assert_eq!(last_sent(&app).2, json!({ "action": "save", "connection": { "provider": "custom", "name": "DeepSeek", "baseUrl": "https://api.deepseek.com/v1", "apiKey": "sk-ds" } }));
+    }
+
+    /// A refused save comes back to its step with the daemon's words, the key still there (masked);
+    /// a name already used sends a Custom API back to its name.
+    #[test]
+    fn a_refused_save_says_why_where_it_can_be_fixed() {
+        let mut app = loaded();
+        on_apis(&mut app, Ok(apis_reply(json!([]))));
+        let draft = |provider: &str| ApiDraft { id: None, provider: provider.into(), name: "DeepSeek".into(), base_url: "https://api.deepseek.com/v1".into(), key_url: String::new(),
+            key_env: String::new(), header: String::new(), prefix: String::new(), step: ApiStep::Key };
+        on_api_saved(&mut app, "local", draft("openrouter"), "sk".into(), Err(RpcError::new("API_CONNECTIONS_FAILED", "This API could not be saved. Try again.")));
+        let (_, _, value, secret, error, step) = api_dialog(&app);
+        assert_eq!((value.as_str(), secret, error.as_str(), step), ("sk", true, "This API could not be saved. Try again.", ApiStep::Key));
+        app.modal = None;
+        on_api_saved(&mut app, "local", draft("custom"), "sk".into(), Err(RpcError::new("API_CONNECTIONS_FAILED", "An API with this name already exists. Choose another name.")));
+        let (_, field, value, _, error, step) = api_dialog(&app);
+        assert_eq!((field.as_str(), value.as_str(), step), ("Name", "DeepSeek", ApiStep::Name));
+        assert!(error.contains("already exists"));
+    }
+
+    /// Edit connection: a preset's key alone — blank keeps it — sent with the API's id and its key
+    /// variable, header and prefix as they are; a custom one starts at its name.
+    #[test]
+    fn a_saved_api_is_edited_and_deleted() {
+        let mut app = loaded();
+        let custom = json!({ "id": "deepseek", "provider": "custom", "name": "DeepSeek", "baseUrl": "https://api.deepseek.com/v1", "keyEnv": "DEEPSEEK_API_KEY", "authHeader": "Authorization", "authPrefix": "Bearer" });
+        let preset = json!({ "id": "replicate", "provider": "replicate", "name": "Replicate", "baseUrl": "https://api.replicate.com/v1", "keyEnv": "REPLICATE_API_TOKEN", "authHeader": "Authorization", "authPrefix": "Bearer" });
+        let mut reply = apis_reply(json!([custom, preset]));
+        reply["presets"].as_array_mut().unwrap().push(json!({ "provider": "replicate", "name": "Replicate", "baseUrl": "https://api.replicate.com/v1", "keyUrl": "" }));
+        on_apis(&mut app, Ok(reply));
+        assert!(!rows_of(&app).iter().any(|r| r.id.starts_with(API_EDIT)), "folded: no Edit or Delete");
+        let mut picker = Picker::new("models", "");
+        choose(&mut app, &mut picker, "mv:api:replicate", false);
+        let rows = rows_of(&app);
+        assert!(rows.iter().any(|r| r.id == "mv:apiedit:replicate") && rows.iter().any(|r| r.id == "mv:apidel:replicate"));
+        choose(&mut app, &mut picker, "mv:apiedit:replicate", false);
+        assert_eq!(api_dialog(&app).0, "Edit Replicate");
+        assert_eq!(api_dialog(&app).5, ApiStep::Key);
+        answer(&mut app, "");
+        assert_eq!(last_sent(&app).2, json!({ "action": "save", "connection": { "id": "replicate", "provider": "replicate", "name": "Replicate",
+            "baseUrl": "https://api.replicate.com/v1", "keyEnv": "REPLICATE_API_TOKEN", "authHeader": "Authorization", "authPrefix": "Bearer" } }), "no key: the saved one stays");
+
+        app.modal = None;
+        choose(&mut app, &mut picker, "mv:apiedit:deepseek", false);
+        assert_eq!((api_dialog(&app).2.as_str(), api_dialog(&app).5), ("DeepSeek", ApiStep::Name));
+
+        // Delete asks first, then removes it.
+        app.modal = None;
+        assert!(matches!(plan_enter(&app, "mv:apidel:deepseek"), Plan::Arm(ref w, ref then) if w.starts_with("Delete DeepSeek?") && **then == Plan::ApiRemove("deepseek".into())));
+        let mut picker = Picker::new("models", "");
+        choose(&mut app, &mut picker, "mv:apidel:deepseek", false);
+        assert!(!app.models_view.sent.iter().any(|s| s.2["action"] == "remove"), "asked first");
+        choose(&mut app, &mut picker, "mv:apidel:deepseek", false);
+        assert_eq!(last_sent(&app), ("local".into(), "api_connections".into(), json!({ "action": "remove", "id": "deepseek" })));
+    }
+
+    /// The desktop's URL rules.
+    #[test]
+    fn an_api_url_is_checked_as_the_desktop_checks_it() {
+        assert_eq!(url_problem(""), Some("Enter the API's URL."));
+        assert!(url_problem("api.example.com").unwrap().starts_with("Enter the full URL"));
+        assert!(url_problem("ftp://example.com").unwrap().starts_with("Enter the full URL"));
+        assert!(url_problem("https://user:pw@example.com/v1").unwrap().starts_with("Take the username"));
+        assert!(url_problem("https://example.com/v1?x=1").unwrap().starts_with("Take the ? or #"));
+        assert_eq!(url_problem("https://api.example.com/v1"), None);
+        assert_eq!(url_problem("http://localhost:8080/v1"), None);
+    }
+
+    /// An NVIDIA machine's models run in its card: the heading says its VRAM and "fits" is judged
+    /// against the VRAM it has for models — what is free on it and what our own running model holds —
+    /// not the machine's RAM, which a Mac's unified memory still shows.
+    #[test]
+    fn an_nvidia_machine_is_told_its_vram_not_its_ram() {
+        let mut app = app();
+        let mut reply = local_reply(qwen("available", Value::Null), false);
+        on_local(&mut app, "local", Ok(reply.clone()));
+        assert_eq!(catalog_heading(app.models_view.local.get("local")), format!("Get for {} · 64 GB", this_computer()));
+        assert!(text(&preview(&app, "mv:local:qwen-35b")).contains("Memory   fits"), "{}", text(&preview(&app, "mv:local:qwen-35b")));
+
+        reply["fitBytes"] = json!(14.0 * GIB);
+        reply["fitMemory"] = json!("vram");
+        reply["gpuMemoryBytes"] = json!(16.0 * GIB);
+        on_local(&mut app, "local", Ok(reply.clone()));
+        assert_eq!(catalog_heading(app.models_view.local.get("local")), format!("Get for {} · 16 GB VRAM", this_computer()));
+        let panel = text(&preview(&app, "mv:local:qwen-35b"));
+        assert!(panel.contains("VRAM     needs 20 GB · its GPU has 14 GB for models"), "{panel}");
+        assert!(!panel.contains("has 64 GB"), "{panel}");
+
+        // A daemon that names no card's total: what it has for models.
+        reply.as_object_mut().unwrap().remove("gpuMemoryBytes");
+        on_local(&mut app, "local", Ok(reply));
+        assert_eq!(catalog_heading(app.models_view.local.get("local")), format!("Get for {} · 14 GB VRAM for models", this_computer()));
+    }
+
+    #[test]
+    fn a_name_is_shown_without_the_quant_its_file_ends_in() {
+        for (name, shown) in [("Qwen3.8-27B-UD-Q4_K_M", "Qwen3.8-27B"), ("Qwen3-4B-Instruct-2507-Q4_K_M", "Qwen3-4B-Instruct-2507"),
+            ("qwen3:4b-instruct-2507-q4_k_m", "qwen3:4b-instruct-2507"), ("Kev-0.8B-Q8_0", "Kev-0.8B"), ("gpt-oss-20b-MXFP4", "gpt-oss-20b"),
+            ("Mistral-7B-v0.1.IQ4_XS", "Mistral-7B-v0.1"), ("gemma-4-E4B-it-BF16", "gemma-4-E4B-it"), ("Qwen3.6-35B-A3B-UD_Q5_K_XL", "Qwen3.6-35B-A3B"),
+            // Nothing to take off — and a word that only starts like one (`Q3-Coder`, `Qwen`) is the name's.
+            ("Qwen3.6-35B-A3B", "Qwen3.6-35B-A3B"), ("llama3.2:3b", "llama3.2:3b"), ("gemma-4-e2b", "gemma-4-e2b"), ("Qwen-Q3-Coder", "Qwen-Q3-Coder"),
+            ("Q4_K_M", "Q4_K_M"), ("-Q4", "-Q4"), ("Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B")] {
+            assert_eq!(without_quant(name), shown, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_shared_model_is_shown_without_its_quant_and_switched_onto_by_its_served_name() {
+        let mut app = loaded();
+        let mut g = grids_reply(&[]);
+        g["grids"][1]["models"][0]["id"] = json!("Qwen3.8-27B-UD-Q4_K_M");
+        on_grids(&mut app, "local", Ok(g));
+        let id = "mv:grid:team\tgpu-box\tQwen3.8-27B-UD-Q4_K_M";
+        assert_eq!(row(&rows_of(&app), id).label, "Qwen3.8-27B");
+        assert!(row(&rows_of(&app), id).extra.contains("Qwen3.8-27B-UD-Q4_K_M"));
+        let panel = text(&preview(&app, id));
+        assert!(panel.starts_with("Qwen3.8-27B\n"), "{panel}");
+        assert!(panel.contains("Quant    Q4_K_M"), "{panel}");
+        match plan_enter(&app, id) {
+            Plan::Retarget { payload, .. } => assert_eq!(payload["gridModel"], "Qwen3.8-27B-UD-Q4_K_M"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The catalog's Qwen3.8-27B running here, which grid serves under its file's name: one row in Your
+    /// models (not a second, as the grid's), and Enter on it moves the harness onto what grid serves.
+    #[test]
+    fn a_catalog_model_running_here_is_one_row_and_switched_onto_by_the_name_grid_serves() {
+        let mut app = app();
+        let catalog = json!({ "id": "unsloth/Qwen3.8-27B-GGUF", "name": "Qwen3.8-27B", "state": "running", "quant": "UD-Q4_K_M", "sizeBytes": 15.3 * GIB,
+            "canStart": false, "canStop": true, "app": "Grid", "servedAs": ["Qwen3.8-27B-UD-Q4_K_M"] });
+        on_local(&mut app, "local", Ok(local_reply(catalog, false)));
+        on_grids(&mut app, "local", Ok(grids_reply(&["Qwen3.8-27B-UD-Q4_K_M"])));
+        let rows = rows_of(&app);
+        let mine: Vec<&str> = rows.iter().filter(|r| r.group.as_deref() == Some(YOUR_MODELS) && r.label == "Qwen3.8-27B").map(|r| r.id.as_str()).collect();
+        assert_eq!(mine, vec!["mv:local:unsloth/Qwen3.8-27B-GGUF"]);
+        match plan_enter(&app, "mv:local:unsloth/Qwen3.8-27B-GGUF") {
+            Plan::Retarget { payload, name, .. } => { assert_eq!(payload["gridModel"], "Qwen3.8-27B-UD-Q4_K_M"); assert_eq!(name, "Qwen3.8-27B") }
+            other => panic!("{other:?}"),
+        }
+        // An older daemon, which does not say: as before — the grid's row beside it.
+        let mut older = app.models_view.local.get("local").cloned().unwrap();
+        older.models.iter_mut().for_each(|m| m.served_as.clear());
+        app.models_view.local.insert("local".into(), older);
+        assert!(rows_of(&app).iter().any(|r| r.id == "mv:grid:own-grid\tstudio\tQwen3.8-27B-UD-Q4_K_M"));
+    }
+
+    #[test]
+    fn stop_on_a_model_another_computer_runs_says_where_to_stop_it() {
+        let mut app = loaded();
+        let mut g = grids_reply(&[]);
+        g["grids"][1]["models"][0]["id"] = json!("Qwen3.8-27B-UD-Q4_K_M");
+        on_grids(&mut app, "local", Ok(g));
+        let mut picker = Picker::new("Models", "");
+        let id = "mv:grid:team\tgpu-box\tQwen3.8-27B-UD-Q4_K_M";
+        assert!(matches!(plan_stop(&app, id), Plan::Say(ref w) if w == "Qwen3.8-27B runs on gpu-box — stop it there"));
+        choose(&mut app, &mut picker, id, true);
+        choose(&mut app, &mut picker, id, true);
+        assert!(app.models_view.sent.iter().all(|s| s.1 != "grid_fleet_model_stop"));
+    }
+
+    /// A model a Grid setup left running, which the catalog does not list: grid serves it under its
+    /// file's name, quant and all. It is shown without the quant (the Quant line says it), and a
+    /// harness still moves onto it by the name grid serves.
+    #[test]
+    fn a_running_model_is_shown_without_its_quant_and_still_switched_onto_by_its_served_name() {
+        let mut app = app();
+        let file = json!({ "id": "local:Qwen3.8-27B-UD-Q4_K_M.gguf", "name": "Qwen3.8-27B-UD-Q4_K_M", "state": "running", "quant": "", "canStart": false, "canStop": true, "app": "Grid" });
+        on_local(&mut app, "local", Ok(local_reply(file, false)));
+        on_grids(&mut app, "local", Ok(grids_reply(&["Qwen3.8-27B-UD-Q4_K_M"])));
+        let id = "mv:local:local:Qwen3.8-27B-UD-Q4_K_M.gguf";
+        assert_eq!(row(&rows_of(&app), id).label, "Qwen3.8-27B");
+        let panel = text(&preview(&app, id));
+        assert!(panel.starts_with("Qwen3.8-27B\n"), "{panel}");
+        assert!(panel.contains("Quant    Q4_K_M"), "{panel}");
+        match plan_enter(&app, id) {
+            Plan::Retarget { payload, name, .. } => {
+                assert_eq!(payload["gridModel"], "Qwen3.8-27B-UD-Q4_K_M");
+                assert_eq!(name, "Qwen3.8-27B");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

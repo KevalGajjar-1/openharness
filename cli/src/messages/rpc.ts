@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { WebSocket } from 'ws'
 import { localSocketPath } from '../lib/localSocket.js'
+import { NOT_RUNNING, pidIn, unreachableText } from '../lib/unreachable.js'
 import { MessageError } from './model.js'
 
 export interface RpcTarget { port: number; machineId: string; dataDir?: string; signal?: AbortSignal }
@@ -29,7 +30,7 @@ export const messagesRpc: Rpc = (target, payload, timeoutMs = 20_000) => new Pro
   }
   const timer = setTimeout(() => finish(new MessageError('UNCONFIRMED', 'The daemon did not answer in time.')), timeoutMs)
   const abort = () => finish(new MessageError('CANCELLED', 'Cancelled.'))
-  ws.on('error', () => finish(new MessageError('DAEMON_UNREACHABLE', 'The Harness daemon is not running here. Start it with `harness start`.')))
+  ws.on('error', (error) => finish(new MessageError('DAEMON_UNREACHABLE', target.dataDir ? unreachableText({ error, pid: pidIn(target.dataDir) }) : NOT_RUNNING)))
   ws.on('close', (code) => finish(new MessageError(code === 4404 ? 'NO_PEER_LINK' : 'DISCONNECTED', code === 4404
     ? 'That machine is not paired with this one.' : 'The daemon connection closed.')))
   ws.on('open', () => ws.send(JSON.stringify({ type: 'machine_select', payload: { machineId: target.machineId, localProtocolVersion: 1 } })))

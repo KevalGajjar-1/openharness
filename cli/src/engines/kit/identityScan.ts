@@ -6,6 +6,11 @@ export class IdentityReadUnavailable extends Error {
   readonly code = 'IDENTITY_UNAVAILABLE'
   constructor(reason: string, message = `Conversation identity is held: ${reason}.`) { super(message) }
 }
+/** A conversation was seen and then could not be read: never a reason to stop its process without it
+ *  (lib/stopAgentService.ts `withoutConversation`). */
+export class ObservedConversationUnavailable extends IdentityReadUnavailable {
+  constructor(message: string) { super('', message) }
+}
 
 export type IdentityVersion = Pick<Stats, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'ctimeMs'> & {
   /** Descriptor numbers can exceed Number's exact range; never round kernel ownership evidence. */

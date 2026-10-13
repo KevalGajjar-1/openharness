@@ -73,8 +73,8 @@ for workloads, slow tails, connection failures and raw data.
 In the workspace, a **harness** is one running session of an agent such as Codex
 or Claude Code, with its own conversation and working context. A **tab** groups
 harnesses. Use **New Harness** to start one and **New Tab** to group work.
-Turn on **Agent Messages** for a tab (its chat icon, or right-click the tab) to let its
-agents message each other with `harness send`; it is off by default.
+Harnesses in the same tab can message each other with `harness send`: **Agent Messages**,
+an experiment of your account, off by default and turned on in Settings ▸ Experimental.
 
 The Store offers **harnesses** with instructions, tools, and optional viewers for
 specific crafts. Install a harness, then start it in your workspace. See the
@@ -137,6 +137,14 @@ computer:
 ```bash
 curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 hn
+```
+
+**For agents:** Claude Code and Codex can start, wait for and read other harnesses with the `harness` skill
+([harness.autonomous.ai/agents](https://harness.autonomous.ai/agents), which has the Codex lines too):
+
+```bash
+claude plugin marketplace add autonomous-ai/openharness --sparse .claude-plugin plugins
+claude plugin install harness@openharness
 ```
 
 <details>

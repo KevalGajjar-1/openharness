@@ -9,15 +9,17 @@ import 'swarm_interactions_test.dart' show chord;
 import 'swarm_screen_test.dart' show mount;
 import 'swarm_state_test.dart' show createApp;
 
-/// ⇧⌘P: "Show Agent Messages" (this tab's log) and "Agent Messages: turn on/off
-/// for this tab" replace Swarm's "Tab conversation".
+/// ⇧⌘P: "Show Agent Messages" (this tab's log) replaces Swarm's "Tab
+/// conversation". There is no command to turn Agent Messages on or off for a
+/// tab: whether agents may message is the account's, in Settings ▸ Experimental
+/// (owner, 2026-10-12).
 void main() {
-  test('the commands are named for Agent Messages, and Swarm\'s is gone', () {
+  test('Show Agent Messages is the one command, and Swarm\'s is gone', () {
     expect(
       harnessCommandById['agent_messages.show']?.label,
       'Show Agent Messages',
     );
-    expect(harnessCommandById['agent_messages.toggle'], isNotNull);
+    expect(harnessCommandById['agent_messages.toggle'], isNull);
     expect(harnessCommandById['team.open'], isNull);
   });
 
@@ -30,35 +32,23 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('the palette turns Agent Messages on for this tab', (
+  testWidgets('the palette offers the log and nothing to turn on', (
     tester,
   ) async {
     final app = createApp();
     addTearDown(app.dispose);
-    final api = await joinAgentMessagesDesk(app);
+    await joinAgentMessagesDesk(app);
     await mount(tester, app);
-    final tab = app.activeSwarmId;
     await search(tester, '> agent messages');
     // The row, and the preview of the chosen one.
     expect(find.text('Show Agent Messages'), findsWidgets);
-    expect(find.text('Agent Messages: turn on for this tab'), findsWidgets);
+    expect(find.textContaining('for this tab'), findsNothing);
     expect(find.textContaining('Tab conversation'), findsNothing);
-    await tester.tap(
-      find.text('Agent Messages: turn on for this tab').hitTestable().first,
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(api.writes, [(tab, true)]);
-    expect(app.agentMessages.isOn(tab), isTrue);
-    await search(tester, '> agent messages');
-    expect(find.text('Agent Messages: turn off for this tab'), findsWidgets);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('a tab without Agent Messages lists neither command', (
-    tester,
-  ) async {
-    // Before the desk is joined there is no flag to show or set.
+  testWidgets('a tab without Agent Messages lists no command', (tester) async {
+    // Before the desk is joined there is no log to show.
     final app = createApp()..status = AppStatus.authenticated;
     addTearDown(app.dispose);
     await mount(tester, app);

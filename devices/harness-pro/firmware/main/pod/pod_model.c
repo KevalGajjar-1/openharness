@@ -133,6 +133,9 @@ static int make_room(pod_model_t *m, const rank_t *newcomer) {
 // hold a copy of one to see whether it changed anything. It takes a 64-bit FNV-1a signature of the agent's
 // visible fields before and after instead. Left out: seen, lib_seen, src and age_s (sweep bookkeeping that is
 // never a visible change); event_ms only when `with_event` is false (a fresh stamp alone is not one).
+// A fresh slot (already zeroed): the turn stats are unknown, not zero.
+static void init_agent(pod_agent_t *a) { a->tests_passed = a->tests_failed = a->commits = a->tokens_in = a->tokens_out = -1; a->step_total = -1; }
+
 static uint64_t fnv_bytes(uint64_t h, const void *p, size_t n) {
     const unsigned char *b = p;
     while (n--) h = (h ^ *b++) * 1099511628211ull;
@@ -148,7 +151,13 @@ static uint64_t agent_sig(const pod_agent_t *a, bool with_event) {
     h = fnv_str(h, a->activity);
     h = fnv_str(h, a->verb);
     h = fnv_bytes(h, &a->step_count, sizeof a->step_count);
-    for (int i = 0; i < a->step_count; i++) h = fnv_str(h, a->steps[i]);
+    for (int i = 0; i < a->step_count; i++) { h = fnv_str(h, a->steps[i]); h = fnv_bytes(h, &a->step_at_s[i], sizeof a->step_at_s[i]); }
+    h = fnv_bytes(h, &a->failed, sizeof a->failed);
+    h = fnv_bytes(h, &a->tests_passed, sizeof a->tests_passed);
+    h = fnv_bytes(h, &a->tests_failed, sizeof a->tests_failed);
+    h = fnv_bytes(h, &a->commits, sizeof a->commits);
+    h = fnv_bytes(h, &a->tokens_in, sizeof a->tokens_in);
+    h = fnv_bytes(h, &a->tokens_out, sizeof a->tokens_out);
     h = fnv_str(h, a->question);
     h = fnv_bytes(h, &a->state, sizeof a->state);
     h = fnv_bytes(h, &a->since_ms, sizeof a->since_ms);
@@ -187,6 +196,7 @@ void pod_model_agent(pod_model_t *m, const char *id, const char *name, const cha
         i = m->agent_count++;
         memset(&m->agents[i], 0, sizeof m->agents[i]);
         m->agents[i].age_s = -1;
+        init_agent(&m->agents[i]);
         copy_str(m->agents[i].id, sizeof m->agents[i].id, id);
         m->revision++;
     }
@@ -227,19 +237,31 @@ static pod_state_t state_of_status(const char *status) {
 }
 
 // A sentence the agent has moved on from joins the turn's steps (newest first, no repeats, the oldest falls off).
+// Each keeps the seconds into the turn it arrived at (0xFFFF when no turn.started was seen: a rebuilt list has no times).
 static void drop_step(pod_agent_t *a, int at) {
-    for (int i = at; i + 1 < a->step_count; i++) memcpy(a->steps[i], a->steps[i + 1], POD_STEP_BYTES);
+    if (at < a->fresh_steps) a->fresh_steps--;
+    for (int i = at; i + 1 < a->step_count; i++) {
+        memcpy(a->steps[i], a->steps[i + 1], POD_STEP_BYTES);
+        a->step_at_s[i] = a->step_at_s[i + 1];
+    }
     a->step_count--;
 }
-static void push_step(pod_agent_t *a, const char *old) {
+static void push_step(pod_agent_t *a, const char *old, uint32_t now_ms) {
     if (!old[0]) return;
     char cut[POD_STEP_BYTES];
     copy_str(cut, sizeof cut, old);
     for (int i = 0; i < a->step_count; i++) if (!strcmp(a->steps[i], cut)) { drop_step(a, i); break; }
-    if (a->step_count == POD_STEPS_MAX) a->step_count--;
-    for (int i = a->step_count; i > 0; i--) memcpy(a->steps[i], a->steps[i - 1], POD_STEP_BYTES);
+    if (a->step_count == POD_STEPS_MAX) { a->step_count--; if (a->fresh_steps > a->step_count) a->fresh_steps = a->step_count; }
+    for (int i = a->step_count; i > 0; i--) {
+        memcpy(a->steps[i], a->steps[i - 1], POD_STEP_BYTES);
+        a->step_at_s[i] = a->step_at_s[i - 1];
+    }
     memcpy(a->steps[0], cut, sizeof cut);
+    const uint32_t s = (now_ms - a->since_ms) / 1000;   // unsigned: the clock wraps
+    a->step_at_s[0] = !a->turn_started ? 0xFFFF : s > 0xFFFE ? 0xFFFE : (uint16_t)s;
     a->step_count++;
+    if (a->fresh_steps < a->step_count) a->fresh_steps++;
+    if (a->step_total >= 0 && a->step_total < INT16_MAX) a->step_total++;
 }
 
 static void set_state(pod_agent_t *a, pod_state_t s, uint32_t now_ms);
@@ -255,6 +277,7 @@ void pod_model_library_row(pod_model_t *m, const char *id, const char *name, con
         if (make_room(m, &r) < 0) return;
         i = m->agent_count++;
         memset(&m->agents[i], 0, sizeof m->agents[i]);
+        init_agent(&m->agents[i]);
         copy_str(m->agents[i].id, sizeof m->agents[i].id, id);
         m->revision++;
     }
@@ -308,6 +331,7 @@ static void sync_meta_members(pod_model_t *m, const char *const *agent_ids[], co
                 i = m->agent_count++;
                 memset(&m->agents[i], 0, sizeof m->agents[i]);
                 m->agents[i].age_s = -1;
+                init_agent(&m->agents[i]);
                 m->agents[i].state = POD_OFFLINE;
                 copy_str(m->agents[i].id, sizeof m->agents[i].id, agent_ids[t][k]);
                 copy_str(m->agents[i].name, sizeof m->agents[i].name, mm->name);
@@ -415,7 +439,11 @@ static pod_agent_t *fresh_agent(pod_model_t *m, const char *id, uint32_t now_ms)
 static void set_state(pod_agent_t *a, pod_state_t s, uint32_t now_ms) {
     if (s == POD_WORKING && a->state != POD_WORKING) a->since_ms = now_ms;
     if (s != POD_ASKING) a->question[0] = 0;
-    if (s != POD_WORKING) { a->activity[0] = 0; a->verb[0] = 0; a->step_count = 0; }
+    if (s == POD_WORKING && a->state != POD_WORKING && a->state != POD_ASKING) {   // a new turn without a turn.started
+        a->failed = false;
+        a->step_total = -1;
+    }
+    if (s != POD_WORKING) { a->activity[0] = 0; a->verb[0] = 0; a->step_count = a->fresh_steps = 0; a->turn_started = false; }
     // A task starting or ending is news; idle <-> done <-> offline from a sweep (a machine back, a boot's first look) is not.
     bool busy_now = s == POD_WORKING || s == POD_ASKING, busy_was = a->state == POD_WORKING || a->state == POD_ASKING;
     if (a->state != s && (busy_now || busy_was)) { a->act_ms = now_ms; a->has_act = true; }
@@ -450,7 +478,11 @@ void pod_model_turn(pod_model_t *m, const char *id, const char *kind, const char
         a->elapsed_s = 0;
         a->activity[0] = 0;
         a->verb[0] = 0;
-        a->step_count = 0;
+        a->step_count = a->fresh_steps = 0;
+        a->step_total = 0;
+        a->turn_started = true;
+        a->failed = false;
+        a->tests_passed = a->tests_failed = a->commits = a->tokens_in = a->tokens_out = -1;
     } else if (!strcmp(kind, "verb")) {
         if (a->state == POD_ASKING) return;
         set_state(a, POD_WORKING, now_ms);
@@ -474,7 +506,7 @@ void pod_model_turn(pod_model_t *m, const char *id, const char *kind, const char
         // a text replaces the line; a new turn (started) or a state change away from working is what clears it.
         // Blanking here made the body text appear with the heartbeat and vanish ~40 ms later, every 3-5 s.
         if (text && *text) {
-            if (strcmp(text, a->activity)) push_step(a, a->activity);
+            if (strcmp(text, a->activity)) push_step(a, a->activity, now_ms);
             copy_str(a->activity, sizeof a->activity, text);
             a->activity_cut = strlen(text) >= sizeof a->activity;
             for (int i = 0; i < a->step_count; i++) if (!strcmp(a->steps[i], a->activity)) { drop_step(a, i); break; }
@@ -484,11 +516,12 @@ void pod_model_turn(pod_model_t *m, const char *id, const char *kind, const char
         // A tool the turn just started ("Read · pod_model.c"): the newest grey line. A turn of tool calls and no
         // prose had nothing else to show, and the body stayed empty through all of it.
         if (a->state == POD_ASKING) return;
-        if (text && *text) { set_state(a, POD_WORKING, now_ms); push_step(a, text); }
+        if (text && *text) { set_state(a, POD_WORKING, now_ms); push_step(a, text, now_ms); }
     } else if (!strcmp(kind, "done")) {
         set_state(a, POD_DONE, now_ms);
     } else if (!strcmp(kind, "error")) {
         set_state(a, POD_IDLE, now_ms);
+        a->failed = true;
     }
     // A task's clock: only an event inside a turn. A stray done for an idle agent (the daemon's focus read, a replay)
     // is not a task, and stamping it put agents with no turn at the top of Recent (owner, 2026-10-11).
@@ -497,6 +530,19 @@ void pod_model_turn(pod_model_t *m, const char *id, const char *kind, const char
                                !strcmp(kind, "step") || !strcmp(kind, "done") || !strcmp(kind, "error"))) {
         a->act_ms = now_ms; a->has_act = true;
     }
+    if (before != agent_sig(a, true)) m->revision++;
+}
+
+void pod_model_turn_stats(pod_model_t *m, const char *id, int32_t passed, int32_t failed, int32_t commits, int32_t tokens_in, int32_t tokens_out) {
+    int i = find_idx(m, id);
+    if (i < 0) return;
+    pod_agent_t *a = &m->agents[i];
+    uint64_t before = agent_sig(a, true);
+    if (passed >= 0) a->tests_passed = passed;
+    if (failed >= 0) a->tests_failed = failed;
+    if (commits >= 0) a->commits = commits;
+    if (tokens_in >= 0) a->tokens_in = tokens_in;
+    if (tokens_out >= 0) a->tokens_out = tokens_out;
     if (before != agent_sig(a, true)) m->revision++;
 }
 
@@ -511,7 +557,7 @@ void pod_model_question(pod_model_t *m, const char *id, const char *text) {
     a->sent = false;
     a->state = POD_ASKING;
     a->activity[0] = 0;
-    a->step_count = 0;
+    a->fresh_steps = 0;   // the steps stay for Console's LEADING UP TO IT; Classic never showed them after a question
     copy_str(a->question, sizeof a->question, text);
     if (before != agent_sig(a, true)) m->revision++;
 }
@@ -715,6 +761,8 @@ void pod_model_unread_add(pod_model_t *m, const char *agent, const char *name, c
     pod_copy_str(u->text, sizeof u->text, text);
     u->at_ms = now_ms;
     u->elapsed_s = elapsed_s;
+    const pod_agent_t *a = pod_model_find(m, agent);
+    u->kind = a && a->failed ? POD_UNREAD_FAILED : POD_UNREAD_FINISHED;
     m->unread_count++;
     m->revision++;
 }

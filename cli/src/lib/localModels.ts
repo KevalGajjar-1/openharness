@@ -12,6 +12,7 @@ import type { LocalRecord, PictureState } from './gridPicture.js'
 import { displayModelName } from './gridReader.js'
 import { readEnvExports } from './gridWake.js'
 import { MIN_CODING_CONTEXT } from './codingContext.js'
+import type { GpuProcess } from './gpuProcesses.js'
 import { APP_LABEL, AppStartError, GRID_LABEL, appContext, readAppRecords, writeAppRecords, type AppEngine, type AppEngineOps, type AppEngineRecord, type AppModel } from './appModels.js'
 
 // Its own module, so the API launches the core keeps need not load this one (codingContext.ts).
@@ -82,6 +83,11 @@ export interface LocalModel {
   /** What it runs in: `Grid` for a model Grid's llama.cpp serves, or the app whose folder holds it
    *  (`Ollama`, `LM Studio`, `llama.cpp`, [AppModel]). Absent for a catalog model not downloaded yet. */
   app?: string
+  /** The names the grid lists it under while its engine runs here — what a harness on it names as its
+   *  model. A catalog model is served under its file (`Qwen3.8-27B-UD-Q4_K_M`), not its name
+   *  (`Qwen3.8-27B`): matched by name alone, the apps listed it twice, the second time as the grid's,
+   *  and could not move a harness onto it from its own row. */
+  servedAs?: string[]
 }
 export interface ModelOperation {
   id: string; modelId: string; action: 'download' | 'start' | 'stop'; phase: 'running' | 'done' | 'failed'
@@ -89,7 +95,14 @@ export interface ModelOperation {
   progress?: number; error?: string; updatedAt: string
 }
 export interface LocalModelsSnapshot {
+  /** [memoryBytes]: the machine's RAM — on an NVIDIA machine not what a model runs in. */
   models: LocalModel[]; memoryBytes?: number; hardware?: string
+  /** What the catalog fits models to ([modelBudget]) and what memory that is: an NVIDIA card's free
+   *  VRAM (`vram`), an Apple Silicon Mac's unified memory, or system RAM where there is no usable
+   *  GPU. The apps say VRAM, and judge "fits" against it, where a model runs on the card. */
+  fitBytes?: number; fitMemory?: 'vram' | 'unified' | 'ram'
+  /** An NVIDIA machine's cards' VRAM, all of it (grid's `gpus[].memory_total_mb`). */
+  gpuMemoryBytes?: number
   /** A sentence to show BESIDE the list — never `error`. On this protocol an `error` field fails
    * the whole request: the app's RPC layer drops the reply and keeps nothing of it, so a list sent
    * with a warning in `error` arrived as no list at all and the Local tab read 0. */
@@ -139,6 +152,9 @@ interface Options {
   appEngines?: AppEngineOps
   /** How long a scan is waited for ([APP_SCAN_MS]); a test shortens it. */
   appScanMs?: number
+  /** The processes holding NVIDIA VRAM here ([nvidiaComputeApps]), so the catalog counts what this
+   *  picker's own engine holds as the next model's ([LocalModels.withOwnVram]). Absent: not counted. */
+  gpuProcesses?: () => Promise<GpuProcess[]>
 }
 
 /** One concrete, machine-fitted version per model. Non-chat and unprobed offline
@@ -211,6 +227,22 @@ export function modelBudget(device: Record<string, any>): number | undefined {
   if (usable === undefined) return undefined
   if (device.backend === 'cuda' || total === undefined) return usable
   return Math.min(usable, Math.floor(total * GiB * MODEL_MEMORY_SHARE))
+}
+
+/** What the catalog fits to on [device] and what memory that is ([LocalModelsSnapshot.fitBytes]). */
+export function fitOf(device: Record<string, any>): Pick<LocalModelsSnapshot, 'fitBytes' | 'fitMemory' | 'gpuMemoryBytes'> {
+  const fit = modelBudget(device)
+  const backend = str(device.backend)
+  const fitMemory = backend === 'cuda' ? 'vram' as const : backend === 'metal' ? 'unified' as const : backend ? 'ram' as const : undefined
+  const cards = backend === 'cuda' && Array.isArray(device.gpus) ? device.gpus : []
+  const gpuMemoryBytes = cards.reduce((sum: number, gpu: unknown) => sum + (num(obj(gpu).memory_total_mb) ?? 0), 0) * 1024 ** 2
+  return { ...(fit === undefined ? {} : { fitBytes: fit }), ...(fitMemory ? { fitMemory } : {}), ...(gpuMemoryBytes > 0 ? { gpuMemoryBytes } : {}) }
+}
+
+/** An engine record of a Jev decision model's (`jev:` ids — ggml-org's Kev and Laya, Ollama's tev1),
+ *  from before #1141 removed them: [LocalModels.records] forgets it. */
+export function isJevRecord(record: Pick<AppEngineRecord, 'modelId'>): boolean {
+  return record.modelId.startsWith('jev:')
 }
 
 /** Catalog models that are not for running an agent on: safety classifiers such as gpt-oss-safeguard
@@ -372,7 +404,7 @@ export class LocalModels {
     if (!force && this.catalogAt && Date.now() - this.catalogAt < 5 * 60_000) return
     return this.catalogPending ??= (async () => {
       try {
-        this.device = obj(await this.json(['device-info', '--json']))
+        this.device = await this.withOwnVram(obj(await this.json(['device-info', '--json'])))
         const catalog = obj(await this.catalog(this.device))
         this.candidates = rankForCoding(compatibleModels(catalog).filter(candidate => !NOT_FOR_AGENTS.test(candidate.id)))
         // Prefer an already downloaded fitting quant rather than downloading
@@ -394,6 +426,26 @@ export class LocalModels {
           ? error.message : 'Compatible models are unavailable. Try again.'
       }
     })().finally(() => { this.catalogPending = undefined })
+  }
+
+  /** An NVIDIA card's `usable_bytes` is the VRAM free on it now: less what the model this picker runs
+   *  holds. One local model runs at a time and a start stops the running one first, so that VRAM is the
+   *  next model's too, and it is counted back in. Left out, the catalog was fitted to what was left
+   *  beside our own model (2.9 GB of a 24 GB card running a 27B): it offered nothing to get, and the
+   *  running model fell out of it, so its row came back under its file name (`Qwen3.8-27B-UD-Q4_K_M`)
+   *  and the Use that had started it lost the row and never moved the harness. Grid's engine is known by
+   *  its binary; an app's engine this picker started by its record. Everyone else's VRAM (a desktop, a
+   *  browser, a llama-server of the person's own) stays taken. */
+  private async withOwnVram(device: Record<string, any>): Promise<Record<string, any>> {
+    const usable = num(device.usable_bytes)
+    if (device.backend !== 'cuda' || usable === undefined || !this.options.gpuProcesses) return device
+    const records = await this.records()
+    const engines = new Set([join(this.home, 'bin', 'llama-server'), ...records.map(record => record.binary)])
+    const pids = new Set(records.map(record => record.pid))
+    const ours = (await this.options.gpuProcesses()).filter(p => engines.has(p.name) || pids.has(p.pid)).reduce((sum, p) => sum + p.bytes, 0)
+    if (!ours) return device
+    const cards = fitOf(device).gpuMemoryBytes
+    return { ...device, usable_bytes: cards ? Math.min(usable + ours, cards) : usable + ours }
   }
 
   private async downloaded(candidate: Candidate): Promise<boolean> {
@@ -627,6 +679,30 @@ export class LocalModels {
 
   private get appRecordsFile(): string { return join(this.options.stateDir, 'app-engines.json') }
 
+  /** The engines this daemon started — less any left by the Jev decision models Harness no longer has
+   *  (#1141). Their records name models no list knows, and as engine records each one blocked every
+   *  chat model's start ("Stop laya-english first to start another local model."), its engine long
+   *  gone or not, and listed itself as a model to use that cannot chat. Each is forgotten the first
+   *  time it is read, its engine stopped and taken off its grid first should it still run. */
+  private async records(): Promise<AppEngineRecord[]> {
+    const all = await readAppRecords(this.appRecordsFile)
+    const left = all.filter(isJevRecord)
+    if (!left.length) return all
+    const kept = all.filter(record => !isJevRecord(record))
+    await writeAppRecords(this.appRecordsFile, kept)
+    for (const record of left) void this.retire(record)
+    return kept
+  }
+
+  /** A Jev engine still running: stopped, and off its grid (best effort — its record is already gone). */
+  private async retire(record: AppEngineRecord): Promise<void> {
+    try {
+      if (!await this.options.appEngines?.alive(record)) return
+      await this.options.appEngines?.stop(record)
+      await this.run(['--remote', 'leave', record.grid, '--engine', record.alias], undefined, 60_000)
+    } catch { /* forgotten either way */ }
+  }
+
   async list(grid: string | null, force = false): Promise<LocalModelsSnapshot> {
     if (!grid) return { models: [], notice: 'Sign in to find models for this computer.', observedAt: new Date().toISOString(), busy: false }
     if (!force && this.cached?.grid === grid && Date.now() - this.cached.at < 2500) return this.cached.value
@@ -653,7 +729,7 @@ export class LocalModels {
     } catch { inventoryError = 'Running models could not be checked. Try again.' }
     const operation = this.active?.grid === grid ? this.active.operation : this.receipt?.grid === grid ? this.receipt.operation : undefined
     const apps = await this.apps(force)
-    const records = (await readAppRecords(this.appRecordsFile)).filter(record => record.grid === grid)
+    const records = (await this.records()).filter(record => record.grid === grid)
     // An engine this daemon started is read from its record, whatever a later scan makes of the model: a
     // scan that missed the person's llama-server (busy serving, it answered `--version` late) once listed
     // a running engine as Grid's, and Stop then had nothing to stop.
@@ -693,6 +769,7 @@ export class LocalModels {
       const single = Array.isArray(node?.models) && node.models.length === 1
       return { id: candidate.id, name: candidate.name, state: running ? 'running' : available ? 'downloaded' : 'available',
         sizeBytes: candidate.size, quant: candidate.quant, recommended: index === 0,
+        ...(instance ? { servedAs: instance.aliases.map(displayModelName) } : {}),
         ...(candidate.context ? { contextWindow: candidate.context } : {}),
         ...(candidate.estTokS ? { estTokS: candidate.estTokS } : {}),
         ...(candidate.paramsB ? { paramsB: candidate.paramsB } : {}),
@@ -708,7 +785,7 @@ export class LocalModels {
     })
     for (const instance of owned.filter(o => !choices.some(c => c.file === o.file))) {
       const serving = !!servingNode(instance)
-      models.push({ id: `local:${instance.file}`, name: cleanName(instance.aliases[0]),
+      models.push({ id: `local:${instance.file}`, name: cleanName(instance.aliases[0]), servedAs: instance.aliases.map(displayModelName),
         state: serving || parked(instance) ? 'running' : 'available', canStart: false, canStop: !inventoryError,
         operation: operation?.modelId === `local:${instance.file}` ? operation : undefined,
         ...(!serving && parked(instance) ? { gridAsleep: true } : {}), app: GRID_LABEL })
@@ -721,7 +798,7 @@ export class LocalModels {
       const alive = record && this.options.appEngines ? await this.options.appEngines.alive(record) : false
       const listed = !!record && listedHere(record.alias)
       const running = alive && (listed || asleep)
-      return { id, name, app: APP_LABEL[app], state: running ? 'running' : 'downloaded', ...extra,
+      return { id, name, app: APP_LABEL[app], state: running ? 'running' : 'downloaded', ...extra, ...(record ? { servedAs: [record.alias] } : {}),
         canStart: !inventoryError && !record, canStop: !inventoryError && !!record,
         operation: operation?.modelId === id ? operation : undefined, ...(running && !listed ? { gridAsleep: true } : {}) }
     }
@@ -735,6 +812,7 @@ export class LocalModels {
     const freeDiskBytes = await statfs(join(this.home, 'models')).catch(() => statfs(this.home))
       .then(disk => disk.bavail * disk.bsize, () => undefined)
     const value: LocalModelsSnapshot = { models: withoutCopiesOfOwned(models), memoryBytes: num(obj(this.device.memory).total_gb) === undefined ? undefined : this.device.memory.total_gb * GiB,
+      ...fitOf(this.device),
       hardware: str(obj(this.device.machine).model || obj(this.device.cpu).brand), notice: inventoryError || this.catalogError,
       observedAt: new Date().toISOString(), busy: !!this.active, supportsDownload: true,
       ...(freeDiskBytes === undefined ? {} : { freeDiskBytes }) }
@@ -793,7 +871,7 @@ export class LocalModels {
     const app = apps.find(a => a.id === operation.modelId)
     // An engine this daemon started is stopped the way it was started, whatever its id: a record left by a kind of
     // model the picker no longer offers keeps a row (and holds the next start), so its Stop must take it down.
-    const started = (await readAppRecords(this.appRecordsFile)).some(r => r.modelId === operation.modelId && r.grid === grid)
+    const started = (await this.records()).some(r => r.modelId === operation.modelId && r.grid === grid)
     if (started || (operation.modelId.startsWith('app:') && app?.engine !== 'grid')) {
       return this.performApp(grid, operation, app?.engine === 'grid' ? undefined : app)
     }
@@ -942,7 +1020,7 @@ export class LocalModels {
    *  address, answered through the grid, and held to the 64K floor by what the engine says it loaded. */
   private async performApp(grid: string, operation: ModelOperation, app: AppModel | undefined): Promise<void> {
     const ops = this.options.appEngines
-    const records = await readAppRecords(this.appRecordsFile)
+    const records = await this.records()
     const record = records.find(r => r.modelId === operation.modelId && r.grid === grid)
     const without = (gone: AppEngineRecord) => writeAppRecords(this.appRecordsFile, records.filter(r => r !== gone))
     const takeDown = async (started: AppEngineRecord) => {
@@ -975,7 +1053,7 @@ export class LocalModels {
       await writeAppRecords(this.appRecordsFile, [...records.filter(r => !(r.modelId === app.id && r.grid === grid)), started])
       const failed = async (message: string): Promise<never> => {
         await takeDown(started)
-        await writeAppRecords(this.appRecordsFile, (await readAppRecords(this.appRecordsFile)).filter(r => !(r.modelId === app.id && r.grid === grid)))
+        await writeAppRecords(this.appRecordsFile, (await this.records()).filter(r => !(r.modelId === app.id && r.grid === grid)))
         throw new ModelError(message)
       }
       const named = this.options.machineName?.()?.trim()

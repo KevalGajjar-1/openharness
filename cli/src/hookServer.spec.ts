@@ -357,6 +357,30 @@ describe('account Experimental settings proxy', () => {
   })
 })
 
+describe('what the person lets agents do', () => {
+  it('reads the agents\' settings as this computer keeps them, and writes a change through, guarded by the local header', async () => {
+    // The account's experiments (core/experiments.ts `createAgentSettingsSync` answers both): every one off by default.
+    const off = { agentsStartAgents: false, pullRequestLine: false, agentMessages: false, signedIn: true }
+    const writes: unknown[] = []
+    const { base } = await start({
+      onAgentSettingsRead: async () => ({ status: 200, body: off }),
+      onAgentSettingsWrite: async (body) => { writes.push(body); return { status: 200, body: { ...off, ...(body as object) } } },
+    })
+    const patch = (body: string, local = true) => fetch(`${base}/api/agent-settings`, { method: 'PATCH', headers: { 'content-type': 'application/json', ...(local ? { 'x-adapter-local': '1' } : {}) }, body })
+    expect(await (await fetch(`${base}/api/agent-settings`)).json()).toEqual(off)
+    expect((await patch('{"agentMessages":true}', false)).status).toBe(403)
+    expect(await (await patch('{"agentMessages":true}')).json()).toEqual({ ...off, agentMessages: true })
+    expect((await patch('{bad')).status).toBe(400)
+    expect(writes).toEqual([{ agentMessages: true }])
+  })
+
+  it('answers UNAVAILABLE without a handler', async () => {
+    const { base } = await start({})
+    expect((await fetch(`${base}/api/agent-settings`)).status).toBe(503)
+    expect((await fetch(`${base}/api/agent-settings`, { method: 'PATCH', headers: { 'x-adapter-local': '1' }, body: '{}' })).status).toBe(503)
+  })
+})
+
 describe('optional feature routes are absent from core', () => {
   it.each(['/api/zoo', '/api/zoo/ops', '/api/hook/memory-context', '/api/hook/memory-emitted', '/api/hook/opencode-memory-runtime'])(
     'does not handle %s or consult account metadata', async path => {
@@ -722,6 +746,11 @@ describe('the device history and dismiss endpoints', () => {
     expect((await post(JSON.stringify({ pubs: 'a' }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: ['a', 5] }))).status).toBe(400)
     expect((await post(JSON.stringify({ pubs: Array.from({ length: 257 }, (_, i) => `k${i}`) }))).status).toBe(400)
+    // "It's mine": only a literal true asks for the other devices to be told.
+    expect((await post(JSON.stringify({ pubs: ['a'], confirm: true }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pubs: ['a'], confirm: true })
+    expect((await post(JSON.stringify({ pub: 'k', confirm: 'yes' }))).status).toBe(200)
+    expect(onDevicesDismiss).toHaveBeenLastCalledWith({ pub: 'k' })
   })
 
   it('rebaseline passes the previewed head on, and refuses a malformed one', async () => {

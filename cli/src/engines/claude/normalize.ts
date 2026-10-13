@@ -27,6 +27,8 @@ interface RawContentBlock {
   tool_use_id?: string
   content?: string | Array<{ type: string; text?: string }>
   is_error?: boolean
+  /** The last TAIL_OUTPUT chars of a string result that mapContentItem clipped. */
+  tail?: string
   source?: { type: string; media_type: string; data: string }
 }
 
@@ -39,6 +41,8 @@ interface NormalizedMessage {
 }
 
 const MAX_OUTPUT = 2000
+/** Test summaries print last, so the stats read the tail the head clip drops. */
+const TAIL_OUTPUT = 600
 const MAX_THINKING = 500
 const MAX_DIFF_SIDE = 1500
 const PREVIEW_LINES = 8
@@ -215,7 +219,9 @@ function mapContentItem(item: unknown): RawContentBlock {
   }
 
   let resultContent = c.content as RawContentBlock['content']
+  let tail: string | undefined
   if (type === 'tool_result' && typeof resultContent === 'string' && resultContent.length > MAX_OUTPUT) {
+    tail = resultContent.slice(-TAIL_OUTPUT)
     resultContent = resultContent.slice(0, MAX_OUTPUT) + '\n…[truncated]'
   }
 
@@ -249,6 +255,7 @@ function mapContentItem(item: unknown): RawContentBlock {
     tool_use_id: c.tool_use_id as string | undefined,
     content: resultContent,
     is_error: c.is_error as boolean | undefined,
+    ...(tail ? { tail } : {}),
   }
 }
 
@@ -533,6 +540,8 @@ function toolResultEvents(msg: NormalizedMessage, toolIdToName: Map<string, stri
     }
     const toolName = toolIdToName.get(toolUseId) || ''
     const summary = computeToolSummary(toolName, rawOutput, isError)
+    // Only a shell result feeds the turn stats; any other tool's tail would travel for nothing.
+    const outputTail = toolName === 'Bash' ? block.tail ?? rawOutput.slice(-TAIL_OUTPUT) : undefined
     if (rawOutput.length > MAX_OUTPUT) rawOutput = rawOutput.slice(0, MAX_OUTPUT) + '\n…[truncated]'
     const agg = msg.toolUseResult
     const subagent = agg?.agentId
@@ -541,7 +550,7 @@ function toolResultEvents(msg: NormalizedMessage, toolIdToName: Map<string, stri
     events.push({
       type: 'tool_end',
       payload: {
-        id: toolUseId, tool: toolName, output: rawOutput, isError, summary,
+        id: toolUseId, tool: toolName, output: rawOutput, ...(outputTail !== undefined ? { outputTail } : {}), isError, summary,
         ...(subagent ? { subagent } : {}),
         ...(typeof agg?.durationSeconds === 'number' ? { durationSeconds: agg.durationSeconds } : {}),
       },

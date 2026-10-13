@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { CommanderMirror, type CommanderFrame } from './commander.js'
-import { withoutUpdate } from './cardUpdate.js'
+import { isLocalOnly, withoutUpdate } from './cardUpdate.js'
 import type { LiveEvent } from './normalize.js'
 import { BODY_MAX_CHARS, RECAP_MAX_CHARS, deriveTurnSummary } from './deviceRecap.js'
 
@@ -34,6 +34,48 @@ describe('CommanderMirror recap events', () => {
     expect(mirror.latestUpdate('s')).toBe('The build is ready.')
     mirror.ingest([{ type: 'turn_started', payload: {} }] as LiveEvent[], 's')
     expect(mirror.latestUpdate('s')).toBe('')
+  })
+
+  it('emits a local-only reply_text card when a text delta changes the latest paragraph', () => {
+    const frames: CommanderFrame[] = []
+    const mirror = new CommanderMirror({ send: f => frames.push(f), sendWeb: () => {}, hasDevice: () => true,
+      summarize: async () => null, dataDir })
+    mirror.ingest([{ type: 'turn_started', payload: {} }] as LiveEvent[], 's')
+    const replies = () => frames.filter(f => f.payload.kind === 'reply_text')
+    expect(replies()).toHaveLength(0)
+    mirror.ingest([{ type: 'text_delta', payload: { content: 'Looking at ' } }] as LiveEvent[], 's')
+    mirror.ingest([{ type: 'text_delta', payload: { content: 'the spec.' } }] as LiveEvent[], 's')
+    expect(replies().map(f => f.payload.update)).toEqual(['Looking at', 'Looking at the spec.'])
+    expect(replies().every(f => isLocalOnly(f))).toBe(true)
+    // an empty delta changes nothing, and so says nothing
+    mirror.ingest([{ type: 'text_delta', payload: { content: '' } }] as LiveEvent[], 's')
+    expect(replies()).toHaveLength(2)
+    // a replay (history) is not a live turn
+    mirror.ingest([{ type: 'text_delta', payload: { content: ' More.' } }] as LiveEvent[], 's', { replay: true })
+    expect(replies()).toHaveLength(2)
+    // the heartbeat is unchanged
+    mirror.heartbeat('s')
+    expect(frames.some(f => f.payload.kind === 'processing' && f.payload.update === mirror.latestUpdate('s'))).toBe(true)
+  })
+
+  it('streams the TAIL of a long paragraph as reply_text, while latestUpdate keeps its head', () => {
+    const frames: CommanderFrame[] = []
+    const mirror = new CommanderMirror({ send: f => frames.push(f), sendWeb: () => {}, hasDevice: () => true,
+      summarize: async () => null, dataDir })
+    mirror.ingest([{ type: 'turn_started', payload: {} }] as LiveEvent[], 's')
+    const replies = () => frames.filter(f => f.payload.kind === 'reply_text').map(f => f.payload.update as string)
+    const long = 'xin chào đẹp '.repeat(40) + 'END'   // multi-byte, ~500 bytes
+    for (let i = 0; i < long.length; i += 7) mirror.ingest([{ type: 'text_delta', payload: { content: long.slice(i, i + 7) } }] as LiveEvent[], 's')
+    const last = replies().at(-1) as string
+    expect(Buffer.byteLength(last, 'utf8')).toBeLessThanOrEqual(188)
+    expect(last.startsWith('\u2026')).toBe(true)
+    expect(last.endsWith('END')).toBe(true)
+    expect(last).not.toContain('\uFFFD')
+    expect(long.endsWith(last.slice(1))).toBe(true)
+    expect(mirror.latestUpdate('s').endsWith('\u2026')).toBe(true)   // heads unchanged for other consumers
+    // a short paragraph is whole; a new paragraph replaces it
+    mirror.ingest([{ type: 'text_delta', payload: { content: '\n\nShort one.' } }] as LiveEvent[], 's')
+    expect(replies().at(-1)).toBe('Short one.')
   })
 
   it('withoutUpdate strips the sentence from a processing card and touches nothing else', () => {
@@ -283,7 +325,7 @@ describe('CommanderMirror recap events', () => {
     await Promise.resolve()
     const of = (id: string) => deviceFrames.filter((f) => f.dbSessionId === id)
     expect(of('specialist').map((f) => [f.payload.kind, f.payload.subagent])).toEqual([
-      ['processing', undefined], ['processing', undefined], ['done', true], ['summary', true],
+      ['turn_started', undefined], ['processing', undefined], ['reply_text', undefined], ['processing', undefined], ['done', true], ['summary', true],
     ])
     expect(of('director').every((f) => f.payload.subagent === undefined)).toBe(true)
   })
@@ -368,7 +410,9 @@ describe('CommanderMirror recap events', () => {
     await Promise.resolve()
 
     expect(deviceFrames.map((f) => f.payload.kind)).toEqual([
+      'turn_started',
       'processing',
+      'reply_text',
       'processing',
       'done',
       'summary',
@@ -871,4 +915,66 @@ describe('what the mirror holds, as its process tells the core', () => {
       expect(changed).toHaveBeenLastCalledWith('s1')
     }
   })
+})
+
+describe('CommanderMirror shell results for the turn stats', () => {
+  const frames: CommanderFrame[] = []
+  const make = () => {
+    frames.length = 0
+    return new CommanderMirror({ send: (f) => frames.push(f), sendWeb: () => {}, hasDevice: () => true, summarize: async () => null, dataDir: mkdtempSync(join(tmpdir(), 'adapter-commander-')) })
+  }
+  const ended = () => frames.filter((f) => f.payload.kind === 'tool_end').map((f) => f.payload)
+
+  it('emits a top-level shell result with its command, once', () => {
+    const mirror = make()
+    mirror.ingest([{ type: 'turn_started', payload: {} },
+      { type: 'tool_start', payload: { id: 'b1', tool: 'Bash', input: { command: 'git commit -m x' } } },
+      { type: 'tool_end', payload: { id: 'b1', tool: 'Bash', output: 'done', outputTail: 'tail', isError: false, summary: '' } },
+      { type: 'tool_end', payload: { id: 'b1', tool: 'Bash', output: 'done', isError: false, summary: '' } },
+      { type: 'tool_start', payload: { id: 'b2', tool: 'Bash', input: { command: 'ls' } } },
+      { type: 'tool_end', payload: { id: 'b2', tool: 'Bash', output: 'out', isError: true, summary: '' } },
+    ] as LiveEvent[], 's')
+    expect(ended()).toEqual([
+      { kind: 'tool_end', id: 'b1', tool: 'Bash', command: 'git commit -m x', isError: false, outputTail: 'tail' },
+      { kind: 'tool_end', id: 'b2', tool: 'Bash', command: 'ls', isError: true },
+    ])
+  })
+
+  it('gives no outputTail when the engine had none (no stats from it)', () => {
+    const mirror = make()
+    mirror.ingest([{ type: 'turn_started', payload: {} },
+      { type: 'tool_start', payload: { id: 'b1', tool: 'Bash', input: { command: 'npm test' } } },
+      { type: 'tool_end', payload: { id: 'b1', tool: 'Bash', output: 'full output', isError: false, summary: '' } },
+    ] as LiveEvent[], 's')
+    expect(ended()[0]).not.toHaveProperty('outputTail')
+  })
+
+  it('leaves a sub-agent\'s tools and a new turn\'s leftovers alone', () => {
+    const mirror = make()
+    mirror.ingest([{ type: 'turn_started', payload: {} },
+      { type: 'tool_start', payload: { id: 'in', tool: 'Bash', input: { command: 'npm test' }, parentToolUseId: 'task' } },
+      { type: 'tool_end', payload: { id: 'in', tool: 'Bash', output: 'x', isError: false, summary: '' } },
+      { type: 'tool_start', payload: { id: 'old', tool: 'Bash', input: { command: 'npm test' } } },
+      { type: 'turn_started', payload: {} },
+      { type: 'tool_end', payload: { id: 'old', tool: 'Bash', output: 'x', isError: false, summary: '' } },
+    ] as LiveEvent[], 's')
+    expect(ended()).toEqual([])
+  })
+})
+
+it('CommanderMirror tells the devices, locally, that a turn started', () => {
+  const frames: CommanderFrame[] = []
+  const mirror = new CommanderMirror({ send: (f) => frames.push(f), sendWeb: () => {}, hasDevice: () => true, summarize: async () => null, dataDir: mkdtempSync(join(tmpdir(), 'adapter-commander-')) })
+  mirror.ingest([{ type: 'turn_started', payload: {} }, { type: 'turn_started', payload: {} }] as LiveEvent[], 's')
+  expect(frames.filter((f) => f.payload.kind === 'turn_started')).toHaveLength(2)
+  expect(isLocalOnly(frames.find((f) => f.payload.kind === 'turn_started')!)).toBe(true)
+})
+
+it('isLocalOnly marks only the shell result card', () => {
+  expect(isLocalOnly({ type: 'commander_event', payload: { kind: 'turn_started' } })).toBe(true)
+  expect(isLocalOnly({ type: 'commander_event', payload: { kind: 'tool_end' } })).toBe(true)
+  expect(isLocalOnly({ type: 'commander_event', payload: { kind: 'reply_text' } })).toBe(true)
+  expect(isLocalOnly({ type: 'commander_event', payload: { kind: 'tool' } })).toBe(false)
+  expect(isLocalOnly({ type: 'commander_event' })).toBe(false)
+  expect(isLocalOnly({ type: 'agent_deleted', payload: { kind: 'tool_end' } })).toBe(false)
 })

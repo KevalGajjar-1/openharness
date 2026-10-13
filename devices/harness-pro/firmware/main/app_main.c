@@ -9,6 +9,7 @@
 
 #include "app/pro_app.h"
 #include "app/pro_touch.h"
+#include "pro_app_api.h"
 #include "board.h"
 #include "ptt_pro.h"
 #include "board_i2c.h"
@@ -19,6 +20,7 @@
 #include "last_words.h"
 #include "power.h"
 #include "pro_display.h"
+#include "pro_turn.h"
 #include "ram_telemetry.h"
 #include "sys/fw_update.h"
 
@@ -45,9 +47,11 @@ void app_main(void)
     // picks its I2C address) is done by hand inside pro_display_init(), before its driver opens.
     if (!board_i2c_get()) ESP_LOGE(TAG, "shared I2C bus did not come up; touch will stay off");
 
+    pro_turn_set(config_load_turn(pro_turn_build_default()));   // before the first frame and the first touch
     pro_display_init();
     pro_voice_init();    // the PSRAM ring and the microphone, while the heap is unfragmented
     audio_beep_init();   // the ES8311 speaker for the notification beep
+    pro_app_request_skin(config_load_skin(0));   // the saved interface, before the render task so its first frame already has it (no wake: no task yet)
     pro_app_start();     // the render task; Pod shows "Connecting" until the daemon says hello
     pro_touch_start();
     // The side button, after the microphone and the app are up (as the round firmware started its button after the

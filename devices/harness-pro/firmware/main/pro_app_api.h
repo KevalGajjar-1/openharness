@@ -58,6 +58,8 @@ void pro_app_context(const char *id, const char *machine, const char *project, c
 //   "done" / "error"  text "", elapsed_s 0
 // `turn.activity` is delivered as verb, then activity, then step, each only when its field is present.
 void pro_app_turn(const char *id, const char *kind, const char *text, int elapsed_s);
+// turn.stats, once before turn.done: each count is 0..1000000, or -1 when the message left it out.
+void pro_app_turn_stats(const char *id, int tests_passed, int tests_failed, int commits, int tokens_in, int tokens_out);
 
 // `text` and `recap` are NULL when absent, `full` is NULL from a daemon without recap=long-v1.
 // `notify`: a live turn's end that is news here (not `restore`, not `quiet`, not `silent`): file an unread entry, show the
@@ -93,6 +95,12 @@ void pro_app_machines(const cable_machine_t *rows, int count, const char *select
 // ---- settings ----
 // Put a brightness (0..255, what config_store keeps) on the panel. The caller stores it.
 void pro_app_set_brightness(uint8_t level);
+// Turn the screen 180 degrees (or back). Asks only: the render task switches between frames, redrawing the whole glass.
+// The caller stores it.
+void pro_app_request_turn(bool turned);
+// The interface (0 Classic, 1 Console). Asks only, like the turn: the render task switches between frames, ending any
+// voice, swallowing a held contact and resetting the nav to its root. The caller stores it.
+void pro_app_request_skin(int skin);
 
 // ---- firmware update (pro_cable -> pro_app) ----
 // The offer's "busy" decision and the updating flag in one step, atomic with respect to a voice start: false when a voice

@@ -31,6 +31,17 @@ export const GRID_MODEL_RETENTION_MS = 150_000
 const MIN_ABSENT_READS = 2
 
 /**
+ * A model missing from an awake answer when an awake answer listed it no longer ago than this left while
+ * the grid kept answering: its machine stopped serving it (`grid leave`), or the master dropped it. That is
+ * no wake's blank — a master answering 15s ago has heard from its providers — so it goes after
+ * [MIN_ABSENT_READS] answers, not [GRID_MODEL_RETENTION_MS]. Without this, a model stopped on another
+ * computer stayed in this one's Shared with you for over two minutes, offered and failing (only the
+ * computer that stopped it knows at once: `provenStopped`). Three awake memos (15s each), so one slow look
+ * between them still counts as the grid answering throughout.
+ */
+const AWAKE_CONTINUITY_MS = 45_000
+
+/**
  * A sleep record older than this is ignored: the master forgets node rows after 30 days asleep, so an
  * older record lists models nobody serves any more. ⚠️ Cross-repo timing, found by this exact name.
  */
@@ -51,6 +62,8 @@ export interface PictureModel {
   absentSince: number | null
   /** How many awake reads in a row it has been missing from. */
   absentReads: number
+  /** It went missing while the grid kept answering ([AWAKE_CONTINUITY_MS]): left, not a wake's blank. */
+  leftAwake?: boolean
 }
 
 export interface PictureNode {
@@ -147,7 +160,8 @@ function nodeFrom(read: { name: string; engine: string; models: string[] }, at: 
  * An awake answer merged in, per model. A model the answer does not list stays until it has been missing
  * for [GRID_MODEL_RETENTION_MS] across at least two awake answers — so a cold wake that answers empty
  * blanks nothing — unless `provenStopped` says this computer itself stopped serving it, which is positive
- * evidence and takes effect at once.
+ * evidence and takes effect at once, or it went missing while the grid kept answering
+ * ([AWAKE_CONTINUITY_MS]), when two answers without it are enough.
  *
  * Previous entries are paired with live ones by name and engine, first fit, so two same-named machines
  * stay two entries.
@@ -166,8 +180,12 @@ export function mergeAwake(
     if (provenStopped(entry.name, model.key)) return null
     const absentSince = model.absentSince ?? now
     const absentReads = model.absentReads + 1
-    const gone = now - absentSince >= GRID_MODEL_RETENTION_MS && absentReads >= MIN_ABSENT_READS
-    return gone ? null : { ...model, absentSince, absentReads }
+    // Decided at the first answer that missed it, from the answer before.
+    const leftAwake = model.absentSince === null
+      ? previous.state === 'awake' && now - model.seenAt <= AWAKE_CONTINUITY_MS
+      : model.leftAwake === true
+    const gone = absentReads >= MIN_ABSENT_READS && (leftAwake || now - absentSince >= GRID_MODEL_RETENTION_MS)
+    return gone ? null : { ...model, absentSince, absentReads, ...(leftAwake ? { leftAwake } : {}) }
   }
   for (const entry of previous.nodes) {
     const match = live.find((node) => !paired.has(node) && node.name === entry.name && node.engine === entry.engine)
@@ -380,7 +398,7 @@ export function parsePicture(value: unknown): GridPicture | null {
       const key = str(model?.key)
       if (!model || !key || seenAt === null) return []
       const absentReads = typeof model.absentReads === 'number' && Number.isInteger(model.absentReads) && model.absentReads >= 0 ? model.absentReads : 0
-      return [{ key, seenAt, absentSince: time(model.absentSince), absentReads }]
+      return [{ key, seenAt, absentSince: time(model.absentSince), absentReads, ...(model.leftAwake === true ? { leftAwake: true } : {}) }]
     })
     nodes.push({ name: str(node.name), engine: str(node.engine), isMine: node.isMine === true, models })
   }

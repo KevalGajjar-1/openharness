@@ -4,11 +4,15 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 
 /// Agent Messages (docs/design/2026-10-10-agent-messages.md) as this window
-/// sees them: harnesses in a tab with Agent Messages on message each other with
-/// `harness send`, and the daemons deliver. The window only shows it — each
-/// tab's flag (the backend's, off unless a person turned it on), the traffic
-/// the daemons report as `messages_changed`, a tab's log, and the marks a
-/// message leaves on its panes. Nothing here composes or sends.
+/// sees them: harnesses in the same tab message each other with `harness send`,
+/// and the daemons deliver. Whether they may is the account's experiment
+/// (Settings ▸ Experimental, `agent_messages`, off until a person turns it on),
+/// not the tab's: a tab's switch, a 💬 beside its ×, was easy to hit by mistake
+/// and turned the tab off, failing a message that was waiting (owner,
+/// 2026-10-12).
+/// The window only shows what moved — the traffic the daemons report as
+/// `messages_changed`, a tab's log, and the marks a message leaves on its
+/// panes. Nothing here composes, sends or turns anything on.
 
 /// What became of a message for one recipient. A message never expires: it
 /// stays queued until it is delivered, or fails for a reason a person can read.
@@ -201,7 +205,8 @@ typedef AgentMessageLog = ({
   bool complete,
 });
 
-/// A tab with Agent Messages on, and the machines to ask for its traffic.
+/// A tab whose harnesses may message each other, and the machines to ask for
+/// its traffic.
 typedef AgentMessagesRemoteTab = ({String tabId, List<String> machineIds});
 
 /// The short note a message leaves in a pane's header: `→ api` on the
@@ -222,37 +227,31 @@ class PaneMessageMark {
   final bool warning;
 }
 
-/// How a tab's 💬 reads.
-enum TabMessagesState { off, on, flowing }
-
 typedef AgentMessageTabsRead = Future<Map<String, dynamic>?> Function();
-typedef AgentMessagesWrite = Future<Map<String, dynamic>> Function(
-  String tabId,
-  bool enabled,
-);
 typedef AgentMessagesRequest = Future<Map<String, dynamic>> Function(
   String machineId,
   Map<String, dynamic> payload,
 );
 typedef AgentNameOf = String? Function(String machineId, String agentId);
 
-/// Each tab's flag, the traffic the daemons report, and the pane marks it
-/// leaves. Its own notifier, as `AgentAlerts` is: a message arriving must not
-/// rebuild the workspace, only the 💬 and the marks that listen here.
+/// Whether this account has Agent Messages at all, the traffic the daemons
+/// report, and the pane marks it leaves. Its own notifier, as `AgentAlerts`
+/// is: a message arriving must not rebuild the workspace, only the marks and
+/// an open log that listen here. A tab shows nothing of it.
 class AgentMessagesController extends ChangeNotifier {
   AgentMessagesController({
     required this.read,
-    required this.write,
     required this.request,
     required this.nameOf,
     DateTime Function()? now,
-    this.flowingFor = const Duration(seconds: 10),
     this.remoteRecency = const Duration(seconds: 60),
     this.markLife = const Duration(seconds: 5),
   }) : now = now ?? DateTime.now;
 
+  /// The account's desk tabs as the daemon proxies them from the backend
+  /// (`GET /api/agent-messages`). Only whether it answers is used: each tab's
+  /// `enabled` an older daemon or backend still sends is not read.
   final AgentMessageTabsRead read;
-  final AgentMessagesWrite write;
   final AgentMessagesRequest request;
   final AgentNameOf nameOf;
 
@@ -260,28 +259,19 @@ class AgentMessagesController extends ChangeNotifier {
   /// moved ([pollRemote]); lifetimes here run on timers.
   final DateTime Function() now;
 
-  /// How long a tab's status shows 💬 after the last message moved in it,
-  /// before it goes back to the tab's working, done or question mark.
-  final Duration flowingFor;
-
   /// How recent another machine's message must be to count as traffic when a
   /// poll first sees it ([pollRemote]): longer than the remote watch's 15 s
   /// round, so no message falls between two rounds, yet old history does not
-  /// light a tab up.
+  /// mark panes long after it moved.
   final Duration remoteRecency;
 
   /// How long a pane's mark stays, unless the pane is focused first.
   final Duration markLife;
 
-  final _enabled = <String, bool>{};
-  final _pending = <String, bool>{};
-  final _failed = <String, String>{};
-  final _writes = <String, int>{};
   final _traffic = <String, int>{};
   final _seenMessages = <String>{};
-  // What has a lifetime holds the timer that ends it — a tab's 💬 stops, a
-  // mark goes — so nothing has to compare clocks to know it is over.
-  final _flowing = <String, Timer>{};
+  // A mark holds the timer that ends it, so nothing has to compare clocks to
+  // know it is over.
   final _marks = <String, (PaneMessageMark, Timer)>{};
   final _polling = <String>{};
   int _reads = 0, _account = 0;
@@ -289,29 +279,10 @@ class AgentMessagesController extends ChangeNotifier {
 
   /// Whether the daemon and backend answered for this account's tabs. Until
   /// they have — and for good, with an older CLI or backend that does not know
-  /// Agent Messages (404) — there is no 💬 and no menu row: "off" would be a
-  /// guess, and a click could not take.
+  /// Agent Messages (404) — there is no Show Agent Messages: no daemon would
+  /// hold a log to show.
   bool get loaded => _loaded;
   bool _loaded = false;
-
-  /// On when the person turned it on; off when they did not, and whenever the
-  /// backend or daemon cannot say — an older one has no flag to read.
-  bool isOn(String tabId) => _pending[tabId] ?? _enabled[tabId] ?? false;
-
-  /// A turn on or off is on its way to the backend.
-  bool isPending(String tabId) => _pending.containsKey(tabId);
-
-  /// Messages moved in [tabId] within [flowingFor].
-  bool isFlowing(String tabId) => _flowing.containsKey(tabId);
-
-  TabMessagesState stateOf(String tabId) => !isOn(tabId)
-      ? TabMessagesState.off
-      : isFlowing(tabId)
-      ? TabMessagesState.flowing
-      : TabMessagesState.on;
-
-  /// Why the last turn on or off for [tabId] did not take.
-  String? failureFor(String tabId) => _failed[tabId];
 
   /// Counts the `messages_changed` frames for [tabId], so an open log knows
   /// when to read again.
@@ -324,13 +295,12 @@ class AgentMessagesController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// Read every tab's flag again. A failure keeps what was known: one dropped
-  /// request must not turn a tab's 💬 off under the person. An answer of null
-  /// is a daemon or backend without Agent Messages.
+  /// Ask again whether the daemon and backend know Agent Messages. A failure
+  /// keeps what was known: one dropped request must not take Show Agent
+  /// Messages away. An answer of null is a daemon or backend without them.
   Future<void> refresh() async {
     if (_disposed) return;
     final read = ++_reads, account = _account;
-    final writes = Map.of(_writes);
     Map<String, dynamic>? answer;
     try {
       answer = await this.read();
@@ -338,63 +308,11 @@ class AgentMessagesController extends ChangeNotifier {
       return;
     }
     if (_disposed || account != _account || read != _reads) return;
-    if (answer == null) {
-      if (!_loaded && _enabled.isEmpty) return;
-      _loaded = false;
-      _enabled.clear();
-      _notify();
-      return;
-    }
-    final tabs = answer['tabs'];
-    final next = <String, bool>{
-      for (final tab in tabs is List ? tabs : const [])
-        if (tab is Map && tab['id'] is String)
-          tab['id'] as String: tab['enabled'] == true,
-    };
-    // A write that landed while this read was out is newer than its answer.
-    for (final MapEntry(:key, :value) in _writes.entries) {
-      if (writes[key] != value && _enabled.containsKey(key)) {
-        next[key] = _enabled[key]!;
-      }
-    }
-    _enabled
-      ..clear()
-      ..addAll(next);
-    _loaded = true;
+    final loaded = answer != null;
+    if (loaded == _loaded) return;
+    _loaded = loaded;
     _notify();
   }
-
-  /// Turn Agent Messages on or off for [tabId]. Shown at once, put back if
-  /// the backend refuses or cannot be reached. Answers whether it took.
-  Future<bool> setEnabled(String tabId, bool enabled) async {
-    if (_disposed || _pending.containsKey(tabId)) return false;
-    final account = _account;
-    _pending[tabId] = enabled;
-    _failed.remove(tabId);
-    _notify();
-    var saved = false;
-    try {
-      final answer = await write(tabId, enabled);
-      if (_disposed || account != _account) return false;
-      final confirmed = answer['enabled'];
-      _enabled[tabId] = confirmed is bool ? confirmed : enabled;
-      saved = _enabled[tabId] == enabled;
-    } catch (_) {
-      if (_disposed || account != _account) return false;
-    }
-    _pending.remove(tabId);
-    _writes[tabId] = (_writes[tabId] ?? 0) + 1;
-    if (!saved) {
-      _failed[tabId] =
-          'Agent Messages could not be turned ${enabled ? 'on' : 'off'}. '
-          'Check that Harness is signed in and online, then try again.';
-    }
-    _notify();
-    unawaited(refresh());
-    return saved;
-  }
-
-  Future<bool> toggle(String tabId) => setEnabled(tabId, !isOn(tabId));
 
   /// A `messages_changed` frame from a daemon: a message moved, or a sender
   /// hit the rate limit.
@@ -417,7 +335,7 @@ class AgentMessagesController extends ChangeNotifier {
     }
     final tabId = payload['tabId'];
     if (tabId is! String || tabId.isEmpty) return;
-    _flow(tabId);
+    _countTraffic(tabId);
     final id = payload['messageId'];
     // Each status change says the message again; it marks its panes once.
     if (id is String && _remember(id)) {
@@ -432,15 +350,9 @@ class AgentMessagesController extends ChangeNotifier {
     _notify();
   }
 
-  /// [tabId]'s status shows 💬 for [flowingFor] from now — longer when the
-  /// traffic was only read from another machine's log — and an open log reads
-  /// again.
-  void _flow(String tabId, [Duration extra = Duration.zero]) {
-    _flowing.remove(tabId)?.cancel();
-    _flowing[tabId] = Timer(flowingFor + extra, () {
-      _flowing.remove(tabId);
-      _notify();
-    });
+  /// A message moved in [tabId]: an open log reads again. The tab itself
+  /// shows nothing of it.
+  void _countTraffic(String tabId) {
     _traffic[tabId] = trafficFor(tabId) + 1;
   }
 
@@ -457,14 +369,9 @@ class AgentMessagesController extends ChangeNotifier {
   /// only to the windows on its own computer (the core's `clients.windows`), so
   /// traffic between harnesses on other machines would never reach this one.
   /// A message new to this window that moved within [remoteRecency] counts as
-  /// traffic, exactly as if its frame had arrived, and flows for one [round]
-  /// longer: the next round can only renew it a round later, so 💬 would
-  /// otherwise lapse between rounds while agents keep talking. One request at
-  /// a time per machine; a machine still answering the last round is skipped.
-  Future<void> pollRemote(
-    Iterable<AgentMessagesRemoteTab> tabs, {
-    Duration round = Duration.zero,
-  }) async {
+  /// traffic, exactly as if its frame had arrived. One request at a time per
+  /// machine; a machine still answering the last round is skipped.
+  Future<void> pollRemote(Iterable<AgentMessagesRemoteTab> tabs) async {
     if (_disposed) return;
     final byMachine = <String, List<String>>{};
     for (final tab in tabs) {
@@ -474,15 +381,11 @@ class AgentMessagesController extends ChangeNotifier {
     }
     await Future.wait([
       for (final MapEntry(key: machineId, value: tabIds) in byMachine.entries)
-        if (!_polling.contains(machineId)) _poll(machineId, tabIds, round),
+        if (!_polling.contains(machineId)) _poll(machineId, tabIds),
     ]);
   }
 
-  Future<void> _poll(
-    String machineId,
-    List<String> tabIds,
-    Duration round,
-  ) async {
+  Future<void> _poll(String machineId, List<String> tabIds) async {
     final account = _account;
     _polling.add(machineId);
     try {
@@ -499,7 +402,7 @@ class AgentMessagesController extends ChangeNotifier {
           _markPanes(message.from, message.to);
         }
         if (moved) {
-          _flow(tabId, round);
+          _countTraffic(tabId);
           _notify();
         }
       }
@@ -561,13 +464,9 @@ class AgentMessagesController extends ChangeNotifier {
   }
 
   void _stopTimers() {
-    for (final timer in _flowing.values) {
-      timer.cancel();
-    }
     for (final (_, timer) in _marks.values) {
       timer.cancel();
     }
-    _flowing.clear();
     _marks.clear();
   }
 
@@ -637,10 +536,6 @@ class AgentMessagesController extends ChangeNotifier {
   void reset() {
     _account++;
     _reads++;
-    _enabled.clear();
-    _pending.clear();
-    _failed.clear();
-    _writes.clear();
     _traffic.clear();
     _seenMessages.clear();
     _polling.clear();
@@ -671,7 +566,8 @@ class AgentMessagesRemoteWatch {
   final AgentMessagesController controller;
   final ValueListenable<bool> foreground;
 
-  /// The tabs to ask about now: on, with a harness on another machine.
+  /// The tabs to ask about now: those whose harnesses may message each
+  /// other, with a harness on another machine.
   final List<AgentMessagesRemoteTab> Function() tabs;
   final Duration every;
   Timer? _timer;
@@ -696,7 +592,7 @@ class AgentMessagesRemoteWatch {
     _timer = null;
     if (_disposed || !foreground.value) return;
     final targets = tabs();
-    if (targets.isNotEmpty) await controller.pollRemote(targets, round: every);
+    if (targets.isNotEmpty) await controller.pollRemote(targets);
     if (!_disposed && _started && foreground.value && _timer == null) {
       _timer = Timer(every, () => unawaited(poll()));
     }

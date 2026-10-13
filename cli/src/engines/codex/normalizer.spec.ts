@@ -810,3 +810,50 @@ describe('Codex 0.160 — the answer to a non-blocking question', () => {
     expect(new CodexNormalizer('live').ingest(userItem(reply([])))).toEqual([{ type: 'turn_started', payload: { userMessage: '[]' } }])
   })
 })
+
+describe('Codex tool_end exit codes', () => {
+  const isError = (output: string, extra: object = {}, name = 'exec_command') => {
+    const n = new CodexNormalizer('live')
+    n.ingest(line('response_item', { type: 'function_call', call_id: 'c1', name, arguments: JSON.stringify({ cmd: 'ls' }) }))
+    return (n.ingest(line('response_item', { type: 'function_call_output', call_id: 'c1', output, ...extra }))[0].payload as { isError: boolean }).isError
+  }
+
+  it('reads a non-zero exit as an error when no is_error or status says so', () => {
+    expect(isError('Chunk ID: d9\nWall time: 0.3 seconds\nProcess exited with code 2\nOutput:\nboom')).toBe(true)
+    expect(isError('Exit code: 1\nWall time: 0.1 seconds\nOutput:\nboom')).toBe(true)
+    expect(isError('{"output":"boom","metadata":{"exit_code":1,"duration_seconds":0.1}}')).toBe(true)
+  })
+  it('leaves a non-shell tool alone, whatever its output says', () => {
+    expect(isError('Exit code: 1\nOutput:\nboom', {}, 'mcp__x__run')).toBe(false)
+    expect(isError('Process exited with code 2', {}, 'web_search')).toBe(false)
+  })
+  it('leaves a zero exit alone', () => {
+    expect(isError('Process exited with code 0\nOutput:\nok')).toBe(false)
+    expect(isError('Exit code: 0\nOutput:\nok')).toBe(false)
+    expect(isError('{"output":"ok","metadata":{"exit_code":0}}')).toBe(false)
+  })
+})
+
+describe('Codex tool_end outputTail', () => {
+  const end = (output: string, name = 'exec_command') => {
+    const n = new CodexNormalizer('live')
+    n.ingest(line('response_item', { type: 'function_call', call_id: 'c1', name, arguments: JSON.stringify({ cmd: 'ls' }) }))
+    return n.ingest(line('response_item', { type: 'function_call_output', call_id: 'c1', output }))[0].payload as { output: string; outputTail: string }
+  }
+
+  it('is on a shell result only', () => {
+    expect('outputTail' in end('x')).toBe(true)
+    expect('outputTail' in end('x', 'mcp__x__run')).toBe(false)
+  })
+
+  it('keeps the last 600 raw characters beside the clipped head', () => {
+    const done = end('a'.repeat(4400) + 'z'.repeat(600))
+    expect(done.output.startsWith('a'.repeat(2000))).toBe(true)
+    expect(done.outputTail).toBe('z'.repeat(600))
+  })
+
+  it('is the output itself when it is 600 characters or fewer', () => {
+    const done = end('Tests: 44 passed')
+    expect(done.outputTail).toBe(done.output)
+  })
+})

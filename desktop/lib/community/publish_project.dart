@@ -139,10 +139,13 @@ class PublicationHandoff {
             {'127.0.0.1', 'localhost'}.contains(target.host))) {
       throw const FormatException('Invalid Hub address.');
     }
-    final bytes = jsonEncode(draft);
-    if (utf8.encode(bytes).length > 6000000) {
+    final json = utf8.encode(jsonEncode(draft));
+    if (json.length > 6000000) {
       throw const FormatException('Keep this harness under 6 MB.');
     }
+    // Sent as a gzipped file: Cloudflare's rules in front of the Hub refuse a body with raw
+    // `<script>` in it, and a draft carries what the session made. The Hub's import unpacks it.
+    final packed = base64Encode(gzip.encode(json));
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final token = List.generate(
       24,
@@ -176,7 +179,8 @@ class PublicationHandoff {
           "default-src 'none'; script-src 'nonce-$token'; form-action ${target.origin}; frame-ancestors 'none'",
         );
       request.response.write(
-        '<!doctype html><title>Review your harness</title><p>Opening your draft in Harness Hub…</p><form method="post" enctype="multipart/form-data" action="${escape.convert(target.resolve('/hub/import').toString())}"><textarea name="draft" hidden>${escape.convert(bytes)}</textarea><button>Continue to Hub</button></form><script nonce="$token">document.forms[0].submit()</script>',
+        '<!doctype html><title>Review your harness</title><p>Opening your draft in Harness Hub…</p><form method="post" enctype="multipart/form-data" action="${escape.convert(target.resolve('/hub/import').toString())}"><input type="file" name="draft" hidden><button>Continue to Hub</button></form>'
+        '<script nonce="$token">const bytes=Uint8Array.from(atob("$packed"),c=>c.charCodeAt(0));const files=new DataTransfer();files.items.add(new File([bytes],"draft.json.gz",{type:"application/gzip"}));const form=document.forms[0];form.elements.draft.files=files.files;form.submit()</script>',
       );
       await request.response.close();
       await handoff.close();

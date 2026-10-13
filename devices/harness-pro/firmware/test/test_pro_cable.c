@@ -26,15 +26,16 @@
 #include "sys/last_words.h"
 #include "board/board.h"
 #include "sys/config_store.h"
+#include "display/pro_turn.h"
 #include "sys/fw_update.h"
 
 static int checks;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #c); abort(); } checks++; } while (0)
 
 // ---- the recorder --------------------------------------------------------------------------------------
-enum { EV_LINK, EV_AGENTS, EV_SWARMS, EV_LIBRARY, EV_CONTEXT, EV_TURN, EV_SUMMARY, EV_QUESTION, EV_QCLOSE, EV_FOCUS,
+enum { EV_STATS, EV_LINK, EV_AGENTS, EV_SWARMS, EV_LIBRARY, EV_CONTEXT, EV_TURN, EV_SUMMARY, EV_QUESTION, EV_QCLOSE, EV_FOCUS,
        EV_VOICE, EV_MACHINES, EV_NREPLACE, EV_NSEEN };
-typedef struct { int kind; char id[64]; char a[2400], b[2400], c[2400], d[128]; long n1, n2, n3, n4; } ev_t;
+typedef struct { int kind; char id[64]; char a[2400], b[2400], c[2400], d[128]; long n1, n2, n3, n4, n5; } ev_t;
 #define EV_MAX 64
 static ev_t evs[EV_MAX];
 static int nev;
@@ -85,6 +86,10 @@ void pro_app_context(const char *id, const char *machine, const char *project, c
 void pro_app_turn(const char *id, const char *kind, const char *text, int elapsed_s)
 {
     ev_t *e = add(EV_TURN, id); put(e->a, kind); put(e->b, text); e->n1 = elapsed_s;
+}
+void pro_app_turn_stats(const char *id, int passed, int failed, int commits, int tokens_in, int tokens_out)
+{
+    ev_t *e = add(EV_STATS, id); e->n1 = passed; e->n2 = failed; e->n3 = commits; e->n4 = tokens_in; e->n5 = tokens_out;
 }
 void pro_app_summary(const char *id, const char *text, const char *recap, const char *full, bool restore, bool notify)
 {
@@ -156,6 +161,15 @@ bool config_save_muted(bool m) { cfg_muted = m; return true; }
 void config_load_voicelang(char *o, size_t n) { snprintf(o, n, "%s", cfg_lang); }
 bool config_save_voicelang(const char *l) { snprintf(cfg_lang, sizeof cfg_lang, "%s", l); return true; }
 void pro_app_set_brightness(uint8_t level) { panel_level = level; }
+static bool cfg_turn, turn_saves_ok = true;
+static int turn_requests = -1;   // -1: none, else the last flag asked for
+bool config_load_turn(bool fallback) { (void)fallback; return cfg_turn; }
+bool config_save_turn(bool t) { if (!turn_saves_ok) return false; cfg_turn = t; return true; }
+void pro_app_request_turn(bool t) { turn_requests = t; }
+static int cfg_skin, skin_requests = -1;   // skin_requests: -1 none, else the last skin asked for
+int config_load_skin(int fallback) { (void)fallback; return cfg_skin; }
+bool config_save_skin(int s) { cfg_skin = s; return true; }
+void pro_app_request_skin(int s) { skin_requests = s; }
 
 // ---- fw_update recorders: this test is about ROUTING, so fw_update.c is not linked (its own test covers the logic) ----
 static bool voice_is_open;
@@ -719,6 +733,91 @@ static void test_settings(void)
     reset();
     feed("{\"t\":\"settings.set\",\"muted\":true,\"quiet\":false,\"round\":false,\"character\":0}");
     CHECK(strstr(sent[0], "\"ok\":true") && cfg_muted);
+    // screenTurned: carried by settings.state (and hello), saved, and the switch requested; not a bool is refused
+    reset();
+    feed("{\"t\":\"settings.set\",\"muted\":true}");
+    CHECK(strstr(sent[0], "\"screenTurned\":false") && turn_requests == -1);   // read back; untouched when absent
+    reset();
+    feed("{\"t\":\"settings.set\",\"screenTurned\":true}");
+    CHECK(nsent == 1 && strstr(sent[0], "\"ok\":true") && strstr(sent[0], "\"screenTurned\":true") && cfg_turn && turn_requests == 1);
+    reset();
+    turn_requests = -1;
+    feed("{\"t\":\"settings.set\",\"screenTurned\":\"yes\"}");
+    CHECK(nsent == 1 && strstr(sent[0], "\"ok\":false") && strstr(sent[0], "\"error\"") && strstr(sent[0], "\"screenTurned\":true"));
+    CHECK(cfg_turn && turn_requests == -1);
+    reset();
+    feed("{\"t\":\"settings.set\",\"screenTurned\":1}");
+    CHECK(strstr(sent[0], "\"ok\":false") && turn_requests == -1);
+    turn_saves_ok = false;
+    reset();
+    turn_requests = -1;
+    feed("{\"t\":\"settings.set\",\"screenTurned\":false}");
+    CHECK(strstr(sent[0], "\"ok\":false") && cfg_turn && turn_requests == -1);   // not saved: not switched either
+    turn_saves_ok = true;
+    reset();
+    feed("{\"t\":\"settings.set\",\"screenTurned\":false}");
+    CHECK(strstr(sent[0], "\"ok\":true") && strstr(sent[0], "\"screenTurned\":false") && !cfg_turn && turn_requests == 0);
+}
+
+// turn.stats: whole numbers 0..1000000 only; an absent field is -1 (unknown); a bad one refuses the whole message.
+static void test_turn_stats(void)
+{
+    welcome();
+    reset();
+    feed("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"testsPassed\":44,\"testsFailed\":0,\"commits\":1}");
+    CHECK(nev == 1 && evs[0].kind == EV_STATS && !strcmp(evs[0].id, "a") && evs[0].n1 == 44 && evs[0].n2 == 0 && evs[0].n3 == 1);
+    reset();
+    feed("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"commits\":2}");
+    CHECK(nev == 1 && evs[0].n1 == -1 && evs[0].n2 == -1 && evs[0].n3 == 2);
+    const char *bad[] = { "-1", "1.5", "1000001", "\"4\"", "null" };
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        reset();
+        feedf("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"testsPassed\":%s}", bad[i]);
+        CHECK(nev == 0);
+    }
+    reset();
+    feed("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"testsPassed\":1000000}");
+    CHECK(nev == 1 && evs[0].n1 == 1000000);
+    reset();
+    feed("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"tokensIn\":42900,\"tokensOut\":18500}");
+    CHECK(nev == 1 && evs[0].n1 == -1 && evs[0].n4 == 42900 && evs[0].n5 == 18500);
+    reset();
+    feed("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"tokensIn\":50000000}");
+    CHECK(nev == 1 && evs[0].n4 == 50000000 && evs[0].n5 == -1);
+    const char *badt[] = { "50000001", "-1", "1.5" };
+    for (unsigned i = 0; i < sizeof badt / sizeof badt[0]; i++) {
+        reset();
+        feedf("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"tokensIn\":%s}", badt[i]);
+        CHECK(nev == 0);
+        reset();
+        feedf("{\"t\":\"turn.stats\",\"agentId\":\"a\",\"commits\":2,\"tokensOut\":%s}", badt[i]);
+        CHECK(nev == 0);
+    }
+    reset();
+    feed("{\"t\":\"turn.stats\",\"testsPassed\":3}");   // no agent
+    CHECK(nev == 0);
+}
+
+// uiSkin: carried by settings.state, saved, and the switch requested; an unknown value is refused, state unchanged.
+static void test_ui_skin(void)
+{
+    welcome();
+    reset();
+    feed("{\"t\":\"settings.set\",\"muted\":true}");
+    CHECK(strstr(sent[0], "\"uiSkin\":\"classic\"") && skin_requests == -1);
+    reset();
+    feed("{\"t\":\"settings.set\",\"uiSkin\":\"console\"}");
+    CHECK(nsent == 1 && strstr(sent[0], "\"ok\":true") && strstr(sent[0], "\"uiSkin\":\"console\"") && cfg_skin == 1 && skin_requests == 1);
+    skin_requests = -1;
+    const char *bad[] = { "\"neon\"", "1", "true", "null" };
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        reset();
+        feedf("{\"t\":\"settings.set\",\"uiSkin\":%s}", bad[i]);
+        CHECK(nsent == 1 && strstr(sent[0], "\"ok\":false") && strstr(sent[0], "\"uiSkin\":\"console\"") && cfg_skin == 1 && skin_requests == -1);
+    }
+    reset();
+    feed("{\"t\":\"settings.set\",\"uiSkin\":\"classic\"}");
+    CHECK(strstr(sent[0], "\"ok\":true") && strstr(sent[0], "\"uiSkin\":\"classic\"") && cfg_skin == 0 && skin_requests == 0);
 }
 
 // summary flags: only a plain live summary is news; quiet, silent and restore still deliver the recap.
@@ -915,6 +1014,8 @@ int main(void)
     test_session_machines_library_voice();
     pro_cable_test_small_stack();
     test_settings();
+    test_turn_stats();
+    test_ui_skin();
     test_notifications();
     fw_offer_routes();
     fw_frame_routes();

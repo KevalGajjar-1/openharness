@@ -90,7 +90,12 @@ function stripMarkdown(text: string): string {
     .replace(/^\s*\d+\.\s+/gm, '')            // ordered-list markers
     .replace(/^\s*>\s?/gm, '')                // block quotes
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // links and images → their label
-    .replace(/[*_~`]/g, '')                   // emphasis and inline code marks
+    // Emphasis marks go, but never from inside code or a word: an agent's "name it `MAX_SIZE`" read back as
+    // "name it MAXSIZE" in `harness ps` (2026-10-11, in a clean VM), and agents act on what they read there.
+    .split(/(`[^`\n]*`)/)
+    .map((part) => part.startsWith('`') && part.endsWith('`') && part.length > 1 ? part.slice(1, -1)
+      : part.replace(/[*~`]/g, '').replace(/(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, ''))
+    .join('')
     .replace(/[ \t]+/g, ' ')
     .trim()
 }

@@ -1,4 +1,5 @@
 import type { OpenHarness, SocialState } from './types';
+import { gzipJson, gzipType } from './gzip';
 import { refreshHubSession } from './session';
 
 /** Read the existing Harness web session; the community does not mint a second identity. */
@@ -18,8 +19,8 @@ export async function communityRequest<T>(path: string, options: { method?: stri
   const headers = sessionHeaders();
   const request: RequestInit = {
     method: options.method || 'GET', signal: options.signal,
-    headers: { ...headers, ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}), cache: 'no-store',
+    headers: { ...headers, ...(options.body ? { 'Content-Type': gzipType } : {}) },
+    ...(options.body ? { body: await gzipJson(options.body) } : {}), cache: 'no-store',
   };
   let response = await fetch(`/api/community/${path}`, request);
   if (response.status === 401 && headers.Authorization && await refreshHubSession(headers.Authorization)) {

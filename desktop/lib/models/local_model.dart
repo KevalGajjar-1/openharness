@@ -1,3 +1,18 @@
+/// [name] without the quantization its file name ends in, which a row's Quant
+/// says: `Qwen3.8-27B-UD-Q4_K_M` is `Qwen3.8-27B`, `qwen3:4b-instruct-2507-q4_k_m`
+/// is `qwen3:4b-instruct-2507` — hn's `without_quant`, so a model reads the same
+/// in both, and the same on the machine running it as on one it is shared with.
+/// A name that is all quant stays.
+String withoutQuant(String name) {
+  final quant = RegExp(
+    r'[-_.](?:ud[-_])?(?:(?:iq|q|mxfp)\d[a-z0-9_]*|bf16|fp16|f16)$',
+    caseSensitive: false,
+  ).firstMatch(name);
+  return quant == null || quant.start == 0
+      ? name
+      : name.substring(0, quant.start);
+}
+
 /// The local daemon reports lifecycle and measured telemetry. Unknown values
 /// stay absent; a weights file's size is never relabelled as memory use.
 class LocalModel {
@@ -19,8 +34,22 @@ class LocalModel {
     this.estTokS,
     this.paramsB,
     this.app,
+    this.servedAs = const [],
   });
   final String id, name, state;
+
+  /// The names the grid lists this model under while it runs here (`servedAs`; empty from an older
+  /// daemon). A catalog model runs under its file's name (`Qwen3.8-27B-UD-Q4_K_M`), not the catalog's
+  /// (`Qwen3.8-27B`), so its grid listing is matched to it by these.
+  final List<String> servedAs;
+
+  /// Whether the grid's [modelId] is this model: its id, its name, or a name it is served under.
+  bool answersTo(String modelId) {
+    final id = modelId.toLowerCase();
+    return this.id.toLowerCase() == id ||
+        name.toLowerCase() == id ||
+        servedAs.any((served) => served.toLowerCase() == id);
+  }
 
   /// The app this model was downloaded with and starts in (`Ollama`, `LM Studio`, `llama.cpp`): one found
   /// in that app's folder. Null for Grid's own models, and from an older daemon.
@@ -55,13 +84,19 @@ class LocalModel {
     ).firstMatch(id)?.group(1)?.toUpperCase();
   }
 
+  /// Its name as shown: without the quant its file name ends in ([withoutQuant]).
+  String get shownName => withoutQuant(name);
+
+  /// [shownName] with its quant beside it: what tells two downloads of one
+  /// model apart.
   String get displayName {
+    final shown = shownName;
     final variant = quantization;
-    if (variant == null || variant.isEmpty) return name;
+    if (variant == null || variant.isEmpty) return shown;
     final present = RegExp(
       '(^|[^a-z0-9])${RegExp.escape(variant.toLowerCase())}([^a-z0-9]|\$)',
-    ).hasMatch(name.toLowerCase());
-    return present ? name : '$name · $variant';
+    ).hasMatch(shown.toLowerCase());
+    return present ? shown : '$shown · $variant';
   }
 
   factory LocalModel.fromJson(Map<String, dynamic> data) => LocalModel(
@@ -84,6 +119,10 @@ class LocalModel {
     app: switch (data['app']) {
       final String app when app.trim().isNotEmpty => app.trim(),
       _ => null,
+    },
+    servedAs: switch (data['servedAs']) {
+      final List<dynamic> names => names.whereType<String>().toList(),
+      _ => const [],
     },
   );
 }
