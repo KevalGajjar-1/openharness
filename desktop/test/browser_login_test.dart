@@ -303,18 +303,18 @@ void main() {
     expect(browser.transaction, isNull);
   });
 
-  for (final (origin, path) in [
-    ('https://harness.example', '/auth/callback'),
-    ('http://127.0.0.1:54732', '/callback'),
+  for (final (origin, path, workspace) in [
+    ('https://harness.example', '/auth/callback', '/web'),
+    ('http://127.0.0.1:54732', '/callback', '/'),
   ]) {
     test(
-      'callback on $origin cleans the URL, exchanges once, and persists the session',
+      'callback on $origin cleans the URL to the workspace ($workspace), exchanges once, and persists the session',
       () async {
         callback(origin: origin, path: path);
         final first = login.checkStatus();
         final second = login.checkStatus();
         expect(identical(first, second), isTrue);
-        expect(browser.uri.toString(), '$origin/');
+        expect(browser.uri.toString(), '$origin$workspace');
         expect(browser.transaction, isNull);
         expect(api.requests.single, (
           code: 'one-use',
