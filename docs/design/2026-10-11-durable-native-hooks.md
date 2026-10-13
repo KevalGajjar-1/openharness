@@ -1,5 +1,34 @@
 # Durable native hook delivery
 
+## Durable agent cancellation
+
+Native cancellation is also retained on the Registry row, independently of the
+process journal. The immutable request records its original binding, process key
+and journal frontier. An unknown owner stays unknown; recovery cannot fill it in
+or gain interrupt authority. A cancelled row uses schema 3 so an older writer
+refuses it instead of silently dropping the hold. Registration, process changes,
+archiving and discovery must preserve the association.
+
+Ordinary admission stays held until an explicit request first reserves a launch
+token and then confirms a replacement process and conversation. Confirmation
+cannot skip the reservation or change its request, target or token. Each later
+Cancel has a distinct request ID. Activation also needs cancellation of an
+unconfirmed reservation and conditional archived-session publication; these
+transitions are not yet wired into the daemon.
+
+Writes publish only after the file and parent directory are synced. An uncertain
+write is sticky: unrelated saves cannot roll it back, and a retry can confirm only
+its original image. A recovered enabling image must be synced through descriptors
+proven to be the original file and directory. Fresh reads retain the exact binding
+and control image through final effect verification. Stale peer saves and removals
+cannot overwrite a newer cancellation.
+
+A corrupt Registry now remains in place and blocks writes, including after a new
+daemon starts. Starting with an empty table could forget a cancellation when
+truncation removed its marker. Recovery requires repairing or restoring the saved
+state; the daemon does not discard it automatically. Native hook delivery accepts
+both valid schema 2 rows and schema 3 rows with valid control state.
+
 October 13 recap checkpoint: the recaps port now derives a bounded summary from
 the exact answer retained for an owner and generation. Core copies the input
 before a service wait and checks the reply's generation identity, input digest

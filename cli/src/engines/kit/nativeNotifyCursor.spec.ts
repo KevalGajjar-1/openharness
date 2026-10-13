@@ -150,3 +150,18 @@ it('reads only one private runtime, without changing registry permissions or gue
   rmSync(path, { recursive: true }); symlinkSync('/missing-fixture', path)
   expect(nativeNotifyRuntime(root, '%1')).toBeUndefined()
 })
+
+it('keeps delivering native evidence for a cancelled row while refusing malformed control versions', () => {
+  const path = join(root, 'registry.json'), row = runtime()
+  const nativeControl = { version: 1, cancel: { processKey: 'original-process', target: 'a'.repeat(64), request: {
+    requestId: 'original-cancel-request', nonce: 'original-cancel-nonce', agentId: row.agentId,
+    conversationId: 'fixture-conversation', frontier: { index: -1, digest: null },
+  } } }
+  writeFileSync(path, JSON.stringify([{ ...row, schemaVersion: 3, nativeControl }]), { mode: 0o600 })
+  expect(nativeNotifyRuntime(root, '%1')?.agentId).toBe(row.agentId)
+  for (const candidate of [{ ...row, nativeControl }, { ...row, schemaVersion: 3 },
+    { ...row, schemaVersion: 3, nativeControl: { ...nativeControl, version: 2 } }]) {
+    writeFileSync(path, JSON.stringify([candidate]))
+    expect(nativeNotifyRuntime(root, '%1')).toBeUndefined()
+  }
+})

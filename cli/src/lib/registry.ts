@@ -24,6 +24,7 @@ import {
   constants,
   existsSync,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -34,6 +35,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  type BigIntStats,
 } from 'fs'
 import { randomUUID } from 'crypto'
 import { join, basename, dirname, relative, isAbsolute } from 'path'
@@ -58,6 +60,8 @@ import { mergeTerminalRuntimes, processIdentityKey, sameProcessIdentity, termina
 import type { HookTerminalHint, ProcessIdentity, TerminalRuntimeRef } from './terminalTypes.js'
 import { externalReservations, externalResumePending, externalResumeIds, parseExternalResume, type ExternalResumeIntent } from './externalResume.js'
 import type { StartedBy } from './agentAttribution.js'
+import { nativeTurnTarget, nativeTurnTransition, parseNativeTurnIntent, type NativeTurnIntent } from './nativeTurnIntent.js'
+import { inspectHookFile } from '../engines/kit/nativeHookFiles.js'
 
 export type { ProcessIdentity } from './terminalTypes.js'
 
@@ -86,7 +90,10 @@ export interface RegisteredSession {
   /** An explicit Close-after-task intent. Never inferred from visibility or CPU use. */
   closePlan?: import('./closeAgentService.js').AgentClosePlan
   /** Per-row marker; the top-level array is retained for backward-reader safety. */
-  schemaVersion: 2
+  schemaVersion: 2 | 3
+  /** Schema 3 makes older writers refuse this row instead of dropping Cancel.
+   * This survives process changes, registration and stopped-history storage. */
+  nativeControl?: NativeTurnIntent
   /** Whether the supported engine process is currently identified; terminal liveness is tracked separately. */
   active: boolean
   /** Harness-created panes can be rendered before their engine process exists. Absent on legacy rows. */
@@ -600,7 +607,9 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
   const projectedTmuxPane = tmuxProjection(runtimes)
   const launch = normalizedLaunch(row.launch)
   const externalResume = row.externalResume === undefined ? undefined : parseExternalResume(row.externalResume)
-  if (row.schemaVersion !== 2
+  const nativeControl = row.nativeControl === undefined ? undefined : parseNativeTurnIntent(row.nativeControl)
+  if ((row.schemaVersion !== 2 && row.schemaVersion !== 3)
+    || (row.schemaVersion === 3) !== (nativeControl !== undefined) || nativeControl === null
     || typeof row.active !== 'boolean'
     || externalResume === null || externalResume && externalResume.request.engine !== row.engine
     || externalResume && externalResumePending(externalResume) && (row.sessionId !== '' || row.processIdentity !== null || launch?.state !== 'held')
@@ -621,16 +630,17 @@ export function strictPersistedRow(raw: unknown): RegisteredSession | null {
   // Taken out of the spread and put back only when it is a real moment: the spread would otherwise
   // carry a hand-edited string or a negative number straight into the frame's `toISOString()`.
   // `forkedFrom` is out too, so an invalid one is dropped rather than spread back in as-is.
-  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, startedBy: rawStartedBy, parentAgentId: rawParentAgentId, ...rest } = row
+  const { identityHold: _identityHold, evidenceRevision: _revision, interpretationHold: _interpretation, admissionHold: _admission, lastOpenedAt: rawOpenedAt, closePlan: rawClosePlan, forkedFrom: rawForkedFrom, scmLaunch: rawScmLaunch, externalResume: _externalResume, nativeControl: _nativeControl, startedBy: rawStartedBy, parentAgentId: rawParentAgentId, ...rest } = row
   const lastOpenedAt = normalizedOpenedAt(rawOpenedAt)
   // Out of the spread for the same reason: a half-formed record is dropped, never relaunched with.
   const scmLaunch = parseScmLaunchRecord(rawScmLaunch)
   return {
     ...rest,
     ...(externalResume ? { externalResume } : {}),
+    ...(nativeControl ? { nativeControl } : {}),
     ...(scmLaunch ? { scmLaunch } : {}),
     ...(normalizedClosePlan(rawClosePlan) ? { closePlan: normalizedClosePlan(rawClosePlan)! } : {}),
-    schemaVersion: 2,
+    schemaVersion: row.schemaVersion,
     active,
     ...(launch ? { launch } : {}),
     agentId: row.agentId,
@@ -781,7 +791,7 @@ function validatedRows(values: readonly unknown[]): RegisteredSession[] | null {
 function hasUnknownRowSchema(value: unknown): boolean {
   return !!value && typeof value === 'object'
     && Object.hasOwn(value, 'schemaVersion')
-    && (value as { schemaVersion?: unknown }).schemaVersion !== 2
+    && ![2, 3].includes((value as { schemaVersion?: unknown }).schemaVersion as number)
 }
 
 function validLegacyRegistryRow(value: unknown): boolean {
@@ -908,8 +918,17 @@ export function mergedForSave(
   intents: ReadonlyMap<string, ReadonlySet<string>>,
 ): Map<string, Record<string, unknown>> {
   const merged = new Map(latest)
+  // A stale scanner can have removed its old row before it discovers a peer's
+  // Cancel. Keep that row in the ownership index until replacement checks finish;
+  // otherwise its local deletion would hide the durable cancellation barrier.
+  const protectedOwners = new MergeIdentities(new Map([...latest].filter(([, row]) => !!row.nativeControl)))
   for (const baselineId of baselines.keys()) {
-    if (!currentRows.has(baselineId)) merged.delete(baselineId)
+    if (!currentRows.has(baselineId)) {
+      if (latest.get(baselineId)?.nativeControl && baselines.get(baselineId) !== rowFingerprint(latest.get(baselineId))) {
+        throw new IdentityReadUnavailable('native cancellation changed before the original row could be removed')
+      }
+      merged.delete(baselineId)
+    }
   }
   // Built on the first changed row, as the scan it replaces first read the rows then: a save with no
   // changed row reads none of them.
@@ -928,6 +947,13 @@ export function mergedForSave(
     const engine = candidate.engine
     const sessionId = typeof candidate.sessionId === 'string' ? candidate.sessionId : ''
     const routes = new Set(normalizedRuntimes(candidate.runtimes, candidate.tmuxPane).map(terminalRouteKey))
+    for (const [, otherRow] of protectedOwners.sharing(agentId, process?.pid, sessionId, routes)) {
+      if (otherRow.engine === engine && sameProcessIdentity(process, otherRow.processIdentity)
+        || !!sessionId && otherRow.sessionId === sessionId
+        || otherRow.runtimes.some(runtime => routes.has(terminalRouteKey(runtime)))) {
+        throw new IdentityReadUnavailable('native cancellation prevents automatic ownership replacement')
+      }
+    }
     identities ??= new MergeIdentities(merged)
     for (const [otherId, otherRow] of identities.sharing(agentId, process?.pid, sessionId, routes)) {
       const sameProcess = otherRow.engine === engine && sameProcessIdentity(process, otherRow.processIdentity)
@@ -935,6 +961,7 @@ export function mergedForSave(
       const sameRoute = otherRow.runtimes.some((runtime) => routes.has(terminalRouteKey(runtime)))
       // Sharing a pid is not yet the same process: the engine and the start must match too.
       if (!sameProcess && !sameSession && !sameRoute) continue
+      if (otherRow.nativeControl) throw new IdentityReadUnavailable('native cancellation prevents automatic ownership replacement')
       // A daemon-down hook may bind a session while startup discovery is opening the same process.
       // Preserve that binding, then let the scanner-owned agent id/runtime state win deterministically.
       if (sameProcess && !candidate.sessionId && otherRow.sessionId) {
@@ -1062,7 +1089,7 @@ class Registry {
   // A post-rename failure is not absence. Only the same immutable binding intent,
   // unchanged local owners and these exact affected rows can confirm that write.
   private unconfirmedBinding: { image: ReturnType<typeof persistedRow>[]; prior: unknown[]; before: Map<string, string>;
-    agentId: string; intent: string | null; affected: Set<string> } | null = null
+    agentId: string; intent: string | null; affected: Set<string>; sticky?: boolean } | null = null
   /**
    * Fields a caller set on purpose since the last save, by agent: written as they are now, whatever the
    * file says. The merge alone keeps the file's value wherever this view matches what it last saved, so
@@ -1165,7 +1192,8 @@ class Registry {
       const { rows: parsed, dropped, changed: strippedRetired } = withoutRetiredRows(stored)
       if (dropped) console.log(`[registry] dropped ${dropped} agent(s) that lived only in a retired Herdr terminal`)
       if (parsed.some(hasUnknownRowSchema) || parsed.some(value => !!value && typeof value === 'object'
-        && Object.hasOwn(value, 'externalResume') && !strictPersistedRow(value))) {
+        && (Object.hasOwn(value, 'externalResume') || Object.hasOwn(value, 'nativeControl')
+          || (value as { schemaVersion?: unknown }).schemaVersion === 3) && !strictPersistedRow(value))) {
         this.writeBlocked = true
         console.error('[registry] registry contains an unknown row schema; refusing to overwrite it')
         return
@@ -1176,7 +1204,7 @@ class Registry {
         return
       }
       const v2Rows = parsed.filter((row) => !!row && typeof row === 'object'
-        && (row as { schemaVersion?: unknown }).schemaVersion === 2)
+        && [2, 3].includes((row as { schemaVersion?: unknown }).schemaVersion as number))
       if (v2Rows.length && !validatedRows(v2Rows)) {
         this.quarantine('contains a malformed v2 row')
         return
@@ -1187,7 +1215,7 @@ class Registry {
         if (id) this.persistedBaseline.set(id, rowFingerprint(row))
       }
       // The rollback copy is the file as found, retired runtimes and all — not the cleaned rows.
-      if (arr.some((row) => row.schemaVersion !== 2)) {
+      if (arr.some((row) => row.schemaVersion !== 2 && row.schemaVersion !== 3)) {
         atomicWriteJson(PRE_V2_BACKUP_FILE, stored, true)
       }
       let changed = strippedRetired
@@ -1291,7 +1319,8 @@ class Registry {
         const active = !rebooted && raw.active !== false
         const launch = normalizedLaunch(raw.launch)
         const s: RegisteredSession = {
-          schemaVersion: 2,
+          schemaVersion: raw.schemaVersion === 3 ? 3 : 2,
+          ...(raw.nativeControl ? { nativeControl: parseNativeTurnIntent(raw.nativeControl)! } : {}),
           active,
           ...(launch ? { launch } : {}),
           ...(raw.resumeOnly === true ? { resumeOnly: true } : {}),
@@ -1350,7 +1379,7 @@ class Registry {
         }
         if (
           raw.engine !== engine
-          || raw.schemaVersion !== 2
+          || raw.schemaVersion !== s.schemaVersion
           || typeof raw.active !== 'boolean'
           || JSON.stringify(raw.launch) !== JSON.stringify(s.launch)
           || raw.tmuxPane !== pane
@@ -1411,11 +1440,8 @@ class Registry {
   }
 
   /**
-   * Bytes no version of the registry can load — not JSON, the wrong shape, malformed or contradictory
-   * rows — are moved aside, kept byte-for-byte for an operator, and the daemon starts empty: discovery
-   * finds the agents still running in tmux again. Refusing every write instead left a daemon that could
-   * not start a single agent until someone repaired the file by hand. A newer version's rows (an
-   * unknown schema) are not corruption, and are still never touched.
+   * An unreadable table cannot prove that Cancel was absent before the crash.
+   * Preserve its bytes and hold discovery instead of minting uncancelled agents.
    */
   private quarantine(reason: string): void {
     this.agents.clear()
@@ -1426,15 +1452,8 @@ class Registry {
     this.persistedContents = null
     this.unconfirmedBinding = null
     this.intended.clear()
-    const aside = `${FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
-    try {
-      renameSync(FILE, aside)
-      this.writeBlocked = false
-      console.error(`[registry] registry ${reason}; moved it aside to ${aside} and started empty`)
-    } catch (error) {
-      this.writeBlocked = true
-      console.error(`[registry] registry ${reason}, and it could not be moved aside (${error instanceof Error ? error.message : error}); refusing to overwrite it`)
-    }
+    this.writeBlocked = true
+    console.error(`[registry] registry ${reason}; preserving saved state and refusing to overwrite it`)
   }
 
   private loadNames(): void {
@@ -1539,6 +1558,11 @@ class Registry {
 
     const agentId = input.agentId || randomUUID()
     let evicted: { agentId: string; sessionId: string } | null = null
+
+    // A new PID discovered in the same pane must not mint a clean successor to
+    // a cancelled agent. Explicit restart updates the original row after proof.
+    if (this.agents.get(agentId)?.nativeControl || runtimes.some(runtime =>
+      this.agents.get(this.runtimeIndex.get(terminalRouteKey(runtime)) ?? '')?.nativeControl)) return null
 
     for (const runtime of runtimes) {
       const otherId = this.runtimeIndex.get(terminalRouteKey(runtime))
@@ -1880,6 +1904,7 @@ class Registry {
     const stolenFrom = this.bySession(sessionId)
     let displaced: { agentId: string; candidate: RegisteredSession | null } | undefined
     if (stolenFrom && stolenFrom.agentId !== agentId) {
+      if (stolenFrom.nativeControl) throw new IdentityReadUnavailable('native cancellation prevents automatic conversation transfer')
       const released = { ...stolenFrom, sessionId: '', boundAt: null, transcriptPath: null,
         source: null, lastTranscriptAt: now }
       delete released.externalResume; delete released.resumeOnly
@@ -1979,7 +2004,8 @@ class Registry {
       : baseCwd
     const retainEvidence = sameSession && existing.engine === engine && existing.transcriptPath === effectiveTranscriptPath
     const entry: RegisteredSession = {
-      schemaVersion: 2,
+      schemaVersion: existing?.nativeControl ? 3 : 2,
+      ...(existing?.nativeControl ? { nativeControl: existing.nativeControl } : {}),
       active: existing && isTerminalEngine(existing.engine) ? true : existing?.active ?? true,
       ...(existing?.evidenceRevision === undefined ? {} : { evidenceRevision: existing.evidenceRevision }),
       ...(retainEvidence && existing.identityHold ? { identityHold: existing.identityHold } : {}),
@@ -2342,6 +2368,91 @@ class Registry {
     return entry
   }
 
+  /** A fresh bounded disk proof, not the row last observed in memory. Retain it
+   * across every source read and check it at the actual physical boundary. */
+  readNativeControl(input: RegisteredSession): { intent: NativeTurnIntent | undefined; verify(): void } {
+    const original = structuredClone(input), target = nativeTurnTarget(original)
+    if (this.writeBlocked || this.unconfirmedBinding?.affected.has(original.agentId)) {
+      throw new IdentityReadUnavailable('native control is waiting for durable registry confirmation')
+    }
+    // Inspect without chmod: changing permissions after capturing a file is not
+    // evidence that its earlier contents came from the private state writer.
+    const identity = (info: BigIntStats) => `${info.dev}:${info.ino}:${info.uid}:${info.mode}`
+    const stamp = (info: BigIntStats) => `${identity(info)}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
+    const privateState = () => {
+      let directoryIdentity = ''
+      for (const [path, directory, mode] of [[env.ADAPTER_DATA_DIR, true, 0o700], [FILE, false, 0o600]] as const) {
+        const info = lstatSync(path, { bigint: true })
+        if ((directory ? !info.isDirectory() : !info.isFile()) || (info.mode & 0o777n) !== BigInt(mode)
+          || typeof process.getuid === 'function' && info.uid !== BigInt(process.getuid())) {
+          throw new IdentityReadUnavailable('native control needs the original private registry')
+        }
+        if (directory) directoryIdentity = identity(info)
+      }
+      return directoryIdentity
+    }
+    const originalDirectory = privateState()
+    const retained = inspectHookFile(FILE, 0o600)
+    const values: unknown = retained.content === null ? null : JSON.parse(retained.content)
+    const rows = Array.isArray(values) ? validatedRows(values) : null
+    const saved = rows?.find(row => row.agentId === original.agentId)
+    if (!saved || nativeTurnTarget(saved) !== target || rowFingerprint(saved.nativeControl) !== rowFingerprint(original.nativeControl)) {
+      throw new IdentityReadUnavailable('the original durable native control owner changed')
+    }
+    const intent = saved.nativeControl
+    const verify = () => {
+      privateState(); retained.verify()
+      const current = this.byAgent(original.agentId)
+      if (this.writeBlocked || this.unconfirmedBinding?.affected.has(original.agentId) || !current
+        || nativeTurnTarget(current) !== target || rowFingerprint(current.nativeControl) !== rowFingerprint(intent)) {
+        throw new IdentityReadUnavailable('the original native control changed')
+      }
+    }
+    if (intent?.rearm?.replacement) {
+      // A peer can see rename before the publishing process confirms its
+      // directory. Enabling admission requires this exact image to be durable.
+      for (const [path, directory] of [[FILE, false], [env.ADAPTER_DATA_DIR, true]] as const) {
+        const version = directory ? identity : stamp, before = directory ? originalDirectory : retained.stamp
+        verify()
+        const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : constants.O_NONBLOCK))
+        try {
+          if (version(fstatSync(fd, { bigint: true })) !== before) throw new IdentityReadUnavailable('native control changed before durability confirmation')
+          verify()
+          fsyncSync(fd)
+          if (version(fstatSync(fd, { bigint: true })) !== before) {
+            throw new IdentityReadUnavailable('native control changed during durability confirmation')
+          }
+          verify()
+        } finally { closeSync(fd) }
+      }
+    }
+    verify()
+    return { intent, verify }
+  }
+
+  /** This commit bypasses deferred observations and never publishes live state
+   * before file and directory sync. An uncertain control image cannot roll back
+   * to an earlier permission: only this exact request can confirm it. */
+  commitNativeControl(input: RegisteredSession, value: NativeTurnIntent, fence: () => void): RegisteredSession {
+    const original = structuredClone(input), next = parseNativeTurnIntent(value)
+    if (!next || !nativeTurnTransition(original, next)) throw new IdentityReadUnavailable('the proposed native control transition is invalid')
+    const target = nativeTurnTarget(original), before = rowFingerprint(original.nativeControl)
+    const unchanged = () => {
+      const current = this.byAgent(original.agentId)
+      if (!current || nativeTurnTarget(current) !== target || rowFingerprint(current.nativeControl) !== before) {
+        throw new IdentityReadUnavailable('the original native control owner changed before publication')
+      }
+    }
+    const verify = () => { unchanged(); fence(); unchanged() }
+    verify()
+    const current = this.byAgent(original.agentId)!
+    const candidate = { ...structuredClone(current), schemaVersion: 3 as const, nativeControl: next }
+    this.save(true, false, undefined, { agentId: original.agentId, candidate, verify, sticky: true, replaceLive: true })
+    const committed = this.byAgent(original.agentId)!
+    this.readNativeControl(committed).verify()
+    return committed
+  }
+
   /** Mark whether at least one backend placement was verified by this daemon process. */
   setTerminalAvailable(agentId: string, available: boolean): boolean {
     if (!this.agents.has(agentId)) return false
@@ -2678,7 +2789,7 @@ class Registry {
 
   private save(strict = false, exiting = false, externalAgentId?: string,
     bindingCommit?: { agentId: string; candidate: RegisteredSession; verify: () => void; replaceLive?: boolean;
-      displaced?: { agentId: string; candidate: RegisteredSession | null } },
+      displaced?: { agentId: string; candidate: RegisteredSession | null }; sticky?: boolean },
     mutationAgentId = externalAgentId ?? bindingCommit?.agentId): void {
     // Discovery batches observations, but a recovered binding must be durable before interpretation
     // resumes. Commit a complete batch now; an incomplete batch remains held and retries next pass.
@@ -2701,11 +2812,14 @@ class Registry {
         return [entry.agentId, row] as const
       }))
       const beforeCommit = new Map([...currentRows].map(([id, row]) => [id, rowFingerprint(row)]))
-      const intent = bindingCommit ? rowFingerprint({ ...persistedRow(bindingCommit.candidate),
-        touchedAt: 0, boundAt: 0, lastHookAt: 0 }) : undefined
+      const controlFingerprint = (row: RegisteredSession) => rowFingerprint([nativeTurnTarget(row), row.nativeControl])
+      const intent = bindingCommit ? bindingCommit.sticky ? controlFingerprint(bindingCommit.candidate)
+        : rowFingerprint({ ...persistedRow(bindingCommit.candidate), touchedAt: 0, boundAt: 0, lastHookAt: 0 }) : undefined
       let unconfirmed = this.unconfirmedBinding
       let confirming = !!unconfirmed && !!bindingCommit && unconfirmed.agentId === bindingCommit.agentId && unconfirmed.intent === intent
-        && [...unconfirmed.affected].every(id => beforeCommit.get(id) === unconfirmed!.before.get(id))
+        && [...unconfirmed.affected].every(id => beforeCommit.get(id) === unconfirmed!.before.get(id)
+          || unconfirmed!.sticky && id === unconfirmed!.agentId && !!beforeCommit.get(id) && !!unconfirmed!.before.get(id)
+            && controlFingerprint(JSON.parse(beforeCommit.get(id)!)) === controlFingerprint(JSON.parse(unconfirmed!.before.get(id)!)))
       if (bindingCommit) {
         currentRows.set(bindingCommit.agentId, persistedRow(bindingCommit.candidate) as unknown as Record<string, unknown>)
         const displaced = bindingCommit.displaced
@@ -2733,7 +2847,8 @@ class Registry {
           if (!Array.isArray(stored)) throw new Error('registry root changed to a non-array value')
           const parsed = withoutRetiredRows(stored).rows
           if (parsed.some(hasUnknownRowSchema) || parsed.some(value => !!value && typeof value === 'object'
-        && Object.hasOwn(value, 'externalResume') && !strictPersistedRow(value))) {
+        && (Object.hasOwn(value, 'externalResume') || Object.hasOwn(value, 'nativeControl')
+          || (value as { schemaVersion?: unknown }).schemaVersion === 3) && !strictPersistedRow(value))) {
             throw new Error('registry contains an unknown row schema')
           }
           const legacyRows = parsed.filter((row) => !row || typeof row !== 'object' || !Object.hasOwn(row, 'schemaVersion'))
@@ -2741,7 +2856,7 @@ class Registry {
             throw new Error('registry contains a malformed legacy row')
           }
           const v2Rows = parsed.filter((row) => !!row && typeof row === 'object'
-            && (row as { schemaVersion?: unknown }).schemaVersion === 2)
+            && [2, 3].includes((row as { schemaVersion?: unknown }).schemaVersion as number))
           if (v2Rows.length && !validatedRows(v2Rows)) throw new Error('registry contains a malformed v2 row')
           return parsed
         })()
@@ -2751,11 +2866,15 @@ class Registry {
           if (id) latest.set(id, value as Record<string, unknown>)
         }
 
-        if (unconfirmed && [...unconfirmed.affected].some(id => {
+        const peerChanged = unconfirmed && [...unconfirmed.affected].some(id => {
           const written = unconfirmed!.image.find(row => rowId(row) === id)
           return (latest.has(id) ? rowFingerprint(latest.get(id)) : undefined)
             !== (written ? rowFingerprint(written) : undefined)
-        })) {
+        })
+        if (unconfirmed?.sticky && (!confirming || peerChanged)) {
+          throw new IdentityReadUnavailable('the original native control commit still needs durable confirmation')
+        }
+        if (unconfirmed && peerChanged) {
           // A peer changed part of our unpublished ownership group. Its complete
           // validated table wins that whole group; no fragment of the old draft may
           // overwrite it. Recovered bindings stay held until native revalidation.
@@ -2877,7 +2996,7 @@ class Registry {
               // controller or caller can mutate through its live row/input.
               image: JSON.parse(JSON.stringify(serialized)), prior: JSON.parse(JSON.stringify([...prior.values()])),
               agentId: bindingCommit?.agentId ?? unconfirmed!.agentId, intent: intent ?? null,
-              before: beforeCommit, affected,
+              before: beforeCommit, affected, ...((bindingCommit?.sticky || unconfirmed?.sticky) ? { sticky: true } : {}),
             }
           }
           throw error
