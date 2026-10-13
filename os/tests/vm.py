@@ -501,6 +501,7 @@ def check_graphical_keyboard(vm, name, *, allow_welcome=False):
     # first graphical frame. The saved workspace must actually be visible
     # before sending its shortcut; otherwise early keystrokes can be lost.
     deadline = time.monotonic() + 30
+    dismissed = False
     while time.monotonic() < deadline:
         vm.screenshot(name + '-ready')
         visible = subprocess.check_output(
@@ -508,6 +509,13 @@ def check_graphical_keyboard(vm, name, *, allow_welcome=False):
             text=True, stderr=subprocess.DEVNULL, timeout=10)
         if workspace_text_visible(visible, allow_welcome=allow_welcome):
             break
+        # Offline for 10 s, a signed-in hn brings the Wi-Fi form forward as a tab (os_welcome
+        # offer_wifi). Escape closes it, as a person who means to work offline does, once.
+        if not dismissed and 'connecttowi-fi' in re.sub(r'\s+', '', visible).lower():
+            vm.screenshot(name + '-offline-wifi-offered')
+            vm.keys('esc')
+            dismissed = True
+            deadline = max(deadline, time.monotonic() + 15)
         time.sleep(.25)
     else:
         raise RuntimeError('The graphical workspace did not render before keyboard input.')
@@ -824,7 +832,9 @@ def check_first_use(vm, user, folder, installed=False):
     assert interactive_status == 0, 'The visible bundled agent must accept keyboard input and display its reply'
     # The real agent receives the local guide, knows both shortcut layers, and
     # creates work that the later offline installation must preserve.
-    vm.type_probe('what are the os shortcuts for a new harness and connecting a computer and does ctrl b still work')
+    # Short on purpose: the check reads the agent's visible screen, and a long answer scrolls the
+    # Super shortcuts off it (run 38380548451 answered correctly, only the Ctrl+b lines still shown).
+    vm.type_probe('in three short lines what are the os shortcuts for a new harness and connecting a computer and does ctrl b still work')
     vm.keys('ret')
     _, guide_status = vm.command(user('sh -c ' + shlex.quote(
         'for n in $(seq 1 120); do hn capture-pane -p > /tmp/hn-first-guide.txt; '
