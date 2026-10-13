@@ -363,6 +363,14 @@ class VM:
         """Sign the installed system in to the test account at hn's required sign-in page (#1276),
         as a headless box is signed in. Runs as the logged-in user; needs the network."""
         self.command('nm-online -q --timeout=60', timeout=70)
+        # Concurrent test VMs share the test account, and signed in, hn shows the account's shared
+        # tabs: another VM's windows would fill this screen. Keep this computer's tabs to itself.
+        self.command('mkdir -p ~/.config/systemd/user/hn-screen.service.d && printf "[Service]\\n'
+                     'Environment=HARNESS_TUI_DESK_SIGNED_IN=off\\n" > ~/.config/systemd/user/hn-screen.service.d/test-desk.conf && '
+                     'systemctl --user daemon-reload && systemctl --user restart hn-screen && '
+                     'for n in $(seq 1 60); do pgrep -u "$(id -u)" -x "hn|harness-tui" >/dev/null && '
+                     'tr "\\0" "\\n" < /proc/$(pgrep -u "$(id -u)" -nx "hn|harness-tui")/environ | '
+                     'grep -qx HARNESS_TUI_DESK_SIGNED_IN=off && exit 0; sleep 1; done; exit 1', timeout=75)
         self.form_shows(name + '-required', 'Sign in to Harness')
         output, status = self.command('harness login --json --ticket=' + shlex.quote(account_ticket()),
                                       timeout=120, check=False)
@@ -389,16 +397,6 @@ class VM:
                 raise AssertionError('Required sign-in stayed on screen after the account signed in.')
             time.sleep(2)
         self.boot_event('signed-in')
-
-    def local_window(self):
-        """Open and focus a shell window on this computer; returns its id. Signed in, hn shows the
-        account's shared tabs, and concurrent test VMs share the test account (all named `harness`),
-        so another VM's window can be in front: probe in a window that is certainly this one's."""
-        output, _ = self.command('hn new-window -n local-probe && hn display-message -p "HN_LOCAL_WINDOW=#{window_id}"')
-        window = re.search(r'HN_LOCAL_WINDOW=(@\d+)', output)
-        if not window:
-            raise RuntimeError('Could not open a window on this computer.')
-        return window.group(1)
 
     def wait_unlock(self):
         # OCR reads the actual framebuffer; a process or serial prompt alone
@@ -516,7 +514,6 @@ def check_graphical_keyboard(vm, name, *, allow_welcome=False):
     """Prove the installed graphical surface accepts input and renders output."""
     started = time.monotonic()
     vm.command('pgrep -x labwc >/dev/null && pgrep -x foot >/dev/null')
-    local_window = vm.local_window()
     # A running renderer or the daemon's discovery endpoint can precede the
     # first graphical frame. The saved workspace must actually be visible
     # before sending its shortcut; otherwise early keystrokes can be lost.
@@ -576,7 +573,6 @@ def check_graphical_keyboard(vm, name, *, allow_welcome=False):
                shlex.quote(pane.group(1)) + '; then exit 0; fi; '
                'sleep 0.25; done; exit 1')
     vm.command('systemctl --user is-active --quiet hn-screen && pgrep -x "hn|harness-tui" >/dev/null')
-    vm.command('hn kill-window -t ' + shlex.quote(local_window), check=False)  # the probe's own window
     time.sleep(0.25)  # Let the frame following the pane-close event paint.
     return {'confirmed_seconds_since_boot': round(confirmed - vm.started, 3),
             'probe_seconds_including_automated_typing': round(confirmed - started, 3)}
