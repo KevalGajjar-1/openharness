@@ -394,9 +394,15 @@ void main() {
         'action="${const HtmlEscape().convert('https://harness.autonomous.ai/hub/import')}"',
       ),
     );
-    expect(html, contains(const HtmlEscape().convert('</textarea>')));
     expect(html, isNot(contains('<script>bad()')));
     expect(html, isNot(contains('/api/community/harnesses')));
+    // The draft goes as a gzipped file, never as text the edge could read.
+    expect(html, contains('<input type="file" name="draft" hidden>'));
+    final packed = RegExp(r'atob\("([A-Za-z0-9+/=]+)"\)').firstMatch(html)![1]!;
+    expect(
+      jsonDecode(utf8.decode(gzip.decode(base64Decode(packed)))),
+      draft,
+    );
     await handoff.close();
   });
   test('login return accepts only local Hub pages', () {

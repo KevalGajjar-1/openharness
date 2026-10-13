@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 
@@ -47,6 +48,13 @@ describe('POST /api/community/translate', () => {
     const res = await post(await build())
     expect(res.statusCode).toBe(200)
     expect(res.json().data).toEqual({ title: 'Snake game', description: '', conversation: [{ role: 'user', text: 'make a snake game' }], translated: true })
+  })
+
+  it('reads a gzipped draft as the JSON it carries', async () => {
+    llmSays('{"items":[{"i":0,"en":"Snake game"},{"i":2,"en":"make a snake game"}]}')
+    const res = await (await build()).inject({ method: 'POST', url: COMMUNITY_TRANSLATE_PATH, payload: gzipSync(JSON.stringify(draft)), headers: { authorization: 'Bearer sso-token', 'content-type': 'application/gzip' } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.title).toBe('Snake game')
   })
 
   it('fails closed without a configured model, and on a failed call', async () => {
